@@ -1,6 +1,6 @@
-start_server {tags {"failover"}} {
-start_server {} {
-start_server {} {
+start_server {tags {"failover"} overrides {save {}}} {
+start_server {overrides {save {}}} {
+start_server {overrides {save {}}} {
     set node_0 [srv 0 client]
     set node_0_host [srv 0 host]
     set node_0_port [srv 0 port]

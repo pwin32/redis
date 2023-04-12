@@ -671,7 +671,6 @@ if {$::tcl_platform(platform) eq "windows"} {
         exec kill -SIGCONT $pid
     }
 }
-
 proc cmdrstat {cmd r} {
     if {[regexp "\r\ncmdstat_$cmd:(.*?)\r\n" [$r info commandstats] _ value]} {
         set _ $value

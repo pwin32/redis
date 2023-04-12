@@ -1,5 +1,5 @@
-start_server {tags {"repl network"}} {
-    start_server {} {
+start_server {tags {"repl network"} overrides {save {}}} {
+    start_server { overrides {save {}}} {
 
         set master [srv -1 client]
         set master_host [srv -1 host]
