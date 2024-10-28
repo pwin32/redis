@@ -9678,6 +9678,12 @@ RedisModuleString *RM_GetModuleUserACLString(RedisModuleUser *user) {
  * The returned string must be released with RedisModule_FreeString() or by
  * enabling automatic memory management. */
 RedisModuleString *RM_GetCurrentUserName(RedisModuleCtx *ctx) {
+    /* Sometimes, the user isn't passed along the call stack or isn't
+     * even set, so we need to check for the members to avoid crashes. */
+    if (ctx->client == NULL || ctx->client->user == NULL || ctx->client->user->name == NULL) {
+        return NULL;
+    }
+
     return RM_CreateString(ctx,ctx->client->user->name,sdslen(ctx->client->user->name));
 }
 
