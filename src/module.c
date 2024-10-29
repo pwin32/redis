@@ -4171,15 +4171,7 @@ int RM_KeyType(RedisModuleKey *key) {
  * If the key pointer is NULL or the key is empty, zero is returned. */
 size_t RM_ValueLength(RedisModuleKey *key) {
     if (key == NULL || key->value == NULL) return 0;
-    switch(key->value->type) {
-    case OBJ_STRING: return stringObjectLen(key->value);
-    case OBJ_LIST: return listTypeLength(key->value);
-    case OBJ_SET: return setTypeSize(key->value);
-    case OBJ_ZSET: return zsetLength(key->value);
-    case OBJ_HASH: return hashTypeLength(key->value, 0);  /* OPEN: To subtract expired fields? */
-    case OBJ_STREAM: return streamLength(key->value);
-    default: return 0;
-    }
+    return getObjectLength(key->value);
 }
 
 /* If the key is open for writing, remove it, and setup the key to
