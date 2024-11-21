@@ -1590,7 +1590,7 @@ struct redisServer {
     dict *moduleapi;            /* Exported core APIs dictionary for modules. */
     dict *sharedapi;            /* Like moduleapi but containing the APIs that
                                    modules share with each other. */
-    dict *module_configs_queue; /* Dict that stores module configurations from .conf file until after modules are loaded during startup or arguments to loadex. */
+    dict *module_configs_queue; /* Unmapped configs are queued here, assumed to be module config. Applied after modules are loaded during startup or arguments to loadex. */
     list *loadmodule_queue;     /* List of modules to load at startup. */
     int module_pipe[2];         /* Pipe used to awake the event loop by module threads. */
     pid_t child_pid;            /* PID of current child */
@@ -3346,10 +3346,10 @@ void freeServerClientMemUsageBuckets(void);
 typedef struct ModuleConfig ModuleConfig;
 int performModuleConfigSetFromName(sds name, sds value, const char **err);
 int performModuleConfigSetDefaultFromName(sds name, const char **err);
-void addModuleBoolConfig(const char *module_name, const char *name, int flags, void *privdata, int default_val);
-void addModuleStringConfig(const char *module_name, const char *name, int flags, void *privdata, sds default_val);
-void addModuleEnumConfig(const char *module_name, const char *name, int flags, void *privdata, int default_val, configEnum *enum_vals);
-void addModuleNumericConfig(const char *module_name, const char *name, int flags, void *privdata, long long default_val, int conf_flags, long long lower, long long upper);
+void addModuleBoolConfig(sds name, sds alias, int flags, void *privdata, int default_val);
+void addModuleStringConfig(sds name, sds alias, int flags, void *privdata, sds default_val);
+void addModuleEnumConfig(sds name, sds alias, int flags, void *privdata, int default_val, configEnum *enum_vals, int num_enum_vals);
+void addModuleNumericConfig(sds name, sds alias, int flags, void *privdata, long long default_val, int conf_flags, long long lower, long long upper);
 void addModuleConfigApply(list *module_configs, ModuleConfig *module_config);
 int moduleConfigApplyConfig(list *module_configs, const char **err, const char **err_arg_name);
 int getModuleBoolConfig(ModuleConfig *module_config);
@@ -3775,6 +3775,7 @@ void configGetCommand(client *c);
 void configResetStatCommand(client *c);
 void configRewriteCommand(client *c);
 void configHelpCommand(client *c);
+int configExists(const sds name);
 void hincrbyCommand(client *c);
 void hincrbyfloatCommand(client *c);
 void subscribeCommand(client *c);

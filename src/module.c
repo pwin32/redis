@@ -437,7 +437,13 @@ typedef int (*RedisModuleConfigApplyFunc)(RedisModuleCtx *ctx, void *privdata, R
 
 /* Struct representing a module config. These are stored in a list in the module struct */
 struct ModuleConfig {
-    sds name; /* Name of config without the module name appended to the front */
+    sds name;           /* Fullname of the config (as it appears in the config file) */
+    sds alias;          /* Optional alias for the configuration. NULL if none exists */
+    
+    int unprefixedFlag; /* Indicates if the REDISMODULE_CONFIG_UNPREFIXED flag was set. 
+                         * If the configuration name was prefixed,during get_fn/set_fn 
+                         * callbacks, it should be reported without the prefix */
+
     void *privdata; /* Optional data passed into the module config callbacks */
     union get_fn { /* The get callback specified by the module */
         RedisModuleConfigGetStringFunc get_string;
@@ -2253,12 +2259,16 @@ int moduleIsModuleCommand(void *module_handle, struct redisCommand *cmd) {
  * -------------------------------------------------------------------------- */
 
 int moduleListConfigMatch(void *config, void *name) {
-    return strcasecmp(((ModuleConfig *) config)->name, (char *) name) == 0;
+    ModuleConfig *mc = (ModuleConfig *) config;
+    /* Compare the provided name with the config's name and alias if it exists */
+    return strcasecmp(mc->name, (char *) name) == 0 ||
+            ((mc->alias) && strcasecmp(mc->alias, (char *) name) == 0);
 }
 
 void moduleListFree(void *config) {
     ModuleConfig *module_config = (ModuleConfig *) config;
     sdsfree(module_config->name);
+    sdsfree(module_config->alias);
     zfree(config);
 }
 
@@ -12090,10 +12100,9 @@ void moduleRemoveConfigs(RedisModule *module) {
     listRewind(module->module_configs, &li);
     while ((ln = listNext(&li))) {
         ModuleConfig *config = listNodeValue(ln);
-        sds module_name = sdsnew(module->name);
-        sds full_name = sdscat(sdscat(module_name, "."), config->name); /* ModuleName.ModuleConfig */
-        removeConfig(full_name);
-        sdsfree(full_name);
+        removeConfig(config->name);
+        if (config->alias)
+            removeConfig(config->alias);
     }
 }
 
@@ -12132,6 +12141,12 @@ void moduleLoadFromQueue(void) {
         listDelNode(server.loadmodule_queue, ln);
     }
     if (dictSize(server.module_configs_queue)) {
+        serverLog(LL_WARNING, "Unresolved Configuration(s) Detected:");        
+        dictIterator *di = dictGetIterator(server.module_configs_queue);
+        dictEntry *de;
+        while ((de = dictNext(di)) != NULL) {
+            serverLog(LL_WARNING, ">>> '%s %s'", (char *)dictGetKey(de), (char *)dictGetVal(de));
+        }
         serverLog(LL_WARNING, "Module Configuration detected without loadmodule directive or no ApplyConfig call: aborting");
         exit(1);
     }
@@ -12582,7 +12597,8 @@ int moduleVerifyConfigFlags(unsigned int flags, configType type) {
                     | REDISMODULE_CONFIG_PROTECTED
                     | REDISMODULE_CONFIG_DENY_LOADING
                     | REDISMODULE_CONFIG_BITFLAGS
-                    | REDISMODULE_CONFIG_MEMORY))) {
+                    | REDISMODULE_CONFIG_MEMORY
+                    | REDISMODULE_CONFIG_UNPREFIXED))) {
         serverLogRaw(LL_WARNING, "Invalid flag(s) for configuration");
         return REDISMODULE_ERR;
     }
@@ -12619,6 +12635,54 @@ int moduleVerifyResourceName(const char *name) {
     return REDISMODULE_OK;
 }
 
+/* Verify unprefixed name config might be a single "<name>" or in the form 
+ * "<name>|<alias>". Unlike moduleVerifyResourceName(), unprefixed name config 
+ * allows a single dot in the name or alias. 
+ * 
+ * delim - Updates to point to "|" if it exists, NULL otherwise. 
+ */
+int moduleVerifyUnprefixedName(const char *nameAlias, const char **delim) {
+    if (nameAlias[0] == '\0')
+        return REDISMODULE_ERR;
+
+    *delim = NULL;
+    int dot_count = 0, lname = 0;
+
+    for (size_t i = 0; nameAlias[i] != '\0'; i++) {
+        char ch = nameAlias[i];
+        
+        if (((*delim) == NULL) && (ch == '|')) {
+            /* Handle single separator between name and alias */
+            if (!lname) {
+                serverLog(LL_WARNING, "Module configuration name is empty: %s", nameAlias);
+                return REDISMODULE_ERR;
+            }
+            *delim = &nameAlias[i];
+            dot_count = lname = 0;
+        } else if ( (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                    (ch >= '0' && ch <= '9') || (ch == '_') || (ch == '-') )
+        {
+            ++lname;
+        } else if (ch == '.') {
+            /* Allow only one dot per section (name or alias) */
+            if (++dot_count > 1) { 
+                serverLog(LL_WARNING, "Invalid character sequence in Module configuration name or alias: %s", nameAlias);
+                return REDISMODULE_ERR;
+            }
+        } else {
+            serverLog(LL_WARNING, "Invalid character %c in Module configuration name or alias %s.", ch, nameAlias);
+            return REDISMODULE_ERR;
+        }
+    }
+    
+    if (!lname) {
+        serverLog(LL_WARNING, "Module configuration name or alias is empty : %s", nameAlias);
+        return REDISMODULE_ERR;
+    }
+
+    return REDISMODULE_OK;
+}
+
 /* This is a series of set functions for each type that act as dispatchers for 
  * config.c to call module set callbacks. */
 #define CONFIG_ERR_SIZE 256
@@ -12631,9 +12695,24 @@ static void propagateErrorString(RedisModuleString *err_in, const char **err) {
     }
 }
 
+/* If configuration was originally registered with indication to prefix the name, 
+ * return the name without the prefix by skipping prefix "<MODULE-NAME>.". 
+ * Otherwise, return the stored name as is. */
+static char *getRegisteredConfigName(ModuleConfig *config) {
+    if (config->unprefixedFlag)
+        return config->name;
+
+    /* For prefixed configuration, find the '.' indicating the end of the prefix */
+    char *endOfPrefix = strchr(config->name, '.');
+    serverAssert(endOfPrefix != NULL);    
+    return endOfPrefix + 1;
+}
+
 int setModuleBoolConfig(ModuleConfig *config, int val, const char **err) {
     RedisModuleString *error = NULL;
-    int return_code = config->set_fn.set_bool(config->name, val, config->privdata, &error);
+
+    char *rname = getRegisteredConfigName(config);
+    int return_code = config->set_fn.set_bool(rname, val, config->privdata, &error);
     propagateErrorString(error, err);
     return return_code == REDISMODULE_OK ? 1 : 0;
 }
@@ -12641,7 +12720,9 @@ int setModuleBoolConfig(ModuleConfig *config, int val, const char **err) {
 int setModuleStringConfig(ModuleConfig *config, sds strval, const char **err) {
     RedisModuleString *error = NULL;
     RedisModuleString *new = createStringObject(strval, sdslen(strval));
-    int return_code = config->set_fn.set_string(config->name, new, config->privdata, &error);
+    
+    char *rname = getRegisteredConfigName(config);
+    int return_code = config->set_fn.set_string(rname, new, config->privdata, &error);
     propagateErrorString(error, err);
     decrRefCount(new);
     return return_code == REDISMODULE_OK ? 1 : 0;
@@ -12656,7 +12737,8 @@ int setModuleEnumConfig(ModuleConfig *config, int val, const char **err) {
 
 int setModuleNumericConfig(ModuleConfig *config, long long val, const char **err) {
     RedisModuleString *error = NULL;
-    int return_code = config->set_fn.set_numeric(config->name, val, config->privdata, &error);
+    char *rname = getRegisteredConfigName(config);
+    int return_code = config->set_fn.set_numeric(rname, val, config->privdata, &error);
     propagateErrorString(error, err);
     return return_code == REDISMODULE_OK ? 1 : 0;
 }
@@ -12664,20 +12746,24 @@ int setModuleNumericConfig(ModuleConfig *config, long long val, const char **err
 /* This is a series of get functions for each type that act as dispatchers for 
  * config.c to call module set callbacks. */
 int getModuleBoolConfig(ModuleConfig *module_config) {
-    return module_config->get_fn.get_bool(module_config->name, module_config->privdata);
+    char *rname = getRegisteredConfigName(module_config);
+    return module_config->get_fn.get_bool(rname, module_config->privdata);
 }
 
 sds getModuleStringConfig(ModuleConfig *module_config) {
-    RedisModuleString *val = module_config->get_fn.get_string(module_config->name, module_config->privdata);
+    char *rname = getRegisteredConfigName(module_config);
+    RedisModuleString *val = module_config->get_fn.get_string(rname, module_config->privdata);
     return val ? sdsdup(val->ptr) : NULL;
 }
 
 int getModuleEnumConfig(ModuleConfig *module_config) {
-    return module_config->get_fn.get_enum(module_config->name, module_config->privdata);
+    char *rname = getRegisteredConfigName(module_config);
+    return module_config->get_fn.get_enum(rname, module_config->privdata);
 }
 
 long long getModuleNumericConfig(ModuleConfig *module_config) {
-    return module_config->get_fn.get_numeric(module_config->name, module_config->privdata);
+    char *rname = getRegisteredConfigName(module_config);
+    return module_config->get_fn.get_numeric(rname, module_config->privdata);
 }
 
 /* This function takes a module and a list of configs stored as sds NAME VALUE pairs.
@@ -12689,25 +12775,26 @@ int loadModuleConfigs(RedisModule *module) {
     listRewind(module->module_configs, &li);
     while ((ln = listNext(&li))) {
         ModuleConfig *module_config = listNodeValue(ln);
-        sds config_name = sdscatfmt(sdsempty(), "%s.%s", module->name, module_config->name);
-        dictEntry *config_argument = dictFind(server.module_configs_queue, config_name);
-        if (config_argument) {
-            if (!performModuleConfigSetFromName(dictGetKey(config_argument), dictGetVal(config_argument), &err)) {
-                serverLog(LL_WARNING, "Issue during loading of configuration %s : %s", (sds) dictGetKey(config_argument), err);
-                sdsfree(config_name);
+        dictEntry *de = dictUnlink(server.module_configs_queue, module_config->name);
+        if ((!de) && (module_config->alias))
+            de = dictUnlink(server.module_configs_queue, module_config->alias);
+        
+        /* If found in the queue, set the value. Otherwise, set the default value. */                
+        if (de) {
+            if (!performModuleConfigSetFromName(dictGetKey(de), dictGetVal(de), &err)) {
+                serverLog(LL_WARNING, "Issue during loading of configuration %s : %s", (sds) dictGetKey(de), err);
+                dictFreeUnlinkedEntry(server.module_configs_queue, de);
                 dictEmpty(server.module_configs_queue, NULL);
                 return REDISMODULE_ERR;
             }
+            dictFreeUnlinkedEntry(server.module_configs_queue, de);
         } else {
-            if (!performModuleConfigSetDefaultFromName(config_name, &err)) {
+            if (!performModuleConfigSetDefaultFromName(module_config->name, &err)) {
                 serverLog(LL_WARNING, "Issue attempting to set default value of configuration %s : %s", module_config->name, err);
-                sdsfree(config_name);
                 dictEmpty(server.module_configs_queue, NULL);
                 return REDISMODULE_ERR;
             }
         }
-        dictDelete(server.module_configs_queue, config_name);
-        sdsfree(config_name);
     }
     module->configs_initialized = 1;
     return REDISMODULE_OK;
@@ -12757,26 +12844,93 @@ int moduleConfigApplyConfig(list *module_configs, const char **err, const char *
  * ## Module Configurations API
  * -------------------------------------------------------------------------- */
 
-/* Create a module config object. */
-ModuleConfig *createModuleConfig(const char *name, RedisModuleConfigApplyFunc apply_fn, void *privdata, RedisModule *module) {
+/* Resolve config name and create a module config object */
+ModuleConfig *createModuleConfig(const char *name, RedisModuleConfigApplyFunc apply_fn, 
+                                 void *privdata, RedisModule *module, unsigned int flags) 
+{
+    sds cname, alias = NULL;
+
+    /* Determine the configuration name:
+     * - If the unprefixed flag is set, the "<MODULE-NAME>." prefix is omitted.
+     * - An optional alias can be specified using "<NAME>|<ALIAS>".
+     * 
+     * Examples:
+     *   - Unprefixed: "bf.initial_size" or "bf-initial-size|bf.initial_size".
+     *   - Prefixed:   "initial_size" becomes "<MODULE-NAME>.initial_size".
+     */    
+    if (flags & REDISMODULE_CONFIG_UNPREFIXED) {
+        const char *delim = strchr(name, '|');
+        cname = sdsnew(name);
+        if (delim) { /* Handle "<NAME>|<ALIAS>" format */
+            sdssubstr(cname, 0, delim - name);
+            alias = sdsnew(delim + 1);
+        }
+    } else {
+        /* Add the module name prefix */
+        cname = sdscatfmt(sdsempty(), "%s.%s", module->name, name);
+    }
+    
     ModuleConfig *new_config = zmalloc(sizeof(ModuleConfig));
-    new_config->name = sdsnew(name);
+    new_config->unprefixedFlag = flags & REDISMODULE_CONFIG_UNPREFIXED;
+    new_config->name = cname;
+    new_config->alias = alias;
     new_config->apply_fn = apply_fn;
     new_config->privdata = privdata;
     new_config->module = module;
     return new_config;
 }
 
+/* Verify the configuration name and check for duplicates.
+ * 
+ * - If the configuration is flagged as unprefixed, it checks for duplicate
+ *   names and optional aliases in the format <NAME>|<ALIAS>.
+ * - If the configuration is prefixed, it ensures the name is unique with
+ *   the module name prepended (<MODULE_NAME>.<NAME>).
+ */
 int moduleConfigValidityCheck(RedisModule *module, const char *name, unsigned int flags, configType type) {
     if (!module->onload) {
         errno = EBUSY;
         return REDISMODULE_ERR;
     }
-    if (moduleVerifyConfigFlags(flags, type) || moduleVerifyResourceName(name)) {
+    if (moduleVerifyConfigFlags(flags, type)) {
         errno = EINVAL;
         return REDISMODULE_ERR;
     }
-    if (isModuleConfigNameRegistered(module, name)) {
+    
+    int isdup = 0;    
+    if (flags & REDISMODULE_CONFIG_UNPREFIXED) {
+        const char *delim = NULL; /* Pointer to the '|' delimiter in <NAME>|<ALIAS> */
+        if (moduleVerifyUnprefixedName(name, &delim)){
+            errno = EINVAL;
+            return REDISMODULE_ERR;
+        }
+        
+        if (delim) { 
+            /* Temporary split the "<NAME>|<ALIAS>" for the check */
+            int count;
+            sds *ar = sdssplitlen(name, strlen(name), "|", 1, &count);
+            serverAssert(count == 2); /* Already validated */
+            isdup = configExists(ar[0]) || 
+                    configExists(ar[1]) || 
+                    (sdscmp(ar[0], ar[1]) == 0);
+            sdsfreesplitres(ar, count);
+        } else {
+            sds _name = sdsnew(name);
+            isdup = configExists(_name);
+            sdsfree(_name);
+        }
+    } else {
+        if (moduleVerifyResourceName(name)) {
+            errno = EINVAL;
+            return REDISMODULE_ERR;
+        }
+
+        sds fullname = sdscatfmt(sdsempty(), "%s.%s", module->name, name);
+        isdup = configExists(fullname);
+        sdsfree(fullname);
+    }
+    
+    if (isdup) {
         serverLog(LL_WARNING, "Configuration by the name: %s already registered", name);
         errno = EALREADY;
         return REDISMODULE_ERR;
@@ -12886,12 +13040,14 @@ int RM_RegisterStringConfig(RedisModuleCtx *ctx, const char *name, const char *d
     if (moduleConfigValidityCheck(module, name, flags, NUMERIC_CONFIG)) {
         return REDISMODULE_ERR;
     }
-    ModuleConfig *new_config = createModuleConfig(name, applyfn, privdata, module);
-    new_config->get_fn.get_string = getfn;
-    new_config->set_fn.set_string = setfn;
-    listAddNodeTail(module->module_configs, new_config);
-    flags = maskModuleConfigFlags(flags);
-    addModuleStringConfig(module->name, name, flags, new_config, default_val ? sdsnew(default_val) : NULL);
+    
+    ModuleConfig *mc = createModuleConfig(name, applyfn, privdata, module, flags);
+    mc->get_fn.get_string = getfn;
+    mc->set_fn.set_string = setfn;
+    listAddNodeTail(module->module_configs, mc);
+    unsigned int cflags = maskModuleConfigFlags(flags);
+    addModuleStringConfig(sdsdup(mc->name), (mc->alias) ? sdsdup(mc->alias) : NULL, 
+                          cflags, mc, default_val ? sdsnew(default_val) : NULL);
     return REDISMODULE_OK;
 }
 
@@ -12903,12 +13059,13 @@ int RM_RegisterBoolConfig(RedisModuleCtx *ctx, const char *name, int default_val
     if (moduleConfigValidityCheck(module, name, flags, BOOL_CONFIG)) {
         return REDISMODULE_ERR;
     }
-    ModuleConfig *new_config = createModuleConfig(name, applyfn, privdata, module);
-    new_config->get_fn.get_bool = getfn;
-    new_config->set_fn.set_bool = setfn;
-    listAddNodeTail(module->module_configs, new_config);
-    flags = maskModuleConfigFlags(flags);
-    addModuleBoolConfig(module->name, name, flags, new_config, default_val);
+    ModuleConfig *mc = createModuleConfig(name, applyfn, privdata, module, flags);
+    mc->get_fn.get_bool = getfn;
+    mc->set_fn.set_bool = setfn;
+    listAddNodeTail(module->module_configs, mc);
+    unsigned int cflags = maskModuleConfigFlags(flags);
+    addModuleBoolConfig(sdsdup(mc->name), (mc->alias) ? sdsdup(mc->alias) : NULL, 
+                        cflags, mc, default_val);
     return REDISMODULE_OK;
 }
 
@@ -12946,9 +13103,9 @@ int RM_RegisterEnumConfig(RedisModuleCtx *ctx, const char *name, int default_val
     if (moduleConfigValidityCheck(module, name, flags, ENUM_CONFIG)) {
         return REDISMODULE_ERR;
     }
-    ModuleConfig *new_config = createModuleConfig(name, applyfn, privdata, module);
-    new_config->get_fn.get_enum = getfn;
-    new_config->set_fn.set_enum = setfn;
+    ModuleConfig *mc = createModuleConfig(name, applyfn, privdata, module, flags);
+    mc->get_fn.get_enum = getfn;
+    mc->set_fn.set_enum = setfn;
     configEnum *enum_vals = zmalloc((num_enum_vals + 1) * sizeof(configEnum));
     for (int i = 0; i < num_enum_vals; i++) {
         enum_vals[i].name = zstrdup(enum_values[i]);
@@ -12956,9 +13113,11 @@ int RM_RegisterEnumConfig(RedisModuleCtx *ctx, const char *name, int default_val
     }
     enum_vals[num_enum_vals].name = NULL;
     enum_vals[num_enum_vals].val = 0;
-    listAddNodeTail(module->module_configs, new_config);
-    flags = maskModuleConfigFlags(flags) | maskModuleEnumConfigFlags(flags);
-    addModuleEnumConfig(module->name, name, flags, new_config, default_val, enum_vals);
+    listAddNodeTail(module->module_configs, mc);
+
+    unsigned int cflags = maskModuleConfigFlags(flags) | maskModuleEnumConfigFlags(flags);
+    addModuleEnumConfig(sdsdup(mc->name), (mc->alias) ? sdsdup(mc->alias) : NULL, 
+                        cflags, mc, default_val, enum_vals, num_enum_vals);
     return REDISMODULE_OK;
 }
 
@@ -12971,13 +13130,15 @@ int RM_RegisterNumericConfig(RedisModuleCtx *ctx, const char *name, long long de
     if (moduleConfigValidityCheck(module, name, flags, NUMERIC_CONFIG)) {
         return REDISMODULE_ERR;
     }
-    ModuleConfig *new_config = createModuleConfig(name, applyfn, privdata, module);
-    new_config->get_fn.get_numeric = getfn;
-    new_config->set_fn.set_numeric = setfn;
-    listAddNodeTail(module->module_configs, new_config);
+    ModuleConfig *mc = createModuleConfig(name, applyfn, privdata, module, flags);
+    mc->get_fn.get_numeric = getfn;
+    mc->set_fn.set_numeric = setfn;
+    listAddNodeTail(module->module_configs, mc);
     unsigned int numeric_flags = maskModuleNumericConfigFlags(flags);
-    flags = maskModuleConfigFlags(flags);
-    addModuleNumericConfig(module->name, name, flags, new_config, default_val, numeric_flags, min, max);
+
+    unsigned int cflags = maskModuleConfigFlags(flags);
+    addModuleNumericConfig(sdsdup(mc->name), (mc->alias) ? sdsdup(mc->alias) : NULL, 
+                           cflags, mc, default_val, numeric_flags, min, max);
     return REDISMODULE_OK;
 }
 
