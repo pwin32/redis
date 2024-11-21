@@ -730,7 +730,7 @@ NULL
     }
 }
 
-unsigned long evalMemory(void) {
+unsigned long evalScriptsMemoryVM(void) {
     return luaMemory(lctx.lua);
 }
 
@@ -738,7 +738,7 @@ dict* evalScriptsDict(void) {
     return lctx.lua_scripts;
 }
 
-unsigned long evalScriptsMemory(void) {
+unsigned long evalScriptsMemoryEngine(void) {
     return lctx.lua_scripts_mem +
             dictMemUsage(lctx.lua_scripts) +
             dictSize(lctx.lua_scripts) * sizeof(luaScript) +
