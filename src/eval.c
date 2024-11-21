@@ -259,13 +259,17 @@ void scriptingInit(int setup) {
 void freeLuaScriptsSync(dict *lua_scripts, list *lua_scripts_lru_list, lua_State *lua) {
     dictRelease(lua_scripts);
     listRelease(lua_scripts_lru_list);
-    lua_gc(lua, LUA_GCCOLLECT, 0);
-    lua_close(lua);
 
 #if defined(USE_JEMALLOC)
     /* When lua is closed, destroy the previously used private tcache. */
     void *ud = (global_State*)G(lua)->ud;
     unsigned int lua_tcache = (unsigned int)(uintptr_t)ud;
+#endif
+
+    lua_gc(lua, LUA_GCCOLLECT, 0);
+    lua_close(lua);
+
+#if defined(USE_JEMALLOC)
     je_mallctl("tcache.destroy", NULL, NULL, (void *)&lua_tcache, sizeof(unsigned int));
 #endif
 }
