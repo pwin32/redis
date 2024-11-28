@@ -9774,6 +9774,45 @@ int RM_ACLCheckKeyPermissions(RedisModuleUser *user, RedisModuleString *key, int
     return REDISMODULE_OK;
 }
 
+/* Check if the user can access keys matching the given key prefix according to the ACLs 
+ * attached to the user and the flags representing key access. The flags are the same that 
+ * are used in the keyspec for logical operations. These flags are documented in 
+ * RedisModule_SetCommandInfo as the REDISMODULE_CMD_KEY_ACCESS, 
+ * REDISMODULE_CMD_KEY_UPDATE, REDISMODULE_CMD_KEY_INSERT, and REDISMODULE_CMD_KEY_DELETE flags.
+ * 
+ * If no flags are supplied, the user is still required to have some access to keys matching 
+ * the prefix for this command to return successfully.
+ *
+ * If the user is able to access keys matching the prefix, then REDISMODULE_OK is returned.
+ * Otherwise, REDISMODULE_ERR is returned and errno is set to one of the following values:
+ * 
+ * * EINVAL: The provided flags are invalid.
+ * * EACCES: The user does not have permission to access keys matching the prefix.
+ */
+int RM_ACLCheckKeyPrefixPermissions(RedisModuleUser *user, RedisModuleString *prefix, int flags) {
+    const int allow_mask = (REDISMODULE_CMD_KEY_ACCESS
+                            | REDISMODULE_CMD_KEY_INSERT
+                            | REDISMODULE_CMD_KEY_DELETE
+                            | REDISMODULE_CMD_KEY_UPDATE);
+
+    if ((flags & allow_mask) != flags) {
+        errno = EINVAL;
+        return REDISMODULE_ERR;
+    }
+
+    int keyspec_flags = moduleConvertKeySpecsFlags(flags, 0);
+
+    /* Add the prefix flag to the keyspec flags */
+    keyspec_flags |= CMD_KEY_PREFIX;
+
+    if (ACLUserCheckKeyPerm(user->user, prefix->ptr, sdslen(prefix->ptr), keyspec_flags) != ACL_OK) {
+        errno = EACCES;
+        return REDISMODULE_ERR;
+    }
+
+    return REDISMODULE_OK;
+}
+
 /* Check if the pubsub channel can be accessed by the user based off of the given
  * access flags. See RM_ChannelAtPosWithFlags for more information about the
  * possible flags that can be passed in.
@@ -14186,6 +14225,7 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(GetModuleUserFromUserName);
     REGISTER_API(ACLCheckCommandPermissions);
     REGISTER_API(ACLCheckKeyPermissions);
+    REGISTER_API(ACLCheckKeyPrefixPermissions);
     REGISTER_API(ACLCheckChannelPermissions);
     REGISTER_API(ACLAddLogEntry);
     REGISTER_API(ACLAddLogEntryByUserName);
