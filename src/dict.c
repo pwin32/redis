@@ -697,8 +697,9 @@ int _dictClear(dict *d, int htidx, void(callback)(dict*)) {
     /* Free all the elements */
     for (i = 0; i < DICTHT_SIZE(d->ht_size_exp[htidx]) && d->ht_used[htidx] > 0; i++) {
         dictEntry *he, *nextHe;
-
-        if (callback && (i & 65535) == 0) callback(d);
+        /* Callback will be called once for every 65535 deletions. Beware,
+         * if dict has less than 65535 items, it will not be called at all.*/
+        if (callback && i != 0 && (i & 65535) == 0) callback(d);
 
         if ((he = d->ht_table[htidx][i]) == NULL) continue;
         while(he) {
