@@ -217,7 +217,7 @@ int prefixmatch(const char *pattern, int patternLen,
      * it can match any suffix of the string beyond the prefix. This check
      * remains outside stringmatchlen_impl() to keep its complexity manageable.
      */
-    if (pattern[patternLen - 1] != '*' || patternLen == 0)
+    if (patternLen == 0 || pattern[patternLen - 1] != '*' )
         return 0;
 
     /* Count backward the number of consecutive backslashes preceding the '*'
