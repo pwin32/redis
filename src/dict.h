@@ -196,6 +196,7 @@ int dictTryExpand(dict *d, unsigned long size);
 int dictShrink(dict *d, unsigned long size);
 int dictAdd(dict *d, void *key, void *val);
 dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing);
+dictEntry *dictAddNonExistsByHash(dict *d, void *key, const uint64_t hash);
 void *dictFindPositionForInsert(dict *d, const void *key, dictEntry **existing);
 dictEntry *dictInsertAtPosition(dict *d, void *key, void *position);
 dictEntry *dictAddOrFind(dict *d, void *key);
@@ -207,6 +208,8 @@ dictEntry *dictTwoPhaseUnlinkFind(dict *d, const void *key, dictEntry ***plink, 
 void dictTwoPhaseUnlinkFree(dict *d, dictEntry *he, dictEntry **plink, int table_index);
 void dictRelease(dict *d);
 dictEntry * dictFind(dict *d, const void *key);
+dictEntry *dictFindByHash(dict *d, const void *key, const uint64_t hash);
+dictEntry *dictFindByHashAndPtr(dict *d, const void *oldptr, const uint64_t hash);
 void *dictFetchValue(dict *d, const void *key);
 int dictShrinkIfNeeded(dict *d);
 int dictExpandIfNeeded(dict *d);
@@ -249,7 +252,6 @@ uint8_t *dictGetHashFunctionSeed(void);
 unsigned long dictScan(dict *d, unsigned long v, dictScanFunction *fn, void *privdata);
 unsigned long dictScanDefrag(dict *d, unsigned long v, dictScanFunction *fn, dictDefragFunctions *defragfns, void *privdata);
 uint64_t dictGetHash(dict *d, const void *key);
-dictEntry *dictFindEntryByPtrAndHash(dict *d, const void *oldptr, uint64_t hash);
 void dictRehashingInfo(dict *d, unsigned long long *from_size, unsigned long long *to_size);
 
 size_t dictGetStatsMsg(char *buf, size_t bufsize, dictStats *stats, int full);
