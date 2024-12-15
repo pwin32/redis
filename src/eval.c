@@ -266,6 +266,7 @@ void freeLuaScriptsSync(dict *lua_scripts, list *lua_scripts_lru_list, lua_State
     unsigned int lua_tcache = (unsigned int)(uintptr_t)ud;
 #endif
 
+    lua_gc(lua, LUA_GCCOLLECT, 0);
     lua_close(lua);
 
 #if defined(USE_JEMALLOC)
