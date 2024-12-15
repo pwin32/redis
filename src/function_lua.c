@@ -189,6 +189,7 @@ static void luaEngineFreeFunction(void *engine_ctx, void *compiled_function) {
 
 static void luaEngineFreeCtx(void *engine_ctx) {
     luaEngineCtx *lua_engine_ctx = engine_ctx;
+    lua_gc(lua_engine_ctx->lua, LUA_GCCOLLECT, 0);
     lua_close(lua_engine_ctx->lua);
     zfree(lua_engine_ctx);
 }
