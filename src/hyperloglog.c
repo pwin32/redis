@@ -190,6 +190,13 @@ struct hllhdr {
 
 static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected";
 
+#ifdef HAVE_AVX2
+static int simd_enabled = 1;
+#define HLL_USE_AVX2 (simd_enabled && __builtin_cpu_supports("avx2"))
+#else
+#define HLL_USE_AVX2 0
+#endif
+
 /* =========================== Low level bit macros ========================= */
 
 /* Macros to access the dense representation.
@@ -1155,7 +1162,7 @@ void hllMergeDenseAVX2(uint8_t *reg_raw, const uint8_t *reg_dense) {
 void hllMergeDense(uint8_t* reg_raw, const uint8_t* reg_dense) {
 #ifdef HAVE_AVX2
     if (HLL_REGISTERS == 16384 && HLL_BITS == 6) {
-        if (__builtin_cpu_supports("avx2")) {
+        if (HLL_USE_AVX2) {
             hllMergeDenseAVX2(reg_raw, reg_dense);
             return;
         }
@@ -1315,7 +1322,7 @@ void hllDenseCompressAVX2(uint8_t *reg_dense, const uint8_t *reg_raw) {
 void hllDenseCompress(uint8_t *reg_dense, const uint8_t *reg_raw) {
 #ifdef HAVE_AVX2
     if (HLL_REGISTERS == 16384 && HLL_BITS == 6) {
-        if (__builtin_cpu_supports("avx2")) {
+        if (HLL_USE_AVX2) {
             hllDenseCompressAVX2(reg_dense, reg_raw);
             return;
         }
@@ -1587,6 +1594,7 @@ void pfmergeCommand(client *c) {
     /* Write the resulting HLL to the destination HLL registers and
      * invalidate the cached value. */
     if (use_dense) {
+        hdr = o->ptr;
         hllDenseCompress(hdr->registers, max);
     } else {
         for (j = 0; j < HLL_REGISTERS; j++) {
@@ -1724,12 +1732,33 @@ cleanup:
  * PFDEBUG DECODE <key>
  * PFDEBUG ENCODING <key>
  * PFDEBUG TODENSE <key>
+ * PFDEBUG SIMD (ON|OFF)
  */
 void pfdebugCommand(client *c) {
     char *cmd = c->argv[1]->ptr;
     struct hllhdr *hdr;
     robj *o;
     int j;
+
+    if (!strcasecmp(cmd, "simd")) {
+        if (c->argc != 3) goto arityerr;
+
+        if (!strcasecmp(c->argv[2]->ptr, "on")) {
+#ifdef HAVE_AVX2
+            simd_enabled = 1;
+#endif
+        } else if (!strcasecmp(c->argv[2]->ptr, "off")) {
+#ifdef HAVE_AVX2
+            simd_enabled = 0;
+#endif
+        } else {
+            addReplyError(c, "Argument must be ON or OFF");
+        }
+
+        addReplyStatus(c, HLL_USE_AVX2 ? "enabled" : "disabled");
+
+        return;
+    }
 
     o = lookupKeyWrite(c->db,c->argv[2]);
     if (o == NULL) {
