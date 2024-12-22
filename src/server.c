@@ -636,7 +636,8 @@ dictType clientDictType = {
     NULL,                       /* key dup */
     NULL,                       /* val dup */
     dictClientKeyCompare,       /* key compare */
-    .no_value = 1               /* no values in this dict */
+    .no_value = 1,              /* no values in this dict */
+    .keys_are_odd = 0           /* a client pointer is not an odd pointer */            
 };
 
 /* This function is called once a background process of some kind terminates,

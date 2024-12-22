@@ -53,12 +53,12 @@ typedef struct dictType {
     /* Flags */
     /* The 'no_value' flag, if set, indicates that values are not used, i.e. the
      * dict is a set. When this flag is set, it's not possible to access the
-     * value of a dictEntry and it's also impossible to use dictSetKey(). Entry
-     * metadata can also not be used. */
+     * value of a dictEntry and it's also impossible to use dictSetKey(). It 
+     * enables an optimization to store a key directly without an allocating 
+     * dictEntry in between, if it is the only key in the bucket. */
     unsigned int no_value:1;
-    /* If no_value = 1 and all keys are odd (LSB=1), setting keys_are_odd = 1
-     * enables one more optimization: to store a key without an allocated
-     * dictEntry. */
+    /* This flag is required for `no_value` optimization since the optimization
+     * reuses LSB bits as metadata */ 
     unsigned int keys_are_odd:1;
     /* TODO: Add a 'keys_are_even' flag and use a similar optimization if that
      * flag is set. */
