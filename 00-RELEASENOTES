@@ -12,7 +12,19 @@ SECURITY: There are security fixes in the release.
 --------------------------------------------------------------------------------
 
 
-Redis Community Edition 6.2.16    Released Wed 02 Oct 2024 20:17:04 IDT
+================================================================================
+Redis 6.2.17    Released Mon 6 Jan 2025 12:30:00 IDT
+================================================================================
+
+Upgrade urgency SECURITY: See security fixes below.
+
+Security fixes
+==============
+* (CVE-2024-46981) Lua script commands may lead to remote code execution
+
+
+================================================================================
+Redis 6.2.16    Released Wed 02 Oct 2024 20:17:04 IDT
 ================================================================================
 
 Upgrade urgency SECURITY: See security fixes below.
