@@ -1467,6 +1467,7 @@ void scriptingRelease(int async) {
     else
         dictRelease(server.lua_scripts);
     server.lua_scripts_mem = 0;
+    lua_gc(server.lua, LUA_GCCOLLECT, 0);
     lua_close(server.lua);
 }
 
