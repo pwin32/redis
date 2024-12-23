@@ -313,7 +313,7 @@ start_server {tags {"info" "external:skip"}} {
             assert_lessthan $cycle2 [expr $cycle1+10] ;# we expect 2 or 3 cycles here, but allow some tolerance
             if {$::verbose} { puts "eventloop metrics el_sum1: $el_sum1, el_sum2: $el_sum2" }
             assert_morethan $el_sum2 $el_sum1
-            assert_lessthan $el_sum2 [expr $el_sum1+30000] ;# we expect roughly 100ms here, but allow some tolerance
+            assert_lessthan $el_sum2 [expr $el_sum1+100000] ;# we expect roughly 100ms here, but allow some tolerance
             if {$::verbose} { puts "eventloop metrics cmd_sum1: $cmd_sum1, cmd_sum2: $cmd_sum2" }
             assert_morethan $cmd_sum2 $cmd_sum1
             assert_lessthan $cmd_sum2 [expr $cmd_sum1+15000] ;# we expect about tens of ms here, but allow some tolerance

@@ -698,6 +698,16 @@ proc latencyrstat_percentiles {cmd r} {
     }
 }
 
+proc get_io_thread_clients {id {client r}} {
+    set pattern "io_thread_$id:clients=(\[0-9\]+)"
+    set info [$client info threads]
+    if {[regexp $pattern $info _ value]} {
+        return $value
+    } else {
+        return -1
+    }
+}
+
 proc generate_fuzzy_traffic_on_key {key type duration} {
     # Commands per type, blocking commands removed
     # TODO: extract these from COMMAND DOCS, and improve to include other types

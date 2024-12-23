@@ -10,6 +10,7 @@ start_server {tags {"lazyfree"}} {
         set peak_mem [s used_memory]
         assert {[r unlink myset] == 1}
         assert {$peak_mem > $orig_mem+1000000}
+        reconnect ;# free the memory of reused argv of client
         wait_for_condition 50 100 {
             [s used_memory] < $peak_mem &&
             [s used_memory] < $orig_mem*2
@@ -32,6 +33,7 @@ start_server {tags {"lazyfree"}} {
         set peak_mem [s used_memory]
         r flushdb async
         assert {$peak_mem > $orig_mem+1000000}
+        reconnect ;# free the memory of reused argv of client
         wait_for_condition 50 100 {
             [s used_memory] < $peak_mem &&
             [s used_memory] < $orig_mem*2
