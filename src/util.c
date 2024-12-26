@@ -109,23 +109,23 @@ static int stringmatchlen_impl(const char *pattern, int patternLen,
 
             pattern++;
             patternLen--;
-            not = pattern[0] == '^';
+            not = patternLen && pattern[0] == '^';
             if (not) {
                 pattern++;
                 patternLen--;
             }
             match = 0;
             while(1) {
-                if (pattern[0] == '\\' && patternLen >= 2) {
+                if (patternLen >= 2 && pattern[0] == '\\') {
                     pattern++;
                     patternLen--;
                     if (pattern[0] == string[0])
                         match = 1;
-                } else if (pattern[0] == ']') {
-                    break;
                 } else if (patternLen == 0) {
                     pattern--;
                     patternLen++;
+                    break;
+                } else if (pattern[0] == ']') {
                     break;
                 } else if (patternLen >= 3 && pattern[1] == '-') {
                     int start = pattern[0];
@@ -186,7 +186,7 @@ static int stringmatchlen_impl(const char *pattern, int patternLen,
         pattern++;
         patternLen--;
         if (stringLen == 0) {
-            while(*pattern == '*') {
+            while(patternLen && *pattern == '*') {
                 pattern++;
                 patternLen--;
             }
