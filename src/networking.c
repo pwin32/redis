@@ -1080,8 +1080,8 @@ void addReplyBulk(client *c, robj *obj) {
          * to the output buffer. */
         char buf[34];
         size_t len = ll2string(buf,sizeof(buf),(long)obj->ptr);
-        buf[len+1] = '\r';
-        buf[len+2] = '\n';
+        buf[len] = '\r';
+        buf[len+1] = '\n';
         _addReplyLongLongBulk(c, len);
         _addReplyToBufferOrList(c,buf,len+2);
     } else {
