@@ -2060,11 +2060,8 @@ int _writeToClient(client *c, ssize_t *nwritten) {
  * thread safe. */
 int writeToClient(client *c, int handler_installed) {
     if (!(c->io_flags & CLIENT_IO_WRITE_ENABLED)) return C_OK;
-    /* Update total number of writes on server */
-    atomicIncr(server.stat_total_writes_processed, 1);
-    if (c->running_tid != IOTHREAD_MAIN_THREAD_ID) {
-        atomicIncr(server.stat_io_writes_processed, 1);
-    }
+    /* Update the number of writes of io threads on server */
+    atomicIncr(server.stat_io_writes_processed[c->running_tid], 1);
 
     ssize_t nwritten = 0, totwritten = 0;
 
@@ -2833,11 +2830,8 @@ void readQueryFromClient(connection *conn) {
     if (!(c->io_flags & CLIENT_IO_READ_ENABLED)) return;
     c->read_error = 0;
 
-    /* Update total number of reads on server */
-    atomicIncr(server.stat_total_reads_processed, 1);
-    if (c->running_tid != IOTHREAD_MAIN_THREAD_ID) {
-        atomicIncr(server.stat_io_reads_processed, 1);
-    }
+    /* Update the number of reads of io threads on server */
+    atomicIncr(server.stat_io_reads_processed[c->running_tid], 1);
 
     readlen = PROTO_IOBUF_LEN;
     /* If this is a multi bulk request, and we are processing a bulk reply

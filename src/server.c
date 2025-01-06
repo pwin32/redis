@@ -2616,10 +2616,10 @@ void resetServerStats(void) {
     server.stat_sync_full = 0;
     server.stat_sync_partial_ok = 0;
     server.stat_sync_partial_err = 0;
-    atomicSet(server.stat_io_reads_processed, 0);
-    atomicSet(server.stat_total_reads_processed, 0);
-    atomicSet(server.stat_io_writes_processed, 0);
-    atomicSet(server.stat_total_writes_processed, 0);
+    for (j = 0; j < IO_THREADS_MAX_NUM; j++) {
+        atomicSet(server.stat_io_reads_processed[j], 0);
+        atomicSet(server.stat_io_writes_processed[j], 0);
+    }
     atomicSet(server.stat_client_qbuf_limit_disconnections, 0);
     server.stat_client_outbuf_limit_disconnections = 0;
     for (j = 0; j < STATS_METRIC_COUNT; j++) {
@@ -5912,9 +5912,29 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
         }
     }
 
+    /* Threads */
+    int stat_io_ops_processed_calculated = 0;
+    long long stat_io_reads_processed = 0, stat_io_writes_processed = 0;
+    long long stat_total_reads_processed = 0, stat_total_writes_processed = 0;
+    if (all_sections || (dictFind(section_dict,"threads") != NULL)) {
+        if (sections++) info = sdscat(info,"\r\n");
+        info = sdscatprintf(info, "# Threads\r\n");
+        long long reads, writes;
+        for (j = 0; j < server.io_threads_num; j++) {
+            atomicGet(server.stat_io_reads_processed[j], reads);
+            atomicGet(server.stat_io_writes_processed[j], writes);
+            info = sdscatprintf(info, "io_thread_%d:clients=%d,reads=%lld,writes=%lld\r\n",
+                                       j, server.io_threads_clients_num[j], reads, writes);
+            stat_total_reads_processed += reads;
+            if (j != 0) stat_io_reads_processed += reads; /* Skip the main thread */
+            stat_total_writes_processed += writes;
+            if (j != 0) stat_io_writes_processed += writes; /* Skip the main thread */
+        }
+        stat_io_ops_processed_calculated = 1;
+    }
+
     /* Stats */
     if (all_sections  || (dictFind(section_dict,"stats") != NULL)) {
-        long long stat_total_reads_processed, stat_total_writes_processed;
         long long stat_net_input_bytes, stat_net_output_bytes;
         long long stat_net_repl_input_bytes, stat_net_repl_output_bytes;
         long long current_eviction_exceeded_time = server.stat_last_eviction_exceeded_time ?
@@ -5922,16 +5942,25 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
         long long current_active_defrag_time = server.stat_last_active_defrag_time ?
             (long long) elapsedUs(server.stat_last_active_defrag_time): 0;
         long long stat_client_qbuf_limit_disconnections;
-        long long stat_io_reads_processed, stat_io_writes_processed;
-        atomicGet(server.stat_total_reads_processed, stat_total_reads_processed);
-        atomicGet(server.stat_total_writes_processed, stat_total_writes_processed);
         atomicGet(server.stat_net_input_bytes, stat_net_input_bytes);
         atomicGet(server.stat_net_output_bytes, stat_net_output_bytes);
         atomicGet(server.stat_net_repl_input_bytes, stat_net_repl_input_bytes);
         atomicGet(server.stat_net_repl_output_bytes, stat_net_repl_output_bytes);
         atomicGet(server.stat_client_qbuf_limit_disconnections, stat_client_qbuf_limit_disconnections);
-        atomicGet(server.stat_io_reads_processed, stat_io_reads_processed);
-        atomicGet(server.stat_io_writes_processed, stat_io_writes_processed);
+
+        /* If we calculated the total reads and writes in the threads section,
+         * we don't need to do it again, and also keep the values consistent. */
+        if (!stat_io_ops_processed_calculated) {
+            long long reads, writes;
+            for (j = 0; j < server.io_threads_num; j++) {
+                atomicGet(server.stat_io_reads_processed[j], reads);
+                stat_total_reads_processed += reads;
+                if (j != 0) stat_io_reads_processed += reads; /* Skip the main thread */
+                atomicGet(server.stat_io_writes_processed[j], writes);
+                stat_total_writes_processed += writes;
+                if (j != 0) stat_io_writes_processed += writes; /* Skip the main thread */
+            }
+        }
 
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info, "# Stats\r\n" FMTARGS(
@@ -6131,15 +6160,6 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             (long)m_ru.ru_stime.tv_sec, (long)m_ru.ru_stime.tv_usec,
             (long)m_ru.ru_utime.tv_sec, (long)m_ru.ru_utime.tv_usec);
 #endif  /* RUSAGE_THREAD */
-    }
-
-    /* Threads */
-    if (all_sections || (dictFind(section_dict,"threads") != NULL)) {
-        if (sections++) info = sdscat(info,"\r\n");
-        info = sdscatprintf(info, "# Threads\r\n");
-        for (j = 0; j < server.io_threads_num; j++) {
-            info = sdscatprintf(info, "io_thread_%d:clients=%d\r\n", j, server.io_threads_clients_num[j]);
-        }
     }
 
     /* Modules */
