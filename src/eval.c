@@ -93,7 +93,7 @@ struct ldbState {
  * bodies in order to obtain the Lua function name, and in the implementation
  * of redis.sha1().
  *
- * 'digest' should point to a 41 bytes buffer: 40 for SHA1 converted into an
+ * 'digest' should point to a 41 bytes buffer: 40 for SHA1 converted into a
  * hexadecimal number, plus 1 byte for null term. */
 void sha1hex(char *digest, char *script, size_t len) {
     SHA1_CTX ctx;
