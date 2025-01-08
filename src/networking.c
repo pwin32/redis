@@ -2428,8 +2428,12 @@ int processMultibulkBuffer(client *c) {
         c->multibulklen = ll;
 
         /* Setup argv array on client structure.
-         * Create new argv if space is insufficient or if we need to allocate it gradually. */
-        if (unlikely(c->multibulklen > c->argv_len || c->multibulklen > 1024)) {
+         * Create new argv in the following cases:
+         * 1) When the requested size is greater than the current size.
+         * 2) When the requested size is less than the current size, because
+         *    we always allocate argv gradually with a maximum size of 1024,
+         *    Therefore, if argv_len exceeds this limit, we always reallocate. */
+        if (unlikely(c->multibulklen > c->argv_len || c->argv_len > 1024)) {
             zfree(c->argv);
             c->argv_len = min(c->multibulklen, 1024);
             c->argv = zmalloc(sizeof(robj*)*c->argv_len);
