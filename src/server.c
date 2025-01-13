@@ -1444,7 +1444,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             serverLog(LL_DEBUG,
                 "%lu clients connected (%lu replicas), %zu bytes in use",
                 listLength(server.clients)-listLength(server.slaves),
-                listLength(server.slaves),
+                replicationLogicalReplicaCount(),
                 zmalloc_used_memory());
         }
     }
@@ -2183,6 +2183,8 @@ void initServerConfig(void) {
     server.cached_master = NULL;
     server.master_initial_offset = -1;
     server.repl_state = REPL_STATE_NONE;
+    server.repl_rdb_ch_state = REPL_RDB_CH_STATE_NONE;
+    server.repl_full_sync_buffer = (struct replDataBuf) {0};
     server.repl_transfer_tmpfile = NULL;
     server.repl_transfer_fd = -1;
     server.repl_transfer_s = NULL;
@@ -2679,6 +2681,8 @@ void initServer(void) {
     server.hz = server.config_hz;
     server.pid = getpid();
     server.in_fork_child = CHILD_TYPE_NONE;
+    server.rdb_pipe_read = -1;
+    server.rdb_child_exit_pipe = -1;
     server.main_thread_id = pthread_self();
     server.current_client = NULL;
     server.errors = raxNew();
@@ -5458,7 +5462,10 @@ const char *replstateToString(int replstate) {
     switch (replstate) {
     case SLAVE_STATE_WAIT_BGSAVE_START:
     case SLAVE_STATE_WAIT_BGSAVE_END:
+    case SLAVE_STATE_WAIT_RDB_CHANNEL:
         return "wait_bgsave";
+    case SLAVE_STATE_SEND_BULK_AND_STREAM:
+        return "send_bulk_and_stream";
     case SLAVE_STATE_SEND_BULK:
         return "send_bulk";
     case SLAVE_STATE_ONLINE:
@@ -6056,7 +6063,9 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
                 "master_last_io_seconds_ago:%d\r\n", server.master ? ((int)(server.unixtime-server.master->lastinteraction)) : -1,
                 "master_sync_in_progress:%d\r\n", server.repl_state == REPL_STATE_TRANSFER,
                 "slave_read_repl_offset:%lld\r\n", slave_read_repl_offset,
-                "slave_repl_offset:%lld\r\n", slave_repl_offset));
+                "slave_repl_offset:%lld\r\n", slave_repl_offset,
+                "replica_full_sync_buffer_size:%zu\r\n", server.repl_full_sync_buffer.size,
+                "replica_full_sync_buffer_peak:%zu\r\n", server.repl_full_sync_buffer.peak));
 
             if (server.repl_state == REPL_STATE_TRANSFER) {
                 double perc = 0;
@@ -6085,7 +6094,7 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
 
         info = sdscatprintf(info,
             "connected_slaves:%lu\r\n",
-            listLength(server.slaves));
+            replicationLogicalReplicaCount());
 
         /* If min-slaves-to-write is active, write the number of slaves
          * currently considered 'good'. */
@@ -6107,6 +6116,14 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
                 char ip[NET_IP_STR_LEN], *slaveip = slave->slave_addr;
                 int port;
                 long lag = 0;
+
+                /* During rdbchannel replication, replica opens two connections.
+                 * These are distinct slaves in server.slaves list from master
+                 * POV. We don't want to list these separately. If a rdbchannel
+                 * replica has an associated main-channel replica in
+                 * server.slaves list, we'll list main channel replica only. */
+                if (replicationCheckHasMainChannel(slave))
+                    continue;
 
                 if (!slaveip) {
                     if (connAddrPeerName(slave->conn,ip,sizeof(ip),&port) == -1)
