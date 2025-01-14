@@ -489,22 +489,27 @@ int getBitfieldTypeFromArgument(client *c, robj *o, int *sign, int *bits) {
  * bits to a string object. The command creates or pad with zeroes the string
  * so that the 'maxbit' bit can be addressed. The object is finally
  * returned. Otherwise if the key holds a wrong type NULL is returned and
- * an error is sent to the client. */
-robj *lookupStringForBitCommand(client *c, uint64_t maxbit, int *dirty) {
+ * an error is sent to the client.
+ * 
+ * (Must provide all the arguments to the function)
+ */
+static robj *lookupStringForBitCommand(client *c, uint64_t maxbit, 
+                                       size_t *strOldSize, size_t *strGrowSize) 
+{
     size_t byte = maxbit >> 3;
     robj *o = lookupKeyWrite(c->db,c->argv[1]);
     if (checkType(c,o,OBJ_STRING)) return NULL;
-    if (dirty) *dirty = 0;
 
     if (o == NULL) {
         o = createObject(OBJ_STRING,sdsnewlen(NULL, byte+1));
         dbAdd(c->db,c->argv[1],o);
-        if (dirty) *dirty = 1;
+        *strGrowSize = byte + 1;
+        *strOldSize = 0;
     } else {
         o = dbUnshareStringValue(c->db,c->argv[1],o);
-        size_t oldlen = sdslen(o->ptr);
+        *strOldSize  = sdslen(o->ptr);
         o->ptr = sdsgrowzero(o->ptr,byte+1);
-        if (dirty && oldlen != sdslen(o->ptr)) *dirty = 1;
+        *strGrowSize = sdslen(o->ptr) - *strOldSize;
     }
     return o;
 }
@@ -561,8 +566,9 @@ void setbitCommand(client *c) {
         return;
     }
 
-    int dirty;
-    if ((o = lookupStringForBitCommand(c,bitoffset,&dirty)) == NULL) return;
+    size_t strOldSize, strGrowSize;
+    if ((o = lookupStringForBitCommand(c,bitoffset,&strOldSize,&strGrowSize)) == NULL) 
+        return;
 
     /* Get current values */
     byte = bitoffset >> 3;
@@ -573,7 +579,7 @@ void setbitCommand(client *c) {
     /* Either it is newly created, changed length, or the bit changes before and after.
      * Note that the bitval here is actually a decimal number.
      * So we need to use `!!` to convert it to 0 or 1 for comparison. */
-    if (dirty || (!!bitval != on)) {
+    if (strGrowSize || (!!bitval != on)) {
         /* Update byte with new bit value. */
         byteval &= ~(1 << bit);
         byteval |= ((on & 0x1) << bit);
@@ -581,6 +587,13 @@ void setbitCommand(client *c) {
         signalModifiedKey(c,c->db,c->argv[1]);
         notifyKeyspaceEvent(NOTIFY_STRING,"setbit",c->argv[1],c->db->id);
         server.dirty++;
+
+        /* If this is not a new key (old size not 0) and size changed, then 
+         * update the keysizes histogram. Otherwise, the histogram already 
+         * updated in lookupStringForBitCommand() by calling dbAdd(). */
+        if ((strOldSize > 0) && (strGrowSize != 0))
+            updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr), OBJ_STRING, 
+                               strOldSize, strOldSize + strGrowSize);
     }
 
     /* Return original value. */
@@ -1065,7 +1078,8 @@ struct bitfieldOp {
 void bitfieldGeneric(client *c, int flags) {
     robj *o;
     uint64_t bitoffset;
-    int j, numops = 0, changes = 0, dirty = 0;
+    int j, numops = 0, changes = 0;
+    size_t strOldSize, strGrowSize = 0;
     struct bitfieldOp *ops = NULL; /* Array of ops to execute at end. */
     int owtype = BFOVERFLOW_WRAP; /* Overflow type. */
     int readonly = 1;
@@ -1159,7 +1173,7 @@ void bitfieldGeneric(client *c, int flags) {
         /* Lookup by making room up to the farthest bit reached by
          * this operation. */
         if ((o = lookupStringForBitCommand(c,
-            highest_write_offset,&dirty)) == NULL) {
+            highest_write_offset,&strOldSize,&strGrowSize)) == NULL) {
             zfree(ops);
             return;
         }
@@ -1209,7 +1223,7 @@ void bitfieldGeneric(client *c, int flags) {
                     setSignedBitfield(o->ptr,thisop->offset,
                                       thisop->bits,newval);
 
-                    if (dirty || (oldval != newval))
+                    if (strGrowSize || (oldval != newval))
                         changes++;
                 } else {
                     addReplyNull(c);
@@ -1243,7 +1257,7 @@ void bitfieldGeneric(client *c, int flags) {
                     setUnsignedBitfield(o->ptr,thisop->offset,
                                         thisop->bits,newval);
 
-                    if (dirty || (oldval != newval))
+                    if (strGrowSize || (oldval != newval))
                         changes++;
                 } else {
                     addReplyNull(c);
@@ -1286,6 +1300,14 @@ void bitfieldGeneric(client *c, int flags) {
     }
 
     if (changes) {
+
+        /* If this is not a new key (old size not 0) and size changed, then 
+         * update the keysizes histogram. Otherwise, the histogram already 
+         * updated in lookupStringForBitCommand() by calling dbAdd(). */
+        if ((strOldSize > 0) && (strGrowSize != 0))
+            updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr), OBJ_STRING,
+                               strOldSize, strOldSize + strGrowSize);
+        
         signalModifiedKey(c,c->db,c->argv[1]);
         notifyKeyspaceEvent(NOTIFY_STRING,"setbit",c->argv[1],c->db->id);
         server.dirty += changes;

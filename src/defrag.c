@@ -296,7 +296,7 @@ void activeDefragHfieldDictCallback(void *privdata, const dictEntry *de) {
         dictUseStoredKeyApi(d, 1);
         uint64_t hash = dictGetHash(d, newhf);
         dictUseStoredKeyApi(d, 0);
-        dictEntry *de = dictFindEntryByPtrAndHash(d, hf, hash);
+        dictEntry *de = dictFindByHashAndPtr(d, hf, hash);
         serverAssert(de);
         dictSetKey(d, de, newhf);
     }
@@ -729,8 +729,9 @@ void defragStream(redisDb *db, dictEntry *kde) {
 void defragModule(redisDb *db, dictEntry *kde) {
     robj *obj = dictGetVal(kde);
     serverAssert(obj->type == OBJ_MODULE);
-
-    if (!moduleDefragValue(dictGetKey(kde), obj, db->id))
+    robj keyobj;
+    initStaticStringObject(keyobj, dictGetKey(kde));
+    if (!moduleDefragValue(&keyobj, obj, db->id))
         defragLater(db, kde);
 }
 
@@ -752,7 +753,7 @@ void defragKey(defragCtx *ctx, dictEntry *de) {
              * the pointer it holds, since it won't be able to do the string
              * compare, but we can find the entry using key hash and pointer. */
             uint64_t hash = kvstoreGetHash(db->expires, newsds);
-            dictEntry *expire_de = kvstoreDictFindEntryByPtrAndHash(db->expires, slot, keysds, hash);
+            dictEntry *expire_de = kvstoreDictFindByHashAndPtr(db->expires, slot, keysds, hash);
             if (expire_de) kvstoreDictSetKey(db->expires, slot, expire_de, newsds);
         }
 
@@ -940,7 +941,9 @@ int defragLaterItem(dictEntry *de, unsigned long *cursor, long long endtime, int
         } else if (ob->type == OBJ_STREAM) {
             return scanLaterStreamListpacks(ob, cursor, endtime);
         } else if (ob->type == OBJ_MODULE) {
-            return moduleLateDefrag(dictGetKey(de), ob, cursor, endtime, dbid);
+            robj keyobj;
+            initStaticStringObject(keyobj, dictGetKey(de));
+            return moduleLateDefrag(&keyobj, ob, cursor, endtime, dbid);
         } else {
             *cursor = 0; /* object type may have changed since we schedule it for later */
         }

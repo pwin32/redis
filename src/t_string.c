@@ -21,7 +21,7 @@ static int checkStringLength(client *c, long long size, long long append) {
         return C_OK;
     /* 'uint64_t' cast is there just to prevent undefined behavior on overflow */
     long long total = (uint64_t)size + append;
-    /* Test configured max-bulk-len represending a limit of the biggest string object,
+    /* Test configured max-bulk-len representing a limit of the biggest string object,
      * and also test for overflow. */
     if (total > server.proto_max_bulk_len || total < size || total < append) {
         addReplyError(c,"string exceeds maximum allowed size (proto-max-bulk-len)");
@@ -61,7 +61,7 @@ static int checkStringLength(client *c, long long size, long long append) {
 static int getExpireMillisecondsOrReply(client *c, robj *expire, int flags, int unit, long long *milliseconds);
 
 void setGenericCommand(client *c, int flags, robj *key, robj *val, robj *expire, int unit, robj *ok_reply, robj *abort_reply) {
-    long long milliseconds = 0; /* initialized to avoid any harmness warning */
+    long long milliseconds = 0; /* initialized to avoid any harmless warning */
     int found = 0;
     int setkey_flags = 0;
 
@@ -420,6 +420,7 @@ void getsetCommand(client *c) {
 }
 
 void setrangeCommand(client *c) {
+    size_t oldLen = 0, newLen;
     robj *o;
     long offset;
     sds value = c->argv[3]->ptr;
@@ -449,16 +450,14 @@ void setrangeCommand(client *c) {
         o = createObject(OBJ_STRING,sdsnewlen(NULL, offset+value_len));
         dbAdd(c->db,c->argv[1],o);
     } else {
-        size_t olen;
-
         /* Key exists, check type */
         if (checkType(c,o,OBJ_STRING))
             return;
 
         /* Return existing string length when setting nothing */
-        olen = stringObjectLen(o);
+        oldLen = stringObjectLen(o);
         if (value_len == 0) {
-            addReplyLongLong(c,olen);
+            addReplyLongLong(c, oldLen);
             return;
         }
 
@@ -478,7 +477,10 @@ void setrangeCommand(client *c) {
             "setrange",c->argv[1],c->db->id);
         server.dirty++;
     }
-    addReplyLongLong(c,sdslen(o->ptr));
+
+    newLen = sdslen(o->ptr);
+    updateKeysizesHist(c->db,getKeySlot(c->argv[1]->ptr),OBJ_STRING,oldLen,newLen);
+    addReplyLongLong(c,newLen);
 }
 
 void getrangeCommand(client *c) {
@@ -669,7 +671,7 @@ void incrbyfloatCommand(client *c) {
 }
 
 void appendCommand(client *c) {
-    size_t totlen;
+    size_t totlen, append_len;
     robj *o, *append;
 
     dictEntry *de;
@@ -679,7 +681,7 @@ void appendCommand(client *c) {
         c->argv[2] = tryObjectEncoding(c->argv[2]);
         dbAdd(c->db,c->argv[1],c->argv[2]);
         incrRefCount(c->argv[2]);
-        totlen = stringObjectLen(c->argv[2]);
+        append_len = totlen = stringObjectLen(c->argv[2]);
     } else {
         /* Key exists, check type */
         if (checkType(c,o,OBJ_STRING))
@@ -687,7 +689,7 @@ void appendCommand(client *c) {
 
         /* "append" is an argument, so always an sds */
         append = c->argv[2];
-        const size_t append_len = sdslen(append->ptr);
+        append_len = sdslen(append->ptr);
         if (checkStringLength(c,stringObjectLen(o),append_len) != C_OK)
             return;
 
@@ -699,6 +701,7 @@ void appendCommand(client *c) {
     signalModifiedKey(c,c->db,c->argv[1]);
     notifyKeyspaceEvent(NOTIFY_STRING,"append",c->argv[1],c->db->id);
     server.dirty++;
+    updateKeysizesHist(c->db,getKeySlot(c->argv[1]->ptr),OBJ_STRING, totlen - append_len, totlen);
     addReplyLongLong(c,totlen);
 }
 

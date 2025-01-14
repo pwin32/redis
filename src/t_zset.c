@@ -728,7 +728,7 @@ zskiplistNode *zslNthInLexRange(zskiplist *zsl, zlexrangespec *range, long n) {
                 x = x->level[0].forward;
             }
         } else {
-            /* If offset is big, we caasn jump from the last zsl->level-1 node. */
+            /* If offset is big, we can jump from the last zsl->level-1 node. */
             rank_diff = edge_rank + 1 + n - last_highest_level_rank;
             x = zslGetElementByRankFromNode(last_highest_level_node, zsl->level - 1, rank_diff);
         }
@@ -1843,6 +1843,7 @@ void zaddGenericCommand(client *c, int flags) {
         zsetTypeMaybeConvert(zobj, elements);
     }
 
+    unsigned long llen = zsetLength(zobj);
     for (j = 0; j < elements; j++) {
         double newscore;
         score = scores[j];
@@ -1860,6 +1861,7 @@ void zaddGenericCommand(client *c, int flags) {
         score = newscore;
     }
     server.dirty += (added+updated);
+    updateKeysizesHist(c->db, getKeySlot(key->ptr), OBJ_ZSET, llen, llen+added);
 
 reply_to_client:
     if (incr) { /* ZINCRBY or INCR option. */
@@ -1907,8 +1909,13 @@ void zremCommand(client *c) {
 
     if (deleted) {
         notifyKeyspaceEvent(NOTIFY_ZSET,"zrem",key,c->db->id);
-        if (keyremoved)
-            notifyKeyspaceEvent(NOTIFY_GENERIC,"del",key,c->db->id);
+        if (keyremoved) {            
+            notifyKeyspaceEvent(NOTIFY_GENERIC, "del", key, c->db->id);
+            /* No need updateKeysizesHist(). dbDelete() done it already. */
+        } else {
+            unsigned long len =  zsetLength(zobj);
+            updateKeysizesHist(c->db, getKeySlot(key->ptr), OBJ_ZSET, len + deleted, len);
+        }
         signalModifiedKey(c,c->db,key);
         server.dirty += deleted;
     }
@@ -2023,8 +2030,13 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
     if (deleted) {
         signalModifiedKey(c,c->db,key);
         notifyKeyspaceEvent(NOTIFY_ZSET,notify_type,key,c->db->id);
-        if (keyremoved)
-            notifyKeyspaceEvent(NOTIFY_GENERIC,"del",key,c->db->id);
+        if (keyremoved) {
+            notifyKeyspaceEvent(NOTIFY_GENERIC, "del", key, c->db->id);
+            /* No need updateKeysizesHist(). dbDelete() done it already. */
+        } else {
+            unsigned long len =  zsetLength(zobj);
+            updateKeysizesHist(c->db, getKeySlot(key->ptr), OBJ_ZSET, len + deleted, len);
+        }
     }
     server.dirty += deleted;
     addReplyLongLong(c,deleted);
@@ -4031,6 +4043,9 @@ void genericZpopCommand(client *c, robj **keyv, int keyc, int where, int emitkey
 
         dbDelete(c->db,key);
         notifyKeyspaceEvent(NOTIFY_GENERIC,"del",key,c->db->id);
+        /* No need updateKeysizesHist(). dbDelete() done it already. */
+    } else {
+        updateKeysizesHist(c->db, getKeySlot(key->ptr), OBJ_ZSET, llen, llen - result_count);
     }
     signalModifiedKey(c,c->db,key);
 
