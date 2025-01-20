@@ -2,6 +2,72 @@ Redis Community Edition 8.0 release notes
 =========================================
 
 ============================================================
+8.0-M03 (v7.9.226)    Committed Mon 20 Jan 2025 15:00:00 IST
+============================================================
+
+This is the third Milestone of Redis Community Edition 8.0.
+
+Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
+Once we reach feature-completeness we will release RC1.
+
+### Headlines:
+
+8.0-M03 introduces an improved replication mechanism which is more performant and robust, a new I/O threading implementation which enables throughput increase on multi-core environments, and many additional performance improvements. Both Alpine and Debian Docker images are now available on [Docker Hub](https://hub.docker.com/_/redis). A snap and Homebrew distributions are available as well.
+
+
+### Security fixes
+
+- (CVE-2024-46981) Lua script may lead to remote code execution
+- (CVE-2024-51741) Denial-of-service due to malformed ACL selectors
+
+### New Features
+
+- #13695 New I/O threading implementation 
+- #13732 New replication mechanism
+
+
+### Bug fixes
+
+- #13653 `MODULE LOADEX` - crash on nonexistent parameter name
+- #13661 `FUNCTION FLUSH` - memory leak when using jemalloc
+- #13626 Memory leak on failed RDB loading
+
+### Other general improvements
+
+- #13639 When `hide-user-data-from-log` is enabled - also print command tokens on crash
+- #13660 Add the Lua VM memory to memory overhead
+
+### New metrics
+
+- #13592 `INFO` - new `KEYSIZES` section includes key size distributions for basic data types
+- #13695 `INFO` - new `Threads` section includes I/O threading metrics
+
+### Modules API
+
+- #13666 `RedisModule_ACLCheckKeyPrefixPermissions` - check access permissions to any key matching a given prefix
+- #13676 `RedisModule_HashFieldMinExpire` - query the minimum expiration time over all the hash’s fields
+- #13676 `RedisModule_HashGet` - new `REDISMODULE_HASH_EXPIRE_TIME` flag - query the field expiration time
+- #13656 `RedisModule_RegisterXXXConfig` - allow registering unprefixed configuration parameters
+
+### Configuration parameters
+
+
+- `replica-full-sync-buffer-limit` - maximum size of accumulated replication stream data on the replica side
+- `io-threads-do-reads` is no longer effective. The new I/O threading implementation always use threads for both reads and writes
+
+### Performance and resource utilization improvements
+
+- #13638 Optimize CRC64 performance
+- #13521 Optimize commands with large argument count - reuse c->argv after command execution
+- #13558 Optimize `PFCOUNT` and `PFMERGE` - SIMD acceleration
+- #13644 Optimize `GET` on high pipeline use-cases
+- #13646 Optimize `EXISTS` - prefetching and branch prediction hints
+- #13652 Optimize `LRANGE` - improve listpack handling and decoding efficiency
+- #13655 Optimize `HSET` - avoid unnecessary hash field creation or deletion
+- #13721 Optimize `LRANGE` and `HGETALL` - refactor client write preparation and handling
+
+
+============================================================
 8.0-M02 (v7.9.225)    Committed Mon 28 Oct 2024 14:00:00 IST
 ============================================================
 
