@@ -931,6 +931,8 @@ int VINFO_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
         RedisModule_ReplyWithSimpleString(ctx, "f32");
     } else if (vset->hnsw->quant_type == HNSW_QUANT_Q8) {
         RedisModule_ReplyWithSimpleString(ctx, "int8");
+    } else if (vset->hnsw->quant_type == HNSW_QUANT_BIN) {
+        RedisModule_ReplyWithSimpleString(ctx, "bin");
     } else {
         RedisModule_ReplyWithSimpleString(ctx, "unknown");
     }
