@@ -1034,7 +1034,7 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
         RedisModuleString *ele = RedisModule_LoadString(rdb);
         size_t vector_len;
         void *vector = RedisModule_LoadStringBuffer(rdb, &vector_len);
-        uint32_t vector_bytes = dim * (quant_type == HNSW_QUANT_Q8 ? 1 : 4);
+        uint32_t vector_bytes = hnsw_quants_bytes(vset->hnsw);
         if (vector_len != vector_bytes) {
             RedisModule_LogIOError(rdb,"warning",
                                        "Mismatching vector dimension");
