@@ -1990,7 +1990,7 @@ hnswNode *hnsw_insert_serialized(HNSW *index, void *vector, uint64_t *params, ui
 
     /* Create node, passing vector data directly based on quantization type. */
     hnswNode *node;
-    if (index->quant_type == HNSW_QUANT_Q8) {
+    if (index->quant_type != HNSW_QUANT_NONE) {
         node = hnsw_node_new(index, id, NULL, vector, 0, level);
     } else {
         node = hnsw_node_new(index, id, vector, NULL, 0, level);
