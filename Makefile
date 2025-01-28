@@ -22,11 +22,18 @@ LDFLAGS = -lm $(SAN)
 
 # Detect OS
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
+uname_M := $(shell sh -c 'uname -m 2>/dev/null || echo not')
 
 # Shared library compile flags for linux / osx
 ifeq ($(uname_S),Linux)
 	SHOBJ_CFLAGS ?= -W -Wall -fno-common -g -ggdb -std=c99 -O2
-	SHOBJ_LDFLAGS ?= -shared -latomic
+	SHOBJ_LDFLAGS ?= -shared
+ifneq (,$(findstring armv,$(uname_M)))
+	SHOBJ_LDFLAGS += -latomic
+endif
+ifneq (,$(findstring aarch64,$(uname_M)))
+	SHOBJ_LDFLAGS += -latomic
+endif
 else
 	SHOBJ_CFLAGS ?= -W -Wall -dynamic -fno-common -g -ggdb -std=c99 -Ofast -ffast-math
 	SHOBJ_LDFLAGS ?= -bundle -undefined dynamic_lookup
