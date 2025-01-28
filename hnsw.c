@@ -451,8 +451,10 @@ void hnsw_get_node_vector(HNSW *index, hnswNode *node, float *vec) {
     }
 
     // De-normalize.
-    for (uint32_t j = 0; j < index->vector_dim; j++)
-        vec[j] *= node->l2;
+    if (index->quant_type != HNSW_QUANT_BIN) {
+        for (uint32_t j = 0; j < index->vector_dim; j++)
+            vec[j] *= node->l2;
+    }
 }
 
 /* Return the number of bytes needed to represent a vector in the index,
