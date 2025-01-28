@@ -26,7 +26,7 @@ uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 # Shared library compile flags for linux / osx
 ifeq ($(uname_S),Linux)
 	SHOBJ_CFLAGS ?= -W -Wall -fno-common -g -ggdb -std=c99 -O2
-	SHOBJ_LDFLAGS ?= -shared
+	SHOBJ_LDFLAGS ?= -shared -latomic
 else
 	SHOBJ_CFLAGS ?= -W -Wall -dynamic -fno-common -g -ggdb -std=c99 -Ofast -ffast-math
 	SHOBJ_LDFLAGS ?= -bundle -undefined dynamic_lookup
@@ -49,7 +49,7 @@ all: vset.so
 vset.xo: redismodule.h
 
 vset.so: vset.xo hnsw.xo
-	$(LD) -o $@ $^ $(SHOBJ_LDFLAGS) $(LIBS) -lc
+	$(CC) -o $@ $^ $(SHOBJ_LDFLAGS) $(LIBS) -lc
 
 # Example sources / objects
 SRCS = hnsw.c w2v.c
