@@ -1086,8 +1086,7 @@ size_t VectorSetMemUsage(const void *value) {
     size += sizeof(*node) * vset->hnsw->node_count;
 
     /* Vector storage. */
-    uint64_t vec_storage = vset->hnsw->vector_dim;
-    if (vset->hnsw->quant_type == HNSW_QUANT_NONE) vec_storage *= 4;
+    uint64_t vec_storage = hnsw_quants_bytes(vset->hnsw);
     size += vec_storage * vset->hnsw->node_count;
 
     /* Layers array. We use 1.33 as average nodes layers count. */
