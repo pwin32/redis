@@ -290,11 +290,19 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         }
         RedisModule_DictSet(vset->dict,val,newnode);
         val = NULL; // Don't free it later.
+
+        /* FIXME: probably it's better to drop the CAS argument when
+         * replicating. Other VADDs with CAS against the same item may arrive
+         * and can be executed out of order. Also DEL commands may arrive
+         * while the VADD is in progress.
+         *
+         * The problem of dropping CAS however is that the replica may no
+         * longer be able to keep with the insertion load. */
+        RedisModule_ReplicateVerbatim(ctx);
     }
 
     // Whatever happens is a success... :D
     RedisModule_ReplyWithLongLong(ctx,1);
-
     if (val) RedisModule_FreeString(ctx,val); // Not added? Free it.
     RedisModule_Free(vec);
     return retval;
