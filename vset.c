@@ -1142,9 +1142,13 @@ void VectorSetDigest(RedisModuleDigest *md, void *value) {
 
     /* Add consistent order-independent hash of all vectors */
     hnswNode *node = vset->hnsw->head;
+
+    /* Hash the vector dimension and number of nodes. */
+    RedisModule_DigestAddLongLong(md, vset->hnsw->node_count);
+    RedisModule_DigestAddLongLong(md, vset->hnsw->vector_dim);
+    RedisModule_DigestEndSequence(md);
+
     while(node) {
-        /* Hash the vector dimension */
-        RedisModule_DigestAddLongLong(md, vset->hnsw->vector_dim);
         /* Hash each vector component */
         RedisModule_DigestAddStringBuffer(md, node->vector, hnsw_quants_bytes(vset->hnsw));
         /* Hash the associated value */
@@ -1152,8 +1156,8 @@ void VectorSetDigest(RedisModuleDigest *md, void *value) {
         const char *str = RedisModule_StringPtrLen(node->value, &len);
         RedisModule_DigestAddStringBuffer(md, (char*)str, len);
         node = node->next;
+        RedisModule_DigestEndSequence(md);
     }
-    RedisModule_DigestEndSequence(md);
 }
 
 /* This function must be present on each Redis module. It is used in order to
