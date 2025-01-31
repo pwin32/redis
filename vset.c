@@ -603,8 +603,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         vector_args = consumed_args;
 
         /* Apply projection if the set uses it, with the exception
-         * of ELE type, that will already have the right dimension.
-         * XXX: check explicitly that ELE was passed, not just size. */
+         * of ELE type, that will already have the right dimension. */
         if (vset->proj_matrix && dim != vset->hnsw->vector_dim) {
             float *projected = applyProjection(vec, vset->proj_matrix,
                                              vset->proj_input_size, dim);
