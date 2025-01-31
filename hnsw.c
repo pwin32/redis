@@ -488,7 +488,7 @@ uint32_t hnsw_quants_bytes(HNSW *index) {
  * original vector) make sure to save the l2 on disk and set it back
  * after the node creation (see later for the serialization API that
  * handles this and more). */
-hnswNode *hnsw_node_new(HNSW *index, uint64_t id, const float *vector, const int8_t *qvector, float qrange, uint32_t level) {
+hnswNode *hnsw_node_new(HNSW *index, uint64_t id, const float *vector, const int8_t *qvector, float qrange, uint32_t level, int normalize) {
     hnswNode *node = hmalloc(sizeof(hnswNode)+(sizeof(hnswNodeLayer)*(level+1)));
     if (!node) return NULL;
 
@@ -512,7 +512,8 @@ hnswNode *hnsw_node_new(HNSW *index, uint64_t id, const float *vector, const int
             return NULL;
         }
         memcpy(node->vector, vector, sizeof(float) * index->vector_dim);
-        hnsw_normalize_vector(node->vector,&node->l2,index->vector_dim);
+        if (normalize)
+            hnsw_normalize_vector(node->vector,&node->l2,index->vector_dim);
 
         /* Handle quantization. */
         if (index->quant_type != HNSW_QUANT_NONE) {
@@ -1571,7 +1572,7 @@ InsertContext *hnsw_prepare_insert_nolock(HNSW *index, const float *vector,
     /* Crete a new node that we may be able to insert into the
      * graph later, when calling the commit function. */
     uint32_t level = random_level();
-    ctx->node = hnsw_node_new(index, id, vector, qvector, qrange, level);
+    ctx->node = hnsw_node_new(index, id, vector, qvector, qrange, level, 1);
     if (!ctx->node) {
         hfree(ctx);
         return NULL;
@@ -1993,9 +1994,9 @@ hnswNode *hnsw_insert_serialized(HNSW *index, void *vector, uint64_t *params, ui
     /* Create node, passing vector data directly based on quantization type. */
     hnswNode *node;
     if (index->quant_type != HNSW_QUANT_NONE) {
-        node = hnsw_node_new(index, id, NULL, vector, 0, level);
+        node = hnsw_node_new(index, id, NULL, vector, 0, level, 0);
     } else {
-        node = hnsw_node_new(index, id, vector, NULL, 0, level);
+        node = hnsw_node_new(index, id, vector, NULL, 0, level, 0);
     }
     if (!node) return NULL;
 
