@@ -23,8 +23,14 @@
 static RedisModuleType *VectorSetType;
 static uint64_t VectorSetTypeNextId = 0;
 
-#define VSET_DEFAULT_C_EF 200   // Default EF value if not specified.
-#define VSET_DEFAULT_COUNT 10   // Default num elements returned by VSIM.
+// Default EF value if not specified during creation.
+#define VSET_DEFAULT_C_EF 200
+
+// Default EF value if not specified during search.
+#define VSET_DEFAULT_SEARCH_EF 100
+
+// Default num elements returned by VSIM.
+#define VSET_DEFAULT_COUNT 10
 
 /* ========================== Internal data structure  ====================== */
 
@@ -495,11 +501,10 @@ void *VSIM_thread(void *arg) {
      * way to provide enough recall.
      *
      * If the user didn't asked for a specific exploration, we use
-     * 50 as minimum, or we match count if count is greater than
-     * that. Otherwise the minumim will be the specified EF argument. */
-
-    if (ef == 0) ef = 100; // This is a decent default to go fast but avoid
-                           // obvious local minima along the path.
+     * VSET_DEFAULT_SEARCH_EF as minimum, or we match count if count
+     * is greater than that. Otherwise the minumim will be the specified
+     * EF argument. */
+    if (ef == 0) ef = VSET_DEFAULT_SEARCH_EF;
     if (count > ef) ef = count;
 
     /* Perform search */
