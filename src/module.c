@@ -439,7 +439,6 @@ typedef int (*RedisModuleConfigApplyFunc)(RedisModuleCtx *ctx, void *privdata, R
 struct ModuleConfig {
     sds name;           /* Fullname of the config (as it appears in the config file) */
     sds alias;          /* Optional alias for the configuration. NULL if none exists */
-    int defaultWasSet;  /* Indicates if the default value was set for the configuration */
     int unprefixedFlag; /* Indicates if the REDISMODULE_CONFIG_UNPREFIXED flag was set. 
                          * If the configuration name was prefixed,during get_fn/set_fn 
                          * callbacks, it should be reported without the prefix */
