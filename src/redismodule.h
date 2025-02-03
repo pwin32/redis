@@ -1695,8 +1695,8 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(RegisterNumericConfig);
     REDISMODULE_GET_API(RegisterStringConfig);
     REDISMODULE_GET_API(RegisterEnumConfig);
-    REDISMODULE_GET_API(LoadDefaultConfigs);
     REDISMODULE_GET_API(LoadConfigs);
+    REDISMODULE_GET_API(LoadDefaultConfigs);
     REDISMODULE_GET_API(RdbStreamCreateFromFile);
     REDISMODULE_GET_API(RdbStreamFree);
     REDISMODULE_GET_API(RdbLoad);

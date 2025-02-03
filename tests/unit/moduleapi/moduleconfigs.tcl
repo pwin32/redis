@@ -346,13 +346,12 @@ start_server {tags {"modules"}} {
     test {loadmodule CONFIG values take precedence over loadmoduleex ARGS values} {
         # Load module with conflicting CONFIG and ARGS values
         r module loadex $testmodule \
-            CONFIG moduleconfigs.mutable_bool yes \
+            CONFIG moduleconfigs.string foo \
             CONFIG moduleconfigs.memory_numeric 2mb \
-            ARGS moduleconfigs.mutable_bool no \
-            ARGS moduleconfigs.memory_numeric 4mb
+            ARGS override
 
-        # Verify CONFIG values took precedence
-        assert_equal [r config get moduleconfigs.mutable_bool] "moduleconfigs.mutable_bool yes"
+        # Verify CONFIG values took precedence over the pseudo values that
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string foo"
         assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 2097152"
 
         r module unload moduleconfigs
@@ -361,29 +360,26 @@ start_server {tags {"modules"}} {
     # Test: Ensure that modified configuration values from ARGS are correctly written to the config file
     test {Modified ARGS values are persisted after config rewrite when set through CONFIG commands} {
         # Load module with non-default ARGS values
-        r module loadex $testmodule \
-            ARGS moduleconfigs.memory_numeric 4mb \
-            ARGS moduleconfigs.string_setting "custom_value"
+        r module loadex $testmodule ARGS override
 
-        # Verify the initial ARGS values
-        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 4194304"
-        assert_equal [r config get moduleconfigs.string_setting] "moduleconfigs.string_setting custom_value"
+        # Verify the initial values were overwritten
+        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 123"
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string foo"
 
         # Set new values to simulate user configuration changes
-        r config set moduleconfigs.memory_numeric 8mb
-        r config set moduleconfigs.string_setting "modified_value"
+        r config set moduleconfigs.memory_numeric 1mb
+        r config set moduleconfigs.string "modified_value"
 
         # Verify that the changes took effect
-        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 8388608"
-        assert_equal [r config get moduleconfigs.string_setting] "moduleconfigs.string_setting modified_value"
+        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 1048576"
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string modified_value"
 
         # Perform a config rewrite
         r config rewrite
 
-        # Read and verify config file contents to check for persistence
-        set config_contents [file read [config_path]]
-        assert_contains "moduleconfigs.memory_numeric 8388608" $config_contents
-        assert_contains "moduleconfigs.string_setting modified_value" $config_contents
+        restart_server 0 true false
+        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 1048576"
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string modified_value"
         r module unload moduleconfigs
     }
 }
