@@ -3901,6 +3901,9 @@ int RM_GetSelectedDb(RedisModuleCtx *ctx) {
  *                                 context is using RESP3.
  *
  *  * REDISMODULE_CTX_FLAGS_SERVER_STARTUP: The Redis instance is starting
+ *
+ *  * REDISMODULE_CTX_FLAGS_DEBUG_ENABLED: Debug commands are enabled for this
+ *                                         context.
  */
 int RM_GetContextFlags(RedisModuleCtx *ctx) {
     int flags = 0;
@@ -3922,6 +3925,9 @@ int RM_GetContextFlags(RedisModuleCtx *ctx) {
         client *c = ctx->blocked_client ? ctx->blocked_client->client : ctx->client;
         if (c && (c->flags & (CLIENT_DIRTY_CAS|CLIENT_DIRTY_EXEC))) {
             flags |= REDISMODULE_CTX_FLAGS_MULTI_DIRTY;
+        }
+        if (c && allowProtectedAction(server.enable_debug_cmd, c)) {
+            flags |= REDISMODULE_CTX_FLAGS_DEBUG_ENABLED;
         }
     }
 
@@ -3989,6 +3995,11 @@ int RM_GetContextFlags(RedisModuleCtx *ctx) {
     /* Non-empty server.loadmodule_queue means that Redis is starting. */
     if (listLength(server.loadmodule_queue) > 0)
         flags |= REDISMODULE_CTX_FLAGS_SERVER_STARTUP;
+
+    /* If debug commands are completely enabled */
+    if (server.enable_debug_cmd == PROTECTED_ACTION_ALLOWED_YES) {
+        flags |= REDISMODULE_CTX_FLAGS_DEBUG_ENABLED;
+    }
 
     return flags;
 }
