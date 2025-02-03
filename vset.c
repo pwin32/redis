@@ -345,6 +345,8 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             quant_type = HNSW_QUANT_NONE;
         } else if (!strcasecmp(opt, "BIN")) {
             quant_type = HNSW_QUANT_BIN;
+        } else if (!strcasecmp(opt, "Q8")) {
+            quant_type = HNSW_QUANT_Q8;
         } else {
             RedisModule_Free(vec);
             return RedisModule_ReplyWithError(ctx,"ERR invalid option after element");
