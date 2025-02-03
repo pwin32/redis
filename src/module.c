@@ -12913,7 +12913,6 @@ int loadModuleSingleConfig(dictEntry *config_queue_entry, ModuleConfig *module_c
 int loadModuleDefaultConfigs(RedisModule *module) {
     listIter li;
     listNode *ln;
-    const char *err = NULL;
     listRewind(module->module_configs, &li);
     while ((ln = listNext(&li))) {
         ModuleConfig *module_config = listNodeValue(ln);
