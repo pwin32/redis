@@ -397,6 +397,8 @@ void debugCommand(client *c) {
 "    Hard crash and restart after a <milliseconds> delay (default 0).",
 "DIGEST",
 "    Output a hex signature representing the current DB content.",
+"INTERNAL_SECRET",
+"    Return the cluster internal secret (hashed with crc16) or error if not in cluster mode.",
 "DIGEST-VALUE <key> [<key> ...]",
 "    Output a hex signature of the values of all the specified keys.",
 "ERROR <string>",
@@ -759,6 +761,15 @@ NULL
         for (int i = 0; i < 20; i++) d = sdscatprintf(d, "%02x",digest[i]);
         addReplyStatus(c,d);
         sdsfree(d);
+    } else if (!strcasecmp(c->argv[1]->ptr,"internal_secret") && c->argc == 2) {
+        size_t len;
+        const char *internal_secret = clusterGetSecret(&len);
+        if (!internal_secret) {
+            addReplyError(c, "Internal secret is missing");
+        } else {
+            uint16_t hash = crc16(internal_secret, len);
+            addReplyLongLong(c, hash);
+        }
     } else if (!strcasecmp(c->argv[1]->ptr,"digest-value") && c->argc >= 2) {
         /* DEBUG DIGEST-VALUE key key key ... key. */
         addReplyArrayLen(c,c->argc-2);
