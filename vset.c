@@ -297,13 +297,6 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         RedisModule_DictSet(vset->dict,val,newnode);
         val = NULL; // Don't free it later.
 
-        /* FIXME: probably it's better to drop the CAS argument when
-         * replicating. Other VADDs with CAS against the same item may arrive
-         * and can be executed out of order. Also DEL commands may arrive
-         * while the VADD is in progress.
-         *
-         * The problem of dropping CAS however is that the replica may no
-         * longer be able to keep with the insertion load. */
         RedisModule_ReplicateVerbatim(ctx);
     }
 
@@ -356,6 +349,20 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             RedisModule_Free(vec);
             return RedisModule_ReplyWithError(ctx,"ERR invalid option after element");
         }
+    }
+
+    /* Drop CAS if this is a replica and we are getting the command from the
+     * replication link: we want to add/delete items in the same order as
+     * the master, while with CAS the timing would be different.
+     *
+     * Also for Lua scripts and MULTI/EXEC, we want to run the command
+     * on the main thread. */
+    if (RedisModule_GetContextFlags(ctx) &
+            (REDISMODULE_CTX_FLAGS_REPLICATED|
+             REDISMODULE_CTX_FLAGS_LUA|
+             REDISMODULE_CTX_FLAGS_MULTI))
+    {
+        cas = 0;
     }
 
     /* Open/create key */
