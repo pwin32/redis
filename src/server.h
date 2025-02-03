@@ -866,6 +866,12 @@ typedef struct moduleValue {
     void *value;
 } moduleValue;
 
+typedef enum {
+    MODULE_DEFAULT_CONFIG = 0x1,
+    MODULE_ONLOAD_CONFIG = 0x2,
+    MODULE_CONFIGURED = MODULE_DEFAULT_CONFIG | MODULE_ONLOAD_CONFIG
+} ModuleConfigFlags;
+
 /* This structure represents a module inside the system. */
 struct RedisModule {
     void *handle;   /* Module dlopen() handle. */
@@ -877,7 +883,7 @@ struct RedisModule {
     list *using;    /* List of modules we use some APIs of. */
     list *filters;  /* List of filters the module has registered. */
     list *module_configs; /* List of configurations the module has registered */
-    int configs_initialized; /* Have the module configurations been initialized? */
+    ModuleConfigFlags configs_initialized; /* Have the module configurations been initialized? */
     int in_call;    /* RM_Call() nesting level */
     int in_hook;    /* Hooks callback nesting level for this module (0 or 1). */
     int options;    /* Module options and capabilities. */

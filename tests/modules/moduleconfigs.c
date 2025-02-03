@@ -226,6 +226,8 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     size_t len;
     if (argc && !strcasecmp(RedisModule_StringPtrLen(argv[0], &len), "noload")) {
         return REDISMODULE_OK;
+    } else if (RedisModule_LoadDefaultConfigs(ctx) == REDISMODULE_ERR) {
+        return REDISMODULE_ERR;
     } else if (RedisModule_LoadConfigs(ctx) == REDISMODULE_ERR) {
         if (strval) {
             RedisModule_FreeString(ctx, strval);
