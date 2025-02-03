@@ -297,13 +297,6 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         RedisModule_DictSet(vset->dict,val,newnode);
         val = NULL; // Don't free it later.
 
-        /* FIXME: probably it's better to drop the CAS argument when
-         * replicating. Other VADDs with CAS against the same item may arrive
-         * and can be executed out of order. Also DEL commands may arrive
-         * while the VADD is in progress.
-         *
-         * The problem of dropping CAS however is that the replica may no
-         * longer be able to keep with the insertion load. */
         RedisModule_ReplicateVerbatim(ctx);
     }
 
@@ -352,10 +345,26 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             quant_type = HNSW_QUANT_NONE;
         } else if (!strcasecmp(opt, "BIN")) {
             quant_type = HNSW_QUANT_BIN;
+        } else if (!strcasecmp(opt, "Q8")) {
+            quant_type = HNSW_QUANT_Q8;
         } else {
             RedisModule_Free(vec);
             return RedisModule_ReplyWithError(ctx,"ERR invalid option after element");
         }
+    }
+
+    /* Drop CAS if this is a replica and we are getting the command from the
+     * replication link: we want to add/delete items in the same order as
+     * the master, while with CAS the timing would be different.
+     *
+     * Also for Lua scripts and MULTI/EXEC, we want to run the command
+     * on the main thread. */
+    if (RedisModule_GetContextFlags(ctx) &
+            (REDISMODULE_CTX_FLAGS_REPLICATED|
+             REDISMODULE_CTX_FLAGS_LUA|
+             REDISMODULE_CTX_FLAGS_MULTI))
+    {
+        cas = 0;
     }
 
     /* Open/create key */
@@ -480,22 +489,15 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     }
 }
 
-/* VSIM thread handling the blocked client request. */
-void *VSIM_thread(void *arg) {
-    pthread_detach(pthread_self());
-
-    void **targ = (void**)arg;
-    RedisModuleBlockedClient *bc = targ[0];
-    struct vsetObject *vset = targ[1];
-    float *vec = targ[2];
-    unsigned long count = (unsigned long)targ[3];
-    float epsilon = *((float*)targ[4]);
-    unsigned long withscores = (unsigned long)targ[5];
-    unsigned long ef = (unsigned long)targ[6];
-
-    RedisModule_Free(targ[4]);
-    RedisModule_Free(targ);
-
+/* Common path for the execution of the VSIM command both threaded and
+ * not threaded. Note that 'ctx' may be normal context of a thread safe
+ * context obtained from a blocked client. The locking that is specific
+ * to the vset object is handled by the caller, however the function
+ * handles the HNSW locking explicitly. */
+void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
+    float *vec, unsigned long count, float epsilon, unsigned long withscores,
+    unsigned long ef)
+{
     /* In our scan, we can't just collect 'count' elements as
      * if count is small we would explore the graph in an insufficient
      * way to provide enough recall.
@@ -516,7 +518,6 @@ void *VSIM_thread(void *arg) {
     RedisModule_Free(vec);
 
     /* Return results */
-    RedisModuleCtx *ctx = RedisModule_GetThreadSafeContext(bc);
     if (withscores)
         RedisModule_ReplyWithMap(ctx, REDISMODULE_POSTPONED_LEN);
     else
@@ -538,11 +539,36 @@ void *VSIM_thread(void *arg) {
     else
         RedisModule_ReplySetArrayLength(ctx, arraylen);
 
+    RedisModule_Free(neighbors);
+    RedisModule_Free(distances);
+}
+
+/* VSIM thread handling the blocked client request. */
+void *VSIM_thread(void *arg) {
+    pthread_detach(pthread_self());
+
+    // Extract arguments.
+    void **targ = (void**)arg;
+    RedisModuleBlockedClient *bc = targ[0];
+    struct vsetObject *vset = targ[1];
+    float *vec = targ[2];
+    unsigned long count = (unsigned long)targ[3];
+    float epsilon = *((float*)targ[4]);
+    unsigned long withscores = (unsigned long)targ[5];
+    unsigned long ef = (unsigned long)targ[6];
+    RedisModule_Free(targ[4]);
+    RedisModule_Free(targ);
+
+    // Accumulate reply in a thread safe context: no contention.
+    RedisModuleCtx *ctx = RedisModule_GetThreadSafeContext(bc);
+
+    // Run the query.
+    VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef);
+
+    // Cleanup.
     RedisModule_FreeThreadSafeContext(ctx);
     pthread_rwlock_unlock(&vset->in_use_lock);
     RedisModule_UnblockClient(bc,NULL);
-    RedisModule_Free(neighbors);
-    RedisModule_Free(distances);
     return NULL;
 }
 
@@ -624,7 +650,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             vector_args = 2 + vdim;  /* VALUES + dim + values */
         } else {
             RedisModule_Free(vec);
-            return RedisModule_ReplyWithError(ctx, 
+            return RedisModule_ReplyWithError(ctx,
                 "ERR vector type must be ELE, FP32 or VALUES");
         }
     }
@@ -675,37 +701,51 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         }
     }
 
-    /* Spawn the thread serving the request:
-     * Acquire the lock here so that the object will not be
-     * destroyed while we work with it in the thread.
-     *
-     * This lock should never block, since:
-     * 1. If we are in the main thread, the key exists (we looked it up)
-     * and so there is no deletion in progress.
-     * 2. If the write lock is taken while destroying the object, another
-     * command or operation (expire?) from the main thread acquired
-     * it to delete the object, so *it* will block if there are still
-     * operations in progress on this key. */
-    pthread_rwlock_rdlock(&vset->in_use_lock);
+    int threaded_request = 1; // Run on a thread, by default.
 
-    RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx,NULL,NULL,NULL,0);
-    pthread_t tid;
-    void **targ = RedisModule_Alloc(sizeof(void*)*7);
-    targ[0] = bc;
-    targ[1] = vset;
-    targ[2] = vec;
-    targ[3] = (void*)count;
-    targ[4] = RedisModule_Alloc(sizeof(float));
-    *((float*)targ[4]) = epsilon;
-    targ[5] = (void*)(unsigned long)withscores;
-    targ[6] = (void*)(unsigned long)ef;
-    if (pthread_create(&tid,NULL,VSIM_thread,targ) != 0) {
-        pthread_rwlock_unlock(&vset->in_use_lock);
-        RedisModule_AbortBlock(bc);
-        RedisModule_Free(vec);
-        RedisModule_Free(targ[4]);
-        RedisModule_Free(targ);
-        return RedisModule_ReplyWithError(ctx,"-ERR Can't start thread");
+    // Disable threaded for MULTI/EXEC and Lua.
+    if (RedisModule_GetContextFlags(ctx) &
+             (REDISMODULE_CTX_FLAGS_LUA|
+             REDISMODULE_CTX_FLAGS_MULTI))
+    {
+        threaded_request = 0;
+    }
+
+    if (threaded_request) {
+        /* Spawn the thread serving the request:
+         * Acquire the lock here so that the object will not be
+         * destroyed while we work with it in the thread.
+         *
+         * This lock should never block, since:
+         * 1. If we are in the main thread, the key exists (we looked it up)
+         * and so there is no deletion in progress.
+         * 2. If the write lock is taken while destroying the object, another
+         * command or operation (expire?) from the main thread acquired
+         * it to delete the object, so *it* will block if there are still
+         * operations in progress on this key. */
+        pthread_rwlock_rdlock(&vset->in_use_lock);
+
+        RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx,NULL,NULL,NULL,0);
+        pthread_t tid;
+        void **targ = RedisModule_Alloc(sizeof(void*)*7);
+        targ[0] = bc;
+        targ[1] = vset;
+        targ[2] = vec;
+        targ[3] = (void*)count;
+        targ[4] = RedisModule_Alloc(sizeof(float));
+        *((float*)targ[4]) = epsilon;
+        targ[5] = (void*)(unsigned long)withscores;
+        targ[6] = (void*)(unsigned long)ef;
+        if (pthread_create(&tid,NULL,VSIM_thread,targ) != 0) {
+            pthread_rwlock_unlock(&vset->in_use_lock);
+            RedisModule_AbortBlock(bc);
+            RedisModule_Free(vec);
+            RedisModule_Free(targ[4]);
+            RedisModule_Free(targ);
+            return RedisModule_ReplyWithError(ctx,"-ERR Can't start thread");
+        }
+    } else {
+        VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef);
     }
 
     return REDISMODULE_OK;
