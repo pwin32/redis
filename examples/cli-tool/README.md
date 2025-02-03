@@ -1,5 +1,5 @@
 This tool is similar to redis-cli (but very basic) but allows
-to specify arguments that are expanded as fectors by calling
+to specify arguments that are expanded as vectors by calling
 ollama to get the embedding.
 
 Whatever is passed as !"foo bar" gets expanded into
