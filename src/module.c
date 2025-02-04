@@ -13294,7 +13294,7 @@ int RM_RegisterNumericConfig(RedisModuleCtx *ctx, const char *name, long long de
  * This will return REDISMODULE_ERR if it is called:
  * 1. outside RedisModule_OnLoad
  * 2. more than once
- * 3. after the LoadConfis call */
+ * 3. after the RedisModule_LoadConfigs call */
 int RM_LoadDefaultConfigs(RedisModuleCtx *ctx) {
     if (!ctx || !ctx->module || !ctx->module->onload || ctx->module->configs_initialized) {
         return REDISMODULE_ERR;
