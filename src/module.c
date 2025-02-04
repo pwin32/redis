@@ -12499,7 +12499,7 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
     ctx.module->onload = 0;
 
     int post_load_err = 0;
-    if (listLength(ctx.module->module_configs) && !(ctx.module->configs_initialized & MODULE_NON_DEFAULT_CONFIG)) {
+    if (listLength(ctx.module->module_configs) && !(ctx.module->configs_initialized & MODULE_CONFIGS_USER_VALS)) {
         serverLogRaw(LL_WARNING, "Module Configurations were not set, missing LoadConfigs call. Unloading the module.");
         post_load_err = 1;
     }
@@ -12890,37 +12890,19 @@ long long getModuleNumericConfig(ModuleConfig *module_config) {
     return module_config->get_fn.get_numeric(rname, module_config->privdata);
 }
 
-int loadModuleSingleConfig(dictEntry *config_queue_entry, ModuleConfig *module_config, bool set_default_if_missing) {
-    const char *err = NULL;
-    if (config_queue_entry) {
-        if (!performModuleConfigSetFromName(dictGetKey(config_queue_entry), dictGetVal(config_queue_entry), &err)) {
-            serverLog(LL_WARNING, "Issue during loading of configuration %s : %s", (sds) dictGetKey(config_queue_entry), err);
-            dictFreeUnlinkedEntry(server.module_configs_queue, config_queue_entry);
-            dictEmpty(server.module_configs_queue, NULL);
-            return REDISMODULE_ERR;
-        }
-        dictFreeUnlinkedEntry(server.module_configs_queue, config_queue_entry);
-    } else if (set_default_if_missing) {
-        if (!performModuleConfigSetDefaultFromName(module_config->name, &err)) {
-            serverLog(LL_WARNING, "Issue attempting to set default value of configuration %s : %s", module_config->name, err);
-            dictEmpty(server.module_configs_queue, NULL);
-            return REDISMODULE_ERR;
-        }
-    }
-    return REDISMODULE_OK;
-}
-
 int loadModuleDefaultConfigs(RedisModule *module) {
     listIter li;
     listNode *ln;
+    const char *err = NULL;
     listRewind(module->module_configs, &li);
     while ((ln = listNext(&li))) {
         ModuleConfig *module_config = listNodeValue(ln);
-        if (loadModuleSingleConfig(NULL, module_config, true) != REDISMODULE_OK) {
+        if (!performModuleConfigSetDefaultFromName(module_config->name, &err)) {
+            serverLog(LL_WARNING, "Issue attempting to set default value of configuration %s : %s", module_config->name, err);
             return REDISMODULE_ERR;
         }
     }
-    module->configs_initialized |= MODULE_DEFAULT_CONFIG;
+    module->configs_initialized |= MODULE_CONFIGS_DEFAULTS;
     return REDISMODULE_OK;
 }
 
@@ -12929,20 +12911,33 @@ int loadModuleDefaultConfigs(RedisModule *module) {
 int loadModuleConfigs(RedisModule *module) {
     listIter li;
     listNode *ln;
+    const char *err = NULL;
     listRewind(module->module_configs, &li);
-    const bool set_default_if_missing = !(module->configs_initialized & MODULE_DEFAULT_CONFIG);
+    const int set_default_if_missing = !(module->configs_initialized & MODULE_CONFIGS_DEFAULTS);
     while ((ln = listNext(&li))) {
         ModuleConfig *module_config = listNodeValue(ln);
         dictEntry *de = dictUnlink(server.module_configs_queue, module_config->name);
         if ((!de) && (module_config->alias))
             de = dictUnlink(server.module_configs_queue, module_config->alias);
 
-        /* If found in the queue, set the value. Otherwise, set the default value if set_default_if_missing is true. */
-        if (loadModuleSingleConfig(de, module_config, set_default_if_missing) != REDISMODULE_OK) {
-            return REDISMODULE_ERR;
+        /* If found in the queue, set the value. Otherwise, set the default value. */
+        if (de) {
+            if (!performModuleConfigSetFromName(dictGetKey(de), dictGetVal(de), &err)) {
+                serverLog(LL_WARNING, "Issue during loading of configuration %s : %s", (sds) dictGetKey(de), err);
+                dictFreeUnlinkedEntry(server.module_configs_queue, de);
+                dictEmpty(server.module_configs_queue, NULL);
+                return REDISMODULE_ERR;
+            }
+            dictFreeUnlinkedEntry(server.module_configs_queue, de);
+        } else if (set_default_if_missing) {
+            if (!performModuleConfigSetDefaultFromName(module_config->name, &err)) {
+                serverLog(LL_WARNING, "Issue attempting to set default value of configuration %s : %s", module_config->name, err);
+                dictEmpty(server.module_configs_queue, NULL);
+                return REDISMODULE_ERR;
+            }
         }
     }
-    module->configs_initialized |= (MODULE_DEFAULT_CONFIG | MODULE_NON_DEFAULT_CONFIG);
+    module->configs_initialized = MODULE_CONFIGS_ALL_APPLIED;
     return REDISMODULE_OK;
 }
 
@@ -13288,8 +13283,17 @@ int RM_RegisterNumericConfig(RedisModuleCtx *ctx, const char *name, long long de
     return REDISMODULE_OK;
 }
 
+/* Applies all default configurations on the module load.
+ * Only call this function if the module would like to make changes to the
+ * configuration values before the actual values are applied by RedisModule_LoadConfigs.
+ * Otherwise continue calling RedisModule_LoadConfigs, it should already set the default values if needed.
+ * This sets an ordering for the possible source of a configuration value:
+ * 1. config values - e.g from the config file or CONFIG during loadex
+ * 2. module values - e.g from the module arguments
+ * 3. default values - if no other value was set
+ * This will return REDISMODULE_ERR if it is called outside RedisModule_OnLoad or more than once or after the LoadConfis call. */
 int RM_LoadDefaultConfigs(RedisModuleCtx *ctx) {
-    if (!ctx || !ctx->module || !ctx->module->onload) {
+    if (!ctx || !ctx->module || !ctx->module->onload || ctx->module->configs_initialized) {
         return REDISMODULE_ERR;
     }
     RedisModule *module = ctx->module;
