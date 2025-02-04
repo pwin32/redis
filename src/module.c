@@ -12499,7 +12499,7 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
     ctx.module->onload = 0;
 
     int post_load_err = 0;
-    if (listLength(ctx.module->module_configs) && !(ctx.module->configs_initialized & MODULE_ONLOAD_CONFIG)) {
+    if (listLength(ctx.module->module_configs) && !(ctx.module->configs_initialized & MODULE_NON_DEFAULT_CONFIG)) {
         serverLogRaw(LL_WARNING, "Module Configurations were not set, missing LoadConfigs call. Unloading the module.");
         post_load_err = 1;
     }
@@ -12942,7 +12942,7 @@ int loadModuleConfigs(RedisModule *module) {
             return REDISMODULE_ERR;
         }
     }
-    module->configs_initialized |= (MODULE_DEFAULT_CONFIG | MODULE_ONLOAD_CONFIG);
+    module->configs_initialized |= (MODULE_DEFAULT_CONFIG | MODULE_NON_DEFAULT_CONFIG);
     return REDISMODULE_OK;
 }
 

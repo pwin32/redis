@@ -868,8 +868,8 @@ typedef struct moduleValue {
 
 typedef enum {
     MODULE_DEFAULT_CONFIG = 0x1,
-    MODULE_ONLOAD_CONFIG = 0x2,
-    MODULE_CONFIGURED = MODULE_DEFAULT_CONFIG | MODULE_ONLOAD_CONFIG
+    MODULE_NON_DEFAULT_CONFIG = 0x2,
+    MODULE_CONFIGURED = MODULE_DEFAULT_CONFIG | MODULE_NON_DEFAULT_CONFIG
 } ModuleConfigFlags;
 
 /* This structure represents a module inside the system. */
