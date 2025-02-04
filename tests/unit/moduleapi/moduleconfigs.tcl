@@ -351,7 +351,7 @@ start_server {tags {"modules"}} {
             ARGS override
 
         # Verify CONFIG values took precedence over the pseudo values that
-        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string foo"
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string goo"
         assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 2097152"
 
         r module unload moduleconfigs
