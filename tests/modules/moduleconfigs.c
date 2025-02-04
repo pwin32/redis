@@ -165,6 +165,17 @@ int registerBlockCheck(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     return REDISMODULE_OK;
 }
 
+void cleanup(RedisModuleCtx *ctx) {
+    if (strval) {
+        RedisModule_FreeString(ctx, strval);
+        strval = NULL;
+    }
+    if (strval2) {
+        RedisModule_FreeString(ctx, strval2);
+        strval2 = NULL;
+    }
+}
+
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
@@ -264,22 +275,12 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
   
     return REDISMODULE_OK;
 err:
-    if (strval) {
-        RedisModule_FreeString(ctx, strval);
-        strval = NULL;
-    }
+    cleanup(ctx);
     return REDISMODULE_ERR;
 }
 
 int RedisModule_OnUnload(RedisModuleCtx *ctx) {
     REDISMODULE_NOT_USED(ctx);
-    if (strval) {
-        RedisModule_FreeString(ctx, strval);
-        strval = NULL;
-    }
-    if (strval2) {
-        RedisModule_FreeString(ctx, strval2);
-        strval2 = NULL;
-    }
+    cleanup(ctx);
     return REDISMODULE_OK;
 }

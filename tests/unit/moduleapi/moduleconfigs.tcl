@@ -319,7 +319,7 @@ start_server {tags {"modules"}} {
 
         # missing LoadConfigs call
         catch {exec src/redis-server --loadmodule "$testmodule" noload --moduleconfigs.string "hello"} err
-        assert_match {*Module Configurations were not set, likely a missing LoadConfigs call. Unloading the module.*} $err
+        assert_match {*Module Configurations were not set, missing LoadConfigs call. Unloading the module.*} $err
 
         # successful
         start_server [list overrides [list loadmodule "$testmodule" moduleconfigs.string "bootedup" moduleconfigs.enum two moduleconfigs.flags "two four"]] {
