@@ -13293,7 +13293,7 @@ int RM_LoadDefaultConfigs(RedisModuleCtx *ctx) {
         return REDISMODULE_ERR;
     }
     RedisModule *module = ctx->module;
-    /* Load configs from conf file or arguments from loadex */
+    /* Load default configs of the module */
     return loadModuleDefaultConfigs(module);
 }
 
