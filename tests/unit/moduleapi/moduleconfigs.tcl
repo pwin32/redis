@@ -346,7 +346,7 @@ start_server {tags {"modules"}} {
     test {loadmodule CONFIG values take precedence over loadmoduleex ARGS values} {
         # Load module with conflicting CONFIG and ARGS values
         r module loadex $testmodule \
-            CONFIG moduleconfigs.string foo \
+            CONFIG moduleconfigs.string goo \
             CONFIG moduleconfigs.memory_numeric 2mb \
             ARGS override
 
