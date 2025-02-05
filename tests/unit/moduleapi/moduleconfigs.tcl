@@ -350,7 +350,7 @@ start_server {tags {"modules"}} {
             CONFIG moduleconfigs.memory_numeric 2mb \
             ARGS override-default
 
-        # Verify CONFIG values took precedence over the pseudo values that
+        # Verify CONFIG values took precedence over the values that override-default would have caused the module to set
         assert_equal [r config get moduleconfigs.string] "moduleconfigs.string goo"
         assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 2097152"
 
