@@ -252,10 +252,11 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     size_t len;
     if (argc && !strcasecmp(RedisModule_StringPtrLen(argv[0], &len), "noload")) {
         return REDISMODULE_OK;
-    } else if (RedisModule_LoadDefaultConfigs(ctx) == REDISMODULE_ERR) {
-        RedisModule_Log(ctx, "warning", "Failed to load default configuration");
-        goto err;
-    } else if (argc && !strcasecmp(RedisModule_StringPtrLen(argv[0], &len), "override")) {
+    } if (argc && !strcasecmp(RedisModule_StringPtrLen(argv[0], &len), "override-default")) {
+        if (RedisModule_LoadDefaultConfigs(ctx) == REDISMODULE_ERR) {
+            RedisModule_Log(ctx, "warning", "Failed to load default configuration");
+            goto err;
+        }
         // simulate configuration values being overwritten by the command line
         RedisModule_Log(ctx, "debug", "Overriding configuration values");
         if (strval) RedisModule_FreeString(ctx, strval);

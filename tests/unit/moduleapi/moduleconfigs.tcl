@@ -348,7 +348,7 @@ start_server {tags {"modules"}} {
         r module loadex $testmodule \
             CONFIG moduleconfigs.string goo \
             CONFIG moduleconfigs.memory_numeric 2mb \
-            ARGS override
+            ARGS override-default
 
         # Verify CONFIG values took precedence over the pseudo values that
         assert_equal [r config get moduleconfigs.string] "moduleconfigs.string goo"
@@ -360,7 +360,7 @@ start_server {tags {"modules"}} {
     # Test: Ensure that modified configuration values from ARGS are correctly written to the config file
     test {Modified ARGS values are persisted after config rewrite when set through CONFIG commands} {
         # Load module with non-default ARGS values
-        r module loadex $testmodule ARGS override
+        r module loadex $testmodule ARGS override-default
 
         # Verify the initial values were overwritten
         assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 123"
