@@ -127,6 +127,16 @@ void vectorSetReleaseObject(struct vsetObject *o) {
     RedisModule_Free(o);
 }
 
+/* Return a string representing the quantization type name of a vector set. */
+const char *vectorSetGetQuantName(struct vsetObject *o) {
+    switch(o->hnsw->quant_type) {
+    case HNSW_QUANT_NONE: return "f32";
+    case HNSW_QUANT_Q8: return "int8";
+    case HNSW_QUANT_BIN: return "bin";
+    default: return "unknown";
+    }
+}
+
 /* Insert the specified element into the Vector Set.
  * If update is '1', the existing node will be updated.
  *
@@ -979,15 +989,7 @@ int VINFO_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 
     /* Quantization type */
     RedisModule_ReplyWithSimpleString(ctx, "quant-type");
-    if (vset->hnsw->quant_type == HNSW_QUANT_NONE) {
-        RedisModule_ReplyWithSimpleString(ctx, "f32");
-    } else if (vset->hnsw->quant_type == HNSW_QUANT_Q8) {
-        RedisModule_ReplyWithSimpleString(ctx, "int8");
-    } else if (vset->hnsw->quant_type == HNSW_QUANT_BIN) {
-        RedisModule_ReplyWithSimpleString(ctx, "bin");
-    } else {
-        RedisModule_ReplyWithSimpleString(ctx, "unknown");
-    }
+    RedisModule_ReplyWithSimpleString(ctx, vectorSetGetQuantName(vset));
 
     /* Vector dimensionality. */
     RedisModule_ReplyWithSimpleString(ctx, "vector-dim");
