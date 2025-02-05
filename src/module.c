@@ -13286,11 +13286,8 @@ int RM_RegisterNumericConfig(RedisModuleCtx *ctx, const char *name, long long de
 /* Applies all default configurations for the parameters the module registered.
  * Only call this function if the module would like to make changes to the
  * configuration values before the actual values are applied by RedisModule_LoadConfigs.
- * Otherwise continue calling RedisModule_LoadConfigs, it should already set the default values if needed.
- * This sets an ordering for the possible source of a configuration value:
- * 1. config values - e.g from the config file or CONFIG during loadex
- * 2. module values - e.g from the module arguments
- * 3. default values - if no other value was set
+ * Otherwise it's sufficient to call RedisModule_LoadConfigs, it should already set the default values if needed.
+ * This makes it possible to distinguish between default values and user provided values and apply other changes between setting the defaults and the user values.```
  * This will return REDISMODULE_ERR if it is called:
  * 1. outside RedisModule_OnLoad
  * 2. more than once
