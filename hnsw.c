@@ -648,7 +648,11 @@ pqueue *search_layer(HNSW *index, hnswNode *query, hnswNode *entry_point,
 
         /* Stop if we can't get better results. Note that this can
          * be true only if we already collected 'ef' elements in
-         * the priority queue. */
+         * the priority queue. This is why: if we have less than EF
+         * elements, later in the for loop that checks the neighbors we
+         * add new elements BOTH in the results and candidates pqueue: this
+         * means that before accumulating EF elements, the worst candidate
+         * can be as bad as the worst result, but not worse. */
         float furthest = pq_max_distance(results);
         if (cur_dist > furthest) break;
 
