@@ -8,3 +8,4 @@ w2v
 word2vec.bin
 TODO
 *.txt
+*.rdb

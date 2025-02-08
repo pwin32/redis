@@ -449,7 +449,7 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         cas = 0;
 
     /* Here depending on the CAS option we directly insert in a blocking
-     * way, or use a therad to do candidate neighbors selection and only
+     * way, or use a thread to do candidate neighbors selection and only
      * later, in the reply callback, actually add the element. */
 
     if (!cas) {
