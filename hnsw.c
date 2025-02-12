@@ -70,9 +70,9 @@
                              * orphaned of one link. */
 
 
-void (*hfree)(void *p) = free;
-void *(*hmalloc)(size_t s) = malloc;
-void *(*hrealloc)(void *old, size_t s) = realloc;
+static void (*hfree)(void *p) = free;
+static void *(*hmalloc)(size_t s) = malloc;
+static void *(*hrealloc)(void *old, size_t s) = realloc;
 
 void hnsw_set_allocator(void (*free_ptr)(void*), void *(*malloc_ptr)(size_t),
                         void *(*realloc_ptr)(void*, size_t))
