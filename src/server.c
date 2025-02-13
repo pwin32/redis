@@ -2192,6 +2192,7 @@ void initServerConfig(void) {
     server.repl_down_since = 0; /* Never connected, repl is down since EVER. */
     server.master_repl_offset = 0;
     server.fsynced_reploff_pending = 0;
+    server.repl_stream_lastio = server.unixtime;
 
     /* Replication partial resync backlog */
     server.repl_backlog = NULL;
