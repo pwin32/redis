@@ -127,6 +127,16 @@ void vectorSetReleaseObject(struct vsetObject *o) {
     RedisModule_Free(o);
 }
 
+/* Return a string representing the quantization type name of a vector set. */
+const char *vectorSetGetQuantName(struct vsetObject *o) {
+    switch(o->hnsw->quant_type) {
+    case HNSW_QUANT_NONE: return "f32";
+    case HNSW_QUANT_Q8: return "int8";
+    case HNSW_QUANT_BIN: return "bin";
+    default: return "unknown";
+    }
+}
+
 /* Insert the specified element into the Vector Set.
  * If update is '1', the existing node will be updated.
  *
@@ -850,8 +860,19 @@ int VREM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
  * reduced vector is returned instead. */
 int VEMB_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     RedisModule_AutoMemory(ctx);
+    int raw_output = 0; // RAW option.
 
-    if (argc != 3) return RedisModule_WrongArity(ctx);
+    if (argc < 3) return RedisModule_WrongArity(ctx);
+
+    /* Parse arguments. */
+    for (int j = 3; j < argc; j++) {
+        const char *opt = RedisModule_StringPtrLen(argv[j], NULL);
+        if (!strcasecmp(opt,"raw")) {
+            raw_output = 1;
+        } else {
+            return RedisModule_ReplyWithError(ctx,"ERR invalid option");
+        }
+    }
 
     /* Get key and element. */
     RedisModuleString *key = argv[1];
@@ -875,16 +896,24 @@ int VEMB_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         return RedisModule_ReplyWithNull(ctx);
     }
 
-    /* Get the vector associated with the node. */
-    float *vec = RedisModule_Alloc(sizeof(float) * vset->hnsw->vector_dim);
-    hnsw_get_node_vector(vset->hnsw, node, vec); // May dequantize/denorm.
+    if (raw_output) {
+        int output_qrange = vset->hnsw->quant_type == HNSW_QUANT_Q8;
+        RedisModule_ReplyWithArray(ctx, 3+output_qrange);
+        RedisModule_ReplyWithSimpleString(ctx, vectorSetGetQuantName(vset));
+        RedisModule_ReplyWithStringBuffer(ctx, node->vector, hnsw_quants_bytes(vset->hnsw));
+        RedisModule_ReplyWithDouble(ctx, node->l2);
+        if (output_qrange) RedisModule_ReplyWithDouble(ctx, node->quants_range);
+    } else {
+        /* Get the vector associated with the node. */
+        float *vec = RedisModule_Alloc(sizeof(float) * vset->hnsw->vector_dim);
+        hnsw_get_node_vector(vset->hnsw, node, vec); // May dequantize/denorm.
 
-    /* Return as array of doubles. */
-    RedisModule_ReplyWithArray(ctx, vset->hnsw->vector_dim);
-    for (uint32_t i = 0; i < vset->hnsw->vector_dim; i++)
-        RedisModule_ReplyWithDouble(ctx, vec[i]);
-
-    RedisModule_Free(vec);
+        /* Return as array of doubles. */
+        RedisModule_ReplyWithArray(ctx, vset->hnsw->vector_dim);
+        for (uint32_t i = 0; i < vset->hnsw->vector_dim; i++)
+            RedisModule_ReplyWithDouble(ctx, vec[i]);
+        RedisModule_Free(vec);
+    }
     return REDISMODULE_OK;
 }
 
@@ -979,15 +1008,7 @@ int VINFO_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 
     /* Quantization type */
     RedisModule_ReplyWithSimpleString(ctx, "quant-type");
-    if (vset->hnsw->quant_type == HNSW_QUANT_NONE) {
-        RedisModule_ReplyWithSimpleString(ctx, "f32");
-    } else if (vset->hnsw->quant_type == HNSW_QUANT_Q8) {
-        RedisModule_ReplyWithSimpleString(ctx, "int8");
-    } else if (vset->hnsw->quant_type == HNSW_QUANT_BIN) {
-        RedisModule_ReplyWithSimpleString(ctx, "bin");
-    } else {
-        RedisModule_ReplyWithSimpleString(ctx, "unknown");
-    }
+    RedisModule_ReplyWithSimpleString(ctx, vectorSetGetQuantName(vset));
 
     /* Vector dimensionality. */
     RedisModule_ReplyWithSimpleString(ctx, "vector-dim");
