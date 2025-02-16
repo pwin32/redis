@@ -336,13 +336,100 @@ int exprTokenize(exprstate *es, char *expr, char **errptr) {
     return 0;
 }
 
+/* Helper function to get operator precedence from the operator table. */
+int exprGetOpPrecedence(int opcode) {
+    for (int i = 0; ExprOptable[i].opname != NULL; i++) {
+        if (ExprOptable[i].opcode == opcode)
+            return ExprOptable[i].precedence;
+    }
+    return -1;
+}
+
+/* Helper function to get operator arity from the operator table. */
+int exprGetOpArity(int opcode) {
+    for (int i = 0; ExprOptable[i].opname != NULL; i++) {
+        if (ExprOptable[i].opcode == opcode)
+            return ExprOptable[i].arity;
+    }
+    return -1;
+}
+
+/* Process an operator during compilation. Returns 0 on success, 1 on error. */
+int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, char **errptr) {
+    if (op->opcode == EXPR_OP_OPAREN) {
+	// This is just a marker for us. Do nothing.
+        if (!exprStackPush(&es->ops_stack, op)) return 1;
+        return 0;
+    }
+
+    if (op->opcode == EXPR_OP_CPAREN) {
+        /* Process operators until we find the matching opening parenthesis. */
+        while (1) {
+            exprtoken *top_op = exprStackPop(&es->ops_stack);
+            if (top_op == NULL) {
+                if (errptr) *errptr = es->expr + op->offset;
+                return 1;
+            }
+
+            if (top_op->opcode == EXPR_OP_OPAREN) {
+                free(top_op);  // Free the opening parenthesis token.
+                free(op);      // Free the closing parenthesis token.
+                return 0;
+            }
+
+            int arity = exprGetOpArity(top_op->opcode);
+            if (*stack_items < arity) {
+                if (errptr) *errptr = es->expr + top_op->offset;
+                return 1;
+            }
+
+            if (!exprStackPush(&es->program, top_op)) return 1;
+            *stack_items = *stack_items - arity + 1;
+        }
+    }
+
+    int curr_prec = exprGetOpPrecedence(op->opcode);
+
+    /* Process operators with higher or equal precedence. */
+    while (1) {
+        exprtoken *top_op = exprStackPeek(&es->ops_stack);
+        if (top_op == NULL || top_op->opcode == EXPR_OP_OPAREN) break;
+
+        int top_prec = exprGetOpPrecedence(top_op->opcode);
+        if (top_prec < curr_prec) break;
+
+        /* Pop and add to program. */
+        top_op = exprStackPop(&es->ops_stack);
+        int arity = exprGetOpArity(top_op->opcode);
+        if (*stack_items < arity) {
+            if (errptr) *errptr = es->expr + top_op->offset;
+            return 1;
+        }
+
+        if (!exprStackPush(&es->program, top_op)) return 1;
+        *stack_items = *stack_items - arity + 1;
+    }
+
+    /* Push current operator. */
+    if (!exprStackPush(&es->ops_stack, op)) return 1;
+    return 0;
+}
+
+/* Compile the expression into a set of push-value and exec-operator
+ * that exprRun() can execute. The function returns an expstate object
+ * that can be used for execution of the program. On error, NULL
+ * is returned, and optionally the position of the error into the
+ * expression is returned by reference. */
 exprstate *exprCompile(char *expr, char **errptr) {
     /* Initialize expression state. */
     exprstate *es = malloc(sizeof(exprstate));
     if (!es) return NULL;
 
     es->expr = strdup(expr);
-    if (!es->expr) return NULL;
+    if (!es->expr) {
+        free(es);
+        return NULL;
+    }
     es->p = es->expr;
     es->syntax_error = 0;
 
@@ -352,17 +439,102 @@ exprstate *exprCompile(char *expr, char **errptr) {
     exprStackInit(&es->tokens);
     exprStackInit(&es->program);
 
-    /* Tokenizaton. */
-    if (exprTokenize(es,expr,errptr)) {
+    /* Tokenization. */
+    if (exprTokenize(es, expr, errptr)) {
         exprFree(es);
         return NULL;
     }
 
-    /* Compile the expression into a sequence of operators calls
-     * and values pushed on the stack: we check the operators precedence
-     * and handle parenthesis at compile time, so that later the VM
-     * to execute the expression will need to do the minimum work needed. */
+    /* Compile the expression into a sequence of operations. */
+    int stack_items = 0;  // Track # of items that would be on the stack
+                          // during execution. This way we can detect arity
+                          // issues at compile time.
 
+    /* Process each token. */
+    for (int i = 0; i < es->tokens.numitems; i++) {
+        exprtoken *token = es->tokens.items[i];
+
+        if (token->token_type == EXPR_TOKEN_EOF) break;
+
+        /* Handle values (numbers, strings, selectors). */
+        if (token->token_type == EXPR_TOKEN_NUM ||
+            token->token_type == EXPR_TOKEN_STR ||
+            token->token_type == EXPR_TOKEN_SELECTOR)
+        {
+            exprtoken *value_token = malloc(sizeof(exprtoken));
+            if (!value_token) {
+                if (errptr) *errptr = es->expr + token->offset;
+                exprFree(es);
+                return NULL;
+            }
+            *value_token = *token;  // Copy the token.
+            if (!exprStackPush(&es->program, value_token)) {
+                free(value_token);
+                if (errptr) *errptr = es->expr + token->offset;
+                exprFree(es);
+                return NULL;
+            }
+            stack_items++;
+            continue;
+        }
+
+        /* Handle operators. */
+        if (token->token_type == EXPR_TOKEN_OP) {
+            exprtoken *op_token = malloc(sizeof(exprtoken));
+            if (!op_token) {
+                if (errptr) *errptr = es->expr + token->offset;
+                exprFree(es);
+                return NULL;
+            }
+            *op_token = *token;  // Copy the token.
+
+            if (exprProcessOperator(es, op_token, &stack_items, errptr)) {
+                exprFree(es);
+                return NULL;
+            }
+            continue;
+        }
+    }
+
+    /* Process remaining operators on the stack. */
+    while (es->ops_stack.numitems > 0) {
+        exprtoken *op = exprStackPop(&es->ops_stack);
+        if (op->opcode == EXPR_OP_OPAREN) {
+            if (errptr) *errptr = es->expr + op->offset;
+            free(op);
+            exprFree(es);
+            return NULL;
+        }
+
+        int arity = exprGetOpArity(op->opcode);
+        if (stack_items < arity) {
+            if (errptr) *errptr = es->expr + op->offset;
+            free(op);
+            exprFree(es);
+            return NULL;
+        }
+
+        if (!exprStackPush(&es->program, op)) {
+            free(op);
+            if (errptr) *errptr = es->expr + op->offset;
+            exprFree(es);
+            return NULL;
+        }
+        stack_items = stack_items - arity + 1;
+    }
+
+    /* Verify that exactly one value would remain on the stack after
+     * execution. We could also check that such value is a number, but this
+     * would make the code more complex without much gains. */
+    if (stack_items != 1) {
+        if (errptr) {
+            /* Point to the last token's offset for error reporting. */
+            exprtoken *last = es->tokens.items[es->tokens.numitems - 1];
+            *errptr = es->expr + last->offset;
+        }
+        exprFree(es);
+        return NULL;
+    }
     return es;
 }
 
@@ -408,7 +580,6 @@ void exprPrintStack(exprstack *stack, const char *name) {
 }
 
 int main(int argc, char **argv) {
-
     char *testexpr = "(5*2)-3 and 'foo'";
     if (argc >= 1) testexpr = argv[1];
 
@@ -427,6 +598,7 @@ int main(int argc, char **argv) {
     }
 
     exprPrintStack(&es->tokens, "Tokens");
+    exprPrintStack(&es->program, "Program");
     exprFree(es);
     return 0;
 }
