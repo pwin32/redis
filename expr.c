@@ -112,6 +112,8 @@ struct {
     {NULL,  0,  0,               0, 0}   // Terminator.
 };
 
+#define EXPR_OP_SPECIALCHARS "+-*%/!()<>=|&"
+
 /* ============================== Stack handling ============================ */
 
 #include <stdlib.h>
@@ -171,10 +173,15 @@ void exprConsumeSpaces(exprstate *es) {
     while(es->p[0] && isspace(es->p[0])) es->p++;
 }
 
-#define EXPR_OP_SPECIALCHARS "+-*%/!()<>="
 void exprParseOperatorOrSelector(exprstate *es) {
-    es->current.token_type = es->p[0] == '.' ? EXPR_TOKEN_SELECTOR : EXPR_TOKEN_OP;
     char *start = es->p;
+    if (es->p[0] == '.') {
+        es->current.token_type = EXPR_TOKEN_SELECTOR;
+        es->p++;
+    } else {
+        es->current.token_type = EXPR_TOKEN_OP;
+    }
+
     while(es->p[0] &&
           (isalpha(es->p[0]) ||
            strchr(EXPR_OP_SPECIALCHARS,es->p[0]) != NULL))
@@ -188,21 +195,18 @@ void exprParseOperatorOrSelector(exprstate *es) {
     size_t bestlen = 0;
     if (es->current.token_type == EXPR_TOKEN_OP) {
         int j;
-        printf("maxlen: %d\n", (int) matchlen);
         for (j = 0; ExprOptable[j].opname != NULL; j++) {
             if (ExprOptable[j].oplen > matchlen) continue;
             if (memcmp(ExprOptable[j].opname, start, ExprOptable[j].oplen) != 0)
             {
                 continue;
             }
-            printf("%s\n", ExprOptable[j].opname);
             if (ExprOptable[j].oplen > bestlen) {
                 es->current.opcode = ExprOptable[j].opcode;
                 bestlen = ExprOptable[j].oplen;
             }
         }
         if (bestlen == 0) {
-            printf("HERE %s len:%d\n", start, (int)matchlen);
             es->syntax_error++;
         } else {
             es->p = start + bestlen;
@@ -275,7 +279,7 @@ void exprFree(exprstate *es) {
 
 /* Split the provided expression into a stack of tokens. Returns
  * 0 on success, 1 on error. */
-int exprTokenize(exprstate *es, char *expr, char **errptr) {
+int exprTokenize(exprstate *es, char *expr, int *errpos) {
     /* Main parsing loop. */
     while(1) {
         exprConsumeSpaces(es);
@@ -316,7 +320,7 @@ int exprTokenize(exprstate *es, char *expr, char **errptr) {
         }
 
         if (es->syntax_error) {
-            if (errptr) *errptr = expr + (es->p - es->expr);
+            if (errpos) *errpos = es->p - es->expr;
             return 1; // Syntax Error.
         }
 
@@ -355,7 +359,7 @@ int exprGetOpArity(int opcode) {
 }
 
 /* Process an operator during compilation. Returns 0 on success, 1 on error. */
-int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, char **errptr) {
+int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *errpos) {
     if (op->opcode == EXPR_OP_OPAREN) {
 	// This is just a marker for us. Do nothing.
         if (!exprStackPush(&es->ops_stack, op)) return 1;
@@ -367,7 +371,7 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, char **e
         while (1) {
             exprtoken *top_op = exprStackPop(&es->ops_stack);
             if (top_op == NULL) {
-                if (errptr) *errptr = es->expr + op->offset;
+                if (errpos) *errpos = op->offset;
                 return 1;
             }
 
@@ -379,7 +383,7 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, char **e
 
             int arity = exprGetOpArity(top_op->opcode);
             if (*stack_items < arity) {
-                if (errptr) *errptr = es->expr + top_op->offset;
+                if (errpos) *errpos = top_op->offset;
                 return 1;
             }
 
@@ -402,7 +406,7 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, char **e
         top_op = exprStackPop(&es->ops_stack);
         int arity = exprGetOpArity(top_op->opcode);
         if (*stack_items < arity) {
-            if (errptr) *errptr = es->expr + top_op->offset;
+            if (errpos) *errpos = top_op->offset;
             return 1;
         }
 
@@ -420,7 +424,7 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, char **e
  * that can be used for execution of the program. On error, NULL
  * is returned, and optionally the position of the error into the
  * expression is returned by reference. */
-exprstate *exprCompile(char *expr, char **errptr) {
+exprstate *exprCompile(char *expr, int *errpos) {
     /* Initialize expression state. */
     exprstate *es = malloc(sizeof(exprstate));
     if (!es) return NULL;
@@ -440,7 +444,7 @@ exprstate *exprCompile(char *expr, char **errptr) {
     exprStackInit(&es->program);
 
     /* Tokenization. */
-    if (exprTokenize(es, expr, errptr)) {
+    if (exprTokenize(es, expr, errpos)) {
         exprFree(es);
         return NULL;
     }
@@ -463,14 +467,14 @@ exprstate *exprCompile(char *expr, char **errptr) {
         {
             exprtoken *value_token = malloc(sizeof(exprtoken));
             if (!value_token) {
-                if (errptr) *errptr = es->expr + token->offset;
+                if (errpos) *errpos = token->offset;
                 exprFree(es);
                 return NULL;
             }
             *value_token = *token;  // Copy the token.
             if (!exprStackPush(&es->program, value_token)) {
                 free(value_token);
-                if (errptr) *errptr = es->expr + token->offset;
+                if (errpos) *errpos = token->offset;
                 exprFree(es);
                 return NULL;
             }
@@ -482,13 +486,13 @@ exprstate *exprCompile(char *expr, char **errptr) {
         if (token->token_type == EXPR_TOKEN_OP) {
             exprtoken *op_token = malloc(sizeof(exprtoken));
             if (!op_token) {
-                if (errptr) *errptr = es->expr + token->offset;
+                if (errpos) *errpos = token->offset;
                 exprFree(es);
                 return NULL;
             }
             *op_token = *token;  // Copy the token.
 
-            if (exprProcessOperator(es, op_token, &stack_items, errptr)) {
+            if (exprProcessOperator(es, op_token, &stack_items, errpos)) {
                 exprFree(es);
                 return NULL;
             }
@@ -500,7 +504,7 @@ exprstate *exprCompile(char *expr, char **errptr) {
     while (es->ops_stack.numitems > 0) {
         exprtoken *op = exprStackPop(&es->ops_stack);
         if (op->opcode == EXPR_OP_OPAREN) {
-            if (errptr) *errptr = es->expr + op->offset;
+            if (errpos) *errpos = op->offset;
             free(op);
             exprFree(es);
             return NULL;
@@ -508,7 +512,7 @@ exprstate *exprCompile(char *expr, char **errptr) {
 
         int arity = exprGetOpArity(op->opcode);
         if (stack_items < arity) {
-            if (errptr) *errptr = es->expr + op->offset;
+            if (errpos) *errpos = op->offset;
             free(op);
             exprFree(es);
             return NULL;
@@ -516,7 +520,7 @@ exprstate *exprCompile(char *expr, char **errptr) {
 
         if (!exprStackPush(&es->program, op)) {
             free(op);
-            if (errptr) *errptr = es->expr + op->offset;
+            if (errpos) *errpos = op->offset;
             exprFree(es);
             return NULL;
         }
@@ -527,10 +531,10 @@ exprstate *exprCompile(char *expr, char **errptr) {
      * execution. We could also check that such value is a number, but this
      * would make the code more complex without much gains. */
     if (stack_items != 1) {
-        if (errptr) {
+        if (errpos) {
             /* Point to the last token's offset for error reporting. */
             exprtoken *last = es->tokens.items[es->tokens.numitems - 1];
-            *errptr = es->expr + last->offset;
+            *errpos = last->offset;
         }
         exprFree(es);
         return NULL;
@@ -581,19 +585,14 @@ void exprPrintStack(exprstack *stack, const char *name) {
 
 int main(int argc, char **argv) {
     char *testexpr = "(5*2)-3 and 'foo'";
-    if (argc >= 1) testexpr = argv[1];
+    if (argc >= 2) testexpr = argv[1];
 
     printf("Compiling expression: %s\n", testexpr);
 
-    char *errptr = NULL;
-    exprstate *es = exprCompile(testexpr,&errptr);
+    int errpos = 0;
+    exprstate *es = exprCompile(testexpr,&errpos);
     if (es == NULL) {
-        printf("Compilation failed near \"...%s\"\n", errptr);
-        return 1;
-    }
-
-    if (es->syntax_error) {
-        printf("Syntax error found\n");
+        printf("Compilation failed near \"...%s\"\n", testexpr+errpos);
         return 1;
     }
 
