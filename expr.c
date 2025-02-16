@@ -41,6 +41,7 @@
  * json selectors, that start with a dot: ".age", ".properties.somearray[1]" */
 typedef struct exprtoken {
     int token_type;         // Token type of the just parsed token.
+    int offset;             // Chars offset in expression.
     union {
         double num;         // Value for EXPR_TOKEN_NUM.
         struct {
@@ -74,7 +75,8 @@ typedef struct exprstate {
     // Virtual machine state.
     exprstack values_stack;
     exprstack ops_stack;
-    exprstack program;      // Expression "compiled" into a sequence of tokens.
+    exprstack tokens;       // Expression processed into a sequence of tokens.
+    exprstack program;      // Expression compiled into opcodes and values.
     int ip;                 // Instruction pointer inside "program".
 } exprstate;
 
@@ -84,26 +86,30 @@ struct {
     int oplen;
     int opcode;
     int precedence;
+    int arity;
 } ExprOptable[] = {
-    {"(",   1,  EXPR_OP_OPAREN,  7},
-    {")",   1,  EXPR_OP_CPAREN,  7},
-    {"!",   1,  EXPR_OP_NOT,     6},
-    {"**",  2,  EXPR_OP_POW,     5},
-    {"*",   1,  EXPR_OP_MULT,    4},
-    {"/",   1,  EXPR_OP_DIV,     4},
-    {"%",   1,  EXPR_OP_MOD,     4},
-    {"+",   1,  EXPR_OP_SUM,     3},
-    {"-",   1,  EXPR_OP_DIFF,    3},
-    {">",   1,  EXPR_OP_GT,      2},
-    {">=",  2,  EXPR_OP_GTE,     2},
-    {"<",   1,  EXPR_OP_LT,      2},
-    {"<=",  2,  EXPR_OP_LTE,     2},
-    {"==",  2,  EXPR_OP_EQ,      2},
-    {"!=",  2,  EXPR_OP_NEQ,     2},
-    {"in",  2,  EXPR_OP_IN,      2},
-    {"and", 3,  EXPR_OP_AND,     1},
-    {"or",  2,  EXPR_OP_OR,      0},
-    {NULL,  0,  0,               0}   // Terminator.
+    {"(",   1,  EXPR_OP_OPAREN,  7, 0},
+    {")",   1,  EXPR_OP_CPAREN,  7, 0},
+    {"!",   1,  EXPR_OP_NOT,     6, 1},
+    {"not", 3,  EXPR_OP_NOT,     6, 1},
+    {"**",  2,  EXPR_OP_POW,     5, 2},
+    {"*",   1,  EXPR_OP_MULT,    4, 2},
+    {"/",   1,  EXPR_OP_DIV,     4, 2},
+    {"%",   1,  EXPR_OP_MOD,     4, 2},
+    {"+",   1,  EXPR_OP_SUM,     3, 2},
+    {"-",   1,  EXPR_OP_DIFF,    3, 2},
+    {">",   1,  EXPR_OP_GT,      2, 2},
+    {">=",  2,  EXPR_OP_GTE,     2, 2},
+    {"<",   1,  EXPR_OP_LT,      2, 2},
+    {"<=",  2,  EXPR_OP_LTE,     2, 2},
+    {"==",  2,  EXPR_OP_EQ,      2, 2},
+    {"!=",  2,  EXPR_OP_NEQ,     2, 2},
+    {"in",  2,  EXPR_OP_IN,      2, 2},
+    {"and", 3,  EXPR_OP_AND,     1, 2},
+    {"&& ", 2,  EXPR_OP_AND,     1, 2},
+    {"or",  2,  EXPR_OP_OR,      0, 2},
+    {"||",  2,  EXPR_OP_OR,      0, 2},
+    {NULL,  0,  0,               0, 0}   // Terminator.
 };
 
 /* ============================== Stack handling ============================ */
@@ -260,30 +266,16 @@ void exprFree(exprstate *es) {
     /* Free all stacks. */
     exprStackFree(&es->values_stack);
     exprStackFree(&es->ops_stack);
+    exprStackFree(&es->tokens);
     exprStackFree(&es->program);
 
     /* Free the state object itself. */
     free(es);
 }
 
-/* Compile the provided expression into a stack of tokens within
- * context that can be used to execute it. */
-exprstate *exprCompile(char *expr, char **errptr) {
-    /* Initialize expression state */
-    exprstate *es = malloc(sizeof(exprstate));
-    if (!es) return NULL;
-
-    es->expr = strdup(expr);
-    if (!es->expr) return NULL;
-    es->p = es->expr;
-    es->syntax_error = 0;
-
-    /* Initialize all stacks */
-    exprStackInit(&es->values_stack);
-    exprStackInit(&es->ops_stack);
-    exprStackInit(&es->program);
-    es->ip = 0;
-
+/* Split the provided expression into a stack of tokens. Returns
+ * 0 on success, 1 on error. */
+int exprTokenize(exprstate *es, char *expr, char **errptr) {
     /* Main parsing loop. */
     while(1) {
         exprConsumeSpaces(es);
@@ -292,7 +284,7 @@ exprstate *exprCompile(char *expr, char **errptr) {
          * number, or an operator. */
         int minus_is_number = 0; // By default is an operator.
 
-        exprtoken *last = exprStackPeek(&es->program);
+        exprtoken *last = exprStackPeek(&es->tokens);
         if (last == NULL) {
             /* If we are at the start of an expression, the minus is
              * considered a number. */
@@ -308,7 +300,6 @@ exprstate *exprCompile(char *expr, char **errptr) {
         }
 
         /* Parse based on the current character. */
-        printf("Compiling... (minus_number:%d) %s\n", minus_is_number, es->p);
         if (*es->p == '\0') {
             es->current.token_type = EXPR_TOKEN_EOF;
         } else if (isdigit(*es->p) ||
@@ -326,27 +317,53 @@ exprstate *exprCompile(char *expr, char **errptr) {
 
         if (es->syntax_error) {
             if (errptr) *errptr = expr + (es->p - es->expr);
-            goto error;
+            return 1; // Syntax Error.
         }
 
-        /* Allocate and copy current token to program stack */
+        /* Allocate and copy current token to tokens stack */
         exprtoken *token = malloc(sizeof(exprtoken));
-        if (!token) goto error;
+        if (!token) return 1; // OOM.
 
-        *token = es->current;  /* Copy the entire structure */
+        *token = es->current;  /* Copy the entire structure. */
+        token->offset = es->p - es->expr; /* To report errors gracefully. */
 
-        printf("Pushing %d\n", es->current.token_type);
-        if (!exprStackPush(&es->program, token)) {
+        if (!exprStackPush(&es->tokens, token)) {
             free(token);
-            goto error;
+            return 1; // OOM.
         }
         if (es->current.token_type == EXPR_TOKEN_EOF) break;
     }
-    return es;
+    return 0;
+}
 
-error:
-    exprFree(es);
-    return NULL;
+exprstate *exprCompile(char *expr, char **errptr) {
+    /* Initialize expression state. */
+    exprstate *es = malloc(sizeof(exprstate));
+    if (!es) return NULL;
+
+    es->expr = strdup(expr);
+    if (!es->expr) return NULL;
+    es->p = es->expr;
+    es->syntax_error = 0;
+
+    /* Initialize all stacks. */
+    exprStackInit(&es->values_stack);
+    exprStackInit(&es->ops_stack);
+    exprStackInit(&es->tokens);
+    exprStackInit(&es->program);
+
+    /* Tokenizaton. */
+    if (exprTokenize(es,expr,errptr)) {
+        exprFree(es);
+        return NULL;
+    }
+
+    /* Compile the expression into a sequence of operators calls
+     * and values pushed on the stack: we check the operators precedence
+     * and handle parenthesis at compile time, so that later the VM
+     * to execute the expression will need to do the minimum work needed. */
+
+    return es;
 }
 
 /* ============================ Simple test main ============================ */
@@ -409,7 +426,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    exprPrintStack(&es->program, "Program");
+    exprPrintStack(&es->tokens, "Tokens");
     exprFree(es);
     return 0;
 }
