@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <math.h>
 
 #define EXPR_TOKEN_EOF 0
 #define EXPR_TOKEN_NUM 1
@@ -77,7 +78,6 @@ typedef struct exprstate {
     exprstack ops_stack;
     exprstack tokens;       // Expression processed into a sequence of tokens.
     exprstack program;      // Expression compiled into opcodes and values.
-    int ip;                 // Instruction pointer inside "program".
 } exprstate;
 
 /* Valid operators. */
@@ -116,6 +116,7 @@ struct {
 
 /* ================================ Expr token ============================== */
 void exprFreeToken(exprtoken *t) {
+    if (t == NULL) return;
     free(t);
 }
 
@@ -547,6 +548,180 @@ exprstate *exprCompile(char *expr, int *errpos) {
     return es;
 }
 
+/* ============================ Expression execution ======================== */
+
+/* Convert a token to its numeric value. For strings we attempt to parse them
+ * as numbers, returning 0 if conversion fails. */
+double exprTokenToNum(exprtoken *t) {
+    if (t->token_type == EXPR_TOKEN_NUM) {
+        return t->num;
+    } else if (t->token_type == EXPR_TOKEN_STR) {
+        char *str = malloc(t->str.len + 1);
+        memcpy(str, t->str.start, t->str.len);
+        str[t->str.len] = '\0';
+        char *endptr;
+        double val = strtod(str, &endptr);
+        free(str);
+        return *endptr == '\0' ? val : 0;
+    } else {
+        return 0;
+    }
+}
+
+/* Compare two tokens. Returns true if they are equal. */
+int exprTokensEqual(exprtoken *a, exprtoken *b) {
+    // If both are strings, do string comparison.
+    if (a->token_type == EXPR_TOKEN_STR && b->token_type == EXPR_TOKEN_STR) {
+        return a->str.len == b->str.len &&
+               memcmp(a->str.start, b->str.start, a->str.len) == 0;
+    }
+
+    // If both are numbers, do numeric comparison.
+    if (a->token_type == EXPR_TOKEN_NUM && b->token_type == EXPR_TOKEN_NUM) {
+        return a->num == b->num;
+    }
+
+    // Mixed types - convert to numbers and compare.
+    return exprTokenToNum(a) == exprTokenToNum(b);
+}
+
+/* Execute the compiled expression program. Returns 1 if the final stack value
+ * evaluates to true, 0 otherwise. Also returns 0 if any selector callback fails. */
+int exprRun(exprstate *es, int (*get_attrib_callback)(void *privdata, char *attrname, size_t attrnamelen, exprtoken *token), void *privdata) {
+    // Reset the values stack.
+    es->values_stack.numitems = 0;
+
+    // Execute each instruction in the program.
+    for (int i = 0; i < es->program.numitems; i++) {
+        exprtoken *t = es->program.items[i];
+
+        // Handle selectors by calling the callback.
+        if (t->token_type == EXPR_TOKEN_SELECTOR) {
+            exprtoken *result = malloc(sizeof(exprtoken));
+            if (result != NULL &&
+                get_attrib_callback(privdata, t->str.start, t->str.len, result))
+            {
+                exprStackPush(&es->values_stack, result);
+                continue;
+            }
+            exprFreeToken(result);
+            return 0;  // Selector not found, expression fails.
+        }
+
+        // Push non-operator values directly onto the stack.
+        if (t->token_type != EXPR_TOKEN_OP) {
+            exprtoken *nt = malloc(sizeof(exprtoken));
+            *nt = *t;
+            exprStackPush(&es->values_stack, nt);
+            continue;
+        }
+
+        // Handle operators.
+        exprtoken *result = malloc(sizeof(exprtoken));
+        result->token_type = EXPR_TOKEN_NUM;
+
+        // Pop operands - we know we have enough from compile-time checks.
+        exprtoken *b = exprStackPop(&es->values_stack);
+        exprtoken *a = NULL;
+        if (exprGetOpArity(t->opcode) == 2) {
+            a = exprStackPop(&es->values_stack);
+        }
+
+        switch(t->opcode) {
+        case EXPR_OP_NOT:
+            result->num = exprTokenToNum(b) == 0 ? 1 : 0;
+            break;
+        case EXPR_OP_POW: {
+            double base = exprTokenToNum(a);
+            double exp = exprTokenToNum(b);
+            result->num = pow(base, exp);
+            break;
+        }
+        case EXPR_OP_MULT:
+            result->num = exprTokenToNum(a) * exprTokenToNum(b);
+            break;
+        case EXPR_OP_DIV:
+            result->num = exprTokenToNum(a) / exprTokenToNum(b);
+            break;
+        case EXPR_OP_MOD: {
+            double va = exprTokenToNum(a);
+            double vb = exprTokenToNum(b);
+            result->num = fmod(va, vb);
+            break;
+        }
+        case EXPR_OP_SUM:
+            result->num = exprTokenToNum(a) + exprTokenToNum(b);
+            break;
+        case EXPR_OP_DIFF:
+            result->num = exprTokenToNum(a) - exprTokenToNum(b);
+            break;
+        case EXPR_OP_GT:
+            result->num = exprTokenToNum(a) > exprTokenToNum(b) ? 1 : 0;
+            break;
+        case EXPR_OP_GTE:
+            result->num = exprTokenToNum(a) >= exprTokenToNum(b) ? 1 : 0;
+            break;
+        case EXPR_OP_LT:
+            result->num = exprTokenToNum(a) < exprTokenToNum(b) ? 1 : 0;
+            break;
+        case EXPR_OP_LTE:
+            result->num = exprTokenToNum(a) <= exprTokenToNum(b) ? 1 : 0;
+            break;
+        case EXPR_OP_EQ:
+            result->num = exprTokensEqual(a, b) ? 1 : 0;
+            break;
+        case EXPR_OP_NEQ:
+            result->num = !exprTokensEqual(a, b) ? 1 : 0;
+            break;
+        case EXPR_OP_IN: {
+            // For 'in' operator, b must be a tuple.
+            result->num = 0;  // Default to false.
+            if (b->token_type == EXPR_TOKEN_TUPLE) {
+                for (size_t j = 0; j < b->tuple.len; j++) {
+                    if (exprTokensEqual(a, &b->tuple.ele[j])) {
+                        result->num = 1;  // Found a match.
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+        case EXPR_OP_AND:
+            result->num =
+                exprTokenToNum(a) != 0 && exprTokenToNum(b) != 0 ? 1 : 0;
+            break;
+        case EXPR_OP_OR:
+            result->num =
+                exprTokenToNum(a) != 0 || exprTokenToNum(b) != 0 ? 1 : 0;
+            break;
+        default:
+            // Do nothing: we don't want runtime errors.
+            break;
+        }
+
+        // Free operands and push result.
+        if (a) exprFreeToken(a);
+        exprFreeToken(b);
+        exprStackPush(&es->values_stack, result);
+    }
+
+    // Get final result from stack.
+    exprtoken *final = exprStackPop(&es->values_stack);
+    if (final == NULL) return 0;
+
+    // Convert result to boolean.
+    int retval;
+    if (final->token_type == EXPR_TOKEN_NUM) {
+        printf("FINAL %f\n", final->num);
+        retval = final->num != 0;
+    } else {
+        retval = 1;  // Non-numeric types evaluate to true.
+    }
+
+    exprFreeToken(final);
+    return retval;
+}
+
 /* ============================ Simple test main ============================ */
 
 #ifdef TEST_MAIN
@@ -603,6 +778,8 @@ int main(int argc, char **argv) {
 
     exprPrintStack(&es->tokens, "Tokens");
     exprPrintStack(&es->program, "Program");
+    int result = exprRun(es,NULL,NULL);
+    printf("Result: %d\n", result);
     exprFree(es);
     return 0;
 }
