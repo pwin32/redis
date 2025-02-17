@@ -114,6 +114,11 @@ struct {
 
 #define EXPR_OP_SPECIALCHARS "+-*%/!()<>=|&"
 
+/* ================================ Expr token ============================== */
+void exprFreeToken(exprtoken *t) {
+    free(t);
+}
+
 /* ============================== Stack handling ============================ */
 
 #include <stdlib.h>
@@ -163,7 +168,7 @@ exprtoken *exprStackPeek(exprstack *stack) {
  * assumed to be heap allocated. The passed pointer itself is not freed. */
 void exprStackFree(exprstack *stack) {
     for (int j = 0; j < stack->numitems; j++)
-        free(stack->items[j]);
+        exprFreeToken(stack->items[j]);
     free(stack->items);
 }
 
@@ -188,11 +193,11 @@ void exprParseOperatorOrSelector(exprstate *es) {
     {
         es->p++;
     }
-    size_t matchlen = es->p - start;
+    int matchlen = es->p - start;
 
     /* If this is not a selector for an attribute to retrive, then
      * it must be one of the valid operators. */
-    size_t bestlen = 0;
+    int bestlen = 0;
     if (es->current.token_type == EXPR_TOKEN_OP) {
         int j;
         for (j = 0; ExprOptable[j].opname != NULL; j++) {
@@ -279,7 +284,7 @@ void exprFree(exprstate *es) {
 
 /* Split the provided expression into a stack of tokens. Returns
  * 0 on success, 1 on error. */
-int exprTokenize(exprstate *es, char *expr, int *errpos) {
+int exprTokenize(exprstate *es, int *errpos) {
     /* Main parsing loop. */
     while(1) {
         exprConsumeSpaces(es);
@@ -332,7 +337,7 @@ int exprTokenize(exprstate *es, char *expr, int *errpos) {
         token->offset = es->p - es->expr; /* To report errors gracefully. */
 
         if (!exprStackPush(&es->tokens, token)) {
-            free(token);
+            exprFreeToken(token);
             return 1; // OOM.
         }
         if (es->current.token_type == EXPR_TOKEN_EOF) break;
@@ -376,8 +381,8 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *err
             }
 
             if (top_op->opcode == EXPR_OP_OPAREN) {
-                free(top_op);  // Free the opening parenthesis token.
-                free(op);      // Free the closing parenthesis token.
+                exprFreeToken(top_op);  // Free the opening parenthesis token.
+                exprFreeToken(op);      // Free the closing parenthesis token.
                 return 0;
             }
 
@@ -444,15 +449,15 @@ exprstate *exprCompile(char *expr, int *errpos) {
     exprStackInit(&es->program);
 
     /* Tokenization. */
-    if (exprTokenize(es, expr, errpos)) {
+    if (exprTokenize(es, errpos)) {
         exprFree(es);
         return NULL;
     }
 
     /* Compile the expression into a sequence of operations. */
     int stack_items = 0;  // Track # of items that would be on the stack
-                          // during execution. This way we can detect arity
-                          // issues at compile time.
+                         // during execution. This way we can detect arity
+                         // issues at compile time.
 
     /* Process each token. */
     for (int i = 0; i < es->tokens.numitems; i++) {
@@ -473,7 +478,7 @@ exprstate *exprCompile(char *expr, int *errpos) {
             }
             *value_token = *token;  // Copy the token.
             if (!exprStackPush(&es->program, value_token)) {
-                free(value_token);
+                exprFreeToken(value_token);
                 if (errpos) *errpos = token->offset;
                 exprFree(es);
                 return NULL;
@@ -505,7 +510,7 @@ exprstate *exprCompile(char *expr, int *errpos) {
         exprtoken *op = exprStackPop(&es->ops_stack);
         if (op->opcode == EXPR_OP_OPAREN) {
             if (errpos) *errpos = op->offset;
-            free(op);
+            exprFreeToken(op);
             exprFree(es);
             return NULL;
         }
@@ -513,13 +518,13 @@ exprstate *exprCompile(char *expr, int *errpos) {
         int arity = exprGetOpArity(op->opcode);
         if (stack_items < arity) {
             if (errpos) *errpos = op->offset;
-            free(op);
+            exprFreeToken(op);
             exprFree(es);
             return NULL;
         }
 
         if (!exprStackPush(&es->program, op)) {
-            free(op);
+            exprFreeToken(op);
             if (errpos) *errpos = op->offset;
             exprFree(es);
             return NULL;
@@ -584,7 +589,7 @@ void exprPrintStack(exprstack *stack, const char *name) {
 }
 
 int main(int argc, char **argv) {
-    char *testexpr = "(5*2)-3 and 'foo'";
+    char *testexpr = "(5+2)*3 and 'foo'";
     if (argc >= 2) testexpr = argv[1];
 
     printf("Compiling expression: %s\n", testexpr);
