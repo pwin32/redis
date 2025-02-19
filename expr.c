@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include "cJSON.h"
 
 #define EXPR_TOKEN_EOF 0
 #define EXPR_TOKEN_NUM 1
@@ -171,6 +172,14 @@ void exprStackFree(exprstack *stack) {
     for (int j = 0; j < stack->numitems; j++)
         exprFreeToken(stack->items[j]);
     free(stack->items);
+}
+
+/* Just reset the stack removing all the items, but leaving it in a state
+ * that makes it still usable for new elements. */
+void exprStackReset(exprstack *stack) {
+    for (int j = 0; j < stack->numitems; j++)
+        exprFreeToken(stack->items[j]);
+    stack->numitems = 0;
 }
 
 /* =========================== Expression compilation ======================= */
@@ -553,18 +562,28 @@ exprstate *exprCompile(char *expr, int *errpos) {
 /* Convert a token to its numeric value. For strings we attempt to parse them
  * as numbers, returning 0 if conversion fails. */
 double exprTokenToNum(exprtoken *t) {
+    char buf[128];
     if (t->token_type == EXPR_TOKEN_NUM) {
         return t->num;
-    } else if (t->token_type == EXPR_TOKEN_STR) {
-        char *str = malloc(t->str.len + 1);
-        memcpy(str, t->str.start, t->str.len);
-        str[t->str.len] = '\0';
+    } else if (t->token_type == EXPR_TOKEN_STR && t->str.len < sizeof(buf)) {
+        memcpy(buf, t->str.start, t->str.len);
+        buf[t->str.len] = '\0';
         char *endptr;
-        double val = strtod(str, &endptr);
-        free(str);
+        double val = strtod(buf, &endptr);
         return *endptr == '\0' ? val : 0;
     } else {
         return 0;
+    }
+}
+
+/* Conver obejct to true/false (0 or 1) */
+double exprTokenToBool(exprtoken *t) {
+    if (t->token_type == EXPR_TOKEN_NUM) {
+        return t->num != 0;
+    } else if (t->token_type == EXPR_TOKEN_STR && t->str.len == 0) {
+        return 0; // Empty string are false, like in Javascript.
+    } else {
+        return 1; // Every non numerical type is true.
     }
 }
 
@@ -587,9 +606,9 @@ int exprTokensEqual(exprtoken *a, exprtoken *b) {
 
 /* Execute the compiled expression program. Returns 1 if the final stack value
  * evaluates to true, 0 otherwise. Also returns 0 if any selector callback fails. */
-int exprRun(exprstate *es, int (*get_attrib_callback)(void *privdata, char *attrname, size_t attrnamelen, exprtoken *token), void *privdata) {
-    // Reset the values stack.
-    es->values_stack.numitems = 0;
+int exprRun(exprstate *es, char *json, size_t json_len) {
+    exprStackReset(&es->values_stack);
+    cJSON *parsed_json = NULL;
 
     // Execute each instruction in the program.
     for (int i = 0; i < es->program.numitems; i++) {
@@ -598,14 +617,17 @@ int exprRun(exprstate *es, int (*get_attrib_callback)(void *privdata, char *attr
         // Handle selectors by calling the callback.
         if (t->token_type == EXPR_TOKEN_SELECTOR) {
             exprtoken *result = malloc(sizeof(exprtoken));
-            if (result != NULL &&
-                get_attrib_callback(privdata, t->str.start, t->str.len, result))
-            {
-                exprStackPush(&es->values_stack, result);
-                continue;
+            if (result != NULL && json != NULL) {
+                if (parsed_json == NULL)
+                    parsed_json = cJSON_ParseWithLength(json,json_len);
+                if (parsed_json) {
+                    exprStackPush(&es->values_stack, result);
+                    continue;
+                }
             }
             exprFreeToken(result);
-            return 0;  // Selector not found, expression fails.
+            if (parsed_json) cJSON_Delete(parsed_json);
+            return 0;  // Selector not found or OOM: expression fails.
         }
 
         // Push non-operator values directly onto the stack.
@@ -629,7 +651,7 @@ int exprRun(exprstate *es, int (*get_attrib_callback)(void *privdata, char *attr
 
         switch(t->opcode) {
         case EXPR_OP_NOT:
-            result->num = exprTokenToNum(b) == 0 ? 1 : 0;
+            result->num = exprTokenToBool(b) == 0 ? 1 : 0;
             break;
         case EXPR_OP_POW: {
             double base = exprTokenToNum(a);
@@ -688,11 +710,11 @@ int exprRun(exprstate *es, int (*get_attrib_callback)(void *privdata, char *attr
         }
         case EXPR_OP_AND:
             result->num =
-                exprTokenToNum(a) != 0 && exprTokenToNum(b) != 0 ? 1 : 0;
+                exprTokenToBool(a) != 0 && exprTokenToBool(b) != 0 ? 1 : 0;
             break;
         case EXPR_OP_OR:
             result->num =
-                exprTokenToNum(a) != 0 || exprTokenToNum(b) != 0 ? 1 : 0;
+                exprTokenToBool(a) != 0 || exprTokenToBool(b) != 0 ? 1 : 0;
             break;
         default:
             // Do nothing: we don't want runtime errors.
@@ -705,19 +727,14 @@ int exprRun(exprstate *es, int (*get_attrib_callback)(void *privdata, char *attr
         exprStackPush(&es->values_stack, result);
     }
 
+    if (parsed_json) cJSON_Delete(parsed_json);
+
     // Get final result from stack.
     exprtoken *final = exprStackPop(&es->values_stack);
     if (final == NULL) return 0;
 
     // Convert result to boolean.
-    int retval;
-    if (final->token_type == EXPR_TOKEN_NUM) {
-        printf("FINAL %f\n", final->num);
-        retval = final->num != 0;
-    } else {
-        retval = 1;  // Non-numeric types evaluate to true.
-    }
-
+    int retval = exprTokenToBool(final);
     exprFreeToken(final);
     return retval;
 }
@@ -765,7 +782,9 @@ void exprPrintStack(exprstack *stack, const char *name) {
 
 int main(int argc, char **argv) {
     char *testexpr = "(5+2)*3 and 'foo'";
+    char *testjson = "{\"year\": 1984, \"name\": \"The Matrix\"}";
     if (argc >= 2) testexpr = argv[1];
+    if (argc >= 3) testjson = argv[2];
 
     printf("Compiling expression: %s\n", testexpr);
 
@@ -778,8 +797,9 @@ int main(int argc, char **argv) {
 
     exprPrintStack(&es->tokens, "Tokens");
     exprPrintStack(&es->program, "Program");
-    int result = exprRun(es,NULL,NULL);
-    printf("Result: %d\n", result);
+    printf("Running against object: %s\n", testjson);
+    int result = exprRun(es,testjson,strlen(testjson));
+    printf("Result: %s\n", result ? "True" : "False");
     exprFree(es);
     return 0;
 }
