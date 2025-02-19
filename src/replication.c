@@ -4581,7 +4581,7 @@ void replicationCron(void) {
             (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_END &&
              server.rdb_child_type != RDB_CHILD_TYPE_SOCKET));
 
-        if (is_presync) {
+        if (is_presync && !(slave->flags & CLIENT_CLOSE_ASAP)) {
             connWrite(slave->conn, "\n", 1);
         }
     }
