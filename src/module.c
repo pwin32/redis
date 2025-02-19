@@ -11258,7 +11258,7 @@ static void moduleScanKeyCallback(void *privdata, const dictEntry *de) {
  * The way it should be used:
  *
  *      RedisModuleScanCursor *c = RedisModule_ScanCursorCreate();
- *      RedisModuleKey *key = RedisModule_OpenKey(...)
+ *      RedisModuleKey *key = RedisModule_OpenKey(...);
  *      while(RedisModule_ScanKey(key, c, callback, privateData));
  *      RedisModule_CloseKey(key);
  *      RedisModule_ScanCursorDestroy(c);
@@ -11268,13 +11268,13 @@ static void moduleScanKeyCallback(void *privdata, const dictEntry *de) {
  *
  *      RedisModuleScanCursor *c = RedisModule_ScanCursorCreate();
  *      RedisModule_ThreadSafeContextLock(ctx);
- *      RedisModuleKey *key = RedisModule_OpenKey(...)
+ *      RedisModuleKey *key = RedisModule_OpenKey(...);
  *      while(RedisModule_ScanKey(ctx, c, callback, privateData)){
  *          RedisModule_CloseKey(key);
  *          RedisModule_ThreadSafeContextUnlock(ctx);
  *          // do some background job
  *          RedisModule_ThreadSafeContextLock(ctx);
- *          RedisModuleKey *key = RedisModule_OpenKey(...)
+ *          key = RedisModule_OpenKey(...);
  *      }
  *      RedisModule_CloseKey(key);
  *      RedisModule_ScanCursorDestroy(c);
