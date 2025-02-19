@@ -2,8 +2,13 @@
  * Copyright (c) 2016-Present, Redis Ltd.
  * All rights reserved.
  *
+ * Copyright (c) 2024-present, Valkey contributors.
+ * All rights reserved.
+ *
  * Licensed under your choice of the Redis Source Available License 2.0
  * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ *
+ * Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
  */
 
 /* --------------------------------------------------------------------------
@@ -13782,7 +13787,7 @@ const char *RM_GetCurrentCommandName(RedisModuleCtx *ctx) {
  * defrag callback.
  */
 struct RedisModuleDefragCtx {
-    long long int endtime;
+    monotime endtime;
     unsigned long *cursor;
     struct redisObject *key; /* Optional name of key processed, NULL when unknown. */
     int dbid;                /* The dbid of the key being processed, -1 when unknown. */
@@ -13821,7 +13826,7 @@ int RM_RegisterDefragCallbacks(RedisModuleCtx *ctx, RedisModuleDefragFunc start,
  * so it generally makes sense to do small batches of work in between calls.
  */
 int RM_DefragShouldStop(RedisModuleDefragCtx *ctx) {
-    return (ctx->endtime != 0 && ctx->endtime < ustime());
+    return (ctx->endtime != 0 && ctx->endtime <= getMonotonicUs());
 }
 
 /* Store an arbitrary cursor value for future re-use.
@@ -13929,7 +13934,7 @@ RedisModuleString *RM_DefragRedisModuleString(RedisModuleDefragCtx *ctx, RedisMo
  * Returns a zero value (and initializes the cursor) if no more needs to be done,
  * or a non-zero value otherwise.
  */
-int moduleLateDefrag(robj *key, robj *value, unsigned long *cursor, long long endtime, int dbid) {
+int moduleLateDefrag(robj *key, robj *value, unsigned long *cursor, monotime endtime, int dbid) {
     moduleValue *mv = value->ptr;
     moduleType *mt = mv->type;
 
