@@ -1129,7 +1129,14 @@ void VectorSetRdbSave(RedisModuleIO *rdb, void *value) {
 
     hnswNode *node = vset->hnsw->head;
     while(node) {
-        RedisModule_SaveString(rdb, node->value);
+        struct vsetNodeVal *nv = node->value;
+        RedisModule_SaveString(rdb, nv->item);
+        if (vset->numattribs) {
+            if (nv->attrib)
+                RedisModule_SaveString(rdb, nv->attrib);
+            else
+                RedisModule_SaveStringBuffer(rdb, "", 0);
+        }
         hnswSerNode *sn = hnsw_serialize_node(vset->hnsw,node);
         RedisModule_SaveStringBuffer(rdb, (const char *)sn->vector, sn->vector_size);
         RedisModule_SaveUnsigned(rdb, sn->params_count);
@@ -1152,7 +1159,9 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
     if (!vset) return NULL;
 
     /* Load projection matrix if present */
-    uint32_t has_projection = RedisModule_LoadUnsigned(rdb);
+    uint32_t save_flags = RedisModule_LoadUnsigned(rdb);
+    int has_projection = save_flags & SAVE_FLAG_HAS_PROJMATRIX;
+    int has_attribs = save_flags & SAVE_FLAG_HAS_ATTRIBS;
     if (has_projection) {
         uint32_t input_dim = RedisModule_LoadUnsigned(rdb);
         uint32_t output_dim = dim;
@@ -1174,6 +1183,16 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
     while(elements--) {
         // Load associated string element.
         RedisModuleString *ele = RedisModule_LoadString(rdb);
+        RedisModuleString *attrib = NULL;
+        if (has_attribs) {
+            attrib = RedisModule_LoadString(rdb);
+            size_t attrlen;
+            RedisModule_StringPtrLen(attrib,&attrlen);
+            if (attrlen == 0) {
+                RedisModule_FreeString(NULL,attrib);
+                attrib = NULL;
+            }
+        }
         size_t vector_len;
         void *vector = RedisModule_LoadStringBuffer(rdb, &vector_len);
         uint32_t vector_bytes = hnsw_quants_bytes(vset->hnsw);
@@ -1189,12 +1208,16 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
         for (uint32_t j = 0; j < params_count; j++)
             params[j] = RedisModule_LoadUnsigned(rdb);
 
-        hnswNode *node = hnsw_insert_serialized(vset->hnsw, vector, params, params_count, ele);
+        struct vsetNodeVal *nv = RedisModule_Alloc(sizeof(*nv));
+        nv->item = ele;
+        nv->attrib = attrib;
+        hnswNode *node = hnsw_insert_serialized(vset->hnsw, vector, params, params_count, nv);
         if (node == NULL) {
             RedisModule_LogIOError(rdb,"warning",
                                        "Vector set node index loading error");
             return NULL; // Loading error.
         }
+        if (nv->attrib) vset->numattribs++;
         RedisModule_DictSet(vset->dict,ele,node);
         RedisModule_Free(vector);
         RedisModule_Free(params);
