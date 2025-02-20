@@ -13930,6 +13930,75 @@ RedisModuleString *RM_DefragRedisModuleString(RedisModuleDefragCtx *ctx, RedisMo
     return activeDefragStringOb(str);
 }
 
+/* Defrag callback for radix tree iterator, called for each node,
+ * used in order to defrag the nodes allocations. */
+int moduleDefragRaxNode(raxNode **noderef) {
+    raxNode *newnode = activeDefragAlloc(*noderef);
+    if (newnode) {
+        *noderef = newnode;
+        return 1;
+    }
+    return 0;
+}
+
+/* Defragment a Redis Module Dictionary by scanning its contents and calling a value
+ * callback for each value.
+ *
+ * The callback gets the current value in the dict, and should return non-NULL with a new pointer,
+ * if the value was re-allocated to a different address. The callback also gets the key name just as a reference.
+ *
+ * The API can work incrementally by accepting a seek position to continue from, and
+ * returning the next position to seek to on the next call (or return NULL when the iteration is completed).
+ *
+ * This API returns a new dict if it was re-allocated to a new address (will only
+ * be attempted when *seekTo is NULL on entry).
+ */
+RedisModuleDict *RM_DefragRedisModuleDict(RedisModuleDefragCtx *ctx, RedisModuleDict *dict, RedisModuleDefragDictValueCallback valueCB, RedisModuleString **seekTo) {
+    RedisModuleDict *newdict = NULL;
+    raxIterator ri;
+
+    if (*seekTo == NULL) {
+        /* if last seek is NULL, we start new iteration */
+        rax* newrax = NULL;
+        if ((newdict = activeDefragAlloc(dict)))
+            dict = newdict;
+        if ((newrax = activeDefragAlloc(dict->rax)))
+            dict->rax = newrax;
+    }
+
+    raxStart(&ri,dict->rax);
+    if (*seekTo == NULL) {
+        /* assign the iterator node callback before the seek, so that the
+         * initial nodes that are processed till the first item are covered */
+        ri.node_cb = moduleDefragRaxNode;
+        raxSeek(&ri,"^",NULL,0);
+    } else {
+        /* if cursor is non-zero, we seek to the static 'last' */
+        if (!raxSeek(&ri,">", (*seekTo)->ptr, sdslen((*seekTo)->ptr))) {
+            goto cleanup;
+        }
+        /* assign the iterator node callback after the seek, so that the
+         * initial nodes that are processed till now aren't covered */
+        ri.node_cb = moduleDefragRaxNode;
+    }
+
+    while (raxNext(&ri)) {
+        void *newdata = valueCB(ctx, ri.data, ri.key, ri.key_len);
+        if (newdata)
+            raxSetData(ri.node, ri.data=newdata);
+        if (RM_DefragShouldStop(ctx)) {
+            if (*seekTo) RM_FreeString(NULL, *seekTo);
+            *seekTo = RM_CreateString(NULL, (const char *)ri.key, ri.key_len);
+            raxStop(&ri);
+            return newdict;
+        }
+    }
+cleanup:
+    if (*seekTo) RM_FreeString(NULL, *seekTo);
+    *seekTo = NULL;
+    raxStop(&ri);
+    return newdict;
+}
 
 /* Perform a late defrag of a module datatype key.
  *
@@ -14379,6 +14448,7 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(DefragAllocRaw);
     REGISTER_API(DefragFreeRaw);
     REGISTER_API(DefragRedisModuleString);
+    REGISTER_API(DefragRedisModuleDict);
     REGISTER_API(DefragShouldStop);
     REGISTER_API(DefragCursorSet);
     REGISTER_API(DefragCursorGet);
