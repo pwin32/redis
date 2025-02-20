@@ -56,6 +56,9 @@ typedef struct exprtoken {
             size_t len;
         } tuple;            // Tuples are like [1, 2, 3] for "in" operator.
     };
+    char *heapstr;          // True if we have a private allocation for this
+                            // string. When possible, it just references to the
+                            // string expression we compiled, exprstate->expr.
 } exprtoken;
 
 /* Simple stack of expr tokens. This is used both to represent the stack
@@ -118,6 +121,7 @@ struct {
 /* ================================ Expr token ============================== */
 void exprFreeToken(exprtoken *t) {
     if (t == NULL) return;
+    if (t->heapstr != NULL) free(t->heapstr);
     free(t);
 }
 
@@ -618,9 +622,38 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
         if (t->token_type == EXPR_TOKEN_SELECTOR) {
             exprtoken *result = malloc(sizeof(exprtoken));
             if (result != NULL && json != NULL) {
+                cJSON *attrib = NULL;
                 if (parsed_json == NULL)
                     parsed_json = cJSON_ParseWithLength(json,json_len);
                 if (parsed_json) {
+                    char item_name[128];
+                    if (t->str.len <= sizeof(item_name)) {
+                        memcpy(item_name,t->str.start+1,t->str.len-1);
+                        item_name[t->str.len] = 0;
+                        attrib = cJSON_GetObjectItem(parsed_json,item_name);
+                    }
+                    /* Fill the token according to the JSON type stored
+                     * at the attribute. */
+                    if (attrib) {
+                        if (cJSON_IsNumber(attrib)) {
+                            result->token_type = EXPR_TOKEN_NUM;
+                            result->num = cJSON_GetNumberValue(attrib);
+                        } else if (cJSON_IsString(attrib)) {
+                            result->token_type = EXPR_TOKEN_STR;
+                            char *strval = cJSON_GetStringValue(attrib);
+                            result->heapstr = strdup(strval);
+                            if (result->heapstr != NULL) {
+                                result->str.start = result->heapstr;
+                                result->str.len = strlen(result->heapstr);
+                            } else {
+                                attrib = NULL;
+                            }
+                        } else {
+                            attrib = NULL; // Unsupported type.
+                        }
+                    }
+                }
+                if (attrib) {
                     exprStackPush(&es->values_stack, result);
                     continue;
                 }
