@@ -207,7 +207,7 @@ int vectorSetInsert(struct vsetObject *o, float *vec, int8_t *qvec, float qrange
     if (attrib != NULL) o->numattribs++;
     RedisModule_DictSet(o->dict,val,node);
     RedisModule_RetainString(NULL,val);
-    if (attrib) RedisModule_RetainString(NULL,val);
+    if (attrib) RedisModule_RetainString(NULL,attrib);
     return 1;
 }
 
@@ -358,7 +358,7 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         // Then: insert the node in the HNSW data structure.
         hnswNode *newnode;
         if ((newnode = hnsw_try_commit_insert(vset->hnsw, ic)) == NULL) {
-            newnode = hnsw_insert(vset->hnsw, vec, NULL, 0, 0, val, ef);
+            newnode = hnsw_insert(vset->hnsw, vec, NULL, 0, 0, nv, ef);
         }
         RedisModule_DictSet(vset->dict,val,newnode);
         val = NULL; // Don't free it later.
