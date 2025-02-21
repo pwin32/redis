@@ -387,7 +387,7 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     int cas = 0; // Threaded check-and-set style insert.
     long long ef = VSET_DEFAULT_C_EF; // HNSW creation time EF for new nodes.
     float *vec = parseVector(argv, argc, 2, &dim, &reduce_dim, &consumed_args);
-    RedisModuleString *attrib; // Attributes if passed via ATTRIB.
+    RedisModuleString *attrib = NULL; // Attributes if passed via ATTRIB.
     if (!vec)
         return RedisModule_ReplyWithError(ctx,"ERR invalid vector specification");
 
