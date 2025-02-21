@@ -981,6 +981,92 @@ int VEMB_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     return REDISMODULE_OK;
 }
 
+/* VSETATTR key element json
+ * Set or remove the JSON attribute associated with an element.
+ * Setting an empty string removes the attribute.
+ * The command returns one if the attribute was actually updated or
+ * zero if there is no key or element. */
+int VSETATTR_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    RedisModule_AutoMemory(ctx);
+
+    if (argc != 4) return RedisModule_WrongArity(ctx);
+
+    RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1],
+        REDISMODULE_READ|REDISMODULE_WRITE);
+    int type = RedisModule_KeyType(key);
+
+    if (type == REDISMODULE_KEYTYPE_EMPTY)
+        return RedisModule_ReplyWithLongLong(ctx, 0);
+
+    if (RedisModule_ModuleTypeGetType(key) != VectorSetType)
+        return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
+
+    struct vsetObject *vset = RedisModule_ModuleTypeGetValue(key);
+    hnswNode *node = RedisModule_DictGet(vset->dict, argv[2], NULL);
+    if (!node)
+        return RedisModule_ReplyWithLongLong(ctx, 0);
+
+    struct vsetNodeVal *nv = node->value;
+    RedisModuleString *new_attr = argv[3];
+
+    /* Set or delete the attribute based on the fact it's an empty
+     * string or not. */
+    size_t attrlen;
+    RedisModule_StringPtrLen(new_attr, &attrlen);
+    if (attrlen == 0) {
+        // If we had an attribute before, decrease the count and free it.
+        if (nv->attrib) {
+            vset->numattribs--;
+            RedisModule_FreeString(NULL, nv->attrib);
+            nv->attrib = NULL;
+        }
+    } else {
+        // If we didn't have an attribute before, increase the count.
+        // Otherwise free the old one.
+        if (nv->attrib) {
+            RedisModule_FreeString(NULL, nv->attrib);
+        } else {
+            vset->numattribs++;
+        }
+        // Set new attribute.
+        RedisModule_RetainString(NULL, new_attr);
+        nv->attrib = new_attr;
+    }
+
+    RedisModule_ReplyWithLongLong(ctx, 1);
+    RedisModule_ReplicateVerbatim(ctx);
+    return REDISMODULE_OK;
+}
+
+/* VGETATTR key element
+ * Get the JSON attribute associated with an element.
+ * Returns NIL if the element has no attribute or doesn't exist. */
+int VGETATTR_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    RedisModule_AutoMemory(ctx);
+
+    if (argc != 3) return RedisModule_WrongArity(ctx);
+
+    RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ);
+    int type = RedisModule_KeyType(key);
+
+    if (type == REDISMODULE_KEYTYPE_EMPTY)
+        return RedisModule_ReplyWithNull(ctx);
+
+    if (RedisModule_ModuleTypeGetType(key) != VectorSetType)
+        return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
+
+    struct vsetObject *vset = RedisModule_ModuleTypeGetValue(key);
+    hnswNode *node = RedisModule_DictGet(vset->dict, argv[2], NULL);
+    if (!node)
+        return RedisModule_ReplyWithNull(ctx);
+
+    struct vsetNodeVal *nv = node->value;
+    if (!nv->attrib)
+        return RedisModule_ReplyWithNull(ctx);
+
+    return RedisModule_ReplyWithString(ctx, nv->attrib);
+}
+
 /* ============================== Reflection ================================ */
 
 /* VLINKS key element [WITHSCORES]
@@ -1369,6 +1455,14 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 
     if (RedisModule_CreateCommand(ctx, "VINFO",
         VINFO_RedisCommand, "readonly fast", 1, 1, 1) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+
+    if (RedisModule_CreateCommand(ctx, "VSETATTR",
+        VSETATTR_RedisCommand, "write fast", 1, 1, 1) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+
+    if (RedisModule_CreateCommand(ctx, "VGETATTR",
+        VGETATTR_RedisCommand, "readonly fast", 1, 1, 1) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
     hnsw_set_allocator(RedisModule_Free, RedisModule_Alloc,
