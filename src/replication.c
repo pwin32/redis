@@ -519,6 +519,9 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
     /* We can't have slaves attached and no backlog. */
     serverAssert(!(listLength(slaves) != 0 && server.repl_backlog == NULL));
 
+    /* Update the time of sending replication stream to replicas. */
+    server.repl_stream_lastio = server.unixtime;
+
     /* Must install write handler for all replicas first before feeding
      * replication stream. */
     prepareReplicasToWrite();
@@ -660,6 +663,10 @@ void replicationFeedMonitors(client *c, list *monitors, int dictid, robj **argv,
     listRewind(monitors,&li);
     while((ln = listNext(&li))) {
         client *monitor = ln->value;
+        /* Do not show internal commands to non-internal clients. */
+        if (c->realcmd && (c->realcmd->flags & CMD_INTERNAL) && !(monitor->flags & CLIENT_INTERNAL)) {
+            continue;
+        }
         addReply(monitor,cmdobj);
         updateClientMemUsageAndBucket(monitor);
     }
@@ -2444,6 +2451,14 @@ void readSyncBulkPayload(connection *conn) {
     /* Send the initial ACK immediately to put this replica in online state. */
     if (usemark) replicationSendAck();
 
+    /* Restart the AOF subsystem now that we finished the sync. This
+     * will trigger an AOF rewrite, and when done will start appending
+     * to the new file. */
+    if (server.aof_enabled) {
+        serverLog(LL_NOTICE, "MASTER <-> REPLICA sync: Starting AOF after a successful sync");
+        startAppendOnlyWithRetry();
+    }
+
     if (rdbchannel) {
         int close_asap;
 
@@ -2465,13 +2480,6 @@ void readSyncBulkPayload(connection *conn) {
             freeClientAsync(server.master);
     }
 
-    /* Restart the AOF subsystem now that we finished the sync. This
-     * will trigger an AOF rewrite, and when done will start appending
-     * to the new file. */
-    if (server.aof_enabled) {
-        serverLog(LL_NOTICE, "MASTER <-> REPLICA sync: Starting AOF after a successful sync");
-        startAppendOnlyWithRetry();
-    }
     return;
 
 error:
@@ -3671,6 +3679,7 @@ static void rdbChannelReplDataBufInit(void) {
     serverAssert(server.repl_full_sync_buffer.blocks == NULL);
     server.repl_full_sync_buffer.size = 0;
     server.repl_full_sync_buffer.used = 0;
+    server.repl_full_sync_buffer.mem_used = 0;
     server.repl_full_sync_buffer.blocks = listCreate();
     server.repl_full_sync_buffer.blocks->free = zfree;
 }
@@ -3682,6 +3691,7 @@ static void rdbChannelReplDataBufFree(void) {
     server.repl_full_sync_buffer.blocks = NULL;
     server.repl_full_sync_buffer.size = 0;
     server.repl_full_sync_buffer.used = 0;
+    server.repl_full_sync_buffer.mem_used = 0;
 }
 
 /* Replication: Replica side.
@@ -3752,6 +3762,7 @@ void rdbChannelBufferReplData(connection *conn) {
 
         listAddNodeTail(server.repl_full_sync_buffer.blocks, tail);
         server.repl_full_sync_buffer.size += tail->size;
+        server.repl_full_sync_buffer.mem_used += usable_size + sizeof(listNode);
 
         /* Update buffer's peak */
         if (server.repl_full_sync_buffer.peak < server.repl_full_sync_buffer.size)
@@ -3791,7 +3802,8 @@ int rdbChannelStreamReplDataToDb(client *c) {
 
         server.repl_full_sync_buffer.used -= used;
         server.repl_full_sync_buffer.size -= size;
-
+        server.repl_full_sync_buffer.mem_used -= (size + sizeof(listNode) +
+                                                    sizeof(replDataBufBlock));
         if (server.repl_debug_pause & REPL_DEBUG_ON_STREAMING_REPL_BUF)
             debugPauseProcess();
 
@@ -4470,8 +4482,6 @@ long long replicationGetSlaveOffset(void) {
 
 /* Replication cron function, called 1 time per second. */
 void replicationCron(void) {
-    static long long replication_cron_loops = 0;
-
     /* Check failover status first, to see if we need to start
      * handling the failover. */
     updateFailoverStatus();
@@ -4524,9 +4534,12 @@ void replicationCron(void) {
     listNode *ln;
     robj *ping_argv[1];
 
-    /* First, send PING according to ping_slave_period. */
-    if ((replication_cron_loops % server.repl_ping_slave_period) == 0 &&
-        listLength(server.slaves))
+    /* First, send PING according to ping_slave_period. The reason why master
+     * sends PING is to keep the connection with replica active, so master need
+     * not send PING to replicas if already sent replication stream in the past
+     * repl_ping_slave_period time. */
+    if (server.masterhost == NULL && listLength(server.slaves) &&
+        server.unixtime >= server.repl_stream_lastio + server.repl_ping_slave_period)
     {
         /* Note that we don't send the PING if the clients are paused during
          * a Redis Cluster manual failover: the PING we send will otherwise
@@ -4568,7 +4581,7 @@ void replicationCron(void) {
             (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_END &&
              server.rdb_child_type != RDB_CHILD_TYPE_SOCKET));
 
-        if (is_presync) {
+        if (is_presync && !(slave->flags & CLIENT_CLOSE_ASAP)) {
             connWrite(slave->conn, "\n", 1);
         }
     }
@@ -4663,7 +4676,6 @@ void replicationCron(void) {
 
     /* Refresh the number of slaves with lag <= min-slaves-max-lag. */
     refreshGoodSlavesCount();
-    replication_cron_loops++; /* Incremented with frequency 1 HZ. */
 }
 
 int shouldStartChildReplication(int *mincapa_out, int *req_out) {
