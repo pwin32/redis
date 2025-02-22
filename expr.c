@@ -12,6 +12,12 @@
 #include <math.h>
 #include "cJSON.h"
 
+#ifdef TEST_MAIN
+#define RedisModule_Alloc malloc
+#define RedisModule_Realloc realloc
+#define RedisModule_Free free
+#endif
+
 #define EXPR_TOKEN_EOF 0
 #define EXPR_TOKEN_NUM 1
 #define EXPR_TOKEN_STR 2
@@ -121,8 +127,8 @@ struct {
 /* ================================ Expr token ============================== */
 void exprFreeToken(exprtoken *t) {
     if (t == NULL) return;
-    if (t->heapstr != NULL) free(t->heapstr);
-    free(t);
+    if (t->heapstr != NULL) RedisModule_Free(t->heapstr);
+    RedisModule_Free(t);
 }
 
 /* ============================== Stack handling ============================ */
@@ -134,7 +140,7 @@ void exprFreeToken(exprtoken *t) {
 
 /* Initialize a new expression stack. */
 void exprStackInit(exprstack *stack) {
-    stack->items = malloc(sizeof(exprtoken*) * EXPR_STACK_INITIAL_SIZE);
+    stack->items = RedisModule_Alloc(sizeof(exprtoken*) * EXPR_STACK_INITIAL_SIZE);
     stack->numitems = 0;
     stack->allocsize = EXPR_STACK_INITIAL_SIZE;
 }
@@ -146,7 +152,7 @@ int exprStackPush(exprstack *stack, exprtoken *token) {
     if (stack->numitems == stack->allocsize) {
         size_t newsize = stack->allocsize * 2;
         exprtoken **newitems =
-            realloc(stack->items, sizeof(exprtoken*) * newsize);
+            RedisModule_Realloc(stack->items, sizeof(exprtoken*) * newsize);
         if (newitems == NULL) return 0;
         stack->items = newitems;
         stack->allocsize = newsize;
@@ -175,7 +181,7 @@ exprtoken *exprStackPeek(exprstack *stack) {
 void exprStackFree(exprstack *stack) {
     for (int j = 0; j < stack->numitems; j++)
         exprFreeToken(stack->items[j]);
-    free(stack->items);
+    RedisModule_Free(stack->items);
 }
 
 /* Just reset the stack removing all the items, but leaving it in a state
@@ -284,7 +290,7 @@ void exprFree(exprstate *es) {
     if (es == NULL) return;
 
     /* Free the original expression string. */
-    if (es->expr) free(es->expr);
+    if (es->expr) RedisModule_Free(es->expr);
 
     /* Free all stacks. */
     exprStackFree(&es->values_stack);
@@ -293,7 +299,7 @@ void exprFree(exprstate *es) {
     exprStackFree(&es->program);
 
     /* Free the state object itself. */
-    free(es);
+    RedisModule_Free(es);
 }
 
 /* Split the provided expression into a stack of tokens. Returns
@@ -344,7 +350,7 @@ int exprTokenize(exprstate *es, int *errpos) {
         }
 
         /* Allocate and copy current token to tokens stack */
-        exprtoken *token = malloc(sizeof(exprtoken));
+        exprtoken *token = RedisModule_Alloc(sizeof(exprtoken));
         if (!token) return 1; // OOM.
 
         *token = es->current;  /* Copy the entire structure. */
@@ -445,12 +451,12 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *err
  * expression is returned by reference. */
 exprstate *exprCompile(char *expr, int *errpos) {
     /* Initialize expression state. */
-    exprstate *es = malloc(sizeof(exprstate));
+    exprstate *es = RedisModule_Alloc(sizeof(exprstate));
     if (!es) return NULL;
 
     es->expr = strdup(expr);
     if (!es->expr) {
-        free(es);
+        RedisModule_Free(es);
         return NULL;
     }
     es->p = es->expr;
@@ -484,7 +490,7 @@ exprstate *exprCompile(char *expr, int *errpos) {
             token->token_type == EXPR_TOKEN_STR ||
             token->token_type == EXPR_TOKEN_SELECTOR)
         {
-            exprtoken *value_token = malloc(sizeof(exprtoken));
+            exprtoken *value_token = RedisModule_Alloc(sizeof(exprtoken));
             if (!value_token) {
                 if (errpos) *errpos = token->offset;
                 exprFree(es);
@@ -503,7 +509,7 @@ exprstate *exprCompile(char *expr, int *errpos) {
 
         /* Handle operators. */
         if (token->token_type == EXPR_TOKEN_OP) {
-            exprtoken *op_token = malloc(sizeof(exprtoken));
+            exprtoken *op_token = RedisModule_Alloc(sizeof(exprtoken));
             if (!op_token) {
                 if (errpos) *errpos = token->offset;
                 exprFree(es);
@@ -620,7 +626,7 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
 
         // Handle selectors by calling the callback.
         if (t->token_type == EXPR_TOKEN_SELECTOR) {
-            exprtoken *result = malloc(sizeof(exprtoken));
+            exprtoken *result = RedisModule_Alloc(sizeof(exprtoken));
             if (result != NULL && json != NULL) {
                 cJSON *attrib = NULL;
                 if (parsed_json == NULL)
@@ -665,14 +671,14 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
 
         // Push non-operator values directly onto the stack.
         if (t->token_type != EXPR_TOKEN_OP) {
-            exprtoken *nt = malloc(sizeof(exprtoken));
+            exprtoken *nt = RedisModule_Alloc(sizeof(exprtoken));
             *nt = *t;
             exprStackPush(&es->values_stack, nt);
             continue;
         }
 
         // Handle operators.
-        exprtoken *result = malloc(sizeof(exprtoken));
+        exprtoken *result = RedisModule_Alloc(sizeof(exprtoken));
         result->token_type = EXPR_TOKEN_NUM;
 
         // Pop operands - we know we have enough from compile-time checks.

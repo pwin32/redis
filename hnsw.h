@@ -119,6 +119,12 @@ hnswNode *hnsw_insert(HNSW *index, const float *vector, const int8_t *qvector,
 int hnsw_search(HNSW *index, const float *query, uint32_t k,
                 hnswNode **neighbors, float *distances, uint32_t slot,
                 int query_vector_is_normalized);
+int hnsw_search_with_filter
+               (HNSW *index, const float *query_vector, uint32_t k,
+                hnswNode **neighbors, float *distances, uint32_t slot,
+                int query_vector_is_normalized,
+                int (*filter_callback)(void *value, void *privdata),
+                void *filter_privdata, uint32_t max_candidates);
 void hnsw_get_node_vector(HNSW *index, hnswNode *node, float *vec);
 void hnsw_delete_node(HNSW *index, hnswNode *node, void(*free_value)(void*value));
 

@@ -55,7 +55,7 @@ all: vset.so
 
 vset.xo: redismodule.h
 
-vset.so: vset.xo hnsw.xo
+vset.so: vset.xo hnsw.xo cJSON.xo
 	$(CC) -o $@ $^ $(SHOBJ_LDFLAGS) $(LIBS) -lc
 
 # Example sources / objects

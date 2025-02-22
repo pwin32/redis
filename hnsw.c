@@ -780,10 +780,21 @@ void hnsw_free_tmp_node(hnswNode *node, const float *vector) {
  * arrays must have space for at least 'k' items.
  * norm_query should be set to 1 if the query vector is already
  * normalized, otherwise, if 0, the function will copy the vector,
- * L2-normalize the copy and search using the normalized version. */
-int hnsw_search(HNSW *index, const float *query_vector, uint32_t k,
+ * L2-normalize the copy and search using the normalized version.
+ *
+ * If the filter_privdata callback is passed, only elements passing the
+ * specified filter (invoked with privdata and the value associated
+ * to the node as arguments) are returned. In such case, if max_candidates
+ * is not NULL, it represents the maximum number of nodes to explore, since
+ * the search may be otherwise unbound if few or no elements pass the
+ * filter. */
+int hnsw_search_with_filter
+               (HNSW *index, const float *query_vector, uint32_t k,
                 hnswNode **neighbors, float *distances, uint32_t slot,
-                int query_vector_is_normalized)
+                int query_vector_is_normalized,
+                int (*filter_callback)(void *value, void *privdata),
+                void *filter_privdata, uint32_t max_candidates)
+
 {
     if (!index || !query_vector || !neighbors || k == 0) return -1;
     if (!index->enter_point) return 0; // Empty index.
@@ -811,7 +822,9 @@ int hnsw_search(HNSW *index, const float *query_vector, uint32_t k,
     }
 
     /* Search bottom layer (the most densely populated) with ef = k */
-    pqueue *results = search_layer(index, &query, curr_ep, k, 0, slot);
+    pqueue *results = search_layer_with_filter(
+                        index, &query, curr_ep, k, 0, slot, filter_callback,
+                        filter_privdata, max_candidates);
     if (!results) {
         hnsw_free_tmp_node(&query, query_vector);
         return -1;
@@ -829,6 +842,16 @@ int hnsw_search(HNSW *index, const float *query_vector, uint32_t k,
     pq_free(results);
     hnsw_free_tmp_node(&query, query_vector);
     return found;
+}
+
+/* Wrapper to hnsw_search_with_filter() when no filter is needed. */
+int hnsw_search(HNSW *index, const float *query_vector, uint32_t k,
+                hnswNode **neighbors, float *distances, uint32_t slot,
+                int query_vector_is_normalized)
+{
+    return hnsw_search_with_filter(index,query_vector,k,neighbors,
+                                   distances,slot,query_vector_is_normalized,
+                                   NULL,NULL,0);
 }
 
 /* Rescan a node and update the wortst neighbor index.

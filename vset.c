@@ -20,6 +20,10 @@
 #include <pthread.h>
 #include "hnsw.h"
 
+// We inline directly the expression implementation here so that building
+// the module is trivial.
+#include "expr.c"
+
 static RedisModuleType *VectorSetType;
 static uint64_t VectorSetTypeNextId = 0;
 
@@ -561,6 +565,22 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     }
 }
 
+/* HNSW callback to filter items according to a predicate function
+ * (our FILTER expression in this case). */
+int vectorSetFilterCallback(void *value, void *privdata) {
+    exprstate *expr = privdata;
+    struct vsetNodeVal *nv = value;
+    if (nv->attrib == NULL) return 0; // No attributes? No match.
+    size_t json_len;
+    char *json = (char*)RedisModule_StringPtrLen(nv->attrib,&json_len);
+    #if 0
+    int res = exprRun(expr,json,json_len);
+    printf("%s %d\n", json, res);
+    return res;
+    #endif
+    return exprRun(expr,json,json_len);
+}
+
 /* Common path for the execution of the VSIM command both threaded and
  * not threaded. Note that 'ctx' may be normal context of a thread safe
  * context obtained from a blocked client. The locking that is specific
@@ -568,7 +588,7 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
  * handles the HNSW locking explicitly. */
 void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
     float *vec, unsigned long count, float epsilon, unsigned long withscores,
-    unsigned long ef)
+    unsigned long ef, exprstate *filter_expr, unsigned long filter_ef)
 {
     /* In our scan, we can't just collect 'count' elements as
      * if count is small we would explore the graph in an insufficient
@@ -585,7 +605,12 @@ void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
     hnswNode **neighbors = RedisModule_Alloc(sizeof(hnswNode*)*ef);
     float *distances = RedisModule_Alloc(sizeof(float)*ef);
     int slot = hnsw_acquire_read_slot(vset->hnsw);
-    unsigned int found = hnsw_search(vset->hnsw, vec, ef, neighbors, distances, slot, 0);
+    unsigned int found;
+    if (filter_expr == NULL) {
+        found = hnsw_search(vset->hnsw, vec, ef, neighbors, distances, slot, 0);
+    } else {
+        found = hnsw_search_with_filter(vset->hnsw, vec, ef, neighbors, distances, slot, 0, vectorSetFilterCallback, filter_expr, filter_ef);
+    }
     hnsw_release_read_slot(vset->hnsw,slot);
     RedisModule_Free(vec);
 
@@ -598,7 +623,8 @@ void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
 
     for (unsigned int i = 0; i < found && i < count; i++) {
         if (distances[i] > epsilon) break;
-        RedisModule_ReplyWithString(ctx, neighbors[i]->value);
+        struct vsetNodeVal *nv = neighbors[i]->value;
+        RedisModule_ReplyWithString(ctx, nv->item);
         arraylen++;
         if (withscores) {
             /* The similarity score is provided in a 0-1 range. */
@@ -613,6 +639,7 @@ void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
 
     RedisModule_Free(neighbors);
     RedisModule_Free(distances);
+    if (filter_expr) exprFree(filter_expr);
 }
 
 /* VSIM thread handling the blocked client request. */
@@ -628,6 +655,8 @@ void *VSIM_thread(void *arg) {
     float epsilon = *((float*)targ[4]);
     unsigned long withscores = (unsigned long)targ[5];
     unsigned long ef = (unsigned long)targ[6];
+    exprstate *filter_expr = targ[7];
+    unsigned long filter_ef = (unsigned long)targ[8];
     RedisModule_Free(targ[4]);
     RedisModule_Free(targ);
 
@@ -635,7 +664,7 @@ void *VSIM_thread(void *arg) {
     RedisModuleCtx *ctx = RedisModule_GetThreadSafeContext(bc);
 
     // Run the query.
-    VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef);
+    VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef);
 
     // Cleanup.
     RedisModule_FreeThreadSafeContext(ctx);
@@ -644,7 +673,7 @@ void *VSIM_thread(void *arg) {
     return NULL;
 }
 
-/* VSIM key [ELE|FP32|VALUES] <vector or ele> [WITHSCORES] [COUNT num] [EPSILON eps] [EF exploration-factor] */
+/* VSIM key [ELE|FP32|VALUES] <vector or ele> [WITHSCORES] [COUNT num] [EPSILON eps] [EF exploration-factor] [FILTER expression] [FILTER-EF exploration-factor] */
 int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     RedisModule_AutoMemory(ctx);
 
@@ -657,6 +686,10 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     long long count = VSET_DEFAULT_COUNT;   /* New default value */
     long long ef = 0;       /* Exploration factor (see HNSW paper) */
     double epsilon = 2.0;   /* Max cosine distance */
+
+    /* Things computed later. */
+    long long filter_ef = 0;
+    exprstate *filter_expr = NULL;
 
     /* Get key and vector type */
     RedisModuleString *key = argv[1];
@@ -766,6 +799,19 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
                 return RedisModule_ReplyWithError(ctx, "ERR invalid EF");
             }
             j += 2;
+        } else if (!strcasecmp(opt, "FILTER") && j+1 < argc) {
+            RedisModuleString *exprarg = argv[j+1];
+            size_t exprlen;
+            char *exprstr = (char*)RedisModule_StringPtrLen(exprarg,&exprlen);
+            int errpos;
+            filter_expr = exprCompile(exprstr,&errpos);
+            if (filter_expr == NULL) {
+                if ((size_t)errpos >= exprlen) errpos = 0;
+                return RedisModule_ReplyWithErrorFormat(ctx,
+                    "ERR syntax error in FILTER expression near: %s",
+                        exprstr+errpos);
+            }
+            j += 2;
         } else {
             RedisModule_Free(vec);
             return RedisModule_ReplyWithError(ctx,
@@ -774,6 +820,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     }
 
     int threaded_request = 1; // Run on a thread, by default.
+    if (filter_ef == 0) filter_ef = count * 100; // Max filter visited nodes.
 
     // Disable threaded for MULTI/EXEC and Lua.
     if (RedisModule_GetContextFlags(ctx) &
@@ -799,7 +846,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
         RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx,NULL,NULL,NULL,0);
         pthread_t tid;
-        void **targ = RedisModule_Alloc(sizeof(void*)*7);
+        void **targ = RedisModule_Alloc(sizeof(void*)*9);
         targ[0] = bc;
         targ[1] = vset;
         targ[2] = vec;
@@ -808,16 +855,18 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         *((float*)targ[4]) = epsilon;
         targ[5] = (void*)(unsigned long)withscores;
         targ[6] = (void*)(unsigned long)ef;
+        targ[7] = (void*)filter_expr;
+        targ[8] = (void*)(unsigned long)filter_ef;
         if (pthread_create(&tid,NULL,VSIM_thread,targ) != 0) {
             pthread_rwlock_unlock(&vset->in_use_lock);
             RedisModule_AbortBlock(bc);
             RedisModule_Free(vec);
             RedisModule_Free(targ[4]);
             RedisModule_Free(targ);
-            return RedisModule_ReplyWithError(ctx,"-ERR Can't start thread");
+            VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef);
         }
     } else {
-        VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef);
+        VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef);
     }
 
     return REDISMODULE_OK;
