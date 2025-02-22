@@ -573,11 +573,6 @@ int vectorSetFilterCallback(void *value, void *privdata) {
     if (nv->attrib == NULL) return 0; // No attributes? No match.
     size_t json_len;
     char *json = (char*)RedisModule_StringPtrLen(nv->attrib,&json_len);
-    #if 0
-    int res = exprRun(expr,json,json_len);
-    printf("%s %d\n", json, res);
-    return res;
-    #endif
     return exprRun(expr,json,json_len);
 }
 

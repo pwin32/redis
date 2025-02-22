@@ -629,13 +629,15 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
             exprtoken *result = RedisModule_Alloc(sizeof(exprtoken));
             if (result != NULL && json != NULL) {
                 cJSON *attrib = NULL;
-                if (parsed_json == NULL)
+                if (parsed_json == NULL) {
                     parsed_json = cJSON_ParseWithLength(json,json_len);
+                    // Will be left to NULL if the above fails.
+                }
                 if (parsed_json) {
                     char item_name[128];
                     if (t->str.len <= sizeof(item_name)) {
                         memcpy(item_name,t->str.start+1,t->str.len-1);
-                        item_name[t->str.len] = 0;
+                        item_name[t->str.len-1] = 0;
                         attrib = cJSON_GetObjectItem(parsed_json,item_name);
                     }
                     /* Fill the token according to the JSON type stored
