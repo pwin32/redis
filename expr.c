@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include <string.h>
 #include "cJSON.h"
 
 #ifdef TEST_MAIN
@@ -56,16 +57,16 @@ typedef struct exprtoken {
         struct {
             char *start;    // String pointer for EXPR_TOKEN_STR / SELECTOR.
             size_t len;     // String len for EXPR_TOKEN_STR / SELECTOR.
+            char *heapstr;  // True if we have a private allocation for this
+                            // string. When possible, it just references to the
+                            // string expression we compiled, exprstate->expr.
         } str;
         int opcode;         // Opcode ID for EXPR_TOKEN_OP.
         struct {
-            struct exprtoken *ele;
+            struct exprtoken **ele;
             size_t len;
         } tuple;            // Tuples are like [1, 2, 3] for "in" operator.
     };
-    char *heapstr;          // True if we have a private allocation for this
-                            // string. When possible, it just references to the
-                            // string expression we compiled, exprstate->expr.
 } exprtoken;
 
 /* Simple stack of expr tokens. This is used both to represent the stack
@@ -126,10 +127,48 @@ struct {
 #define EXPR_OP_SPECIALCHARS "+-*%/!()<>=|&"
 
 /* ================================ Expr token ============================== */
+
+/* Generic free token function, can be used to free stack allocated
+ * objects (in this case the pointer itself will not be freed) or
+ * heap allocated objects. See the wrappers below. */
+void exprFreeTokenGeneric(exprtoken *t, int stackalloc) {
+    if (t == NULL) {
+        return;
+    } else if (t->token_type == EXPR_TOKEN_STR) {
+        if (t->str.heapstr != NULL) RedisModule_Free(t->str.heapstr);
+    } else if (t->token_type == EXPR_TOKEN_TUPLE) {
+        for (size_t j = 0; j < t->tuple.len; j++)
+            exprFreeTokenGeneric(t->tuple.ele[j],0);
+        if (t->tuple.ele) RedisModule_Free(t->tuple.ele);
+    }
+    if (!stackalloc) RedisModule_Free(t);
+}
+
 void exprFreeToken(exprtoken *t) {
-    if (t == NULL) return;
-    if (t->heapstr != NULL) RedisModule_Free(t->heapstr);
-    RedisModule_Free(t);
+    exprFreeTokenGeneric(t,0);
+}
+
+void exprFreeTokenStack(exprtoken *t) {
+    exprFreeTokenGeneric(t,1);
+}
+
+/* Perform a deep copy of a token. */
+exprtoken *exprCopyToken(exprtoken *t) {
+    exprtoken *new = RedisModule_Alloc(sizeof(*new));
+    *new = *t;
+    if (t->token_type == EXPR_TOKEN_STR ||
+        t->token_type == EXPR_TOKEN_SELECTOR)
+    {
+        if (t->str.heapstr) {
+            printf("%d\n", t->token_type);
+            new->str.heapstr = RedisModule_Strdup(t->str.heapstr);
+        }
+    } else if (t->token_type == EXPR_TOKEN_TUPLE) {
+        new->tuple.ele = RedisModule_Alloc(sizeof(exprtoken*) * t->tuple.len);
+        for (size_t j = 0; j < t->tuple.len; j++)
+            new->tuple.ele[j] = exprCopyToken(t->tuple.ele[j]);
+    }
+    return new;
 }
 
 /* ============================== Stack handling ============================ */
@@ -236,6 +275,7 @@ void exprParseOperatorOrSelector(exprstate *es) {
             es->p = start + bestlen;
         }
     } else {
+        es->current.str.heapstr = NULL;
         es->current.str.start = start;
         es->current.str.len = matchlen;
     }
@@ -267,6 +307,7 @@ void exprParseString(exprstate *es) {
     es->p++;                /* Skip opening quote. */
 
     es->current.token_type = EXPR_TOKEN_STR;
+    es->current.str.heapstr = NULL;
     es->current.str.start = es->p;
 
     while(es->p[0] != '\0') {
@@ -284,6 +325,78 @@ void exprParseString(exprstate *es) {
     }
     /* If we reach here, string was not terminated. */
     es->syntax_error++;
+}
+
+/* Parse a tuple of the form [1, "foo", 42]. No nested tuples are
+ * supported. This type is useful mostly to be used with the "IN"
+ * operator. */
+void exprParseTuple(exprstate *es) {
+    // Work on a stack token since parsing elements inside the tuple
+    // will use es->current.
+    exprtoken t;
+    t.token_type = EXPR_TOKEN_TUPLE;
+    t.tuple.ele = NULL;
+    t.tuple.len = 0;
+    es->p++; /* Skip opening '['. */
+
+    size_t allocated = 0;
+    while(1) {
+        exprConsumeSpaces(es);
+
+        /* Check for empty tuple or end. */
+        if (es->p[0] == ']') {
+            es->p++;
+            break;
+        }
+
+        /* Grow tuple array if needed. */
+        if (t.tuple.len == allocated) {
+            size_t newsize = allocated == 0 ? 4 : allocated * 2;
+            exprtoken **newele = RedisModule_Realloc(t.tuple.ele,
+                sizeof(exprtoken) * newsize);
+            t.tuple.ele = newele;
+            allocated = newsize;
+        }
+
+        /* Parse tuple element. */
+        if (isdigit(es->p[0]) || es->p[0] == '-') {
+            exprParseNumber(es);
+        } else if (es->p[0] == '"' || es->p[0] == '\'') {
+            exprParseString(es);
+        } else {
+            es->syntax_error++;
+            goto syntaxerror;
+        }
+
+        /* Store element if no error was detected. */
+        if (!es->syntax_error) {
+            exprtoken *tcopy = RedisModule_Alloc(sizeof(exprtoken));
+            *tcopy = es->current;
+            t.tuple.ele[t.tuple.len] = tcopy;
+            t.tuple.len++;
+        } else {
+            goto syntaxerror;
+        }
+
+        /* Check for next element. */
+        exprConsumeSpaces(es);
+        if (es->p[0] == ']') {
+            es->p++;
+            break;
+        }
+        if (es->p[0] != ',') {
+            es->syntax_error++;
+            goto syntaxerror;
+        }
+        es->p++; /* Skip comma. */
+    }
+
+    // Successfully parsed. Copy it as the current token and return.
+    es->current = t;
+    return;
+
+syntaxerror:
+    exprFreeTokenStack(&t);
 }
 
 /* Deallocate the object returned by exprCompile(). */
@@ -341,6 +454,8 @@ int exprTokenize(exprstate *es, int *errpos) {
         } else if (*es->p == '.' || isalpha(*es->p) ||
                   strchr(EXPR_OP_SPECIALCHARS, *es->p)) {
             exprParseOperatorOrSelector(es);
+        } else if (*es->p == '[') {
+            exprParseTuple(es);
         } else {
             es->syntax_error++;
         }
@@ -478,10 +593,10 @@ exprstate *exprCompile(char *expr, int *errpos) {
         /* Handle values (numbers, strings, selectors). */
         if (token->token_type == EXPR_TOKEN_NUM ||
             token->token_type == EXPR_TOKEN_STR ||
+            token->token_type == EXPR_TOKEN_TUPLE ||
             token->token_type == EXPR_TOKEN_SELECTOR)
         {
-            exprtoken *value_token = RedisModule_Alloc(sizeof(exprtoken));
-            *value_token = *token;  // Copy the token.
+            exprtoken *value_token = exprCopyToken(token);
             exprStackPush(&es->program, value_token);
             stack_items++;
             continue;
@@ -489,9 +604,7 @@ exprstate *exprCompile(char *expr, int *errpos) {
 
         /* Handle operators. */
         if (token->token_type == EXPR_TOKEN_OP) {
-            exprtoken *op_token = RedisModule_Alloc(sizeof(exprtoken));
-            *op_token = *token;  // Copy the token.
-
+            exprtoken *op_token = exprCopyToken(token);
             if (exprProcessOperator(es, op_token, &stack_items, errpos)) {
                 RedisModule_Free(op_token);
                 exprFree(es);
@@ -620,13 +733,9 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
                         } else if (cJSON_IsString(attrib)) {
                             result->token_type = EXPR_TOKEN_STR;
                             char *strval = cJSON_GetStringValue(attrib);
-                            result->heapstr = strdup(strval);
-                            if (result->heapstr != NULL) {
-                                result->str.start = result->heapstr;
-                                result->str.len = strlen(result->heapstr);
-                            } else {
-                                attrib = NULL;
-                            }
+                            result->str.heapstr = RedisModule_Strdup(strval);
+                            result->str.start = result->str.heapstr;
+                            result->str.len = strlen(result->str.heapstr);
                         } else {
                             attrib = NULL; // Unsupported type.
                         }
@@ -644,8 +753,7 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
 
         // Push non-operator values directly onto the stack.
         if (t->token_type != EXPR_TOKEN_OP) {
-            exprtoken *nt = RedisModule_Alloc(sizeof(exprtoken));
-            *nt = *t;
+            exprtoken *nt = exprCopyToken(t);
             exprStackPush(&es->values_stack, nt);
             continue;
         }
@@ -712,7 +820,7 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
             result->num = 0;  // Default to false.
             if (b->token_type == EXPR_TOKEN_TUPLE) {
                 for (size_t j = 0; j < b->tuple.len; j++) {
-                    if (exprTokensEqual(a, &b->tuple.ele[j])) {
+                    if (exprTokensEqual(a, b->tuple.ele[j])) {
                         result->num = 1;  // Found a match.
                         break;
                     }
