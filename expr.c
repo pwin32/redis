@@ -247,7 +247,7 @@ void exprParseNumber(exprstate *es) {
     char num[64];
     int idx = 0;
     while(isdigit(es->p[0]) || (idx == 0 && es->p[0] == '-')) {
-        if (idx == sizeof(num)-1) {
+        if (idx >= sizeof(num)-1) {
             es->syntax_error++; // Number is too long.
             break;
         }
