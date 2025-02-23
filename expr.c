@@ -353,7 +353,7 @@ void exprParseTuple(exprstate *es) {
         if (t.tuple.len == allocated) {
             size_t newsize = allocated == 0 ? 4 : allocated * 2;
             exprtoken **newele = RedisModule_Realloc(t.tuple.ele,
-                sizeof(exprtoken) * newsize);
+                sizeof(exprtoken*) * newsize);
             t.tuple.ele = newele;
             allocated = newsize;
         }
@@ -537,6 +537,11 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *err
 
         int top_prec = exprGetOpPrecedence(top_op->opcode);
         if (top_prec < curr_prec) break;
+        /* Special case for **: only pop if precedence is strictly higher
+         * so that the operator is right associative, that is:
+         * 2 ** 3 ** 2 is evaluated as 2 ** (3 ** 2) == 512 instead
+         * of (2 ** 3) ** 2 == 64. */
+        if (op->opcode == EXPR_OP_POW && top_prec <= curr_prec) break;
 
         /* Pop and add to program. */
         top_op = exprStackPop(&es->ops_stack);
