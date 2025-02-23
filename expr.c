@@ -116,7 +116,7 @@ struct {
     {"!=",  2,  EXPR_OP_NEQ,     2, 2},
     {"in",  2,  EXPR_OP_IN,      2, 2},
     {"and", 3,  EXPR_OP_AND,     1, 2},
-    {"&& ", 2,  EXPR_OP_AND,     1, 2},
+    {"&&",  2,  EXPR_OP_AND,     1, 2},
     {"or",  2,  EXPR_OP_OR,      0, 2},
     {"||",  2,  EXPR_OP_OR,      0, 2},
     {NULL,  0,  0,               0, 0}   // Terminator.
