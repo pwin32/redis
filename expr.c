@@ -246,8 +246,10 @@ void exprParseNumber(exprstate *es) {
     es->current.token_type = EXPR_TOKEN_NUM;
     char num[64];
     int idx = 0;
-    while(isdigit(es->p[0]) || (idx == 0 && es->p[0] == '-')) {
-        if (idx >= sizeof(num)-1) {
+    while(isdigit(es->p[0]) || es->p[0] == '.' || es->p[0] == 'e' ||
+          es->p[0] == 'E' || (idx == 0 && es->p[0] == '-'))
+    {
+        if (idx >= (int)sizeof(num)-1) {
             es->syntax_error++; // Number is too long.
             break;
         }
