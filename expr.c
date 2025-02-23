@@ -147,19 +147,17 @@ void exprStackInit(exprstack *stack) {
 
 /* Push a token pointer onto the stack. Return 0 on out of memory
  * (leaving the stack as it is), 1 on success. */
-int exprStackPush(exprstack *stack, exprtoken *token) {
+void exprStackPush(exprstack *stack, exprtoken *token) {
     /* Check if we need to grow the stack. */
     if (stack->numitems == stack->allocsize) {
         size_t newsize = stack->allocsize * 2;
         exprtoken **newitems =
             RedisModule_Realloc(stack->items, sizeof(exprtoken*) * newsize);
-        if (newitems == NULL) return 0;
         stack->items = newitems;
         stack->allocsize = newsize;
     }
     stack->items[stack->numitems] = token;
     stack->numitems++;
-    return 1;
 }
 
 /* Pop a token pointer from the stack. Return NULL if the stack is
@@ -353,15 +351,10 @@ int exprTokenize(exprstate *es, int *errpos) {
 
         /* Allocate and copy current token to tokens stack */
         exprtoken *token = RedisModule_Alloc(sizeof(exprtoken));
-        if (!token) return 1; // OOM.
-
         *token = es->current;  /* Copy the entire structure. */
         token->offset = es->p - es->expr; /* To report errors gracefully. */
 
-        if (!exprStackPush(&es->tokens, token)) {
-            exprFreeToken(token);
-            return 1; // OOM.
-        }
+        exprStackPush(&es->tokens, token);
         if (es->current.token_type == EXPR_TOKEN_EOF) break;
     }
     return 0;
@@ -389,7 +382,7 @@ int exprGetOpArity(int opcode) {
 int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *errpos) {
     if (op->opcode == EXPR_OP_OPAREN) {
 	// This is just a marker for us. Do nothing.
-        if (!exprStackPush(&es->ops_stack, op)) return 1;
+        exprStackPush(&es->ops_stack, op);
         return 0;
     }
 
@@ -414,7 +407,7 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *err
                 return 1;
             }
 
-            if (!exprStackPush(&es->program, top_op)) return 1;
+            exprStackPush(&es->program, top_op);
             *stack_items = *stack_items - arity + 1;
         }
     }
@@ -437,12 +430,12 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *err
             return 1;
         }
 
-        if (!exprStackPush(&es->program, top_op)) return 1;
+        exprStackPush(&es->program, top_op);
         *stack_items = *stack_items - arity + 1;
     }
 
     /* Push current operator. */
-    if (!exprStackPush(&es->ops_stack, op)) return 1;
+    exprStackPush(&es->ops_stack, op);
     return 0;
 }
 
@@ -454,13 +447,7 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *err
 exprstate *exprCompile(char *expr, int *errpos) {
     /* Initialize expression state. */
     exprstate *es = RedisModule_Alloc(sizeof(exprstate));
-    if (!es) return NULL;
-
-    es->expr = strdup(expr);
-    if (!es->expr) {
-        RedisModule_Free(es);
-        return NULL;
-    }
+    es->expr = RedisModule_Strdup(expr);
     es->p = es->expr;
     es->syntax_error = 0;
 
@@ -493,18 +480,8 @@ exprstate *exprCompile(char *expr, int *errpos) {
             token->token_type == EXPR_TOKEN_SELECTOR)
         {
             exprtoken *value_token = RedisModule_Alloc(sizeof(exprtoken));
-            if (!value_token) {
-                if (errpos) *errpos = token->offset;
-                exprFree(es);
-                return NULL;
-            }
             *value_token = *token;  // Copy the token.
-            if (!exprStackPush(&es->program, value_token)) {
-                exprFreeToken(value_token);
-                if (errpos) *errpos = token->offset;
-                exprFree(es);
-                return NULL;
-            }
+            exprStackPush(&es->program, value_token);
             stack_items++;
             continue;
         }
@@ -512,14 +489,10 @@ exprstate *exprCompile(char *expr, int *errpos) {
         /* Handle operators. */
         if (token->token_type == EXPR_TOKEN_OP) {
             exprtoken *op_token = RedisModule_Alloc(sizeof(exprtoken));
-            if (!op_token) {
-                if (errpos) *errpos = token->offset;
-                exprFree(es);
-                return NULL;
-            }
             *op_token = *token;  // Copy the token.
 
             if (exprProcessOperator(es, op_token, &stack_items, errpos)) {
+                RedisModule_Free(op_token);
                 exprFree(es);
                 return NULL;
             }
@@ -545,12 +518,7 @@ exprstate *exprCompile(char *expr, int *errpos) {
             return NULL;
         }
 
-        if (!exprStackPush(&es->program, op)) {
-            exprFreeToken(op);
-            if (errpos) *errpos = op->offset;
-            exprFree(es);
-            return NULL;
-        }
+        exprStackPush(&es->program, op);
         stack_items = stack_items - arity + 1;
     }
 
@@ -629,7 +597,7 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
         // Handle selectors by calling the callback.
         if (t->token_type == EXPR_TOKEN_SELECTOR) {
             exprtoken *result = RedisModule_Alloc(sizeof(exprtoken));
-            if (result != NULL && json != NULL) {
+            if (json != NULL) {
                 cJSON *attrib = NULL;
                 if (parsed_json == NULL) {
                     parsed_json = cJSON_ParseWithLength(json,json_len);
