@@ -564,7 +564,6 @@ hnswNode *hnsw_node_new(HNSW *index, uint64_t id, const float *vector, const int
         node->layers[i].links = hmalloc(sizeof(hnswNode*) * max_links);
         if (!node->layers[i].links) {
             for (uint32_t j = 0; j < i; j++) hfree(node->layers[j].links);
-            hfree(node->layers);
             hfree(node->vector);
             hfree(node);
             return NULL;
