@@ -295,7 +295,7 @@ float vectors_distance_bin(const uint64_t *x, const uint64_t *y, uint32_t dim) {
     uint32_t len = (dim+63)/64;
     uint32_t opposite = 0;
     for (uint32_t j = 0; j < len; j++) {
-        int64_t xor = x[j]^y[j];
+        uint64_t xor = x[j]^y[j];
         opposite += popcount64(xor);
     }
     return (float)opposite*2/dim;
