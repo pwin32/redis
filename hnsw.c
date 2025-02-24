@@ -1200,7 +1200,8 @@ void hnsw_reconnect_nodes(HNSW *index, hnswNode **nodes, int count, uint32_t lay
     }
 
     // Step 5: Pair nodes greedily based on scores.
-    int *used = calloc(count, sizeof(int));
+    int *used = hmalloc(count*sizeof(int));
+    memset(used,0,count*sizeof(int));
     if (!used) {
         hfree(distances);
         hfree(row_avgs);
