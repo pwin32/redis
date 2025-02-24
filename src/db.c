@@ -57,36 +57,51 @@ void updateLFU(robj *val) {
  * The histogram is a base-2 logarithmic histogram, with 64 bins. The i'th bin 
  * represents the number of keys with a size in the range 2^i and 2^(i+1) 
  * exclusive. oldLen/newLen must be smaller than 2^48, and if their value 
- * equals 0, it means that the key is being created/deleted, respectively. Each 
+ * equals -1, it means that the key is being created/deleted, respectively. Each
  * data type has its own histogram and it is per database (In addition, there is 
  * histogram per slot for future cluster use).
- * 
- * Examples to LEN values and corresponding bins in histogram: 
- *               [1,2)->0 [2,4)->1 [4,8)->2 [8,16)->3
+ *
+ * Example mapping of key lengths to bins:
+ *               [1,2)->1 [2,4)->2 [4,8)->3 [8,16)->4 ...
+ *
+ * Since strings can be zero length, the histogram also tracks:
+ *               [0,1)->0
  */
-void updateKeysizesHist(redisDb *db, int didx, uint32_t type, uint64_t oldLen, uint64_t newLen) {
+void updateKeysizesHist(redisDb *db, int didx, uint32_t type, int64_t oldLen, int64_t newLen) {
     if(unlikely(type >= OBJ_TYPE_BASIC_MAX))
         return;
 
     kvstoreDictMetadata *dictMeta = kvstoreGetDictMetadata(db->keys, didx);
     kvstoreMetadata *kvstoreMeta = kvstoreGetMetadata(db->keys);
 
-    if (oldLen != 0) {
-        int old_bin = log2ceil(oldLen);
+    if (oldLen > 0) {
+        int old_bin = log2ceil(oldLen) + 1;
         debugServerAssertWithInfo(server.current_client, NULL, old_bin < MAX_KEYSIZES_BINS);        
         /* If following a key deletion it is last one in slot's dict, then
          * slot's dict might get released as well. Verify if metadata is not NULL. */
         if(dictMeta) dictMeta->keysizes_hist[type][old_bin]--;
         kvstoreMeta->keysizes_hist[type][old_bin]--;
+    } else {
+        /* here, oldLen can be either 0 or -1 */
+        if (oldLen == 0) {
+            if (dictMeta) dictMeta->keysizes_hist[type][0]--;
+            kvstoreMeta->keysizes_hist[type][0]--;
+        }
     }
     
-    if (newLen != 0) {
-        int new_bin = log2ceil(newLen);
+    if (newLen > 0) {
+        int new_bin = log2ceil(newLen) + 1;
         debugServerAssertWithInfo(server.current_client, NULL, new_bin < MAX_KEYSIZES_BINS);
         /* If following a key deletion it is last one in slot's dict, then
          * slot's dict might get released as well. Verify if metadata is not NULL. */
         if(dictMeta) dictMeta->keysizes_hist[type][new_bin]++;
         kvstoreMeta->keysizes_hist[type][new_bin]++;
+    } else {
+        /* here, newLen can be either 0 or -1 */
+        if (newLen == 0) {
+            if (dictMeta) dictMeta->keysizes_hist[type][0]++;
+            kvstoreMeta->keysizes_hist[type][0]++;
+        }
     }
 }
 
@@ -249,7 +264,7 @@ static dictEntry *dbAddInternal(redisDb *db, robj *key, robj *val, int update_if
     kvstoreDictSetVal(db->keys, slot, de, val);
     signalKeyAsReady(db, key, val->type);
     notifyKeyspaceEvent(NOTIFY_NEW,"new",key,db->id);
-    updateKeysizesHist(db, slot, val->type, 0, getObjectLength(val)); /* add hist */
+    updateKeysizesHist(db, slot, val->type, -1, getObjectLength(val)); /* add hist */
     return de;
 }
 
@@ -295,7 +310,7 @@ int dbAddRDBLoad(redisDb *db, sds key, robj *val) {
     int slot = getKeySlot(key);
     dictEntry *de = kvstoreDictAddRaw(db->keys, slot, key, NULL);
     if (de == NULL) return 0;
-    updateKeysizesHist(db, slot, val->type, 0, getObjectLength(val)); /* add hist */
+    updateKeysizesHist(db, slot, val->type, -1, getObjectLength(val)); /* add hist */
     initObjectLRUOrLFU(val);
     kvstoreDictSetVal(db->keys, slot, de, val);
     return 1;
@@ -320,7 +335,7 @@ static void dbSetValue(redisDb *db, robj *key, robj *val, int overwrite, dictEnt
     robj *old = dictGetVal(de);
 
     /* Remove old key from keysizes histogram */
-    updateKeysizesHist(db, slot, old->type, getObjectLength(old), 0); /* remove hist */
+    updateKeysizesHist(db, slot, old->type, getObjectLength(old), -1); /* remove hist */
 
     val->lru = old->lru;
 
@@ -341,7 +356,7 @@ static void dbSetValue(redisDb *db, robj *key, robj *val, int overwrite, dictEnt
     kvstoreDictSetVal(db->keys, slot, de, val);
 
     /* Add new key to keysizes histogram */
-    updateKeysizesHist(db, slot, val->type, 0, getObjectLength(val));
+    updateKeysizesHist(db, slot, val->type, -1, getObjectLength(val));
 
     /* if hash with HFEs, take care to remove from global HFE DS */
     if (old->type == OBJ_HASH)
@@ -457,7 +472,7 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
         robj *val = dictGetVal(de);
 
         /* remove key from histogram */
-        updateKeysizesHist(db, slot, val->type, getObjectLength(val), 0);
+        updateKeysizesHist(db, slot, val->type, getObjectLength(val), -1);
 
         /* If hash object with expiry on fields, remove it from HFE DS of DB */
         if (val->type == OBJ_HASH)

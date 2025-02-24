@@ -6317,13 +6317,13 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
         
         for (int dbnum = 0; dbnum < server.dbnum; dbnum++) {
             char *expSizeLabels[] = {
-                "1",   "2",  "4",  "8",  "16",  "32",  "64",  "128",  "256",  "512", /* Byte */
+                "0", "1",   "2",  "4",  "8",  "16",  "32",  "64",  "128",  "256",  "512", /* Byte */
                 "1K", "2K", "4K", "8K", "16K", "32K", "64K", "128K", "256K", "512K", /* Kilo */
                 "1M", "2M", "4M", "8M", "16M", "32M", "64M", "128M", "256M", "512M", /* Mega */
                 "1G", "2G", "4G", "8G", "16G", "32G", "64G", "128G", "256G", "512G", /* Giga */
                 "1T", "2T", "4T", "8T", "16T", "32T", "64T", "128T", "256T", "512T", /* Tera */
                 "1P", "2P", "4P", "8P", "16P", "32P", "64P", "128P", "256P", "512P", /* Peta */
-                "1E", "2E", "4E", "8E"                                               /* Exa */
+                "1E", "2E", "4E"                                               /* Exa */
             };
                                  
             if (kvstoreSize(server.db[dbnum].keys) == 0)
