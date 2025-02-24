@@ -80,11 +80,24 @@ struct redisServer server; /* Server global state */
 /*============================ Internal prototypes ========================== */
 
 static inline int isShutdownInitiated(void);
+static inline int isCommandReusable(struct redisCommand *cmd, robj *commandArg);
 int isReadyToShutdown(void);
 int finishShutdown(void);
 const char *replstateToString(int replstate);
 
 /*============================ Utility functions ============================ */
+
+/* Check if a given command can be reused without performing a lookup.
+ * A command is reusable if:
+ * - It is not NULL.
+ * - It does not have subcommands (subcommands_dict == NULL).
+ *   This preserves simplicity on the check and accounts for the majority of the use cases.
+ * - Its full name matches the provided command argument. */
+static inline int isCommandReusable(struct redisCommand *cmd, robj *commandArg) {
+    return cmd != NULL &&
+           cmd->subcommands_dict == NULL &&
+           strcasecmp(cmd->fullname, commandArg->ptr) == 0;
+}
 
 /* This macro tells if we are in the context of loading an AOF. */
 #define isAOFLoadingContext() \
@@ -3979,8 +3992,12 @@ int processCommand(client *c) {
      * In case we are reprocessing a command after it was blocked,
      * we do not have to repeat the same checks */
     if (!client_reprocessing_command) {
-        struct redisCommand *cmd = c->iolookedcmd ? c->iolookedcmd : lookupCommand(c->argv, c->argc);
-
+        /* check if we can reuse the last command instead of looking up if we already have that info */
+        struct redisCommand *cmd = NULL;
+        if (isCommandReusable(c->lastcmd, c->argv[0]))
+            cmd = c->lastcmd;
+        else
+            cmd = c->iolookedcmd ? c->iolookedcmd : lookupCommand(c->argv, c->argc);
         if (!cmd) {
             /* Handle possible security attacks. */
             if (!strcasecmp(c->argv[0]->ptr,"host:") || !strcasecmp(c->argv[0]->ptr,"post")) {
