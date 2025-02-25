@@ -901,7 +901,7 @@ void exprPrintStack(exprstack *stack, const char *name) {
 }
 
 int main(int argc, char **argv) {
-    char *testexpr = "(5+2)*3 and 'foo'";
+    char *testexpr = "(5+2)*3 and .year > 1980 and 'foo' == 'foo'";
     char *testjson = "{\"year\": 1984, \"name\": \"The Matrix\"}";
     if (argc >= 2) testexpr = argv[1];
     if (argc >= 3) testjson = argv[2];
