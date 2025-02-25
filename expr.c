@@ -160,8 +160,8 @@ exprtoken *exprCopyToken(exprtoken *t) {
         t->token_type == EXPR_TOKEN_SELECTOR)
     {
         if (t->str.heapstr) {
-            printf("%d\n", t->token_type);
             new->str.heapstr = RedisModule_Strdup(t->str.heapstr);
+            new->str.start = new->str.heapstr;
         }
     } else if (t->token_type == EXPR_TOKEN_TUPLE) {
         new->tuple.ele = RedisModule_Alloc(sizeof(exprtoken*) * t->tuple.len);
@@ -519,6 +519,7 @@ int exprProcessOperator(exprstate *es, exprtoken *op, int *stack_items, int *err
 
             int arity = exprGetOpArity(top_op->opcode);
             if (*stack_items < arity) {
+                exprFreeToken(top_op);
                 if (errpos) *errpos = top_op->offset;
                 return 1;
             }
@@ -611,7 +612,7 @@ exprstate *exprCompile(char *expr, int *errpos) {
         if (token->token_type == EXPR_TOKEN_OP) {
             exprtoken *op_token = exprCopyToken(token);
             if (exprProcessOperator(es, op_token, &stack_items, errpos)) {
-                RedisModule_Free(op_token);
+                exprFreeToken(op_token);
                 exprFree(es);
                 return NULL;
             }
@@ -724,7 +725,7 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
                 }
                 if (parsed_json) {
                     char item_name[128];
-                    if (t->str.len <= sizeof(item_name)) {
+                    if (t.str.len > 0 && t->str.len <= sizeof(item_name)) {
                         memcpy(item_name,t->str.start+1,t->str.len-1);
                         item_name[t->str.len-1] = 0;
                         attrib = cJSON_GetObjectItem(parsed_json,item_name);
