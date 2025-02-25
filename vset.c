@@ -802,6 +802,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             filter_expr = exprCompile(exprstr,&errpos);
             if (filter_expr == NULL) {
                 if ((size_t)errpos >= exprlen) errpos = 0;
+                RedisModule_Free(vec);
                 return RedisModule_ReplyWithErrorFormat(ctx,
                     "ERR syntax error in FILTER expression near: %s",
                         exprstr+errpos);
