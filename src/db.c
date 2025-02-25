@@ -35,9 +35,12 @@ typedef enum {
     KEY_DELETED /* The key was deleted now. */
 } keyStatus;
 
+static inline keyStatus expireIfNeededWithSlot(redisDb *db, robj *key, int flags, const int keySlot);
 keyStatus expireIfNeeded(redisDb *db, robj *key, int flags);
 int keyIsExpired(redisDb *db, robj *key);
 static void dbSetValue(redisDb *db, robj *key, robj *val, int overwrite, dictEntry *de);
+static inline dictEntry *dbFindWithKeySlot(redisDb *db, void *key, int keySlot);
+static inline dictEntry *dbFindExpiresWithKeySlot(redisDb *db, void *key, int keySlot);
 
 /* Update LFU when an object is accessed.
  * Firstly, decrement the counter if the decrement time is reached.
@@ -136,7 +139,8 @@ void updateKeysizesHist(redisDb *db, int didx, uint32_t type, int64_t oldLen, in
  * expired on replicas even if the master is lagging expiring our key via DELs
  * in the replication link. */
 robj *lookupKey(redisDb *db, robj *key, int flags, dictEntry **deref) {
-    dictEntry *de = dbFind(db, key->ptr);
+    const int key_slot = getKeySlot(key->ptr);
+    dictEntry *de = dbFindWithKeySlot(db, key->ptr, key_slot);
     robj *val = NULL;
     if (de) {
         val = dictGetVal(de);
@@ -156,7 +160,7 @@ robj *lookupKey(redisDb *db, robj *key, int flags, dictEntry **deref) {
             expire_flags |= EXPIRE_AVOID_DELETE_EXPIRED;
         if (flags & LOOKUP_ACCESS_EXPIRED)
             expire_flags |= EXPIRE_ALLOW_ACCESS_EXPIRED;
-        if (expireIfNeeded(db, key, expire_flags) != KEY_VALID) {
+        if (expireIfNeededWithSlot(db, key, expire_flags, key_slot) != KEY_VALID) {
             /* The key is no longer valid. */
             val = NULL;
         }
@@ -453,7 +457,7 @@ robj *dbRandomKey(redisDb *db) {
              * return a key name that may be already expired. */
             return keyobj;
         }
-        if (expireIfNeeded(db,keyobj,0) != KEY_VALID) {
+        if (expireIfNeededWithSlot(db,keyobj,0,randomSlot) != KEY_VALID) {
             decrRefCount(keyobj);
             continue; /* search for another key. This expired. */
         }
@@ -2060,6 +2064,17 @@ void setExpireWithDictEntry(client *c, redisDb *db, robj *key, long long when, d
 
 /* Return the expire time of the specified key, or -1 if no expire
  * is associated with this key (i.e. the key is non volatile) */
+static inline long long getExpireWithSlot(redisDb *db, robj *key, int keySlot) {
+    dictEntry *de;
+
+    if ((de = dbFindExpiresWithKeySlot(db, key->ptr, keySlot)) == NULL)
+        return -1;
+
+    return dictGetSignedIntegerVal(de);
+}
+
+/* Return the expire time of the specified key, or -1 if no expire
+ * is associated with this key (i.e. the key is non volatile) */
 long long getExpire(redisDb *db, robj *key) {
     dictEntry *de;
 
@@ -2175,21 +2190,25 @@ void propagateDeletion(redisDb *db, robj *key, int lazy) {
     decrRefCount(argv[1]);
 }
 
-/* Check if the key is expired. */
-int keyIsExpired(redisDb *db, robj *key) {
+/* Internal Check if the key is expired based upon mstime_t. */
+static inline int keyIsExpiredInternal(mstime_t when) {
     /* Don't expire anything while loading. It will be done later. */
     if (server.loading) return 0;
-
-    mstime_t when = getExpire(db,key);
-    mstime_t now;
-
     if (when < 0) return 0; /* No expire for this key */
-
-    now = commandTimeSnapshot();
-
+    const mstime_t now = commandTimeSnapshot();
     /* The key expired if the current (virtual or real) time is greater
      * than the expire time of the key. */
     return now > when;
+}
+
+/* Check if the key is expired. */
+static inline int keyIsExpiredWithSlot(redisDb *db, robj *key, int keySlot) {
+    return keyIsExpiredInternal(getExpireWithSlot(db,key,keySlot));
+}
+
+/* Check if the key is expired. */
+int keyIsExpired(redisDb *db, robj *key) {
+    return keyIsExpiredInternal(getExpire(db,key));
 }
 
 /* This function is called when we are going to perform some operation
@@ -2224,9 +2243,13 @@ int keyIsExpired(redisDb *db, robj *key) {
  * The function returns KEY_EXPIRED if the key is expired BUT not deleted,
  * or returns KEY_DELETED if the key is expired and deleted. */
 keyStatus expireIfNeeded(redisDb *db, robj *key, int flags) {
+    return expireIfNeededWithSlot(db,key,flags,getKeySlot(key->ptr));
+}
+
+static inline keyStatus expireIfNeededWithSlot(redisDb *db, robj *key, int flags, const int keySlot) {
     if ((server.allow_access_expired) ||
         (flags & EXPIRE_ALLOW_ACCESS_EXPIRED) ||
-        (!keyIsExpired(db,key)))
+        (!keyIsExpiredWithSlot(db,key,keySlot)))
         return KEY_VALID;
 
     /* If we are running in the context of a replica, instead of
@@ -2304,12 +2327,24 @@ int dbExpandExpires(redisDb *db, uint64_t db_size, int try_expand) {
     return dbExpandGeneric(db->expires, db_size, try_expand);
 }
 
+static inline dictEntry *dbFindGenericWithKeySlot(kvstore *kvs, void *key, int keySlot) {
+    return kvstoreDictFind(kvs, keySlot, key);
+}
+
 static dictEntry *dbFindGeneric(kvstore *kvs, void *key) {
     return kvstoreDictFind(kvs, getKeySlot(key), key);
 }
 
 dictEntry *dbFind(redisDb *db, void *key) {
     return dbFindGeneric(db->keys, key);
+}
+
+static inline dictEntry *dbFindWithKeySlot(redisDb *db, void *key, int keySlot) {
+    return dbFindGenericWithKeySlot(db->keys, key, keySlot);
+}
+
+static inline dictEntry *dbFindExpiresWithKeySlot(redisDb *db, void *key, int keySlot) {
+    return dbFindGenericWithKeySlot(db->expires, key, keySlot);
 }
 
 dictEntry *dbFindExpires(redisDb *db, void *key) {
