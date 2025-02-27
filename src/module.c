@@ -13823,12 +13823,27 @@ int RM_RegisterDefragCallbacks(RedisModuleCtx *ctx, RedisModuleDefragFunc start,
  *
  * When stopped and more work is left to be done, the callback should
  * return 1. Otherwise, it should return 0.
- *
- * NOTE: Modules should consider the frequency in which this function is called,
- * so it generally makes sense to do small batches of work in between calls.
  */
 int RM_DefragShouldStop(RedisModuleDefragCtx *ctx) {
-    return (ctx->endtime != 0 && ctx->endtime <= getMonotonicUs());
+    if (ctx->stopping) /* Return immediately if already stopping */
+        return 1;
+    if (!ctx->endtime) /* Return if no time limit set */
+        return 0;
+
+    /* We use certain thresholds to avoid excessive system calls.
+     * Time checks are only performed when any threshold is reached,
+     * which means we might slightly exceed the expected end time. */
+    if (server.stat_active_defrag_hits - ctx->last_stop_check_hits >= 512 ||
+        server.stat_active_defrag_misses - ctx->last_stop_check_misses >= 1024)
+    {
+        if (ctx->endtime <= getMonotonicUs()) {
+            ctx->stopping = 1;
+            return 1;
+        }
+        ctx->last_stop_check_hits = server.stat_active_defrag_hits;
+        ctx->last_stop_check_misses = server.stat_active_defrag_misses;
+    }
+    return 0;
 }
 
 /* Store an arbitrary cursor value for future re-use.
@@ -13983,9 +13998,11 @@ RedisModuleDict *RM_DefragRedisModuleDict(RedisModuleDefragCtx *ctx, RedisModule
     }
 
     while (raxNext(&ri)) {
-        void *newdata = valueCB(ctx, ri.data, ri.key, ri.key_len);
-        if (newdata)
-            raxSetData(ri.node, ri.data=newdata);
+        if (valueCB) {
+            void *newdata = valueCB(ctx, ri.data, ri.key, ri.key_len);
+            if (newdata)
+                raxSetData(ri.node, ri.data=newdata);
+        }
         if (RM_DefragShouldStop(ctx)) {
             if (*seekTo) RM_FreeString(NULL, *seekTo);
             *seekTo = RM_CreateString(NULL, (const char *)ri.key, ri.key_len);
@@ -14009,7 +14026,10 @@ int moduleLateDefrag(robj *key, robj *value, unsigned long *cursor, monotime end
     moduleValue *mv = value->ptr;
     moduleType *mt = mv->type;
 
-    RedisModuleDefragCtx defrag_ctx = { endtime, cursor, key, dbid};
+    /* Interval shouldn't exceed 1 hour. */
+    serverAssert(!endtime || llabs((long long)endtime - (long long)getMonotonicUs()) < 60*60*1000*1000LL);
+
+    RedisModuleDefragCtx defrag_ctx = INIT_MODULE_DEFRAG_CTX(endtime, cursor, key, dbid);
 
     /* Invoke callback. Note that the callback may be missing if the key has been
      * replaced with a different type since our last visit.
@@ -14058,7 +14078,7 @@ int moduleDefragValue(robj *key, robj *value, int dbid) {
         return 0;  /* Defrag later */
     }
 
-    RedisModuleDefragCtx defrag_ctx = { 0, NULL, key, dbid };
+    RedisModuleDefragCtx defrag_ctx = INIT_MODULE_DEFRAG_CTX(0, NULL, key, dbid);
     mt->defrag(&defrag_ctx, key, &mv->value);
     return 1;
 }
@@ -14067,7 +14087,7 @@ int moduleDefragValue(robj *key, robj *value, int dbid) {
 void moduleDefragStart(void) {
     dictForEach(modules, struct RedisModule, module, 
         if (module->defrag_start_cb) {
-            RedisModuleDefragCtx defrag_ctx = { 0, NULL, NULL, -1};
+            RedisModuleDefragCtx defrag_ctx = INIT_MODULE_DEFRAG_CTX(0, NULL, NULL, -1);
             module->defrag_start_cb(&defrag_ctx);
         }
     );
@@ -14077,7 +14097,7 @@ void moduleDefragStart(void) {
 void moduleDefragEnd(void) {
     dictForEach(modules, struct RedisModule, module, 
         if (module->defrag_end_cb) {
-            RedisModuleDefragCtx defrag_ctx = { 0, NULL, NULL, -1};
+            RedisModuleDefragCtx defrag_ctx = INIT_MODULE_DEFRAG_CTX(0, NULL, NULL, -1);
             module->defrag_end_cb(&defrag_ctx);
         }
     );

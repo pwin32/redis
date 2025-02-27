@@ -61,9 +61,9 @@ start_server {tags {"modules"} overrides {{save ""}}} {
 
             set info [r info defragtest_stats]
             assert {[getInfoProperty $info defragtest_global_strings_attempts] > 0}
-            assert {[getInfoProperty $info defragtest_global_strings_pauses] > 0}
             assert {[getInfoProperty $info defragtest_global_dicts_attempts] > 0}
             assert {[getInfoProperty $info defragtest_global_dicts_defragged] > 0}
+            assert {[getInfoProperty $info defragtest_global_dicts_items_defragged] > 0}
             assert_morethan [getInfoProperty $info defragtest_defrag_started] 0
             assert_morethan [getInfoProperty $info defragtest_defrag_ended] 0
             assert_morethan [getInfoProperty $info defragtest_global_dicts_resumes] [getInfoProperty $info defragtest_defrag_ended]
