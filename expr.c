@@ -715,6 +715,10 @@ exprtoken *exprJsonToToken(cJSON *js) {
         obj->str.start = obj->str.heapstr;
         obj->str.len = strlen(obj->str.heapstr);
         return obj;
+    } else if (cJSON_IsBool(js)) {
+        exprtoken *obj = exprNewToken(EXPR_TOKEN_NUM);
+        obj->num = cJSON_IsTrue(js);
+        return obj;
     } else if (cJSON_IsArray(js)) {
         // First, scan the array to ensure it only
         // contains strings and numbers. Otherwise the
