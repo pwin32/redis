@@ -123,7 +123,7 @@ struct {
     {NULL,  0,  0,               0, 0}   // Terminator.
 };
 
-#define EXPR_OP_SPECIALCHARS "+-*%/!()<>=|&"
+#define EXPR_OP_SPECIALCHARS "+-*%/!()<>=|&_"
 
 /* ================================ Expr token ============================== */
 
