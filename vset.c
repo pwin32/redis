@@ -129,7 +129,7 @@ struct vsetObject *createVectorSetObject(unsigned int dim, uint32_t quant_type) 
 void vectorSetReleaseNodeValue(void *v) {
     struct vsetNodeVal *nv = v;
     RedisModule_FreeString(NULL,nv->item);
-    RedisModule_FreeString(NULL,nv->attrib);
+    if (nv->attrib) RedisModule_FreeString(NULL,nv->attrib);
     RedisModule_Free(nv);
 }
 
@@ -295,11 +295,10 @@ void *VADD_thread(void *arg) {
     RedisModuleBlockedClient *bc = targ[0];
     struct vsetObject *vset = targ[1];
     float *vec = targ[3];
-    RedisModuleString *val = targ[4];
     int ef = (uint64_t)targ[6];
 
     /* Look for candidates... */
-    InsertContext *ic = hnsw_prepare_insert(vset->hnsw, vec, NULL, 0, 0, val, ef);
+    InsertContext *ic = hnsw_prepare_insert(vset->hnsw, vec, NULL, 0, 0, NULL, ef);
     targ[5] = ic; // Pass the context to the reply callback.
 
     /* Unblock the client so that our read reply will be invoked. */
@@ -363,9 +362,12 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         hnswNode *newnode;
         if ((newnode = hnsw_try_commit_insert(vset->hnsw, ic)) == NULL) {
             newnode = hnsw_insert(vset->hnsw, vec, NULL, 0, 0, nv, ef);
+        } else {
+            newnode->value = nv;
         }
         RedisModule_DictSet(vset->dict,val,newnode);
         val = NULL; // Don't free it later.
+        attrib = NULL; // Dont' free it later.
 
         RedisModule_ReplicateVerbatim(ctx);
     }
