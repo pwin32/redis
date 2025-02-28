@@ -1176,7 +1176,8 @@ int VLINKS_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
         /* Add each neighbor's element value to the array. */
         for (uint32_t j = 0; j < node->layers[i].num_links; j++) {
-            RedisModule_ReplyWithString(ctx, node->layers[i].links[j]->value);
+            struct vsetNodeVal *nv = node->layers[i].links[j]->value;
+            RedisModule_ReplyWithString(ctx, nv->item);
             if (withscores) {
                 float distance = hnsw_distance(vset->hnsw, node, node->layers[i].links[j]);
                 /* Convert distance to similarity score to match
