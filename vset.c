@@ -794,6 +794,14 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
                 return RedisModule_ReplyWithError(ctx, "ERR invalid EF");
             }
             j += 2;
+        } else if (!strcasecmp(opt, "FILTER-EF") && j+1 < argc) {
+            if (RedisModule_StringToLongLong(argv[j+1], &filter_ef) !=
+                REDISMODULE_OK || filter_ef <= 0)
+            {
+                RedisModule_Free(vec);
+                return RedisModule_ReplyWithError(ctx, "ERR invalid FILTER-EF");
+            }
+            j += 2;
         } else if (!strcasecmp(opt, "FILTER") && j+1 < argc) {
             RedisModuleString *exprarg = argv[j+1];
             size_t exprlen;
