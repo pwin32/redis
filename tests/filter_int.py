@@ -139,33 +139,65 @@ class VSIMFilterAdvanced(TestCase):
         return similarities[:k]
 
     def matches_filter(self, attributes, filter_expr):
-        """Simple filter matching for verification - handles basic expressions"""
+        """Filter matching for verification - uses Python eval to handle complex expressions"""
         if attributes is None:
             return False  # No attributes or invalid JSON
 
-        # This is a simplified implementation - in a real test we would implement
-        # a proper expression parser for verification, but for this example we'll
-        # use a set of common patterns that match our test cases
+        # Replace JSON path selectors with Python dictionary access
+        py_expr = filter_expr
 
-        if filter_expr == '.category == "electronics"':
-            return attributes.get('category') == 'electronics'
-        elif filter_expr == '.price > 1000':
-            return attributes.get('price', 0) > 1000
-        elif filter_expr == '.in_stock':
-            return attributes.get('in_stock', False)
-        elif filter_expr == '.rating >= 4':
-            return attributes.get('rating', 0) >= 4
-        elif filter_expr == '.category == "electronics" and .price < 500':
-            return (attributes.get('category') == 'electronics' and
-                    attributes.get('price', float('inf')) < 500)
-        elif filter_expr == '.is_premium':
-            return attributes.get('is_premium', False)
-        elif filter_expr == '.price > 100 and .price < 1000':
-            price = attributes.get('price', 0)
-            return price > 100 and price < 1000
+        # Handle `.field` notation (replace with attributes['field'])
+        i = 0
+        while i < len(py_expr):
+            if py_expr[i] == '.' and (i == 0 or not py_expr[i-1].isalnum()):
+                # Find the end of the selector (stops at operators or whitespace)
+                j = i + 1
+                while j < len(py_expr) and (py_expr[j].isalnum() or py_expr[j] == '_'):
+                    j += 1
 
-        # Default case - we can't parse this filter
-        return True
+                if j > i + 1:  # Found a valid selector
+                    field = py_expr[i+1:j]
+                    # Use a safe access pattern that returns a default value based on context
+                    py_expr = py_expr[:i] + f"attributes.get('{field}')" + py_expr[j:]
+                    i = i + len(f"attributes.get('{field}')")
+                else:
+                    i += 1
+            else:
+                i += 1
+
+        # Convert not operator if needed
+        py_expr = py_expr.replace('!', ' not ')
+
+        try:
+            # Custom evaluation that handles exceptions for missing fields
+            # by returning False for the entire expression
+
+            # Split the expression on logical operators
+            parts = []
+            for op in [' and ', ' or ']:
+                if op in py_expr:
+                    parts = py_expr.split(op)
+                    break
+
+            if not parts:  # No logical operators found
+                parts = [py_expr]
+
+            # Try to evaluate each part - if any part fails,
+            # the whole expression should fail
+            try:
+                result = eval(py_expr, {"attributes": attributes})
+                return bool(result)
+            except (TypeError, AttributeError):
+                # This typically happens when trying to compare None with
+                # numbers or other types, or when an attribute doesn't exist
+                return False
+            except Exception as e:
+                print(f"Error evaluating filter expression '{filter_expr}' as '{py_expr}': {e}")
+                return False
+
+        except Exception as e:
+            print(f"Error evaluating filter expression '{filter_expr}' as '{py_expr}': {e}")
+            return False
 
     def safe_decode(self,item):
         return item.decode() if isinstance(item, bytes) else item
@@ -221,8 +253,89 @@ class VSIMFilterAdvanced(TestCase):
 
         # We expect high recall for standard parameters
         if ef >= 500 and (filter_ef is None or filter_ef >= 1000):
-            assert recall >= 0.7, \
-                f"Low recall {recall:.2f} for filter '{filter_expr}'"
+            try:
+                assert recall >= 0.7, \
+                    f"Low recall {recall:.2f} for filter '{filter_expr}'"
+            except AssertionError as e:
+                # Get items found in each set
+                redis_items_set = set(redis_items.keys())
+                linear_items_set = set(item[0] for item in linear_results)
+
+                # Find items in each set
+                only_in_redis = redis_items_set - linear_items_set
+                only_in_linear = linear_items_set - redis_items_set
+                in_both = redis_items_set & linear_items_set
+
+                # Build comprehensive debug message
+                debug = f"\nGround Truth: {len(linear_results)} matching items (total vectors: {len(self.vectors)})"
+                debug += f"\nRedis Found: {len(redis_items)} items with FILTER-EF: {filter_ef or 'default'}"
+                debug += f"\nItems in both sets: {len(in_both)} (recall: {recall:.4f})"
+                debug += f"\nItems only in Redis: {len(only_in_redis)}"
+                debug += f"\nItems only in Ground Truth: {len(only_in_linear)}"
+
+                # Show some example items from each set with their scores
+                if only_in_redis:
+                    debug += "\n\nTOP 5 ITEMS ONLY IN REDIS:"
+                    sorted_redis = sorted([(k, v) for k, v in redis_items.items()], key=lambda x: x[1], reverse=True)
+                    for i, (item, score) in enumerate(sorted_redis[:5]):
+                        if item in only_in_redis:
+                            debug += f"\n  {i+1}. {item} (Score: {score:.4f})"
+
+                            # Show attribute that should match filter
+                            attr = self.attribute_map.get(item)
+                            if attr:
+                                debug += f" - Attrs: {attr.get('category', 'N/A')}, Price: {attr.get('price', 'N/A')}"
+
+                if only_in_linear:
+                    debug += "\n\nTOP 5 ITEMS ONLY IN GROUND TRUTH:"
+                    for i, (item, score) in enumerate(linear_results[:5]):
+                        if item in only_in_linear:
+                            debug += f"\n  {i+1}. {item} (Score: {score:.4f})"
+
+                            # Show attribute that should match filter
+                            attr = self.attribute_map.get(item)
+                            if attr:
+                                debug += f" - Attrs: {attr.get('category', 'N/A')}, Price: {attr.get('price', 'N/A')}"
+
+                # Help identify parsing issues
+                debug += "\n\nPARSING CHECK:"
+                debug += f"\nRedis command: VSIM {self.test_key} VALUES {self.dim} [...] FILTER '{filter_expr}'"
+
+                # Check for WITHSCORES handling issues
+                if len(redis_results) > 0 and len(redis_results) % 2 == 0:
+                    debug += f"\nRedis returned {len(redis_results)} items (looks like item,score pairs)"
+                    debug += f"\nFirst few results: {redis_results[:4]}"
+
+                # Check the filter implementation
+                debug += "\n\nFILTER IMPLEMENTATION CHECK:"
+                debug += f"\nFilter expression: '{filter_expr}'"
+                debug += "\nSample attribute matches from attribute_map:"
+                count_matching = 0
+                for i, (name, attrs) in enumerate(self.attribute_map.items()):
+                    if attrs and self.matches_filter(attrs, filter_expr):
+                        count_matching += 1
+                        if i < 3:  # Show first 3 matches
+                            debug += f"\n  - {name}: {attrs}"
+                debug += f"\nTotal items matching filter in attribute_map: {count_matching}"
+
+                # Check if results array handling could be wrong
+                debug += "\n\nRESULT ARRAYS CHECK:"
+                if len(linear_results) >= 1:
+                    debug += f"\nlinear_results[0]: {linear_results[0]}"
+                    if isinstance(linear_results[0], tuple) and len(linear_results[0]) == 2:
+                        debug += " (correct tuple format: (name, score))"
+                    else:
+                        debug += " (UNEXPECTED FORMAT!)"
+
+                # Debug sort order
+                debug += "\n\nSORTING CHECK:"
+                if len(linear_results) >= 2:
+                    debug += f"\nGround truth first item score: {linear_results[0][1]}"
+                    debug += f"\nGround truth second item score: {linear_results[1][1]}"
+                    debug += f"\nCorrectly sorted by similarity? {linear_results[0][1] >= linear_results[1][1]}"
+
+                # Re-raise with detailed information
+                raise AssertionError(str(e) + debug)
 
         return recall, selectivity, query_time, len(redis_items)
 
