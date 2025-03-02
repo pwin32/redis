@@ -123,7 +123,8 @@ struct {
     {NULL,  0,  0,               0, 0}   // Terminator.
 };
 
-#define EXPR_OP_SPECIALCHARS "+-*%/!()<>=|&_"
+#define EXPR_OP_SPECIALCHARS "+-*%/!()<>=|&"
+#define EXPR_SELECTOR_SPECIALCHARS "_-"
 
 /* ================================ Expr token ============================== */
 
@@ -234,15 +235,11 @@ void exprConsumeSpaces(exprstate *es) {
     while(es->p[0] && isspace(es->p[0])) es->p++;
 }
 
-exprtoken *exprParseOperatorOrSelector(exprstate *es) {
-    int token_type;
+/* Parse an operator, trying to match the longer match in the
+ * operators table. */
+exprtoken *exprParseOperator(exprstate *es) {
+    exprtoken *t = exprNewToken(EXPR_TOKEN_OP);
     char *start = es->p;
-    if (es->p[0] == '.') {
-        token_type = EXPR_TOKEN_SELECTOR;
-        es->p++;
-    } else {
-        token_type = EXPR_TOKEN_OP;
-    }
 
     while(es->p[0] &&
           (isalpha(es->p[0]) ||
@@ -250,35 +247,50 @@ exprtoken *exprParseOperatorOrSelector(exprstate *es) {
     {
         es->p++;
     }
-    int matchlen = es->p - start;
-    exprtoken *t = exprNewToken(token_type);
 
-    /* If this is not a selector for an attribute to retrive, then
-     * it must be one of the valid operators. */
+    int matchlen = es->p - start;
     int bestlen = 0;
-    if (token_type == EXPR_TOKEN_OP) {
-        int j;
-        for (j = 0; ExprOptable[j].opname != NULL; j++) {
-            if (ExprOptable[j].oplen > matchlen) continue;
-            if (memcmp(ExprOptable[j].opname, start, ExprOptable[j].oplen) != 0)
-            {
-                continue;
-            }
-            if (ExprOptable[j].oplen > bestlen) {
-                t->opcode = ExprOptable[j].opcode;
-                bestlen = ExprOptable[j].oplen;
-            }
+    int j;
+
+    // Find the longest matching operator.
+    for (j = 0; ExprOptable[j].opname != NULL; j++) {
+        if (ExprOptable[j].oplen > matchlen) continue;
+        if (memcmp(ExprOptable[j].opname, start, ExprOptable[j].oplen) != 0)
+        {
+            continue;
         }
-        if (bestlen == 0) {
-            exprTokenRelease(t);
-            return NULL;
-        } else {
-            es->p = start + bestlen;
+        if (ExprOptable[j].oplen > bestlen) {
+            t->opcode = ExprOptable[j].opcode;
+            bestlen = ExprOptable[j].oplen;
         }
-    } else {
-        t->str.start = start;
-        t->str.len = matchlen;
     }
+    if (bestlen == 0) {
+        exprTokenRelease(t);
+        return NULL;
+    } else {
+        es->p = start + bestlen;
+    }
+    return t;
+}
+
+// Valid selector charset.
+static int is_selector_char(int c) {
+    return (isalpha(c) ||
+            isdigit(c) ||
+            strchr(EXPR_SELECTOR_SPECIALCHARS,c) != NULL);
+}
+
+/* Parse selectors, they start with a dot and can have alphanumerical
+ * or few special chars. */
+exprtoken *exprParseSelector(exprstate *es) {
+    exprtoken *t = exprNewToken(EXPR_TOKEN_SELECTOR);
+    es->p++; // Skip dot.
+    char *start = es->p;
+
+    while(es->p[0] && is_selector_char(es->p[0])) es->p++;
+    int matchlen = es->p - start;
+    t->str.start = start;
+    t->str.len = matchlen;
     return t;
 }
 
@@ -448,9 +460,10 @@ int exprTokenize(exprstate *es, int *errpos) {
             current = exprParseNumber(es);
         } else if (*es->p == '"' || *es->p == '\'') {
             current = exprParseString(es);
-        } else if (*es->p == '.' || isalpha(*es->p) ||
-                  strchr(EXPR_OP_SPECIALCHARS, *es->p)) {
-            current = exprParseOperatorOrSelector(es);
+        } else if (*es->p == '.' && is_selector_char(es->p[1])) {
+            current = exprParseSelector(es);
+        } else if (isalpha(*es->p) || strchr(EXPR_OP_SPECIALCHARS, *es->p)) {
+            current = exprParseOperator(es);
         } else if (*es->p == '[') {
             current = exprParseTuple(es);
         }
@@ -781,9 +794,9 @@ int exprRun(exprstate *es, char *json, size_t json_len) {
                 }
                 if (parsed_json) {
                     char item_name[128];
-                    if (t->str.len > 0 && t->str.len <= sizeof(item_name)) {
-                        memcpy(item_name,t->str.start+1,t->str.len-1);
-                        item_name[t->str.len-1] = 0;
+                    if (t->str.len > 0 && t->str.len < sizeof(item_name)) {
+                        memcpy(item_name,t->str.start,t->str.len);
+                        item_name[t->str.len] = 0;
                         attrib = cJSON_GetObjectItem(parsed_json,item_name);
                     }
                     /* Fill the token according to the JSON type stored
