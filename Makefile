@@ -53,9 +53,9 @@ all: vset.so
 .c.xo:
 	$(CC) -I. $(CFLAGS) $(SHOBJ_CFLAGS) -fPIC -c $< -o $@
 
-vset.xo: redismodule.h
+vset.xo: redismodule.h expr.c
 
-vset.so: vset.xo hnsw.xo
+vset.so: vset.xo hnsw.xo cJSON.xo
 	$(CC) -o $@ $^ $(SHOBJ_LDFLAGS) $(LIBS) -lc
 
 # Example sources / objects
