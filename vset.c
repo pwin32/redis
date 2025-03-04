@@ -1411,7 +1411,8 @@ size_t VectorSetMemUsage(const void *value) {
 
     /* Associated string value - use Redis Module API to get string size, and
      * guess that all the elements have similar size. */
-    size += RedisModule_MallocSizeString(node->value) * vset->hnsw->node_count;
+    struct vsetNodeVal *nv = node->value;
+    size += RedisModule_MallocSizeString(nv->item) * vset->hnsw->node_count;
 
     /* Account for dictionary overhead - this is an approximation. */
     size += RedisModule_DictSize(vset->dict) * (sizeof(void*) * 2);
@@ -1448,12 +1449,17 @@ void VectorSetDigest(RedisModuleDigest *md, void *value) {
     RedisModule_DigestEndSequence(md);
 
     while(node) {
+        struct vsetNodeVal *nv = node->value;
         /* Hash each vector component */
         RedisModule_DigestAddStringBuffer(md, node->vector, hnsw_quants_bytes(vset->hnsw));
         /* Hash the associated value */
         size_t len;
-        const char *str = RedisModule_StringPtrLen(node->value, &len);
+        const char *str = RedisModule_StringPtrLen(nv->item, &len);
         RedisModule_DigestAddStringBuffer(md, (char*)str, len);
+        if (nv->attrib) {
+            str = RedisModule_StringPtrLen(nv->attrib, &len);
+            RedisModule_DigestAddStringBuffer(md, (char*)str, len);
+        }
         node = node->next;
         RedisModule_DigestEndSequence(md);
     }
