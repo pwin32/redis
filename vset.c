@@ -1210,7 +1210,7 @@ int VINFO_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     struct vsetObject *vset = RedisModule_ModuleTypeGetValue(key);
 
     /* Reply with hash */
-    RedisModule_ReplyWithMap(ctx, 6);
+    RedisModule_ReplyWithMap(ctx, 7);
 
     /* Quantization type */
     RedisModule_ReplyWithSimpleString(ctx, "quant-type");
@@ -1227,6 +1227,10 @@ int VINFO_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     /* Max level of HNSW. */
     RedisModule_ReplyWithSimpleString(ctx, "max-level");
     RedisModule_ReplyWithLongLong(ctx, vset->hnsw->max_level);
+
+    /* Number of nodes with attributes. */
+    RedisModule_ReplyWithSimpleString(ctx, "attributes-count");
+    RedisModule_ReplyWithLongLong(ctx, vset->numattribs);
 
     /* Vector set ID. */
     RedisModule_ReplyWithSimpleString(ctx, "vset-uid");
