@@ -1409,10 +1409,36 @@ size_t VectorSetMemUsage(const void *value) {
     /* Add the 0.33 remaining part, but upper layers have less links. */
     size += (sizeof(hnswNode*) * other_levels_links * vset->hnsw->node_count)/3;
 
-    /* Associated string value - use Redis Module API to get string size, and
-     * guess that all the elements have similar size. */
-    struct vsetNodeVal *nv = node->value;
-    size += RedisModule_MallocSizeString(nv->item) * vset->hnsw->node_count;
+    /* Associated string value and attributres.
+     * Use Redis Module API to get string size, and guess that all the
+     * elements have similar size as the first few. */
+    size_t items_scanned = 0, items_size = 0;
+    size_t attribs_scanned = 0, attribs_size = 0;
+    int scan_effort = 20;
+    while(scan_effort > 0 && node) {
+        struct vsetNodeVal *nv = node->value;
+        items_size += RedisModule_MallocSizeString(nv->item);
+        items_scanned++;
+        if (nv->attrib) {
+            attribs_size += RedisModule_MallocSizeString(nv->attrib);
+            attribs_scanned++;
+        }
+        scan_effort--;
+        node = node->next;
+    }
+
+    /* Add the memory usage due to items. */
+    if (items_scanned)
+        size += items_size / items_scanned * vset->hnsw->node_count;
+
+    /* Add memory usage due to attributres. */
+    if (attribs_scanned == 0) {
+        /* We were not lucky enough to find a single attribute in the
+         * first few items? Let's use a fixed arbitrary value. */
+        attribs_scanned = 1;
+        attribs_size = 64;
+    }
+    size += attribs_size / attribs_scanned * vset->numattribs;
 
     /* Account for dictionary overhead - this is an approximation. */
     size += RedisModule_DictSize(vset->dict) * (sizeof(void*) * 2);
