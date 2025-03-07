@@ -585,7 +585,8 @@ int vectorSetFilterCallback(void *value, void *privdata) {
  * handles the HNSW locking explicitly. */
 void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
     float *vec, unsigned long count, float epsilon, unsigned long withscores,
-    unsigned long ef, exprstate *filter_expr, unsigned long filter_ef)
+    unsigned long ef, exprstate *filter_expr, unsigned long filter_ef,
+    int ground_truth)
 {
     /* In our scan, we can't just collect 'count' elements as
      * if count is small we would explore the graph in an insufficient
@@ -603,10 +604,20 @@ void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
     float *distances = RedisModule_Alloc(sizeof(float)*ef);
     int slot = hnsw_acquire_read_slot(vset->hnsw);
     unsigned int found;
-    if (filter_expr == NULL) {
-        found = hnsw_search(vset->hnsw, vec, ef, neighbors, distances, slot, 0);
+    if (ground_truth) {
+        found = hnsw_ground_truth_with_filter(vset->hnsw, vec, ef, neighbors,
+                    distances, slot, 0,
+                    filter_expr ? vectorSetFilterCallback : NULL,
+                    filter_expr);
     } else {
-        found = hnsw_search_with_filter(vset->hnsw, vec, ef, neighbors, distances, slot, 0, vectorSetFilterCallback, filter_expr, filter_ef);
+        if (filter_expr == NULL) {
+            found = hnsw_search(vset->hnsw, vec, ef, neighbors,
+                                distances, slot, 0);
+        } else {
+            found = hnsw_search_with_filter(vset->hnsw, vec, ef, neighbors,
+                        distances, slot, 0, vectorSetFilterCallback,
+                        filter_expr, filter_ef);
+        }
     }
     hnsw_release_read_slot(vset->hnsw,slot);
     RedisModule_Free(vec);
@@ -654,6 +665,7 @@ void *VSIM_thread(void *arg) {
     unsigned long ef = (unsigned long)targ[6];
     exprstate *filter_expr = targ[7];
     unsigned long filter_ef = (unsigned long)targ[8];
+    unsigned long ground_truth = (unsigned long)targ[9];
     RedisModule_Free(targ[4]);
     RedisModule_Free(targ);
 
@@ -661,7 +673,7 @@ void *VSIM_thread(void *arg) {
     RedisModuleCtx *ctx = RedisModule_GetThreadSafeContext(bc);
 
     // Run the query.
-    VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef);
+    VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef, ground_truth);
 
     // Cleanup.
     RedisModule_FreeThreadSafeContext(ctx);
@@ -683,6 +695,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     long long count = VSET_DEFAULT_COUNT;   /* New default value */
     long long ef = 0;       /* Exploration factor (see HNSW paper) */
     double epsilon = 2.0;   /* Max cosine distance */
+    long long ground_truth = 0; /* Linear scan instead of HNSW search? */
 
     /* Things computed later. */
     long long filter_ef = 0;
@@ -772,6 +785,9 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         if (!strcasecmp(opt, "WITHSCORES")) {
             withscores = 1;
             j++;
+        } else if (!strcasecmp(opt, "TRUTH")) {
+            ground_truth = 1;
+            j++;
         } else if (!strcasecmp(opt, "COUNT") && j+1 < argc) {
             if (RedisModule_StringToLongLong(argv[j+1], &count)
                 != REDISMODULE_OK || count <= 0)
@@ -852,7 +868,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
         RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx,NULL,NULL,NULL,0);
         pthread_t tid;
-        void **targ = RedisModule_Alloc(sizeof(void*)*9);
+        void **targ = RedisModule_Alloc(sizeof(void*)*10);
         targ[0] = bc;
         targ[1] = vset;
         targ[2] = vec;
@@ -863,16 +879,17 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         targ[6] = (void*)(unsigned long)ef;
         targ[7] = (void*)filter_expr;
         targ[8] = (void*)(unsigned long)filter_ef;
+        targ[9] = (void*)(unsigned long)ground_truth;
         if (pthread_create(&tid,NULL,VSIM_thread,targ) != 0) {
             pthread_rwlock_unlock(&vset->in_use_lock);
             RedisModule_AbortBlock(bc);
             RedisModule_Free(vec);
             RedisModule_Free(targ[4]);
             RedisModule_Free(targ);
-            VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef);
+            VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef, ground_truth);
         }
     } else {
-        VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef);
+        VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef, ground_truth);
     }
 
     return REDISMODULE_OK;

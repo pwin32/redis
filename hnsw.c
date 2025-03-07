@@ -2552,3 +2552,69 @@ void hnsw_test_graph_recall(HNSW *index, int test_ef, int verbose) {
            unreachable_nodes,
            total_nodes ? (float)unreachable_nodes * 100 / total_nodes : 0);
 }
+
+/* Return exact K-NN items by performing a linear scan of all nodes.
+ * This function has the same signature as hnsw_search_with_filter() but
+ * instead of using the graph structure, it scans all nodes to find the
+ * true nearest neighbors.
+ *
+ * Note that neighbors and distances arrays must have space for at least 'k' items.
+ * norm_query should be set to 1 if the query vector is already normalized.
+ *
+ * If the filter_callback is passed, only elements passing the specified filter
+ * are returned. The slot parameter is ignored but kept for API consistency. */
+int hnsw_ground_truth_with_filter
+               (HNSW *index, const float *query_vector, uint32_t k,
+                hnswNode **neighbors, float *distances, uint32_t slot,
+                int query_vector_is_normalized,
+                int (*filter_callback)(void *value, void *privdata),
+                void *filter_privdata)
+{
+    /* Note that we don't really use the slot here: it's a linear scan.
+     * Yet we want the user to acquire the slot as this will hold the
+     * global lock in read only mode. */
+    (void) slot;
+
+    /* Take our query vector into a temporary node. */
+    hnswNode query;
+    if (hnsw_init_tmp_node(index, &query, query_vector_is_normalized, query_vector) == 0) return -1;
+
+    /* Accumulate best results into a priority queue. */
+    pqueue *results = pq_new(k);
+    if (!results) {
+        hnsw_free_tmp_node(&query, query_vector);
+        return -1;
+    }
+
+    /* Scan all nodes linearly. */
+    hnswNode *current = index->head;
+    while (current) {
+        /* Apply filter if needed. */
+        if (filter_callback &&
+            !filter_callback(current->value, filter_privdata))
+        {
+            current = current->next;
+            continue;
+        }
+
+        /* Calculate distance to query. */
+        float dist = hnsw_distance(index, &query, current);
+
+        /* Add to results to pqueue. Will be accepted only if better than
+         * the current worse or pqueue not full. */
+        pq_push(results, current, dist);
+        current = current->next;
+    }
+
+    /* Copy results to output arrays. */
+    uint32_t found = MIN(k, results->count);
+    for (uint32_t i = 0; i < found; i++) {
+        neighbors[i] = pq_get_node(results, i);
+        if (distances) distances[i] = pq_get_distance(results, i);
+    }
+
+    /* Clean up. */
+    pq_free(results);
+    hnsw_free_tmp_node(&query, query_vector);
+    return found;
+}
