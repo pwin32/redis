@@ -106,7 +106,7 @@ struct vsetObject *createVectorSetObject(unsigned int dim, uint32_t quant_type) 
     if (!o) return NULL;
 
     o->id = VectorSetTypeNextId++;
-    o->hnsw = hnsw_new(dim,quant_type);
+    o->hnsw = hnsw_new(dim,quant_type,0);
     if (!o->hnsw) {
         RedisModule_Free(o);
         return NULL;

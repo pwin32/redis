@@ -27,7 +27,8 @@ typedef struct {
                                * reallocate the node in very particular
                                * conditions in order to allow linking of
                                * new inserted nodes, so this may change
-                               * dynamically for a small set of nodes. */
+                               * dynamically and be > M*2 for a small set of
+                               * nodes. */
     float worst_distance;     /* Distance to the worst neighbor */
     uint32_t worst_idx;       /* Index of the worst neighbor */
 } hnswNodeLayer;
@@ -74,6 +75,9 @@ typedef struct hnswCursor {
 /* Main HNSW index structure */
 typedef struct HNSW {
     hnswNode *enter_point;   /* Entry point for the graph */
+    uint32_t M;               /* M as in the paper: layer 0 has M*2 max
+                                 neighbors (M populated at insertion time)
+                                 while all the other layers have M neighbors. */
     uint32_t max_level;      /* Current maximum level in the graph */
     uint32_t vector_dim;     /* Dimensionality of stored vectors */
     uint64_t node_count;     /* Total number of nodes */
@@ -110,7 +114,7 @@ typedef struct hnswSerNode {
 typedef struct InsertContext InsertContext;
 
 /* Core HNSW functions */
-HNSW *hnsw_new(uint32_t vector_dim, uint32_t quant_type);
+HNSW *hnsw_new(uint32_t vector_dim, uint32_t quant_type, uint32_t m);
 void hnsw_free(HNSW *index,void(*free_value)(void*value));
 void hnsw_node_free(hnswNode *node);
 void hnsw_print_stats(HNSW *index);

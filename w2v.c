@@ -26,7 +26,7 @@ uint64_t ms_time(void) {
 /* Example usage in main() */
 int w2v_single_thread(int quantization, uint64_t numele, int massdel, int recall) {
     /* Create index */
-    HNSW *index = hnsw_new(300, quantization);
+    HNSW *index = hnsw_new(300, quantization, 0);
     float v[300];
     uint16_t wlen;
 
@@ -201,7 +201,7 @@ int w2v_multi_thread(int numthreads, int quantization, uint64_t numele) {
     /* Create index */
     struct threadContext ctx;
 
-    ctx.index = hnsw_new(300,quantization);
+    ctx.index = hnsw_new(300,quantization,0);
 
     ctx.fp = fopen("word2vec.bin","rb");
     if (ctx.fp == NULL) {
