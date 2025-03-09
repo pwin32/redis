@@ -13959,8 +13959,9 @@ int moduleDefragRaxNode(raxNode **noderef) {
 /* Defragment a Redis Module Dictionary by scanning its contents and calling a value
  * callback for each value.
  *
- * The callback gets the current value in the dict, and should return non-NULL with a new pointer,
+ * The callback gets the current value in the dict, and should update newptr to the new pointer,
  * if the value was re-allocated to a different address. The callback also gets the key name just as a reference.
+ * The callback returns 0 when defrag is complete for this node, 1 when node needs more work.
  *
  * The API can work incrementally by accepting a seek position to continue from, and
  * returning the next position to seek to on the next call (or return NULL when the iteration is completed).
@@ -13983,13 +13984,15 @@ RedisModuleDict *RM_DefragRedisModuleDict(RedisModuleDefragCtx *ctx, RedisModule
 
     raxStart(&ri,dict->rax);
     if (*seekTo == NULL) {
+        /* if last seek is NULL, we start new iteration */
+        moduleDefragRaxNode(&dict->rax->head);
         /* assign the iterator node callback before the seek, so that the
          * initial nodes that are processed till the first item are covered */
         ri.node_cb = moduleDefragRaxNode;
         raxSeek(&ri,"^",NULL,0);
     } else {
-        /* if cursor is non-zero, we seek to the static 'last' */
-        if (!raxSeek(&ri,">", (*seekTo)->ptr, sdslen((*seekTo)->ptr))) {
+        /* Seek to the static 'seekTo'. */
+        if (!raxSeek(&ri,">=", (*seekTo)->ptr, sdslen((*seekTo)->ptr))) {
             goto cleanup;
         }
         /* assign the iterator node callback after the seek, so that the
@@ -13998,12 +14001,20 @@ RedisModuleDict *RM_DefragRedisModuleDict(RedisModuleDefragCtx *ctx, RedisModule
     }
 
     while (raxNext(&ri)) {
+        int ret = 0;
+        void *newdata = NULL;
+
         if (valueCB) {
-            void *newdata = valueCB(ctx, ri.data, ri.key, ri.key_len);
+            ret = valueCB(ctx, ri.data, ri.key, ri.key_len, &newdata);
             if (newdata)
                 raxSetData(ri.node, ri.data=newdata);
         }
-        if (RM_DefragShouldStop(ctx)) {
+
+        /* Check if we need to interrupt defragmentation.
+         * - For explicit interruption, use current position
+         * - For timeout interruption, try to advance to next node if possible */
+        if (ret == 1 || RM_DefragShouldStop(ctx)) {
+            if (ret == 0 && !raxNext(&ri)) goto cleanup; /* Last node and no more work needed. */
             if (*seekTo) RM_FreeString(NULL, *seekTo);
             *seekTo = RM_CreateString(NULL, (const char *)ri.key, ri.key_len);
             raxStop(&ri);
