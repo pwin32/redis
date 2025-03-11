@@ -2,6 +2,58 @@ Redis Community Edition 8.0 release notes
 =========================================
 
 ============================================================
+8.0-RC1 (v7.9.240)    Committed Tue 11 Mar 2025 11:00:00 IST
+============================================================
+
+This is the first Release Candidate of Redis Community Edition 8.0.
+
+Release candidates are feature-complete pre-releases. Pre-releases are not suitable for production use.
+
+### Headlines
+
+8.0-RC1 includes 3 new hash commands, performance improvements, and memory defragmentation improvements.
+
+### Distributions
+
+- Alpine and Debian Docker images - https://hub.docker.com/_/redis
+- Install using snap - see https://github.com/redis/redis-snap
+- Install using brew - see https://github.com/redis/homebrew-redis
+- Install using RPM and Debian APT - will be added on the GA release
+
+### New Features
+
+- #13798 Hash - new commands:
+  - `HGETDEL` Get and delete the value of one or more fields of a given hash key
+  - `HGETEX` Get the value of one or more fields of a given hash key, and optionally set their expiration
+  - `HSETEX` Set the value of one or more fields of a given hash key, and optionally set their expiration
+- #13773 Add replication offset to AOF, allowing more robust way to determine which AOF has a more up-to-date data during recovery
+- #13740, #13763 shared secret - new mechanism to allow sending internal commands between nodes
+
+### Bug fixes
+
+- #13804 Overflow on 32-bit systems when calculating idle time for eviction
+- #13793 `WAITAOF` returns prematurely
+- #13800 Remove `DENYOOM` from `HEXPIRE`, `HEXPIREAT`, `HPEXPIRE`, and `HPEXPIREAT`
+- #13632 Streams - wrong behavior of `XREAD +` after last entry
+
+### Modules API
+
+- #13788 `RedisModule_LoadDefaultConfigs` - load module configuration values from redis.conf
+- #13815 `RM_RegisterDefragFunc2` - support for incremental defragmentation of global module data
+- #13816 `RM_DefragRedisModuleDict` - allow modules to defrag `RedisModuleDict`
+- #13774 `RM_GetContextFlags` - add a `REDISMODULE_CTX_FLAGS_DEBUG_ENABLED` flag to execute debug commands
+
+
+### Performance and resource utilization improvements
+
+- #13752 Reduce defrag CPU usage when defragmentation is ineffective
+- #13764 Reduce latency when a command is called consecutively
+- #13787 Optimize parsing data from clients, specifically multi-bulk (array) data
+- #13792 Optimize dictionary lookup by avoiding duplicate key length calculation during comparisons
+- #13796 Optimize expiration checks
+
+
+============================================================
 8.0-M03 (v7.9.226)    Committed Mon 20 Jan 2025 15:00:00 IST
 ============================================================
 
