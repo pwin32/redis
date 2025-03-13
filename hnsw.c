@@ -1085,10 +1085,33 @@ void select_neighbors(HNSW *index, pqueue *candidates, hnswNode *new_node,
             } else {
                 /* Otherwise we have no other option than reallocating
                  * the max number of links for this target node, and
-                 * ensure at least a few connections for our new node.
-                 *
-                 * XXX: Implement this part. */
-                debugmsg("Node overbooking needed: allocate more\n");
+                 * ensure at least a few connections for our new node. */
+                uint32_t reallocation_limit = layer == 0 ?
+                    index->M * 3 : index->M *2;
+                if (neighbor->layers[layer].max_links >= reallocation_limit)
+                    continue;
+
+                uint32_t new_max_links = neighbor->layers[layer].max_links+1;
+                hnswNode **new_links = hrealloc(neighbor->layers[layer].links,
+                                        sizeof(hnswNode*) * new_max_links);
+                if (new_links == NULL) continue; // Non critical.
+
+                /* Update neighbor's link capacity. */
+                neighbor->layers[layer].links = new_links;
+                neighbor->layers[layer].max_links = new_max_links;
+
+                /* Establish bidirectional link. */
+                uint32_t n = neighbor->layers[layer].num_links;
+                neighbor->layers[layer].links[n] = new_node;
+                neighbor->layers[layer].num_links++;
+                hnsw_update_worst_neighbor_on_add(index, neighbor, layer,
+                                                  n, dist);
+
+                n = new_node->layers[layer].num_links;
+                new_node->layers[layer].links[n] = neighbor;
+                new_node->layers[layer].num_links++;
+                hnsw_update_worst_neighbor_on_add(index, new_node, layer,
+                                                  n, dist);
                 continue;
             }
         }
