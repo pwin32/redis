@@ -11,6 +11,9 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
+#define HNSW_DEFAULT_M  16     /* Used when 0 is given at creation time. */
+#define HNSW_MIN_M      4      /* Probably even too low already. */
+#define HNSW_MAX_M      4096   /* Safeguard sanity limit. */
 #define HNSW_MAX_THREADS 32    /* Maximum number of concurrent threads */
 
 /* Quantization types you can enable at creation time in hnsw_new() */

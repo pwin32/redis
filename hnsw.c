@@ -62,8 +62,6 @@
                              * used when deleting nodes for the search step
                              * needed sometimes to reconnect nodes that remain
                              * orphaned of one link. */
-#define HNSW_DEFAULT_M  16  /* Useful if 0 is given at creation time. */
-#define HNSW_MAX_M 1024     /* Hard limit for M. */
 
 static void (*hfree)(void *p) = free;
 static void *(*hmalloc)(size_t s) = malloc;

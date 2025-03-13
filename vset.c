@@ -100,13 +100,13 @@ float *applyProjection(const float *input, const float *proj_matrix,
 }
 
 /* Create the vector as HNSW+Dictionary combined data structure. */
-struct vsetObject *createVectorSetObject(unsigned int dim, uint32_t quant_type) {
+struct vsetObject *createVectorSetObject(unsigned int dim, uint32_t quant_type, uint32_t hnsw_M) {
     struct vsetObject *o;
     o = RedisModule_Alloc(sizeof(*o));
     if (!o) return NULL;
 
     o->id = VectorSetTypeNextId++;
-    o->hnsw = hnsw_new(dim,quant_type,0);
+    o->hnsw = hnsw_new(dim,quant_type,hnsw_M);
     if (!o->hnsw) {
         RedisModule_Free(o);
         return NULL;
@@ -380,7 +380,8 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     return retval;
 }
 
-/* VADD key [REDUCE dim] FP32|VALUES vector value [CAS] [NOQUANT] */
+/* VADD key [REDUCE dim] FP32|VALUES vector value [CAS] [NOQUANT] [BIN] [Q8]
+ *      [M count] */
 int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
 
@@ -392,6 +393,7 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     int consumed_args;
     int cas = 0; // Threaded check-and-set style insert.
     long long ef = VSET_DEFAULT_C_EF; // HNSW creation time EF for new nodes.
+    long long hnsw_create_M = HNSW_DEFAULT_M; // HNSW creation default M value.
     float *vec = parseVector(argv, argc, 2, &dim, &reduce_dim, &consumed_args);
     RedisModuleString *attrib = NULL; // Attributes if passed via ATTRIB.
     if (!vec)
@@ -413,6 +415,15 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             {
                 RedisModule_Free(vec);
                 return RedisModule_ReplyWithError(ctx, "ERR invalid EF");
+            }
+            j++; // skip argument.
+        } else if (!strcasecmp(opt, "M") && j+1 < argc) {
+            if (RedisModule_StringToLongLong(argv[j+1], &hnsw_create_M)
+                != REDISMODULE_OK || hnsw_create_M < HNSW_MIN_M ||
+                hnsw_create_M > HNSW_MAX_M)
+            {
+                RedisModule_Free(vec);
+                return RedisModule_ReplyWithError(ctx, "ERR invalid M");
             }
             j++; // skip argument.
         } else if (!strcasecmp(opt, "SETATTR") && j+1 < argc) {
@@ -465,7 +476,7 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
                   * key would be left empty until the threaded part
                   * does not return. It's also pointless to try try
                   * doing threaded first elemetn insertion. */
-        vset = createVectorSetObject(reduce_dim ? reduce_dim : dim, quant_type);
+        vset = createVectorSetObject(reduce_dim ? reduce_dim : dim, quant_type, hnsw_create_M);
 
         /* Initialize projection if requested */
         if (reduce_dim) {
@@ -485,7 +496,13 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         if (vset->hnsw->quant_type != quant_type) {
             RedisModule_Free(vec);
             return RedisModule_ReplyWithError(ctx,
-                "ERR use the same quantization of the existing vector set");
+                "ERR asked quantization mismatch with existing vector set");
+        }
+
+        if (vset->hnsw->M != hnsw_create_M) {
+            RedisModule_Free(vec);
+            return RedisModule_ReplyWithError(ctx,
+                "ERR asked M value mismatch with existing vector set");
         }
 
         if ((vset->proj_matrix == NULL && vset->hnsw->vector_dim != dim) ||
@@ -1227,11 +1244,15 @@ int VINFO_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     struct vsetObject *vset = RedisModule_ModuleTypeGetValue(key);
 
     /* Reply with hash */
-    RedisModule_ReplyWithMap(ctx, 7);
+    RedisModule_ReplyWithMap(ctx, 8);
 
     /* Quantization type */
     RedisModule_ReplyWithSimpleString(ctx, "quant-type");
     RedisModule_ReplyWithSimpleString(ctx, vectorSetGetQuantName(vset));
+
+    /* HNSW M value */
+    RedisModule_ReplyWithSimpleString(ctx, "hnsw-m");
+    RedisModule_ReplyWithLongLong(ctx, vset->hnsw->M);
 
     /* Vector dimensionality. */
     RedisModule_ReplyWithSimpleString(ctx, "vector-dim");
@@ -1270,7 +1291,10 @@ void VectorSetRdbSave(RedisModuleIO *rdb, void *value) {
     struct vsetObject *vset = value;
     RedisModule_SaveUnsigned(rdb, vset->hnsw->vector_dim);
     RedisModule_SaveUnsigned(rdb, vset->hnsw->node_count);
-    RedisModule_SaveUnsigned(rdb, vset->hnsw->quant_type);
+
+    uint32_t hnsw_config = (vset->hnsw->quant_type & 0xff) |
+                           ((vset->hnsw->M & 0xffff) << 8);
+    RedisModule_SaveUnsigned(rdb, hnsw_config);
 
     uint32_t save_flags = 0;
     if (vset->proj_matrix) save_flags |= SAVE_FLAG_HAS_PROJMATRIX;
@@ -1316,9 +1340,13 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
 
     uint32_t dim = RedisModule_LoadUnsigned(rdb);
     uint64_t elements = RedisModule_LoadUnsigned(rdb);
-    uint32_t quant_type = RedisModule_LoadUnsigned(rdb);
+    uint32_t hnsw_config = RedisModule_LoadUnsigned(rdb);
+    uint32_t quant_type = hnsw_config & 0xff;
+    uint32_t hnsw_m = (hnsw_config >> 8) & 0xffff;
 
-    struct vsetObject *vset = createVectorSetObject(dim,quant_type);
+    if (hnsw_m == 0) hnsw_m = 16; // Default, useful for RDB files predating
+                                  // this configuration parameter.
+    struct vsetObject *vset = createVectorSetObject(dim,quant_type,hnsw_m);
     if (!vset) return NULL;
 
     /* Load projection matrix if present */
