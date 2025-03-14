@@ -3,7 +3,7 @@
  * Based on the paper by Yu. A. Malkov, D. A. Yashunin
  *
  * Copyright(C) 2024-Present, Redis Ltd. All Rights Reserved.
- * Originally authored by: Salvatore Sanfilippo.
+ * Originally authored by: Salvatore Sanfilippo
  */
 
 #include <stdio.h>
@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <math.h>
 
 #include "hnsw.h"
 
@@ -24,8 +25,155 @@ uint64_t ms_time(void) {
     return (uint64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000);
 }
 
+/* Implementation of the recall test with random vectors. */
+void test_recall(HNSW *index, int ef) {
+    const int num_test_vectors = 10000;
+    const int k = 100; // Number of nearest neighbors to find.
+
+    // Create array to store vectors for mixing.
+    int num_source_vectors = 1000; // Enough, since we mix them.
+    float **source_vectors = malloc(sizeof(float*) * num_source_vectors);
+    if (!source_vectors) {
+        printf("Failed to allocate memory for source vectors\n");
+        return;
+    }
+
+    // Allocate memory for each source vector
+    for (int i = 0; i < num_source_vectors; i++) {
+        source_vectors[i] = malloc(sizeof(float) * 300);
+        if (!source_vectors[i]) {
+            printf("Failed to allocate memory for source vector %d\n", i);
+            // Clean up already allocated vectors.
+            for (int j = 0; j < i; j++) free(source_vectors[j]);
+            free(source_vectors);
+            return;
+        }
+    }
+
+    /* Populate source vectors from the index, we just scan the
+     * first N items. */
+    int source_count = 0;
+    hnswNode *current = index->head;
+    while (current && source_count < num_source_vectors) {
+        hnsw_get_node_vector(index, current, source_vectors[source_count]);
+        source_count++;
+        current = current->next;
+    }
+
+    if (source_count < num_source_vectors) {
+        printf("Warning: Only found %d nodes for source vectors\n",
+            source_count);
+        num_source_vectors = source_count;
+    }
+
+    // Allocate memory for test vector.
+    float *test_vector = malloc(sizeof(float) * 300);
+    if (!test_vector) {
+        printf("Failed to allocate memory for test vector\n");
+        for (int i = 0; i < num_source_vectors; i++) {
+            free(source_vectors[i]);
+        }
+        free(source_vectors);
+        return;
+    }
+
+    // Allocate memory for results.
+    hnswNode **hnsw_results = malloc(sizeof(hnswNode*) * k);
+    hnswNode **linear_results = malloc(sizeof(hnswNode*) * k);
+    float *hnsw_distances = malloc(sizeof(float) * k);
+    float *linear_distances = malloc(sizeof(float) * k);
+
+    if (!hnsw_results || !linear_results || !hnsw_distances || !linear_distances) {
+        printf("Failed to allocate memory for results\n");
+        if (hnsw_results) free(hnsw_results);
+        if (linear_results) free(linear_results);
+        if (hnsw_distances) free(hnsw_distances);
+        if (linear_distances) free(linear_distances);
+        for (int i = 0; i < num_source_vectors; i++) free(source_vectors[i]);
+        free(source_vectors);
+        free(test_vector);
+        return;
+    }
+
+    // Initialize random seed.
+    srand(time(NULL));
+
+    // Perform recall test.
+    printf("\nPerforming recall test with EF=%d on %d random vectors...\n",
+           ef, num_test_vectors);
+    double total_recall = 0.0;
+
+    for (int t = 0; t < num_test_vectors; t++) {
+        // Create a random vector by mixing 3 existing vectors.
+        float weights[3] = {0.0};
+        int src_indices[3] = {0};
+
+        // Generate random weights.
+        float weight_sum = 0.0;
+        for (int i = 0; i < 3; i++) {
+            weights[i] = (float)rand() / RAND_MAX;
+            weight_sum += weights[i];
+            src_indices[i] = rand() % num_source_vectors;
+        }
+
+        // Normalize weights.
+        for (int i = 0; i < 3; i++) weights[i] /= weight_sum;
+
+        // Mix vectors.
+        memset(test_vector, 0, sizeof(float) * 300);
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 300; j++) {
+                test_vector[j] +=
+                    weights[i] * source_vectors[src_indices[i]][j];
+            }
+        }
+
+        // Perform HNSW search with the specified EF parameter.
+        int slot = hnsw_acquire_read_slot(index);
+        int hnsw_found = hnsw_search_with_filter(index, test_vector, k, hnsw_results, hnsw_distances, slot, 0, NULL, NULL, ef);
+
+        // Perform linear search (ground truth).
+        int linear_found = hnsw_ground_truth_with_filter(index, test_vector, k, linear_results, linear_distances, slot, 0, NULL, NULL);
+        hnsw_release_read_slot(index, slot);
+
+        // Calculate recall for this query (intersection size / k).
+        int intersection_count = 0;
+        for (int i = 0; i < linear_found; i++) {
+            for (int j = 0; j < hnsw_found; j++) {
+                if (linear_results[i] == hnsw_results[j]) {
+                    intersection_count++;
+                    break;
+                }
+            }
+        }
+
+        double recall = (double)intersection_count / linear_found;
+        total_recall += recall;
+
+        // Show progress.
+        if ((t+1) % 1000 == 0 || t == num_test_vectors-1) {
+            printf("Processed %d/%d queries, current avg recall: %.2f%%\n",
+                t+1, num_test_vectors, (total_recall / (t+1)) * 100);
+        }
+    }
+
+    // Calculate and print final average recall.
+    double avg_recall = (total_recall / num_test_vectors) * 100;
+    printf("\nRecall Test Results:\n");
+    printf("Average recall@%d (EF=%d): %.2f%%\n", k, ef, avg_recall);
+
+    // Cleanup.
+    free(hnsw_results);
+    free(linear_results);
+    free(hnsw_distances);
+    free(linear_distances);
+    free(test_vector);
+    for (int i = 0; i < num_source_vectors; i++) free(source_vectors[i]);
+    free(source_vectors);
+}
+
 /* Example usage in main() */
-int w2v_single_thread(int quantization, uint64_t numele, int massdel, int recall) {
+int w2v_single_thread(int quantization, uint64_t numele, int massdel, int self_recall, int recall_ef) {
     /* Create index */
     HNSW *index = hnsw_new(300, quantization, 0);
     float v[300];
@@ -87,10 +235,15 @@ int w2v_single_thread(int quantization, uint64_t numele, int massdel, int recall
         }
     }
 
-    // Recall test (slow).
-    if (recall) {
+    // Self-recall test (slow).
+    if (self_recall) {
         hnsw_print_stats(index);
         hnsw_test_graph_recall(index,200,0);
+    }
+
+    // New recall test
+    if (recall_ef > 0) {
+        test_recall(index, recall_ef);
     }
 
     uint64_t connected_nodes;
@@ -273,8 +426,9 @@ int main(int argc, char **argv) {
     uint64_t numele = 20000;
 
     /* This you can enable in single thread mode for testing: */
-    int massdel = 0;    // If true, does the mass deletion test.
-    int recall = 0;     // If true, does the recall test.
+    int massdel = 0;       // If true, does the mass deletion test.
+    int self_recall = 0;   // If true, does the self-recall test.
+    int recall_ef = 0;     // If not 0, does the recall test with this EF value.
 
     for (int j = 1; j < argc; j++) {
         int moreargs = argc-j-1;
@@ -285,8 +439,11 @@ int main(int argc, char **argv) {
             quantization = HNSW_QUANT_BIN;
         } else if (!strcasecmp(argv[j],"--mass-del")) {
             massdel = 1;
-        } else if (!strcasecmp(argv[j],"--recall")) {
-            recall = 1;
+        } else if (!strcasecmp(argv[j],"--self-recall")) {
+            self_recall = 1;
+        } else if (moreargs >= 1 && !strcasecmp(argv[j],"--recall")) {
+            recall_ef = atoi(argv[j+1]);
+            j++;
         } else if (moreargs >= 1 && !strcasecmp(argv[j],"--threads")) {
             numthreads = atoi(argv[j+1]);
             j++;
@@ -295,10 +452,10 @@ int main(int argc, char **argv) {
             j++;
             if (numele < 1) numele = 1;
         } else if (!strcasecmp(argv[j],"--help")) {
-            printf("%s [--quant] [--bin] [--thread <count>] [--numele <count>] [--mass-del] [--recall]\n", argv[0]);
+            printf("%s [--quant] [--bin] [--thread <count>] [--numele <count>] [--mass-del] [--self-recall] [--recall <ef>]\n", argv[0]);
             exit(0);
         } else {
-            printf("Unrecognized option: %s\n", argv[j]);
+            printf("Unrecognized option or wrong number of arguments: %s\n", argv[j]);
             exit(1);
         }
     }
@@ -311,6 +468,6 @@ int main(int argc, char **argv) {
         w2v_multi_thread(numthreads,quantization,numele);
     } else {
         printf("Single thread execution. Use --threads 4 for concurrent API\n");
-        w2v_single_thread(quantization,numele,massdel,recall);
+        w2v_single_thread(quantization,numele,massdel,self_recall,recall_ef);
     }
 }
