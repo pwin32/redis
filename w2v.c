@@ -2,7 +2,8 @@
  * HNSW (Hierarchical Navigable Small World) Implementation
  * Based on the paper by Yu. A. Malkov, D. A. Yashunin
  *
- * Copyright(C) 2024 Salvatore Sanfilippo. All Rights Reserved.
+ * Copyright(C) 2024-Present, Redis Ltd. All Rights Reserved.
+ * Originally authored by: Salvatore Sanfilippo.
  */
 
 #include <stdio.h>

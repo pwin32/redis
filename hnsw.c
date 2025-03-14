@@ -25,7 +25,8 @@
  *    bidirectional), and reliking the nodes orphaned of one link among
  *    them.
  *
- * Copyright(C) 2024-2025 Salvatore Sanfilippo. All Rights Reserved.
+ * Copyright(C) 2024-Present, Redis Ltd. All Rights Reserved.
+ * Originally authored by: Salvatore Sanfilippo.
  */
 
 #define _DEFAULT_SOURCE

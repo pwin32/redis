@@ -3,7 +3,8 @@
  * general code to be used when we want to tell if a given object (with fields)
  * passes or fails a given test for scalars, strings, ...
  *
- * Copyright(C) 2024-2025 Salvatore Sanfilippo. All Rights Reserved.
+ * Copyright(C) 2024-Present, Redis Ltd. All Rights Reserved.
+ * Originally authored by: Salvatore Sanfilippo.
  */
 
 #include <stdio.h>

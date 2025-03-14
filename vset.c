@@ -1,8 +1,8 @@
 /* Redis implementation for vector sets. The data structure itself
  * is implemented in hnsw.c.
  *
- * Copyright(C) 2024 Salvatore Sanfilippo.
- * All Rights Reserved.
+ * Copyright(C) 2024-Present, Redis Ltd. All Rights Reserved.
+ * Originally authored by: Salvatore Sanfilippo.
  */
 
 #define _DEFAULT_SOURCE
