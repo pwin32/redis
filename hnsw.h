@@ -65,12 +65,15 @@ typedef struct hnswNode {
     hnswNodeLayer layers[];
 } hnswNode;
 
+struct HNSW;
+
 /* It is possible to navigate an HNSW with a cursor that guarantees
  * visiting all the elements that remain in the HNSW from the start to the
  * end of the process (but not the new ones, so that the process will
  * eventually finish). Check hnsw_cursor_init(), hnsw_cursor_next() and
  * hnsw_cursor_free(). */
 typedef struct hnswCursor {
+    struct HNSW *index; // Reference to the index of this cursor.
     hnswNode *current;  // Element to report when hnsw_cursor_next() is called.
     struct hnswCursor *next; // Next cursor active.
 } hnswCursor;
@@ -156,8 +159,10 @@ uint32_t hnsw_quants_bytes(HNSW *index);
 
 /* Cursors. */
 hnswCursor *hnsw_cursor_init(HNSW *index);
-void hnsw_cursor_free(HNSW *index, hnswCursor *cursor);
-hnswNode *hnsw_cursor_next(HNSW *index, hnswCursor *cursor);
+void hnsw_cursor_free(hnswCursor *cursor);
+hnswNode *hnsw_cursor_next(hnswCursor *cursor);
+int hnsw_cursor_acquire_lock(hnswCursor *cursor);
+void hnsw_cursor_release_lock(hnswCursor *cursor);
 
 /* Allocator selection. */
 void hnsw_set_allocator(void (*free_ptr)(void*), void *(*malloc_ptr)(size_t),
