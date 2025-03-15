@@ -1931,6 +1931,51 @@ int hnsw_should_reuse_node(HNSW *index, hnswNode *node, int is_normalized, const
     return good_distances >= layer0_connections/2;
 }
 
+/**
+ * Return a random node from the HNSW graph.
+ *
+ * This function performs a random walk starting from the entry point,
+ * using only level 0 connections for navigation. It uses log^2(N) steps
+ * to ensure proper mixing time.
+ */
+
+hnswNode *hnsw_random_node(HNSW *index, int slot) {
+    if (index->node_count == 0 || index->enter_point == NULL)
+        return NULL;
+
+    (void)slot; // Unused, but we need the caller to acquire the lock.
+
+    /* First phase: descend from max level to level 0 taking random paths.
+     * Note that we don't need a more conservative log^2(N) steps for
+     * proper mixing, since we already descend to a random cluster here. */
+    hnswNode *current = index->enter_point;
+    for (uint32_t level = index->max_level; level > 0; level--) {
+        /* If current node doesn't have this level or no links, continue
+	 * to lower level. */
+        if (current->level < level || current->layers[level].num_links == 0)
+            continue;
+
+        /* Choose random neighbor at this level. */
+        uint32_t rand_neighbor = rand() % current->layers[level].num_links;
+        current = current->layers[level].links[rand_neighbor];
+    }
+
+    /* Second phase: at level 0, take log(N) * c random steps. */
+    const int c = 3; // Multiplier for more thorough exploration.
+    double logN = log2(index->node_count + 1);
+    uint32_t num_walks = (uint32_t)(logN * c);
+
+    // Perform random walk at level 0.
+    for (uint32_t i = 0; i < num_walks; i++) {
+        if (current->layers[0].num_links == 0) return current;
+
+        // Choose random neighbor.
+        uint32_t rand_neighbor = rand() % current->layers[0].num_links;
+        current = current->layers[0].links[rand_neighbor];
+    }
+    return current;
+}
+
 /* ============================= Serialization ==============================
  *
  * TO SERIALIZE
