@@ -938,8 +938,6 @@ void hnsw_update_worst_neighbor_on_remove(HNSW *index, hnswNode *node, uint32_t 
 void select_neighbors(HNSW *index, pqueue *candidates, hnswNode *new_node,
                       uint32_t layer, uint32_t required_links, int aggressive)
 {
-    uint32_t max_links = (layer == 0) ? index->M*2 : index->M;
-
     for (uint32_t i = 0; i < candidates->count; i++) {
         hnswNode *neighbor = pq_get_node(candidates,i);
         if (neighbor == new_node) continue; // Don't link node with itself.
@@ -990,7 +988,7 @@ void select_neighbors(HNSW *index, pqueue *candidates, hnswNode *new_node,
         /* If potential neighbor node has space, simply add the new link.
          * We will have space as well. */
         uint32_t n = neighbor->layers[layer].num_links;
-        if (n < max_links) {
+        if (n < neighbor->layers[layer].max_links) {
             /* Link candidate to new node. */
             neighbor->layers[layer].links[n] = new_node;
             neighbor->layers[layer].num_links++;
