@@ -2,16 +2,17 @@ Redis Community Edition 8.0 release notes
 =========================================
 
 ============================================================
-8.0-RC1 (v7.9.240)    Committed Tue 11 Mar 2025 11:00:00 IST
+8.0-M04 (v7.9.227)    Committed Sun 16 Mar 2025 11:00:00 IST
 ============================================================
 
-This is the first Release Candidate of Redis Community Edition 8.0.
+This is the fourth Milestone of Redis Community Edition 8.0.
 
-Release candidates are feature-complete pre-releases. Pre-releases are not suitable for production use.
+Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
+Once we reach feature-completeness we will release RC1.
 
 ### Headlines
 
-8.0-RC1 includes 3 new hash commands, performance improvements, and memory defragmentation improvements.
+8.0-M04 includes 3 new hash commands, performance improvements, and memory defragmentation improvements.
 
 ### Distributions
 
