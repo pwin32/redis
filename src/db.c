@@ -702,7 +702,7 @@ void flushallSyncBgDone(uint64_t client_id) {
     client *c = lookupClientByID(client_id);
 
     /* Verify that client still exists */
-    if (!c) return;
+    if (!(c && c->flags & CLIENT_BLOCKED)) return;
 
     /* Update current_client (Called functions might rely on it) */
     client *old_client = server.current_client;
