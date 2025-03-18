@@ -340,7 +340,8 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
          * the other insert won. We don't even start a threaded VADD
          * if this was an udpate, since the deletion of the element itself
          * in order to perform the update would invalidate the CAS state. */
-        if (RedisModule_DictGet(vset->dict,val,NULL) != NULL) vset = NULL;
+        if (vset && RedisModule_DictGet(vset->dict,val,NULL) != NULL)
+            vset = NULL;
     }
 
     if (vset == NULL) {
