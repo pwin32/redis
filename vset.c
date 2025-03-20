@@ -881,7 +881,14 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
          * 2. If the write lock is taken while destroying the object, another
          * command or operation (expire?) from the main thread acquired
          * it to delete the object, so *it* will block if there are still
-         * operations in progress on this key. */
+         * operations in progress on this key.
+         *
+         * Note: even if we create one thread per request, the underlying
+         * HNSW library has a fixed number of slots for the threads, as it's
+         * defined in HNSW_MAX_THREADS (beware that if you increase it,
+         * every node will use more memory). This means that while this request
+         * is threaded, and will NOT block Redis, it may end waiting for a
+         * free slot if all the HNSW_MAX_THREADS slots are used. */
         pthread_rwlock_rdlock(&vset->in_use_lock);
 
         RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx,NULL,NULL,NULL,0);
