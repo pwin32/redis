@@ -85,13 +85,48 @@ class TestCase:
         self.error_msg = None
         self.error_details = None
         self.test_key = f"test:{self.__class__.__name__.lower()}"
+        # Primary Redis instance (default port)
         self.redis = redis.Redis()
+        # Replica Redis instance (port 6380)
+        self.replica = redis.Redis(port=6380)
+        # Replication status
+        self.replication_setup = False
 
     def setup(self):
         self.redis.delete(self.test_key)
 
     def teardown(self):
         self.redis.delete(self.test_key)
+
+    def setup_replication(self) -> bool:
+        """
+        Setup replication between primary and replica Redis instances.
+        Returns True if replication is successfully established, False otherwise.
+        """
+        # Configure replica to replicate from primary
+        self.replica.execute_command('REPLICAOF', '127.0.0.1', 6379)
+
+        # Wait for replication to be established
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            # Check replication info
+            repl_info = self.replica.info('replication')
+
+            # Check if replication is established
+            if (repl_info.get('role') == 'slave' and
+                repl_info.get('master_host') == '127.0.0.1' and
+                repl_info.get('master_port') == 6379 and
+                repl_info.get('master_link_status') == 'up'):
+
+                self.replication_setup = True
+                return True
+
+            # Wait before next attempt
+            time.sleep(0.5)
+
+        # If we get here, replication wasn't established
+        self.error_msg = "Failed to establish replication between primary and replica"
+        return False
 
     def test(self):
         raise NotImplementedError("Subclasses must implement test method")
@@ -146,6 +181,7 @@ def run_tests():
     print("================================================\n"+
           "Make sure to have Redis running in the localhost\n"+
           "with --enable-debug-command yes\n"+
+          "Both primary (6379) and replica (6380) instances\n"+
           "================================================\n")
 
     tests = find_test_classes()
