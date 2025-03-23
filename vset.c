@@ -531,10 +531,19 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
         /* Apply projection if needed */
         if (vset->proj_matrix) {
+            /* Ensure input dimension matches the projection matrix's expected input dimension */
+            if (dim != vset->proj_input_size) {
+                RedisModule_Free(vec);
+                return RedisModule_ReplyWithErrorFormat(ctx,
+                    "ERR Input dimension mismatch for projection - got %d but projection expects %d",
+                    (int)dim, (int)vset->proj_input_size);
+            }
+            
             float *projected = applyProjection(vec, vset->proj_matrix,
-                                            vset->proj_input_size, dim);
+                                             vset->proj_input_size, dim);
             RedisModule_Free(vec);
             vec = projected;
+            dim = vset->hnsw->vector_dim;
         }
     }
 
@@ -764,6 +773,14 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         /* Apply projection if the set uses it, with the exception
          * of ELE type, that will already have the right dimension. */
         if (vset->proj_matrix && dim != vset->hnsw->vector_dim) {
+            /* Ensure input dimension matches the projection matrix's expected input dimension */
+            if (dim != vset->proj_input_size) {
+                RedisModule_Free(vec);
+                return RedisModule_ReplyWithErrorFormat(ctx,
+                    "ERR Input dimension mismatch for projection - got %d but projection expects %d",
+                    (int)dim, (int)vset->proj_input_size);
+            }
+            
             float *projected = applyProjection(vec, vset->proj_matrix,
                                              vset->proj_input_size, dim);
             RedisModule_Free(vec);
@@ -1251,8 +1268,12 @@ int VINFO_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 
     struct vsetObject *vset = RedisModule_ModuleTypeGetValue(key);
 
+    /* Calculate map size based on projection presence */
+    int map_size = 8;  /* Base fields */
+    if (vset->proj_matrix) map_size += 2;  /* Additional fields for projection */
+
     /* Reply with hash */
-    RedisModule_ReplyWithMap(ctx, 8);
+    RedisModule_ReplyWithMap(ctx, map_size);
 
     /* Quantization type */
     RedisModule_ReplyWithSimpleString(ctx, "quant-type");
@@ -1265,6 +1286,17 @@ int VINFO_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     /* Vector dimensionality. */
     RedisModule_ReplyWithSimpleString(ctx, "vector-dim");
     RedisModule_ReplyWithLongLong(ctx, vset->hnsw->vector_dim);
+
+    /* Add projection information if present */
+    if (vset->proj_matrix) {
+        /* Original input dimension before projection */
+        RedisModule_ReplyWithSimpleString(ctx, "projection-input-dim");
+        RedisModule_ReplyWithLongLong(ctx, vset->proj_input_size);
+        
+        /* Projection enabled flag */
+        RedisModule_ReplyWithSimpleString(ctx, "projection-enabled");
+        RedisModule_ReplyWithBool(ctx, 1);
+    }
 
     /* Number of elements. */
     RedisModule_ReplyWithSimpleString(ctx, "size");
