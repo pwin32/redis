@@ -374,7 +374,7 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     }
 
     // Whatever happens is a success... :D
-    RedisModule_ReplyWithLongLong(ctx,1);
+    RedisModule_ReplyWithBool(ctx,1);
     if (val) RedisModule_FreeString(ctx,val); // Not added? Free it.
     if (attrib) RedisModule_FreeString(ctx,attrib); // Not added? Free it.
     RedisModule_Free(vec);
@@ -589,7 +589,7 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     int added = vectorSetInsert(vset,vec,NULL,0,val,attrib,1,ef);
     RedisModule_Free(vec);
 
-    RedisModule_ReplyWithLongLong(ctx,added);
+    RedisModule_ReplyWithBool(ctx,added);
     if (added) RedisModule_ReplicateVerbatim(ctx);
     return REDISMODULE_OK;
 }
@@ -994,7 +994,7 @@ int VREM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
     /* Handle non-existing key or wrong type */
     if (type == REDISMODULE_KEYTYPE_EMPTY) {
-        return RedisModule_ReplyWithLongLong(ctx, 0);
+        return RedisModule_ReplyWithBool(ctx, 0);
     }
     if (RedisModule_ModuleTypeGetType(keyptr) != VectorSetType) {
         return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
@@ -1006,7 +1006,7 @@ int VREM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     /* Find the node for this element */
     hnswNode *node = RedisModule_DictGet(vset->dict, element, NULL);
     if (!node) {
-        return RedisModule_ReplyWithLongLong(ctx, 0);
+        return RedisModule_ReplyWithBool(ctx, 0);
     }
 
     /* Remove from dictionary */
@@ -1025,7 +1025,7 @@ int VREM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     }
 
     /* Reply and propagate the command */
-    RedisModule_ReplyWithLongLong(ctx, 1);
+    RedisModule_ReplyWithBool(ctx, 1);
     RedisModule_ReplicateVerbatim(ctx);
     return REDISMODULE_OK;
 }
@@ -1110,7 +1110,7 @@ int VSETATTR_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
     int type = RedisModule_KeyType(key);
 
     if (type == REDISMODULE_KEYTYPE_EMPTY)
-        return RedisModule_ReplyWithLongLong(ctx, 0);
+        return RedisModule_ReplyWithBool(ctx, 0);
 
     if (RedisModule_ModuleTypeGetType(key) != VectorSetType)
         return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
@@ -1118,7 +1118,7 @@ int VSETATTR_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
     struct vsetObject *vset = RedisModule_ModuleTypeGetValue(key);
     hnswNode *node = RedisModule_DictGet(vset->dict, argv[2], NULL);
     if (!node)
-        return RedisModule_ReplyWithLongLong(ctx, 0);
+        return RedisModule_ReplyWithBool(ctx, 0);
 
     struct vsetNodeVal *nv = node->value;
     RedisModuleString *new_attr = argv[3];
@@ -1147,7 +1147,7 @@ int VSETATTR_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
         nv->attrib = new_attr;
     }
 
-    RedisModule_ReplyWithLongLong(ctx, 1);
+    RedisModule_ReplyWithBool(ctx, 1);
     RedisModule_ReplicateVerbatim(ctx);
     return REDISMODULE_OK;
 }
