@@ -63,21 +63,53 @@ struct vsetNodeVal {
     RedisModuleString *attrib;
 };
 
-/* Create a random projection matrix for dimensionality reduction.
- * Returns NULL on allocation failure. Matrix is scaled by 1/sqrt(input_dim). */
+/* Count the number of set bits in an integer (population count/Hamming weight).
+ * This is a portable implementation that doesn't rely on compiler extensions. */
+static inline uint32_t bit_count(uint32_t n) {
+    uint32_t count = 0;
+    while (n) {
+        count += n & 1;
+        n >>= 1;
+    }
+    return count;
+}
+
+/* Create a Hadamard-based projection matrix for dimensionality reduction.
+ * Uses {-1, +1} entries with a pattern based on bit operations.
+ * The pattern is matrix[i][j] = (i & j) % 2 == 0 ? 1 : -1
+ * Matrix is scaled by 1/sqrt(input_dim) for normalization.
+ * Returns NULL on allocation failure.
+ *
+ * Note that compared to other approaches (random gaussian weights), what
+ * we have here is deterministic, it means that our replicas will have
+ * the same set of weights. Also this approach seems to work much better
+ * in pratice, and the distances between elements are better guaranteed.
+ *
+ * Note that we still save the projection matrix in the RDB file, because
+ * in the future we may change the weights generation, and we want everything
+ * to be backward compatible. */
 float *createProjectionMatrix(uint32_t input_dim, uint32_t output_dim) {
     float *matrix = RedisModule_Alloc(sizeof(float) * input_dim * output_dim);
-    if (!matrix) return NULL;
 
+    /* Scale factor to normalize the projection. */
     const float scale = 1.0f / sqrt(input_dim);
-    for (uint32_t i = 0; i < input_dim * output_dim; i++) {
-        /* Box-Muller transform for normal distribution */
-        float u1 = (float)rand() / RAND_MAX;
-        float u2 = (float)rand() / RAND_MAX;
-        float r = sqrt(-2.0f * log(u1));
-        float theta = 2.0f * M_PI * u2;
-        matrix[i] = r * cos(theta) * scale;
+
+    /* Fill the matrix using Hadamard pattern. */
+    for (uint32_t i = 0; i < output_dim; i++) {
+        for (uint32_t j = 0; j < input_dim; j++) {
+            /* Calculate position in the flattened matrix. */
+            uint32_t pos = i * input_dim + j;
+
+            /* Hadamard pattern: use bit operations to determine sign
+             * If the count of 1-bits in the bitwise AND of i and j is even,
+             * the value is 1, otherwise -1. */
+            int value = (bit_count(i & j) % 2 == 0) ? 1 : -1;
+
+            /* Store the scaled value. */
+            matrix[pos] = value * scale;
+        }
     }
+
     return matrix;
 }
 
