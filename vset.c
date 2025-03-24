@@ -64,7 +64,8 @@ struct vsetNodeVal {
 };
 
 /* Count the number of set bits in an integer (population count/Hamming weight).
- * This is a portable implementation that doesn't rely on compiler extensions. */
+ * This is a portable implementation that doesn't rely on compiler
+ * extensions. */
 static inline uint32_t bit_count(uint32_t n) {
     uint32_t count = 0;
     while (n) {
@@ -109,16 +110,14 @@ float *createProjectionMatrix(uint32_t input_dim, uint32_t output_dim) {
             matrix[pos] = value * scale;
         }
     }
-
     return matrix;
 }
 
-/* Apply random projection to input vector. Returns new allocated vector or NULL. */
+/* Apply random projection to input vector. Returns new allocated vector. */
 float *applyProjection(const float *input, const float *proj_matrix,
                       uint32_t input_dim, uint32_t output_dim)
 {
     float *output = RedisModule_Alloc(sizeof(float) * output_dim);
-    if (!output) return NULL;
 
     for (uint32_t i = 0; i < output_dim; i++) {
         const float *row = &proj_matrix[i * input_dim];
@@ -135,22 +134,15 @@ float *applyProjection(const float *input, const float *proj_matrix,
 struct vsetObject *createVectorSetObject(unsigned int dim, uint32_t quant_type, uint32_t hnsw_M) {
     struct vsetObject *o;
     o = RedisModule_Alloc(sizeof(*o));
-    if (!o) return NULL;
 
     o->id = VectorSetTypeNextId++;
     o->hnsw = hnsw_new(dim,quant_type,hnsw_M);
-    if (!o->hnsw) {
+    if (!o->hnsw) { // May fail because of mutex creation.
         RedisModule_Free(o);
         return NULL;
     }
 
     o->dict = RedisModule_CreateDict(NULL);
-    if (!o->dict) {
-        hnsw_free(o->hnsw,NULL);
-        RedisModule_Free(o);
-        return NULL;
-    }
-
     o->proj_matrix = NULL;
     o->proj_input_size = 0;
     o->numattribs = 0;
@@ -510,6 +502,14 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
                   * does not return. It's also pointless to try try
                   * doing threaded first elemetn insertion. */
         vset = createVectorSetObject(reduce_dim ? reduce_dim : dim, quant_type, hnsw_create_M);
+        if (vset == NULL) {
+            // We can't fail for OOM in Redis, but the mutex initialization
+            // at least theoretically COULD fail. Likely this code path
+            // is not reachable in practical terms.
+            RedisModule_Free(vec);
+            return RedisModule_ReplyWithError(ctx,
+                "ERR unable to create a Vector Set: system resources issue?");
+        }
 
         /* Initialize projection if requested */
         if (reduce_dim) {
@@ -1549,7 +1549,7 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
     if (hnsw_m == 0) hnsw_m = 16; // Default, useful for RDB files predating
                                   // this configuration parameter.
     struct vsetObject *vset = createVectorSetObject(dim,quant_type,hnsw_m);
-    if (!vset) return NULL;
+    RedisModule_Assert(vset != NULL);
 
     /* Load projection matrix if present */
     uint32_t save_flags = RedisModule_LoadUnsigned(rdb);
