@@ -146,7 +146,7 @@ struct vsetObject *createVectorSetObject(unsigned int dim, uint32_t quant_type, 
     o->proj_matrix = NULL;
     o->proj_input_size = 0;
     o->numattribs = 0;
-    pthread_rwlock_init(&o->in_use_lock,NULL);
+    RedisModule_Assert(pthread_rwlock_init(&o->in_use_lock,NULL) == 0);
     return o;
 }
 
@@ -228,7 +228,7 @@ int vectorSetInsert(struct vsetObject *o, float *vec, int8_t *qvec, float qrange
     if (node == NULL) {
         // XXX Technically in Redis-land we don't have out of memories as we
         // crash. However the HNSW library may fail for error in the locking
-        // libc call. There is understand if this may actually happen or not.
+        // libc call. Probably impossible in practical terms.
         RedisModule_Free(nv);
         return 0;
     }
@@ -383,9 +383,13 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         nv->item = val;
         nv->attrib = attrib;
 
-        // Then: insert the node in the HNSW data structure.
+        /* Then: insert the node in the HNSW data structure. Note that
+         * 'ic' could be NULL in case hnsw_prepare_insert() failed because of
+         * locking failure (likely impossible in practical terms). */
         hnswNode *newnode;
-        if ((newnode = hnsw_try_commit_insert(vset->hnsw, ic)) == NULL) {
+        if (ic == NULL ||
+            (newnode = hnsw_try_commit_insert(vset->hnsw, ic)) == NULL)
+        {
             newnode = hnsw_insert(vset->hnsw, vec, NULL, 0, 0, nv, ef);
         } else {
             newnode->value = nv;
@@ -590,7 +594,7 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     if (cas) {
         /* Make sure the key does not get deleted during the background
          * operation. See VSIM implementation for more information. */
-        pthread_rwlock_rdlock(&vset->in_use_lock);
+        RedisModule_Assert(pthread_rwlock_rdlock(&vset->in_use_lock) == 0);
 
         RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx,VADD_CASReply,NULL,NULL,0);
         pthread_t tid;
@@ -938,7 +942,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
          * every node will use more memory). This means that while this request
          * is threaded, and will NOT block Redis, it may end waiting for a
          * free slot if all the HNSW_MAX_THREADS slots are used. */
-        pthread_rwlock_rdlock(&vset->in_use_lock);
+        RedisModule_Assert(pthread_rwlock_rdlock(&vset->in_use_lock) == 0);
 
         RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx,NULL,NULL,NULL,0);
         pthread_t tid;
@@ -1049,7 +1053,7 @@ int VREM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
      * free function since the strings were retained at insertion time. */
     struct vsetNodeVal *nv = node->value;
     if (nv->attrib != NULL) vset->numattribs--;
-    hnsw_delete_node(vset->hnsw, node, vectorSetReleaseNodeValue);
+    RedisModule_Assert(hnsw_delete_node(vset->hnsw, node, vectorSetReleaseNodeValue) == 1);
 
     /* Destroy empty vector set. */
     if (RedisModule_DictSize(vset->dict) == 0) {
@@ -1704,7 +1708,7 @@ void VectorSetFree(void *value) {
     // Wait for all the threads performing operations on this
     // index to terminate their work (locking for write will
     // wait for all the other threads).
-    pthread_rwlock_wrlock(&vset->in_use_lock);
+    RedisModule_Assert(pthread_rwlock_wrlock(&vset->in_use_lock) == 0);
 
     // This lock is managed only in the main thread, so we can
     // unlock it now, to be able to destroy the mutex later

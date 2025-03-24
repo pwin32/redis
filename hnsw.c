@@ -1555,9 +1555,12 @@ void hnsw_unlink_node(HNSW *index, hnswNode *node) {
  * This will get the write lock, will delete the node, free it,
  * reconnect the node neighbors among themselves, and unlock again.
  * If free_value function pointer is not NULL, then the function provided is
- * used to free node->value. */
-void hnsw_delete_node(HNSW *index, hnswNode *node, void(*free_value)(void*value)) {
-    pthread_rwlock_wrlock(&index->global_lock);
+ * used to free node->value.
+ *
+ * The function returns 0 on error (inability to acquire the lock), otherwise
+ * 1 is returned. */
+int hnsw_delete_node(HNSW *index, hnswNode *node, void(*free_value)(void*value)) {
+    if (pthread_rwlock_wrlock(&index->global_lock) != 0) return 0;
     hnsw_unlink_node(index,node);
     if (free_value && node->value) free_value(node->value);
 
@@ -1569,6 +1572,7 @@ void hnsw_delete_node(HNSW *index, hnswNode *node, void(*free_value)(void*value)
     }
     hnsw_node_free(node);
     pthread_rwlock_unlock(&index->global_lock);
+    return 1;
 }
 
 /* ============================ Threaded API ================================
@@ -2299,7 +2303,11 @@ hnswCursor *hnsw_cursor_init(HNSW *index) {
 /* Free the cursor. Can be called both at the end of the iteration, when
  * hnsw_cursor_next() returned NULL, or before. */
 void hnsw_cursor_free(hnswCursor *cursor) {
-    pthread_rwlock_wrlock(&cursor->index->global_lock); // Best effort.
+    if (pthread_rwlock_wrlock(&cursor->index->global_lock) != 0) {
+        // No easy way to recover from that. We will leak memory.
+        return;
+    }
+
     hnswCursor *x = cursor->index->cursors;
     hnswCursor *prev = NULL;
     while(x) {

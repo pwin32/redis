@@ -136,7 +136,7 @@ int hnsw_search_with_filter
                 int (*filter_callback)(void *value, void *privdata),
                 void *filter_privdata, uint32_t max_candidates);
 void hnsw_get_node_vector(HNSW *index, hnswNode *node, float *vec);
-void hnsw_delete_node(HNSW *index, hnswNode *node, void(*free_value)(void*value));
+int hnsw_delete_node(HNSW *index, hnswNode *node, void(*free_value)(void*value));
 hnswNode *hnsw_random_node(HNSW *index, int slot);
 
 /* Thread safety functions. */
