@@ -970,7 +970,6 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         if (pthread_create(&tid,NULL,VSIM_thread,targ) != 0) {
             pthread_rwlock_unlock(&vset->in_use_lock);
             RedisModule_AbortBlock(bc);
-            RedisModule_Free(vec);
             RedisModule_Free(targ[4]);
             RedisModule_Free(targ);
             VSIM_execute(ctx, vset, vec, count, epsilon, withscores, ef, filter_expr, filter_ef, ground_truth);
