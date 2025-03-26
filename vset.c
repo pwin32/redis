@@ -407,6 +407,9 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         if (ic == NULL ||
             (newnode = hnsw_try_commit_insert(vset->hnsw, ic)) == NULL)
         {
+            /* If we are here, the CAS insert failed. We need to insert
+             * again with full locking for neighbors selection and
+             * actual insertion. This time we can't fail: */
             newnode = hnsw_insert(vset->hnsw, vec, NULL, 0, 0, nv, ef);
             RedisModule_Assert(newnode != NULL);
         } else {
