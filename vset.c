@@ -327,6 +327,7 @@ void *VADD_thread(void *arg) {
 
     /* Unblock the client so that our read reply will be invoked. */
     pthread_rwlock_unlock(&vset->in_use_lock);
+    RedisModule_BlockedClientMeasureTimeEnd(bc);
     RedisModule_UnblockClient(bc,targ); // Use targ as privdata.
     return NULL;
 }
@@ -609,6 +610,7 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         targ[7] = attrib;
         RedisModule_RetainString(ctx,val);
         if (attrib) RedisModule_RetainString(ctx,attrib);
+        RedisModule_BlockedClientMeasureTimeStart(bc);
         if (pthread_create(&tid,NULL,VADD_thread,targ) != 0) {
             pthread_rwlock_unlock(&vset->in_use_lock);
             RedisModule_AbortBlock(bc);
@@ -741,6 +743,7 @@ void *VSIM_thread(void *arg) {
     // Cleanup.
     RedisModule_FreeThreadSafeContext(ctx);
     pthread_rwlock_unlock(&vset->in_use_lock);
+    RedisModule_BlockedClientMeasureTimeEnd(bc);
     RedisModule_UnblockClient(bc,NULL);
     return NULL;
 }
@@ -958,6 +961,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         targ[7] = (void*)filter_expr;
         targ[8] = (void*)(unsigned long)filter_ef;
         targ[9] = (void*)(unsigned long)ground_truth;
+        RedisModule_BlockedClientMeasureTimeStart(bc);
         if (pthread_create(&tid,NULL,VSIM_thread,targ) != 0) {
             pthread_rwlock_unlock(&vset->in_use_lock);
             RedisModule_AbortBlock(bc);
