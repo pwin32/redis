@@ -1574,7 +1574,9 @@ void VectorSetRdbSave(RedisModuleIO *rdb, void *value) {
     }
 }
 
-/* Load object from RDB */
+/* Load object from RDB. Please note that we don't do any cleanup
+ * on errors, and just return NULL, as Redis will abort completely
+ * not just the module but the server itself in this case. */
 void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
     if (encver != 0) return NULL;  // Invalid version
 
@@ -1647,7 +1649,7 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
         if (node == NULL) {
             RedisModule_LogIOError(rdb,"warning",
                                        "Vector set node index loading error");
-            return NULL; // Loading error: abort, no need to free resources.
+            return NULL; // Loading error.
         }
         if (nv->attrib) vset->numattribs++;
         RedisModule_DictSet(vset->dict,ele,node);
