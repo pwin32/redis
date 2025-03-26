@@ -167,6 +167,14 @@ void vectorSetReleaseObject(struct vsetObject *o) {
     RedisModule_Free(o);
 }
 
+/* Wait for all the threads performing operations on this
+ * index to terminate their work (locking for write will
+ * wait for all the other threads). */
+void vectorSetWaitAllBackgroundClients(struct vsetObject *vset) {
+    RedisModule_Assert(pthread_rwlock_wrlock(&vset->in_use_lock) == 0);
+    pthread_rwlock_unlock(&vset->in_use_lock);
+}
+
 /* Return a string representing the quantization type name of a vector set. */
 const char *vectorSetGetQuantName(struct vsetObject *o) {
     switch(o->hnsw->quant_type) {
@@ -187,6 +195,11 @@ int vectorSetInsert(struct vsetObject *o, float *vec, int8_t *qvec, float qrange
     hnswNode *node = RedisModule_DictGet(o->dict,val,NULL);
     if (node != NULL) {
         if (update) {
+            /* Wait for clients in the background: background VSIM
+             * operations touch the nodes attributes we are going
+             * to touch. */
+            vectorSetWaitAllBackgroundClients(o);
+
             struct vsetNodeVal *nv = node->value;
             /* Pass NULL as value-free function. We want to reuse
              * the old value. */
@@ -333,7 +346,9 @@ void *VADD_thread(void *arg) {
     return NULL;
 }
 
-/* Reply callback for CAS variant of VADD. */
+/* Reply callback for CAS variant of VADD.
+ * Note: this is called in the main thread, in the background thread
+ * we just do the read operation of gathering the neighbors. */
 int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     (void)argc;
     RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
@@ -1171,6 +1186,10 @@ int VSETATTR_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int arg
     struct vsetNodeVal *nv = node->value;
     RedisModuleString *new_attr = argv[3];
 
+    /* Background VSIM operations use the node attributes, so
+     * wait for background operations before messing with them. */
+    vectorSetWaitAllBackgroundClients(vset);
+
     /* Set or delete the attribute based on the fact it's an empty
      * string or not. */
     size_t attrlen;
@@ -1718,15 +1737,7 @@ size_t VectorSetMemUsage(const void *value) {
 void VectorSetFree(void *value) {
     struct vsetObject *vset = value;
 
-    // Wait for all the threads performing operations on this
-    // index to terminate their work (locking for write will
-    // wait for all the other threads).
-    RedisModule_Assert(pthread_rwlock_wrlock(&vset->in_use_lock) == 0);
-
-    // This lock is managed only in the main thread, so we can
-    // unlock it now, to be able to destroy the mutex later
-    // in vectorSetReleaseObject().
-    pthread_rwlock_unlock(&vset->in_use_lock);
+    vectorSetWaitAllBackgroundClients(vset);
     vectorSetReleaseObject(value);
 }
 
