@@ -1501,7 +1501,14 @@ int VRANDMEMBER_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int 
             RedisModule_FreeDict(ctx, returned);
         } else {
             /* For large samples, get a random starting node and walk
-             * the list. */
+             * the list.
+             *
+             * IMPORTANT: doing so does not really generate random
+             * elements: it's just a linear scan, but we have no choices.
+             * If we generate too many random elements, more and more would
+             * fail the check of being novel (not yet collected in the set
+             * to return) if the % of elements to emit is too large, we would
+             * spend too much CPU. */
             hnswNode *start_node = hnsw_random_node(vset->hnsw, 0);
             hnswNode *current = start_node;
 
