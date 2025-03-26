@@ -192,6 +192,7 @@ int vectorSetInsert(struct vsetObject *o, float *vec, int8_t *qvec, float qrange
              * the old value. */
             hnsw_delete_node(o->hnsw, node, NULL);
             node = hnsw_insert(o->hnsw,vec,qvec,qrange,0,nv,ef);
+            RedisModule_Assert(node != NULL);
             RedisModule_DictReplace(o->dict,val,node);
 
             /* If attrib != NULL, the user wants that in case of an update we
@@ -392,6 +393,7 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             (newnode = hnsw_try_commit_insert(vset->hnsw, ic)) == NULL)
         {
             newnode = hnsw_insert(vset->hnsw, vec, NULL, 0, 0, nv, ef);
+            RedisModule_Assert(newnode != NULL);
         } else {
             newnode->value = nv;
         }
