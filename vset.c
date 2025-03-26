@@ -617,6 +617,8 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             pthread_rwlock_unlock(&vset->in_use_lock);
             RedisModule_AbortBlock(bc);
             RedisModule_Free(targ);
+            RedisModule_FreeString(ctx,val);
+            if (attrib) RedisModule_FreeString(ctx,attrib);
 
             // Fall back to synchronous insert, see later in the code.
         } else {
@@ -1561,7 +1563,8 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
     uint32_t hnsw_m = (hnsw_config >> 8) & 0xffff;
 
     if (hnsw_m == 0) hnsw_m = 16; // Default, useful for RDB files predating
-                                  // this configuration parameter.
+                                  // this configuration parameter: it was fixed
+                                  // to 16.
     struct vsetObject *vset = createVectorSetObject(dim,quant_type,hnsw_m);
     RedisModule_Assert(vset != NULL);
 
@@ -1622,7 +1625,7 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
         if (node == NULL) {
             RedisModule_LogIOError(rdb,"warning",
                                        "Vector set node index loading error");
-            return NULL; // Loading error.
+            return NULL; // Loading error: abort, no need to free resources.
         }
         if (nv->attrib) vset->numattribs++;
         RedisModule_DictSet(vset->dict,ele,node);
