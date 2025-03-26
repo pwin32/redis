@@ -762,6 +762,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     long long ef = 0;       /* Exploration factor (see HNSW paper) */
     double epsilon = 2.0;   /* Max cosine distance */
     long long ground_truth = 0; /* Linear scan instead of HNSW search? */
+    int no_thread = 0;       /* NOTHREAD option: exec on main thread. */
 
     /* Things computed later. */
     long long filter_ef = 0;
@@ -862,6 +863,9 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         } else if (!strcasecmp(opt, "TRUTH")) {
             ground_truth = 1;
             j++;
+        } else if (!strcasecmp(opt, "NOTHREAD")) {
+            no_thread = 1;
+            j++;
         } else if (!strcasecmp(opt, "COUNT") && j+1 < argc) {
             if (RedisModule_StringToLongLong(argv[j+1], &count)
                 != REDISMODULE_OK || count <= 0)
@@ -918,10 +922,11 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     int threaded_request = 1; // Run on a thread, by default.
     if (filter_ef == 0) filter_ef = count * 100; // Max filter visited nodes.
 
-    // Disable threaded for MULTI/EXEC and Lua.
-    if (RedisModule_GetContextFlags(ctx) &
-             (REDISMODULE_CTX_FLAGS_LUA|
-             REDISMODULE_CTX_FLAGS_MULTI))
+    /* Disable threaded for MULTI/EXEC and Lua, or if explicitly
+     * requsted by the user via the NOTHREAD option. */
+    if (no_thread || (RedisModule_GetContextFlags(ctx) &
+                      (REDISMODULE_CTX_FLAGS_LUA|
+                       REDISMODULE_CTX_FLAGS_MULTI)))
     {
         threaded_request = 0;
     }
