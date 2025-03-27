@@ -663,7 +663,8 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             }
 
             float *projected = applyProjection(vec, vset->proj_matrix,
-                                             vset->proj_input_size, dim);
+                                             vset->proj_input_size,
+                                             vset->hnsw->vector_dim);
             RedisModule_Free(vec);
             vec = projected;
             dim = vset->hnsw->vector_dim;
@@ -910,7 +911,8 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             }
 
             float *projected = applyProjection(vec, vset->proj_matrix,
-                                             vset->proj_input_size, dim);
+                                             vset->proj_input_size,
+                                             vset->hnsw->vector_dim);
             RedisModule_Free(vec);
             vec = projected;
             dim = vset->hnsw->vector_dim;
