@@ -1,5 +1,5 @@
 # Compiler settings
-CC = gcc
+CC = cc
 
 ifdef SANITIZER
 ifeq ($(SANITIZER),address)
@@ -56,7 +56,7 @@ all: vset.so
 vset.xo: redismodule.h expr.c
 
 vset.so: vset.xo hnsw.xo cJSON.xo
-	$(CC) -o $@ $^ $(SHOBJ_LDFLAGS) $(LIBS) -lc
+	$(CC) -o $@ $^ $(SHOBJ_LDFLAGS) $(LIBS) $(SAN) -lc
 
 # Example sources / objects
 SRCS = hnsw.c w2v.c
