@@ -311,7 +311,11 @@ int vectorSetInsert(struct vsetObject *o, float *vec, int8_t *qvec, float qrange
  * Format: [REDUCE dim] FP32|VALUES ...
  * Returns allocated vector and sets dimension in *dim.
  * If reduce_dim is not NULL, sets it to the requested reduction dimension.
- * Returns NULL on parsing error. */
+ * Returns NULL on parsing error.
+ *
+ * The function sets as a reference *consumed_args, so that the caller
+ * knows how many arguments we consumed in order to parse the input
+ * vector. Remaining arguments are often command options. */
 float *parseVector(RedisModuleString **argv, int argc, int start_idx,
                   size_t *dim, uint32_t *reduce_dim, int *consumed_args)
 {
@@ -335,22 +339,27 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
 
     /* Now parse the vector format as before. */
     float *vec = NULL;
+    char *vec_format = RedisModule_StringPtrLen(argv[start_idx],NULL);
 
-    if (!strcasecmp(RedisModule_StringPtrLen(argv[start_idx],NULL),"FP32")) {
+    if (!strcasecmp(vec_format,"FP32")) {
         if (argc < start_idx + 2) return NULL;  // Need FP32 + vector + value.
         size_t vec_raw_len;
-        const char *blob = RedisModule_StringPtrLen(argv[start_idx+1],&vec_raw_len);
+        const char *blob =
+            RedisModule_StringPtrLen(argv[start_idx+1],&vec_raw_len);
+
+        // Must be 4 bytes per component.
         if (vec_raw_len % 4 || vec_raw_len < 4) return NULL;
         *dim = vec_raw_len/4;
+
         vec = RedisModule_Alloc(vec_raw_len);
         if (!vec) return NULL;
         memcpy(vec,blob,vec_raw_len);
         consumed += 2;
-    } else if (!strcasecmp(RedisModule_StringPtrLen(argv[start_idx],NULL),"VALUES")) {
-        if (argc < start_idx + 2) return NULL;  // Need at least dimension..
-        long long vdim;
-        if (RedisModule_StringToLongLong(argv[start_idx+1],&vdim) != REDISMODULE_OK
-            || vdim < 1) return NULL;
+    } else if (!strcasecmp(vec_format,"VALUES")) {
+        if (argc < start_idx + 2) return NULL;  // Need at least the dimension.
+        long long vdim; // Vector dimension passed by the user.
+        if (RedisModule_StringToLongLong(argv[start_idx+1],&vdim)
+            != REDISMODULE_OK || vdim < 1) return NULL;
 
         // Check that all the arguments are available.
         if (argc < start_idx + 2 + vdim) return NULL;
@@ -361,7 +370,9 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
 
         for (int j = 0; j < vdim; j++) {
             double val;
-            if (RedisModule_StringToDouble(argv[start_idx+2+j],&val) != REDISMODULE_OK) {
+            if (RedisModule_StringToDouble(argv[start_idx+2+j],&val)
+                != REDISMODULE_OK)
+            {
                 RedisModule_Free(vec);
                 return NULL;
             }
@@ -369,7 +380,7 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
         }
         consumed += vdim + 2;
     } else {
-        return NULL;  // Unknown format
+        return NULL;  // Unknown format.
     }
 
     if (consumed_args) *consumed_args = consumed;
