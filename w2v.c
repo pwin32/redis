@@ -344,8 +344,8 @@ void *threaded_insert(void *ctxptr) {
         // applies the check if the graph wasn't modified.
         InsertContext *ic;
         uint64_t next_id = ctx->id++;
-        ic = hnsw_prepare_insert(ctx->index, v, NULL, 0, next_id, word, 200);
-        if (hnsw_try_commit_insert(ctx->index, ic) == NULL) {
+        ic = hnsw_prepare_insert(ctx->index, v, NULL, 0, next_id, 200);
+        if (hnsw_try_commit_insert(ctx->index, ic, word) == NULL) {
             // This time try locking since the start.
             hnsw_insert(ctx->index, v, NULL, 0, next_id, word, 200);
         }

@@ -144,8 +144,8 @@ int hnsw_acquire_read_slot(HNSW *index);
 void hnsw_release_read_slot(HNSW *index, int slot);
 
 /* Optimistic insertion API. */
-InsertContext *hnsw_prepare_insert(HNSW *index, const float *vector, const int8_t *qvector, float qrange, uint64_t id, void *value, int ef);
-hnswNode *hnsw_try_commit_insert(HNSW *index, InsertContext *ctx);
+InsertContext *hnsw_prepare_insert(HNSW *index, const float *vector, const int8_t *qvector, float qrange, uint64_t id, int ef);
+hnswNode *hnsw_try_commit_insert(HNSW *index, InsertContext *ctx, void *value);
 void hnsw_free_insert_context(InsertContext *ctx);
 
 /* Serialization. */

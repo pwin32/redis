@@ -339,7 +339,7 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
 
     /* Now parse the vector format as before. */
     float *vec = NULL;
-    char *vec_format = RedisModule_StringPtrLen(argv[start_idx],NULL);
+    const char *vec_format = RedisModule_StringPtrLen(argv[start_idx],NULL);
 
     if (!strcasecmp(vec_format,"FP32")) {
         if (argc < start_idx + 2) return NULL;  // Need FP32 + vector + value.
@@ -404,7 +404,7 @@ void *VADD_thread(void *arg) {
     int ef = (uint64_t)targ[6];
 
     /* Look for candidates... */
-    InsertContext *ic = hnsw_prepare_insert(vset->hnsw, vec, NULL, 0, 0, NULL, ef);
+    InsertContext *ic = hnsw_prepare_insert(vset->hnsw, vec, NULL, 0, 0, ef);
     targ[5] = ic; // Pass the context to the reply callback.
 
     /* Unblock the client so that our read reply will be invoked. */
@@ -473,15 +473,13 @@ int VADD_CASReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
          * locking failure (likely impossible in practical terms). */
         hnswNode *newnode;
         if (ic == NULL ||
-            (newnode = hnsw_try_commit_insert(vset->hnsw, ic)) == NULL)
+            (newnode = hnsw_try_commit_insert(vset->hnsw, ic, nv)) == NULL)
         {
             /* If we are here, the CAS insert failed. We need to insert
              * again with full locking for neighbors selection and
              * actual insertion. This time we can't fail: */
             newnode = hnsw_insert(vset->hnsw, vec, NULL, 0, 0, nv, ef);
             RedisModule_Assert(newnode != NULL);
-        } else {
-            newnode->value = nv;
         }
         RedisModule_DictSet(vset->dict,val,newnode);
         val = NULL; // Don't free it later.
