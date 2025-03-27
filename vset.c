@@ -706,8 +706,6 @@ void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
                         filter_expr, filter_ef);
         }
     }
-    hnsw_release_read_slot(vset->hnsw,slot);
-    RedisModule_Free(vec);
 
     /* Return results */
     if (withscores)
@@ -726,12 +724,14 @@ void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
             RedisModule_ReplyWithDouble(ctx, 1.0 - distances[i]/2.0);
         }
     }
+    hnsw_release_read_slot(vset->hnsw,slot);
 
     if (withscores)
         RedisModule_ReplySetMapLength(ctx, arraylen);
     else
         RedisModule_ReplySetArrayLength(ctx, arraylen);
 
+    RedisModule_Free(vec);
     RedisModule_Free(neighbors);
     RedisModule_Free(distances);
     if (filter_expr) exprFree(filter_expr);
