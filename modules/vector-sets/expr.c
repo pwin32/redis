@@ -3,7 +3,11 @@
  * general code to be used when we want to tell if a given object (with fields)
  * passes or fails a given test for scalars, strings, ...
  *
- * Copyright(C) 2024-Present, Redis Ltd. All Rights Reserved.
+ * Copyright (c) 2009-Present, Redis Ltd.
+ * All rights reserved.
+ *
+ * Licensed under your choice of the Redis Source Available License 2.0
+ * (RSALv2) or the Server Side Public License v1 (SSPLv1).
  * Originally authored by: Salvatore Sanfilippo.
  */
 
@@ -83,7 +87,7 @@ typedef struct exprstate {
     char *expr;             /* Expression string to compile. Note that
                              * expression token strings point directly to this
                              * string. */
-    char *p;                // Currnet position inside 'expr', while parsing.
+    char *p;                // Current position inside 'expr', while parsing.
 
     // Virtual machine state.
     exprstack values_stack;
@@ -685,7 +689,7 @@ double exprTokenToNum(exprtoken *t) {
     }
 }
 
-/* Conver obejct to true/false (0 or 1) */
+/* Convert object to true/false (0 or 1) */
 double exprTokenToBool(exprtoken *t) {
     if (t->token_type == EXPR_TOKEN_NUM) {
         return t->num != 0;

@@ -2,8 +2,13 @@
 #
 # Vector set tests.
 # A Redis instance should be running in the default port.
-# Copyright(C) 2024-2025 Salvatore Sanfilippo.
-# All Rights Reserved.
+#
+# Copyright (c) 2009-Present, Redis Ltd.
+# All rights reserved.
+#
+# Licensed under your choice of the Redis Source Available License 2.0
+# (RSALv2) or the Server Side Public License v1 (SSPLv1).
+#
 
 #!/usr/bin/env python3
 import redis

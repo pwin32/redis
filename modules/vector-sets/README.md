@@ -156,7 +156,7 @@ Because vector sets perform insertion time normalization and optional
 quantization, the returned vector could be approximated. `VEMB` will take
 care to de-quantized and de-normalize the vector before returning it.
 
-It is possible to ask VEMB to return raw data, that is, the interal representation used by the vector: fp32, int8, or a bitmap for binary quantization. This behavior is triggered by the `RAW` option of of VEMB:
+It is possible to ask VEMB to return raw data, that is, the internal representation used by the vector: fp32, int8, or a bitmap for binary quantization. This behavior is triggered by the `RAW` option of of VEMB:
 
     VEMB word_embedding apple RAW
 
@@ -530,10 +530,10 @@ Notably, this pattern can be implemented in a way that avoids paying the sum of 
 
 Vector Sets, or better, HNSWs, the underlying data structure used by Vector Sets, combined with the features provided by the Vector Sets themselves (quantization, random projection, filtering, ...) form an implementation that has a non-trivial space of parameters that can be tuned. Despite to the complexity of the implementation and of vector similarity problems, here there is a list of simple ideas that can drive the user to pick the best settings:
 
-* 8 bit quantization (the default) is almost always a win. It reduces the memory usage of vectors by a factor of 4, yet the performance penality in terms of recall is minimal. It also reduces insertion and search time by around 2 times or more.
+* 8 bit quantization (the default) is almost always a win. It reduces the memory usage of vectors by a factor of 4, yet the performance penalty in terms of recall is minimal. It also reduces insertion and search time by around 2 times or more.
 * Binary quantization is much more extreme: it makes vector sets a lot faster, but increases the recall error in a sensible way, for instance from 95% to 80% if all the parameters remain the same. Yet, the speedup is really big, and the memory usage of vectors, compaerd to full precision vectors, 32 times smaller.
 * Vectors memory usage are not the only responsible for Vector Set high memory usage per entry: nodes contain, on average `M*2 + M*0.33` pointers, where M is by default 16 (but can be tuned in `VADD`, see the `M` option). Also each node has the string item and the optional JSON attributes: those should be as small as possible in order to avoid contributing more to the memory usage.
-* The `M` parameter should be incresed to 32 or more only when a near perfect recall is really needed.
+* The `M` parameter should be increased to 32 or more only when a near perfect recall is really needed.
 * It is possible to gain space (less memory usage) sacrificing time (more CPU time) by using a low `M` (the default of 16, for instance) and a high `EF` (the effort parameter of `VSIM`) in order to scan the graph more deeply.
 * When memory usage is seriosu concern, and there is the suspect the vectors we are storing don't contain as much information - at least for our use case - to justify the number of components they feature, random projection (the `REDUCE` option of `VADD`) could be tested to see if dimensionality reduction is possible with acceptable precision loss.
 
