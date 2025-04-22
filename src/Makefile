@@ -101,6 +101,9 @@ else
 ifeq ($(SANITIZER),undefined)
 	MALLOC=libc
 	CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+	ifeq (clang,$(CLANG))
+		CFLAGS+=-fno-sanitize=function
+	endif
 	LDFLAGS+=-fsanitize=undefined
 else
 ifeq ($(SANITIZER),thread)
