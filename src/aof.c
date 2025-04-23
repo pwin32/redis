@@ -1048,35 +1048,34 @@ void flushAppendOnlyFile(int force) {
     mstime_t latency;
 
     if (sdslen(server.aof_buf) == 0) {
-        /* Check if we need to do fsync even the aof buffer is empty,
-         * because previously in AOF_FSYNC_EVERYSEC mode, fsync is
-         * called only when aof buffer is not empty, so if users
-         * stop write commands before fsync called in one second,
-         * the data in page cache cannot be flushed in time. */
-        if (server.aof_fsync == AOF_FSYNC_EVERYSEC &&
-            server.aof_last_incr_fsync_offset != server.aof_last_incr_size &&
-            server.mstime - server.aof_last_fsync >= 1000 &&
-            !(sync_in_progress = aofFsyncInProgress())) {
-            goto try_fsync;
-
-        /* Check if we need to do fsync even the aof buffer is empty,
-         * the reason is described in the previous AOF_FSYNC_EVERYSEC block,
-         * and AOF_FSYNC_ALWAYS is also checked here to handle a case where
-         * aof_fsync is changed from everysec to always. */
-        } else if (server.aof_fsync == AOF_FSYNC_ALWAYS &&
-                   server.aof_last_incr_fsync_offset != server.aof_last_incr_size)
-        {
-            goto try_fsync;
-        } else {
+        if (server.aof_last_incr_fsync_offset == server.aof_last_incr_size) {
             /* All data is fsync'd already: Update fsynced_reploff_pending just in case.
-             * This is needed to avoid a WAITAOF hang in case a module used RM_Call with the NO_AOF flag,
-             * in which case master_repl_offset will increase but fsynced_reploff_pending won't be updated
-             * (because there's no reason, from the AOF POV, to call fsync) and then WAITAOF may wait on
-             * the higher offset (which contains data that was only propagated to replicas, and not to AOF) */
-            if (!sync_in_progress && server.aof_fsync != AOF_FSYNC_NO)
+             * This is needed to avoid a WAITAOF hang in case a module used RM_Call
+             * with the NO_AOF flag, in which case master_repl_offset will increase but
+             * fsynced_reploff_pending won't be updated (because there's no reason, from
+             * the AOF POV, to call fsync) and then WAITAOF may wait on the higher offset
+             * (which contains data that was only propagated to replicas, and not to AOF) */
+            if (!aofFsyncInProgress())
                 atomicSet(server.fsynced_reploff_pending, server.master_repl_offset);
-            return;
+        } else {
+            /* Check if we need to do fsync even the aof buffer is empty,
+             * because previously in AOF_FSYNC_EVERYSEC mode, fsync is
+             * called only when aof buffer is not empty, so if users
+             * stop write commands before fsync called in one second,
+             * the data in page cache cannot be flushed in time. */
+            if (server.aof_fsync == AOF_FSYNC_EVERYSEC &&
+                server.mstime - server.aof_last_fsync >= 1000 &&
+                !(sync_in_progress = aofFsyncInProgress()))
+                goto try_fsync;
+
+            /* Check if we need to do fsync even the aof buffer is empty,
+             * the reason is described in the previous AOF_FSYNC_EVERYSEC block,
+             * and AOF_FSYNC_ALWAYS is also checked here to handle a case where
+             * aof_fsync is changed from everysec to always. */
+            if (server.aof_fsync == AOF_FSYNC_ALWAYS)
+                goto try_fsync;
         }
+        return;
     }
 
     if (server.aof_fsync == AOF_FSYNC_EVERYSEC)

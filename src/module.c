@@ -12364,7 +12364,7 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
     }
 
     if (post_load_err) {
-        moduleUnload(ctx.module->name, NULL);
+        serverAssert(moduleUnload(ctx.module->name, NULL, 1) == C_OK);
         moduleFreeContext(&ctx);
         return C_ERR;
     }
@@ -12380,14 +12380,17 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
 
 /* Unload the module registered with the specified name. On success
  * C_OK is returned, otherwise C_ERR is returned and errmsg is set
- * with an appropriate message. */
-int moduleUnload(sds name, const char **errmsg) {
+ * with an appropriate message.
+ * Only forcefully unload this module, passing forced_unload != 0, 
+ * if it is certain that it has not yet been in use (e.g., immediate
+ * unload on failed load). */
+int moduleUnload(sds name, const char **errmsg, int forced_unload) {
     struct RedisModule *module = dictFetchValue(modules,name);
 
     if (module == NULL) {
         *errmsg = "no such module with that name";
         return C_ERR;
-    } else if (listLength(module->types)) {
+    } else if (listLength(module->types) && !forced_unload) {
         *errmsg = "the module exports one or more module-side data "
                   "types, can't unload";
         return C_ERR;
@@ -13170,7 +13173,7 @@ NULL
 
     } else if (!strcasecmp(subcmd,"unload") && c->argc == 3) {
         const char *errmsg = NULL;
-        if (moduleUnload(c->argv[2]->ptr, &errmsg) == C_OK)
+        if (moduleUnload(c->argv[2]->ptr, &errmsg, 0) == C_OK)
             addReply(c,shared.ok);
         else {
             if (errmsg == NULL) errmsg = "operation not possible.";
