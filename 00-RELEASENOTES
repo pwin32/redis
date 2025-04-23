@@ -11,6 +11,22 @@ CRITICAL: There is a critical bug affecting MOST USERS. Upgrade ASAP.
 SECURITY: There are security fixes in the release.
 --------------------------------------------------------------------------------
 
+================================================================================
+Redis 7.2.8    Released Wed 23 Apr 2025 12:00:00 IST
+================================================================================
+
+Update urgency: `SECURITY`: There are security fixes in the release.
+
+### Security fixes
+
+* (CVE-2025-21605) An unauthenticated client can cause an unlimited growth of output buffers
+
+### Bug fixes
+
+* #12817, #12905 Fix race condition issues between the main thread and module threads
+* #13863 `RANDOMKEY` - infinite loop during client pause
+* #13877 ShardID inconsistency when both primary and replica support it
+
 
 ================================================================================
 Redis 7.2.7    Released Mon 6 Jan 2025 12:30:00 IDT
