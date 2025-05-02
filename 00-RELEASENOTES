@@ -1,5 +1,79 @@
-Redis Community Edition 8.0 release notes
-=========================================
+Redis Open Source 8.0 release notes
+===================================
+
+=======================================================
+8.0 GA (v8.0.0)    Released Fri 2 May 2025 12:00:00 IST
+=======================================================
+
+This is the General Availability release of Redis Open Source 8.0.
+
+Redis 8.0 deprecates previous Redis and Redis Stack versions.
+
+Stand alone RediSearch, RedisJSON, RedisTimeSeries, and RedisBloom are no longer needed as they are now part of Redis.
+
+
+### Major changes compared to 7.4.2
+
+- Name change: Redis Community Edition is now Redis Open Source
+- License change: licensed under your choice of
+  - (a) the Redis Source Available License 2.0 (RSALv2); or
+  - (b) the Server Side Public License v1 (SSPLv1); or
+  - (c) the GNU Affero General Public License (AGPLv3)
+- Redis Query engine and 8 new data structures are now an integral part of Redis 8
+  - (1) Redis Query Engine, which now supports both horizontal and vertical scaling for search, query and vector workloads
+  - (2) JSON - a queryable JSON document
+  - (3) Time series
+  - (4-8) Five probabilistic data structures: Bloom filter, Cuckoo filter, Count-min sketch, Top-k, and t-digest
+  - (9) Vector set [beta] - a data structure designed for Vector Similarity Search, inspired by Sorted set
+  - These nine components are included in all binary distributions
+
+  - See instructions in the README.md file on how to build from source with all these components
+  - New configuration file: redis-full.conf - loads Redis with all these components,
+    and contains new configuration parameters for Redis Query engine and the new data structures
+  - New ACL categories: @search, @json, @timeseries, @bloom, @cuckoo, @cms, @topk, @tdigest
+  - Commands are also included in the existing ACL categories (@read, @write, etc.)
+
+- More than 30 performance and resource utilization improvements
+- A new I/O threading implementation which enables throughput increase on multi-core environments
+  (set with `io-threads` configuration parameter)
+- An improved replication mechanism which is more performant and robust
+- New hash commands - `HGETDEL`, `HGETEX`, `HSETEX`
+
+For more details, see the release notes of 8.0-M01, 8.0-M02, 8.0-M03,8.0-M04, and 8.0-RC1
+
+### Binary distributions
+
+- Alpine and Debian Docker images - https://hub.docker.com/_/redis
+- Install using snap - see https://github.com/redis/redis-snap
+- Install using brew - see https://github.com/redis/homebrew-redis
+- Install using RPM - see https://github.com/redis/redis-rpm
+- Install using Debian APT - see https://github.com/redis/redis-debian
+
+### Operating systems we test Redis 8.0 on
+
+- Ubuntu 20.04 (Focal Fossa), 22.04 (Jammy Jellyfish), 24.04 (Noble Numbat)
+- Rocky Linux 8.10, 9.5
+- AlmaLinux 8.10, 9.5
+- Debian 11 (Bullseye), 12 (Bookworm)
+- macOS 13 (Ventura), 14 (Sonoma), 15 (Sequoia)
+
+### Supported upgrade paths (by replication or persistence)
+
+- From previous Redis versions, without modules
+- From previous Redis versions with modules (RediSearch, RedisJSON, RedisTimeSeries, RedisBloom)
+- From Redis Stack 7.2 or 7.4
+
+### Security fixes (compared to 8.0-RC1)
+
+
+* (CVE-2025-21605) An unauthenticated client can cause an unlimited growth of output buffers
+
+### Bug fixes (compared to 8.0-RC1)
+
+- #13966, #13932 `CLUSTER SLOTS` - TLS port update not reflected in CLUSTER SLOTS
+- #13958 `XTRIM`, `XADD` - incorrect lag due to trimming stream
+- #13931 `HGETEX` - wrong order of keyspace notifications
+
 
 ==========================================================
 8.0-RC1 (v7.9.240)    Released Mon 7 Apr 2025 10:00:00 IST
