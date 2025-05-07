@@ -3024,7 +3024,7 @@ void syncWithMaster(connection *conn) {
     /* If reached this point, we should be in REPL_STATE_RECEIVE_PSYNC_REPLY. */
     if (server.repl_state != REPL_STATE_RECEIVE_PSYNC_REPLY) {
         serverLog(LL_WARNING,"syncWithMaster(): state machine error, "
-                             "state should be RECEIVE_PSYNC but is %d",
+                             "state should be RECEIVE_PSYNC_REPLY but is %d",
                              server.repl_state);
         goto error;
     }
