@@ -421,7 +421,7 @@ void getsetCommand(client *c) {
 }
 
 void setrangeCommand(client *c) {
-    size_t oldLen = 0, newLen;
+    int64_t oldLen = -1, newLen;
     robj *o;
     long offset;
     sds value = c->argv[3]->ptr;
@@ -605,11 +605,17 @@ void incrDecrCommand(client *c, long long incr) {
     {
         new = o;
         o->ptr = (void*)((long)value);
+        updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr),
+                           OBJ_STRING,
+                           (int64_t) sdigits10(oldvalue),
+                           (int64_t) sdigits10(value));
     } else {
         new = createStringObjectFromLongLongForValue(value);
         if (o) {
+            /* replace value in db and also update keysizes hist */
             dbReplaceValueWithDictEntry(c->db,c->argv[1],new,de);
         } else {
+            /* Add new key to db and also update keysizes hist */
             dbAdd(c->db,c->argv[1],new);
         }
     }
@@ -681,7 +687,7 @@ void incrbyfloatCommand(client *c) {
 }
 
 void appendCommand(client *c) {
-    size_t totlen, append_len;
+    size_t totlen;
     robj *o, *append;
 
     dictEntry *de;
@@ -691,7 +697,7 @@ void appendCommand(client *c) {
         c->argv[2] = tryObjectEncoding(c->argv[2]);
         dbAdd(c->db,c->argv[1],c->argv[2]);
         incrRefCount(c->argv[2]);
-        append_len = totlen = stringObjectLen(c->argv[2]);
+        totlen = stringObjectLen(c->argv[2]);
     } else {
         /* Key exists, check type */
         if (checkType(c,o,OBJ_STRING))
@@ -699,7 +705,7 @@ void appendCommand(client *c) {
 
         /* "append" is an argument, so always an sds */
         append = c->argv[2];
-        append_len = sdslen(append->ptr);
+        size_t append_len = sdslen(append->ptr);
         if (checkStringLength(c,stringObjectLen(o),append_len) != C_OK)
             return;
 
@@ -707,11 +713,13 @@ void appendCommand(client *c) {
         o = dbUnshareStringValueWithDictEntry(c->db,c->argv[1],o,de);
         o->ptr = sdscatlen(o->ptr,append->ptr,append_len);
         totlen = sdslen(o->ptr);
+        int64_t oldlen = totlen - append_len;
+        updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr), OBJ_STRING, oldlen, totlen);
     }
     signalModifiedKey(c,c->db,c->argv[1]);
     notifyKeyspaceEvent(NOTIFY_STRING,"append",c->argv[1],c->db->id);
     server.dirty++;
-    updateKeysizesHist(c->db,getKeySlot(c->argv[1]->ptr),OBJ_STRING, totlen - append_len, totlen);
+    
     addReplyLongLong(c,totlen);
 }
 

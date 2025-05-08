@@ -915,8 +915,9 @@ void ltrimCommand(client *c) {
 
     notifyKeyspaceEvent(NOTIFY_LIST,"ltrim",c->argv[1],c->db->id);
     if ((llenNew = listTypeLength(o)) == 0) {
-        dbDelete(c->db,c->argv[1]);
+        dbDeleteSkipKeysizesUpdate(c->db,c->argv[1]);
         notifyKeyspaceEvent(NOTIFY_GENERIC,"del",c->argv[1],c->db->id);
+        llenNew = -1; /* Indicate key deleted to updateKeysizesHist() */
     } else {
         listTypeTryConversion(o,LIST_CONV_SHRINKING,NULL,NULL);
     }
@@ -1100,9 +1101,6 @@ void lmoveHandlePush(client *c, robj *dstkey, robj *dstobj, robj *value,
     listTypePush(dstobj,value,where);
     signalModifiedKey(c,c->db,dstkey);
 
-    long ll = listTypeLength(dstobj);
-    updateKeysizesHist(c->db, getKeySlot(dstkey->ptr), OBJ_LIST, ll - 1, ll);
-
     notifyKeyspaceEvent(NOTIFY_LIST,
                         where == LIST_HEAD ? "lpush" : "rpush",
                         dstkey,
@@ -1142,15 +1140,23 @@ void lmoveGenericCommand(client *c, int wherefrom, int whereto) {
          * versions of Redis delete keys of empty lists. */
         addReplyNull(c);
     } else {
-        robj *dobj = lookupKeyWrite(c->db,c->argv[2]);
-        robj *touchedkey = c->argv[1];
-
-        if (checkType(c,dobj,OBJ_LIST)) return;
+        robj *dobj, *skey = c->argv[1];
+        int64_t oldlen = 0, newlen = 1; /* init lengths assuming new dst object */
+        
+        if ((dobj = lookupKeyWrite(c->db,c->argv[2])) != NULL) {
+            if (checkType(c,dobj,OBJ_LIST)) return;
+            /* dst object exists */
+            oldlen = (int64_t) listTypeLength(dobj);
+            newlen = oldlen + 1;
+        }
+        
         value = listTypePop(sobj,wherefrom);
         serverAssert(value); /* assertion for valgrind (avoid NPD) */
         lmoveHandlePush(c,c->argv[2],dobj,value,whereto);
-        listElementsRemoved(c,touchedkey,wherefrom,sobj,1,1,NULL);
-
+        /* Update dst obj cardinality in KEYSIZES */
+        updateKeysizesHist(c->db, getKeySlot(c->argv[2]->ptr), OBJ_LIST, oldlen, newlen);
+        /* Update src obj cardinality in KEYSIZES by listElementsRemoved() */
+        listElementsRemoved(c,skey,wherefrom,sobj,1,1,NULL);
         /* listTypePop returns an object with its refcount incremented */
         decrRefCount(value);
 

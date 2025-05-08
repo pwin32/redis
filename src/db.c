@@ -80,22 +80,33 @@ void updateKeysizesHist(redisDb *db, int didx, uint32_t type, int64_t oldLen, in
 
     if (oldLen > 0) {
         int old_bin = log2ceil(oldLen) + 1;
-        debugServerAssertWithInfo(server.current_client, NULL, old_bin < MAX_KEYSIZES_BINS);        
+        debugServerAssert(old_bin < MAX_KEYSIZES_BINS);
         /* If following a key deletion it is last one in slot's dict, then
          * slot's dict might get released as well. Verify if metadata is not NULL. */
-        if(dictMeta) dictMeta->keysizes_hist[type][old_bin]--;
+        if(dictMeta) {
+            dictMeta->keysizes_hist[type][old_bin]--;
+            debugServerAssert(dictMeta->keysizes_hist[type][old_bin] >= 0);
+        }
         kvstoreMeta->keysizes_hist[type][old_bin]--;
+        debugServerAssert(kvstoreMeta->keysizes_hist[type][old_bin] >= 0);
     } else {
         /* here, oldLen can be either 0 or -1 */
         if (oldLen == 0) {
-            if (dictMeta) dictMeta->keysizes_hist[type][0]--;
+            /* Only strings can be empty. Yet, a command flow might temporarily 
+             * dbAdd() empty collection, and only after add elements. */
+
+            if (dictMeta) {
+                dictMeta->keysizes_hist[type][0]--;
+                debugServerAssert(dictMeta->keysizes_hist[type][0] >= 0);
+            }
             kvstoreMeta->keysizes_hist[type][0]--;
+            debugServerAssert(kvstoreMeta->keysizes_hist[type][0] >= 0);
         }
     }
     
     if (newLen > 0) {
         int new_bin = log2ceil(newLen) + 1;
-        debugServerAssertWithInfo(server.current_client, NULL, new_bin < MAX_KEYSIZES_BINS);
+        debugServerAssert(new_bin < MAX_KEYSIZES_BINS);
         /* If following a key deletion it is last one in slot's dict, then
          * slot's dict might get released as well. Verify if metadata is not NULL. */
         if(dictMeta) dictMeta->keysizes_hist[type][new_bin]++;
@@ -103,6 +114,9 @@ void updateKeysizesHist(redisDb *db, int didx, uint32_t type, int64_t oldLen, in
     } else {
         /* here, newLen can be either 0 or -1 */
         if (newLen == 0) {
+            /* Only strings can be empty. Yet, a command flow might temporarily 
+             * dbAdd() empty collection, and only after add elements. */
+            
             if (dictMeta) dictMeta->keysizes_hist[type][0]++;
             kvstoreMeta->keysizes_hist[type][0]++;
         }
@@ -339,8 +353,7 @@ static void dbSetValue(redisDb *db, robj *key, robj *val, int overwrite, dictEnt
     serverAssertWithInfo(NULL,key,de != NULL);
     robj *old = dictGetVal(de);
 
-    /* Remove old key from keysizes histogram */
-    updateKeysizesHist(db, slot, old->type, getObjectLength(old), -1); /* remove hist */
+    int64_t oldlen = (int64_t) getObjectLength(old);
 
     val->lru = old->lru;
 
@@ -360,8 +373,15 @@ static void dbSetValue(redisDb *db, robj *key, robj *val, int overwrite, dictEnt
     }
     kvstoreDictSetVal(db->keys, slot, de, val);
 
-    /* Add new key to keysizes histogram */
-    updateKeysizesHist(db, slot, val->type, -1, getObjectLength(val));
+    /* Remove old key and add new key to KEYSIZES histogram */
+    int64_t newlen = (int64_t) getObjectLength(val);
+    /* Save one call if old and new are the same type */
+    if (old->type == val->type) {
+        updateKeysizesHist(db, slot, old->type, oldlen, newlen);
+    } else {
+        updateKeysizesHist(db, slot, old->type, oldlen, -1); 
+        updateKeysizesHist(db, slot, val->type, -1, newlen);
+    }
 
     /* if hash with HFEs, take care to remove from global HFE DS */
     if (old->type == OBJ_HASH)
@@ -476,11 +496,11 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
     if (de) {
         robj *val = dictGetVal(de);
 
-        /* remove key from histogram */
-        updateKeysizesHist(db, slot, val->type, getObjectLength(val), -1);
+        int64_t oldlen = (int64_t) getObjectLength(val);
+        int type = val->type; 
 
         /* If hash object with expiry on fields, remove it from HFE DS of DB */
-        if (val->type == OBJ_HASH)
+        if (type == OBJ_HASH)
             hashTypeRemoveFromExpires(&db->hexpires, val);
 
         /* RM_StringDMA may call dbUnshareStringValue which may free val, so we
@@ -489,7 +509,7 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
         /* Tells the module that the key has been unlinked from the database. */
         moduleNotifyKeyUnlink(key,val,db->id,flags);
         /* We want to try to unblock any module clients or clients using a blocking XREADGROUP */
-        signalDeletedKeyAsReady(db,key,val->type);
+        signalDeletedKeyAsReady(db,key,type);
         /* We should call decr before freeObjAsync. If not, the refcount may be
          * greater than 1, so freeObjAsync doesn't work */
         decrRefCount(val);
@@ -503,6 +523,11 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
         kvstoreDictDelete(db->expires, slot, key->ptr);
 
         kvstoreDictTwoPhaseUnlinkFree(db->keys, slot, de, plink, table);
+
+        /* remove key from histogram */
+        if(!(flags & DB_FLAG_NO_UPDATE_KEYSIZES))
+            updateKeysizesHist(db, slot, type, oldlen, -1);
+
         return 1;
     } else {
         return 0;
@@ -524,6 +549,17 @@ int dbAsyncDelete(redisDb *db, robj *key) {
  * configuration. Deletes the key synchronously or asynchronously. */
 int dbDelete(redisDb *db, robj *key) {
     return dbGenericDelete(db, key, server.lazyfree_lazy_server_del, DB_FLAG_KEY_DELETED);
+}
+
+/* Similar to dbDelete(), but does not update the keysizes histogram.
+ * This is used when we want to delete a key without affecting the histogram,
+ * typically in cases where a command flow deletes elements from a collection
+ * and then deletes the collection itself. In such cases, using dbDelete()
+ * would incorrectly decrement bin #0. A corresponding test should be added
+ * to `info-keysizes.tcl`. */
+int dbDeleteSkipKeysizesUpdate(redisDb *db, robj *key) {
+    return dbGenericDelete(db, key, server.lazyfree_lazy_server_del,
+                    DB_FLAG_KEY_DELETED | DB_FLAG_NO_UPDATE_KEYSIZES);
 }
 
 /* Prepare the string object stored at 'key' to be modified destructively
