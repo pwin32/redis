@@ -117,6 +117,7 @@ set ::dump_logs 0
 set ::loop 0
 set ::tlsdir "tests/tls"
 set ::singledb 0
+set ::large_memory 0
 
 # Set to 1 when we are running in client mode. The Redis test uses a
 # server-client model to run tests simultaneously. The server instance
@@ -644,6 +645,8 @@ for {set j 0} {$j < [llength $argv]} {incr j} {
     } elseif {$opt eq {--single}} {
         lappend ::single_tests $arg
         incr j
+    } elseif {$opt eq {--large-memory}} {
+        set ::large_memory 1
     } elseif {$opt eq {--only}} {
         lappend ::only_tests $arg
         incr j
