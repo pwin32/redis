@@ -198,6 +198,7 @@ start_server {tags {"introspection"}} {
             aof_rewrite_cpulist
             bgsave_cpulist
             set-proc-title
+            lua-enable-deprecated-api
         }
 
         if {!$::tls} {
