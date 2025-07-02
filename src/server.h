@@ -1447,6 +1447,11 @@ typedef struct client {
 
     /* list node in clients_pending_write list */
     listNode clients_pending_write_node;
+    /* Statistics and metrics */
+    size_t net_input_bytes_curr_cmd; /* Total network input bytes read for the
+                                      * execution of this client's current command. */
+    size_t net_output_bytes_curr_cmd; /* Total network output bytes sent to this
+                                       * client, by the current command. */
     /* Response buffer */
     size_t buf_peak; /* Peak used size of buffer in last 5 sec interval. */
     mstime_t buf_peak_last_reset_time; /* keeps the last time the buffer peak value was reset */
@@ -1977,6 +1982,7 @@ struct redisServer {
     unsigned int max_new_tls_conns_per_cycle; /* The maximum number of tls connections that will be accepted during each invocation of the event loop. */
     unsigned int max_new_conns_per_cycle; /* The maximum number of tcp connections that will be accepted during each invocation of the event loop. */
     int cluster_compatibility_sample_ratio; /* Sampling ratio for cluster mode incompatible commands. */
+    int lazyexpire_nested_arbitrary_keys; /* If disabled, avoid lazy-expire from commands that touch arbitrary keys (SCAN/RANDOMKEY) within transactions */
 
     /* AOF persistence */
     int aof_enabled;                /* AOF configuration */
@@ -2249,6 +2255,7 @@ struct redisServer {
     unsigned long long cluster_link_msg_queue_limit_bytes;  /* Memory usage limit on individual link msg queue */
     int cluster_drop_packet_filter; /* Debug config that allows tactically
                                    * dropping packets of a specific type */
+    int cluster_slot_stats_enabled; /* Cluster slot usage statistics tracking enabled. */
     /* Scripting */
     unsigned int lua_arena;         /* eval lua arena used in jemalloc. */
     mstime_t busy_reply_threshold;  /* Script / module timeout in milliseconds */
@@ -3620,6 +3627,7 @@ void deleteExpiredKeyAndPropagate(redisDb *db, robj *keyobj);
 void deleteEvictedKeyAndPropagate(redisDb *db, robj *keyobj, long long *key_mem_freed);
 void propagateDeletion(redisDb *db, robj *key, int lazy);
 int keyIsExpired(redisDb *db, sds key, kvobj *kv);
+int confAllowsExpireDel(void);
 long long getExpire(redisDb *db, sds key, kvobj *kv);
 kvobj *setExpire(client *c, redisDb *db, robj *key, long long when);
 kvobj *setExpireByLink(client *c, redisDb *db, sds key, long long when, dictEntryLink link);
@@ -4051,6 +4059,7 @@ void sunsubscribeCommand(client *c);
 void watchCommand(client *c);
 void unwatchCommand(client *c);
 void clusterCommand(client *c);
+void clusterSlotStatsCommand(client *c);
 void restoreCommand(client *c);
 void migrateCommand(client *c);
 void askingCommand(client *c);
@@ -4113,11 +4122,13 @@ void xreadCommand(client *c);
 void xgroupCommand(client *c);
 void xsetidCommand(client *c);
 void xackCommand(client *c);
+void xackdelCommand(client *c);
 void xpendingCommand(client *c);
 void xclaimCommand(client *c);
 void xautoclaimCommand(client *c);
 void xinfoCommand(client *c);
 void xdelCommand(client *c);
+void xdelexCommand(client *c);
 void xtrimCommand(client *c);
 void lolwutCommand(client *c);
 void aclCommand(client *c);
