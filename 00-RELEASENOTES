@@ -19,11 +19,62 @@ The release notes contain PRs from multiple repositories:
 #Tn = Time Series (https://github.com/RedisTimeSeries/RedisTimeSeries)
 #Pn = Probabilistic (https://github.com/RedisBloom/RedisBloom)
 
+
+===========================================================
+8.2-RC1 (v8.1.240)    Committed Thu 3 Jul 2025 20:00:00 IST
+===========================================================
+
+This is the first Release Candidate of Redis Open Source 8.0.
+
+Release Candidates are feature-complete pre-releases. Pre-releases are not suitable for production use.
+
+### Headlines
+
+Redis 8.2 introduces major performance and memory footprint improvements, new commands, and command extensions.
+
+8.2-RC1 is available as a Docker image and can be downloaded from [Docker Hub](https://hub.docker.com/_/redis). Additional distributions will be introduced in upcoming pre-releases.
+
+### Security fixes
+
+- (CVE-2025-27151) redis-check-aof may lead to stack overflow and potential RCE
+
+### New Features
+
+- #14130 Streams - new commands: `XDELEX` and `XACKDEL`; extension to `XADD` and `XTRIM`
+- #14039 New command: `CLUSTER SLOT-STATS` - get per-slot usage metrics such as key count, CPU time, and network I/O
+- #14122 `VSIM` - new `IN` operator for filtering expression
+- #Q6329, #Q6329 - Query Engine - new SVS-VAMANA vector index type which supports vector compression (optimized for Intel machines)
+
+### Bug fixes
+
+- #14143 Gracefully handle short read errors for hashes with TTL during full sync
+
+### Performance and resource utilization improvements
+
+- #14103 Optimize `BITCOUNT` by introducing prefetching
+- #14121 Optimize `SCAN` by performing expiration checks only on DBs with volatile keys
+- #14140 Optimize expiry check in `scanCallback`
+- #14131 Optimize `LREM`, `LPOS`, `LINSERT`, `ZRANK`, and more by caching `string2ll` results in `quicklistCompare`
+- #14088 Optimize `COPY`, `RENAME`, and `RESTORE` when TTL is used
+- #14074 Reduce the overhead associated with tracking `malloc`’s usable memory
+- #13900 Optimize the client’s cron to avoid blocking the main thread
+- #J1351 JSON - memory footprint improvement by inlining numbers (MOD-9511)
+
+### Metrics
+
+- #14067 `INFO`: `used_memory_peak_time` - time when `used_memory_peak` was hit
+- #13990 `INFO`:
+  - `master_current_sync_attempts` - number of times the replica attempted to sync to a master since last disconnection
+  - `master_total_sync_attempts` - number of times the replica attempted to sync to a master
+  - `master_link_up_since_seconds` - number of seconds since the link has been up
+  - `total_disconnect_time_sec` - total cumulative time we've been disconnected as a replica
+
+
 ===========================================================
 8.2-M01 (v8.1.224)    Released Thu 19 Jun 2024 10:00:00 IST
 ===========================================================
 
-This is the first Milestone of Redis Community Edition 8.2.
+This is the first Milestone of Redis Open Source 8.2.
 
 Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
 Once we reach feature-completeness we will release RC1.
