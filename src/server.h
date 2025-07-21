@@ -387,7 +387,7 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
                                                     auth had been authenticated from the Module. */
 #define CLIENT_MODULE_PREVENT_AOF_PROP (1ULL<<48) /* Module client do not want to propagate to AOF */
 #define CLIENT_MODULE_PREVENT_REPL_PROP (1ULL<<49) /* Module client do not want to propagate to replica */
-#define CLIENT_REPROCESSING_COMMAND (1ULL<<50) /* The client is re-processing the command. */
+#define CLIENT_REEXECUTING_COMMAND (1ULL<<50) /* The client is re-executing the command. */
 
 /* Any flag that does not let optimize FLUSH SYNC to run it in bg as blocking client ASYNC */
 #define CLIENT_AVOID_BLOCKING_ASYNC_FLUSH (CLIENT_DENY_BLOCKING|CLIENT_MULTI|CLIENT_LUA_DEBUG|CLIENT_LUA_DEBUG_SYNC|CLIENT_MODULE)
@@ -584,8 +584,7 @@ typedef enum {
 #define CMD_CALL_NONE 0
 #define CMD_CALL_PROPAGATE_AOF (1<<0)
 #define CMD_CALL_PROPAGATE_REPL (1<<1)
-#define CMD_CALL_REPROCESSING (1<<2)
-#define CMD_CALL_FROM_MODULE (1<<3)  /* From RM_Call */
+#define CMD_CALL_FROM_MODULE (1<<2)  /* From RM_Call */
 #define CMD_CALL_PROPAGATE (CMD_CALL_PROPAGATE_AOF|CMD_CALL_PROPAGATE_REPL)
 #define CMD_CALL_FULL (CMD_CALL_PROPAGATE)
 
