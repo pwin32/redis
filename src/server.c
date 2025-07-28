@@ -2061,6 +2061,7 @@ void createSharedObjects(void) {
     shared.hpexpireat = createStringObject("HPEXPIREAT",10);
     shared.hpersist = createStringObject("HPERSIST",8);
     shared.hdel = createStringObject("HDEL",4);
+    shared.hsetex = createStringObject("HSETEX",6);
 
     /* Shared command argument */
     shared.left = createStringObject("left",4);
@@ -2083,6 +2084,7 @@ void createSharedObjects(void) {
     shared.special_asterick = createStringObject("*",1);
     shared.special_equals = createStringObject("=",1);
     shared.redacted = makeObjectShared(createStringObject("(redacted)",10));
+    shared.fields = createStringObject("FIELDS",6);
 
     for (j = 0; j < OBJ_SHARED_INTEGERS; j++) {
         shared.integers[j] =
