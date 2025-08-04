@@ -19,6 +19,69 @@ The release notes contain PRs from multiple repositories:
 #Tn = Time Series (https://github.com/RedisTimeSeries/RedisTimeSeries)
 #Pn = Probabilistic (https://github.com/RedisBloom/RedisBloom)
 
+===========================================================
+8.2 GA (v8.2.0)    Released Mon 4 Aug 2025 15:00:00 IST
+===========================================================
+
+This is the General Availability release of Redis Open Source 8.2.
+
+### Major changes compared to 8.0
+
+- Streams - new commands: `XDELEX` and `XACKDEL`; extension to `XADD` and `XTRIM`
+- Bitmap - `BITOP`: new operators: `DIFF`, `DIFF1`, `ANDOR`, and `ONE`
+- Query Engine - new SVS-VAMANA vector index type which supports vector compression
+- More than 15 performance and resource utilization improvements
+- New metrics: per-slot usage metrics, key size distributions for basic data types, and more
+
+### Binary distributions
+
+- Alpine and Debian Docker images - https://hub.docker.com/_/redis
+- Install using snap - see https://github.com/redis/redis-snap
+- Install using brew - see https://github.com/redis/homebrew-redis
+- Install using RPM - see https://github.com/redis/redis-rpm
+- Install using Debian APT - see https://github.com/redis/redis-debian
+
+
+### Operating systems we test Redis 8.2 on
+
+- Ubuntu 22.04 (Jammy Jellyfish), 24.04 (Noble Numbat)
+- Rocky Linux 8.10, 9.5
+- AlmaLinux 8.10, 9.5
+- Debian 12 (Bookworm)
+- macOS 13 (Ventura), 14 (Sonoma), 15 (Sequoia)
+
+### Security fixes (compared to 8.2-RC1)
+
+- (CVE-2025-32023) Fix out-of-bounds write in `HyperLogLog` commands
+- (CVE-2025-48367) Retry accepting other connections even if the accepted connection reports an error
+
+### New Features (compared to 8.2-RC1)
+
+- #14141 Keyspace notifications - new event types:
+  - `OVERWRITTEN` - the value of a key is completely overwritten
+  - `TYPE_CHANGED` - key type change
+
+### Bug fixes (compared to 8.2-RC1)
+
+- #14162 Crash when using evport with I/O threads
+- #14163 `EVAL` crash when error table is empty
+- #14144 Vector sets - RDB format is not compatible with big endian machines
+- #14165 Endless client blocking for blocking commands
+- #14164 Prevent `CLIENT UNBLOCK` from unblocking `CLIENT PAUSE`
+- #14216 TTL was not removed by the `SET` command
+- #14224 `HINCRBYFLOAT` removes field expiration on replica
+
+### Performance and resource utilization improvements (compared to 8.2-RC1)
+
+- #14200 Store iterators on stack instead of on heap
+- #14144 Vector set - improve RDB loading / RESTORE speed by storing the worst link info 
+- #Q6430 More compression variants for the SVS-VAMANA vector index
+- #Q6535 `SHARD_K_RATIO` parameter - favor network latency over accuracy for KNN vector query in a Redis cluster (unstable feature) (MOD-10359)
+
+### Modules API
+
+- #14051 `RedisModule_Get*`, `RedisModule_Set*` - allow modules to access Redis configurations
+- #14114 `RM_UnsubscribeFromKeyspaceEvents` - unregister a module from specific keyspace notifications
 
 ===========================================================
 8.2-RC1 (v8.1.240)    Committed Thu 3 Jul 2025 20:00:00 IST
