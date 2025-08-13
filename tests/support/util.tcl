@@ -830,3 +830,34 @@ proc config_get_set {param value {options {}}} {
     return $config
 }
 
+# The following functions and variables are used only when running large-memory
+# tests. We avoid defining them when not running large-memory tests because the
+# global variables takes up lots of memory.
+proc init_large_mem_vars {} {
+    if {![info exists ::str500]} {
+        set ::str500 [string repeat x 500000000] ;# 500mb
+        set ::str500_len [string length $::str500]
+    }
+}
+
+# Utility function to write big argument into redis client connection
+proc write_big_bulk {size {prefix ""} {skip_read no}} {
+    init_large_mem_vars
+
+    assert {[string length prefix] <= $size}
+    r write "\$$size\r\n"
+    r write $prefix
+    incr size -[string length $prefix]
+    while {$size >= 500000000} {
+        r write $::str500
+        incr size -500000000
+    }
+    if {$size > 0} {
+        r write [string repeat x $size]
+    }
+    r write "\r\n"
+    if {!$skip_read} {
+        r flush
+        r read
+    }
+}

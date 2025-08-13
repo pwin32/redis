@@ -266,3 +266,13 @@ start_server {tags {"hll"}} {
         assert {[r getrange hll 15 15] eq "\x80"}
     }
 }
+
+start_server {tags {"hll large-memory"}} {
+    test {PFADD with 2GB entry should not crash server due to overflow in MurmurHash64A} {
+        r config set proto-max-bulk-len 3221225472
+        r config set client-query-buffer-limit 3221225472
+        r write "*3\r\n\$5\r\nPFADD\r\n\$3\r\nhll\r\n"
+        write_big_bulk 2147483648;
+        r ping
+    } {PONG}
+}
