@@ -1580,7 +1580,7 @@ void whileBlockedCron(void) {
      * activeDefragCycle needs to utilize 25% cpu, it will utilize 2.5ms, so we
      * need to call it multiple times. */
     long hz_ms = 1000/server.hz;
-    while (server.blocked_last_cron < server.mstime) {
+    while (isAOFLoadingContext() && server.blocked_last_cron < server.mstime) {
 
         /* Defrag keys gradually. */
         activeDefragCycle();
