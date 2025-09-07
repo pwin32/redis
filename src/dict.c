@@ -743,6 +743,30 @@ void dictRelease(dict *d)
     zfree(d);
 }
 
+/* Finds the dictEntry using pointer and pre-calculated hash.
+ * oldkey is a dead pointer and should not be accessed.
+ * the hash value should be provided using dictGetHash.
+ * no string / key comparison is performed.
+ * return value is a pointer to the dictEntry if found, or NULL if not found. */
+dictEntry *dictFindByHashAndPtr(dict *d, const void *oldptr, const uint64_t hash) {
+    dictEntry *he;
+    unsigned long idx, table;
+
+    if (dictSize(d) == 0) return NULL; /* dict is empty */
+    for (table = 0; table <= 1; table++) {
+        idx = hash & DICTHT_SIZE_MASK(d->ht_size_exp[table]);
+        if (table == 0 && (long)idx < d->rehashidx) continue;
+        he = d->ht_table[table][idx];
+        while(he) {
+            if (oldptr == dictGetKey(he))
+                return he;
+            he = dictGetNext(he);
+        }
+        if (!dictIsRehashing(d)) return NULL;
+    }
+    return NULL;
+}
+
 dictEntry *dictFind(dict *d, const void *key)
 {
     dictEntry *he;

@@ -209,6 +209,7 @@ void dictFreeUnlinkedEntry(dict *d, dictEntry *he);
 dictEntry *dictTwoPhaseUnlinkFind(dict *d, const void *key, dictEntry ***plink, int *table_index);
 void dictTwoPhaseUnlinkFree(dict *d, dictEntry *he, dictEntry **plink, int table_index);
 void dictRelease(dict *d);
+dictEntry *dictFindByHashAndPtr(dict *d, const void *oldptr, const uint64_t hash);
 dictEntry * dictFind(dict *d, const void *key);
 void *dictFetchValue(dict *d, const void *key);
 int dictShrinkIfNeeded(dict *d);
