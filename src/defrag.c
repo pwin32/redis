@@ -141,6 +141,7 @@ typedef struct {
  * pointers are worthwhile moving and which aren't */
 int je_get_defrag_hint(void* ptr);
 
+#if !defined(DEBUG_DEFRAG_FORCE)
 /* Defrag helper for generic allocations without freeing old pointer.
  *
  * Note: The caller is responsible for freeing the old pointer if this function
@@ -188,6 +189,37 @@ void activeDefragFreeRaw(void *ptr) {
     activeDefragFree(ptr);
     server.stat_active_defrag_hits++;
 }
+#else
+void *activeDefragAllocWithoutFree(void *ptr) {
+    size_t size;
+    void *newptr;
+    size = zmalloc_usable_size(ptr);
+    newptr = zmalloc(size);
+    memcpy(newptr, ptr, size);
+    server.stat_active_defrag_hits++;
+    return newptr;
+}
+
+void activeDefragFree(void *ptr) {
+    zfree(ptr);
+}
+
+void *activeDefragAlloc(void *ptr) {
+    void *newptr = activeDefragAllocWithoutFree(ptr);
+    if (newptr)
+        activeDefragFree(ptr);
+    return newptr;
+}
+
+void *activeDefragAllocRaw(size_t size) {
+    return zmalloc(size);
+}
+
+void activeDefragFreeRaw(void *ptr) {
+    zfree(ptr);
+    server.stat_active_defrag_hits++;
+}
+#endif
 
 /*Defrag helper for sds strings
  *
@@ -1009,6 +1041,7 @@ static void dbKeysScanCallback(void *privdata, const dictEntry *de, dictEntryLin
     server.stat_active_defrag_scanned++;
 }
 
+#if !defined(DEBUG_DEFRAG_FORCE)
 /* Utility function to get the fragmentation ratio from jemalloc.
  * It is critical to do that by comparing only heap maps that belong to
  * jemalloc, and skip ones the jemalloc keeps as spare. Since we use this
@@ -1042,6 +1075,13 @@ float getAllocatorFragmentation(size_t *out_frag_bytes) {
         allocated, active, resident, frag_pct, rss_pct, frag_smallbins_bytes, rss_bytes);
     return frag_pct;
 }
+#else
+float getAllocatorFragmentation(size_t *out_frag_bytes) {
+    if (out_frag_bytes)
+        *out_frag_bytes = SIZE_MAX;
+    return 99; /* The maximum percentage of fragmentation */
+}
+#endif
 
 /* Defrag scan callback for the pubsub dictionary. */
 void defragPubsubScanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
@@ -1585,6 +1625,9 @@ static int activeDefragTimeProc(struct aeEventLoop *eventLoop, long long id, voi
 
     monotime starttime = getMonotonicUs();
     int dutyCycleUs = computeDefragCycleUs();
+#if defined(DEBUG_DEFRAG_FULLY)
+    dutyCycleUs = 30*1000*1000LL; /* 30 seconds */
+#endif
     monotime endtime = starttime + dutyCycleUs;
     int haveMoreWork = 1;
 
