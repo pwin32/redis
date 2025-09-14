@@ -1658,5 +1658,20 @@ start_server {
             assert_equal [dict get $group lag] 0
             assert_equal [dict get $group entries-read] 1
         }
+
+        test "XACKDEL with IDs exceeding STREAMID_STATIC_VECTOR_LEN for heap allocation" {
+            r DEL mystream
+            r XGROUP CREATE mystream mygroup $ MKSTREAM
+
+            # Generate IDs exceeding STREAMID_STATIC_VECTOR_LEN (8) to force heap allocation
+            # instead of using the static vector cache, ensuring proper memory allocation.
+            set ids {}
+            for {set i 0} {$i < 50} {incr i} {
+                lappend ids "$i-1"
+            }
+            set result [r XACKDEL mystream mygroup IDS 50 {*}$ids]
+            assert {[llength $result] == 50}
+            r PING
+        }
     }
 }
