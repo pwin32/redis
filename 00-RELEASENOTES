@@ -1,16 +1,21 @@
-Hello! This file is just a placeholder, since this is the "unstable" branch
-of Redis, the place where all the development happens.
+Redis Open Source 8.4 release notes
+===================================
 
-There is no release notes for this branch, it gets forked into another branch
-every time there is a partial feature freeze in order to eventually create
-a new stable release.
+--------------------------------------------------------------------------------
+Upgrade urgency levels:
 
-Usually "unstable" is stable enough for you to use it in development environments
-however you should never use it in production environments. It is possible
-to download the latest stable release here:
+LOW:      No need to upgrade unless there are new features you want to use.
+MODERATE: Program an upgrade of the server, but it's not urgent.
+HIGH:     There is a critical bug that may affect a subset of users. Upgrade!
+CRITICAL: There is a critical bug affecting MOST USERS. Upgrade ASAP.
+SECURITY: There are security fixes in the release.
+--------------------------------------------------------------------------------
 
-    https://download.redis.io/redis-stable.tar.gz
+The release notes contain PRs from multiple repositories:
 
-More information is available at https://redis.io
+#n - Redis (https://github.com/redis/redis)
+#Qn = Query Engine (https://github.com/RediSearch/RediSearch)
+#Jn = JSON (https://github.com/RedisJSON/RedisJSON)
+#Tn = Time Series (https://github.com/RedisTimeSeries/RedisTimeSeries)
+#Pn = Probabilistic (https://github.com/RedisBloom/RedisBloom)
 
-Happy hacking!
