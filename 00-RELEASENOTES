@@ -11,6 +11,30 @@ CRITICAL: There is a critical bug affecting MOST USERS. Upgrade ASAP.
 SECURITY: There are security fixes in the release.
 --------------------------------------------------------------------------------
 
+
+================================================================================
+Redis 7.4.6    Released Fri 3 Oct 2025 10:00:00 IST
+================================================================================
+
+Update urgency: `SECURITY`: There are security fixes in the release.
+
+### Security fixes
+
+- (CVE-2025-49844) A Lua script may lead to remote code execution
+- (CVE-2025-46817) A Lua script may lead to integer overflow and potential RCE
+- (CVE-2025-46818) A Lua script can be executed in the context of another user
+- (CVE-2025-46819) LUA out-of-bound read
+
+### Bug fixes
+
+- #14330 Potential use-after-free after pubsub and Lua defrag
+- #14319 Potential crash on Lua script defrag
+- #14164 Prevent `CLIENT UNBLOCK` from unblocking `CLIENT PAUSE`
+- #14165 Endless client blocking for blocking commands
+- #14163 `EVAL` crash when error table is empty
+- #14227 `HINCRBYFLOAT` removes field expiration on replica
+
+
 ================================================================================
 Redis 7.4.5    Released Sun 6 Jul 2025 12:00:00 IST
 ================================================================================
@@ -19,8 +43,8 @@ Update urgency: `SECURITY`: There are security fixes in the release.
 
 ### Security fixes
 
-* (CVE-2025-32023) Fix out-of-bounds write in `HyperLogLog` commands
-* (CVE-2025-48367) Retry accepting other connections even if the accepted connection reports an error
+- (CVE-2025-32023) Fix out-of-bounds write in `HyperLogLog` commands
+- (CVE-2025-48367) Retry accepting other connections even if the accepted connection reports an error
 
 
 ================================================================================
@@ -31,7 +55,7 @@ Update urgency: `SECURITY`: There are security fixes in the release.
 
 ### Security fixes
 
-* (CVE-2025-27151) redis-check-aof may lead to stack overflow and potential RCE
+- (CVE-2025-27151) redis-check-aof may lead to stack overflow and potential RCE
 
 ### Bug fixes
 
