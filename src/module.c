@@ -677,11 +677,12 @@ void moduleReleaseTempClient(client *c) {
     listEmpty(c->reply);
     c->reply_bytes = 0;
     c->duration = 0;
-    resetClient(c);
+    resetClient(c, -1);
+    serverAssert(c->all_argv_len_sum == 0);
     c->bufpos = 0;
     c->flags = CLIENT_MODULE;
     c->user = NULL; /* Root user */
-    c->cmd = c->lastcmd = c->realcmd = c->iolookedcmd = NULL;
+    c->cmd = c->lastcmd = c->realcmd = NULL;
     if (c->bstate.async_rm_call_handle) {
         RedisModuleAsyncRMCallPromise *promise = c->bstate.async_rm_call_handle;
         promise->c = NULL; /* Remove the client from the promise so it will no longer be possible to abort it. */
@@ -6635,7 +6636,7 @@ RedisModuleCallReply *RM_Call(RedisModuleCtx *ctx, const char *cmdname, const ch
         int acl_errpos;
         int acl_retval;
 
-        acl_retval = ACLCheckAllUserCommandPerm(user,c->cmd,c->argv,c->argc,&acl_errpos);
+        acl_retval = ACLCheckAllUserCommandPerm(user,c->cmd,c->argv,c->argc,NULL,&acl_errpos);
         if (acl_retval != ACL_OK) {
             sds object = (acl_retval == ACL_DENIED_CMD) ? sdsdup(c->cmd->fullname) : sdsdup(c->argv[acl_errpos]->ptr);
             addACLLogEntry(ctx->client, acl_retval, ACL_LOG_CTX_MODULE, -1, c->user->name, object);
@@ -6660,7 +6661,7 @@ RedisModuleCallReply *RM_Call(RedisModuleCtx *ctx, const char *cmdname, const ch
         c->flags &= ~(CLIENT_READONLY|CLIENT_ASKING);
         c->flags |= ctx->client->flags & (CLIENT_READONLY|CLIENT_ASKING);
         const uint64_t cmd_flags = getCommandFlags(c);
-        if (getNodeByQuery(c,c->cmd,c->argv,c->argc,NULL,cmd_flags,&error_code) !=
+        if (getNodeByQuery(c,c->cmd,c->argv,c->argc,NULL,NULL,0,cmd_flags,&error_code) !=
                            getMyClusterNode())
         {
             sds msg = NULL;
@@ -10022,7 +10023,7 @@ int RM_ACLCheckCommandPermissions(RedisModuleUser *user, RedisModuleString **arg
         return REDISMODULE_ERR;
     }
 
-    if (ACLCheckAllUserCommandPerm(user->user, cmd, argv, argc, &keyidxptr) != ACL_OK) {
+    if (ACLCheckAllUserCommandPerm(user->user, cmd, argv, argc, NULL, &keyidxptr) != ACL_OK) {
         errno = EACCES;
         return REDISMODULE_ERR;
     }
@@ -11157,12 +11158,27 @@ void moduleCallCommandFilters(client *c) {
     }
 
     /* If the filter sets a new command, including command or subcommand,
-     * the command looked up in IO threads will be invalid. */
-    c->iolookedcmd = NULL;
+     * the command looked up will be invalid. */
+    c->lookedcmd = NULL;
 
     c->argv = filter.argv;
     c->argv_len = filter.argv_len;
     c->argc = filter.argc;
+
+    /* Update pending command if it exists. */
+    pendingCommand *pcmd = c->current_pending_cmd;
+    if (pcmd) {
+        pcmd->argv = filter.argv;
+        pcmd->argc = filter.argc;
+        pcmd->argv_len = filter.argv_len;
+        pcmd->cmd = NULL;
+        pcmd->slot = INVALID_CLUSTER_SLOT;
+        pcmd->flags = 0;
+
+        /* Reset keys result */
+        getKeysFreeResult(&pcmd->keys_result);
+        pcmd->keys_result = (getKeysResult)GETKEYS_RESULT_INIT;
+    }
 }
 
 /* Return the number of arguments a filtered command has.  The number of

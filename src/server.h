@@ -202,6 +202,9 @@ struct hdr_histogram;
  * in order to make sure of not over provisioning more than 128 fds. */
 #define CONFIG_FDSET_INCR (CONFIG_MIN_RESERVED_FDS+96)
 
+/* Default lookahead value */
+#define REDIS_DEFAULT_LOOKAHEAD 16
+
 /* OOM Score Adjustment classes. */
 #define CONFIG_OOM_MASTER 0
 #define CONFIG_OOM_REPLICA 1
@@ -463,6 +466,9 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
 #define CLIENT_READ_CONN_DISCONNECTED 11
 #define CLIENT_READ_CONN_CLOSED 12
 #define CLIENT_READ_REACHED_MAX_QUERYBUF 13
+#define CLIENT_READ_COMMAND_NOT_FOUND 14
+#define CLIENT_READ_BAD_ARITY 15
+#define CLIENT_READ_CROSS_SLOT 16
 
 /* Client block type (btype field in client structure)
  * if CLIENT_BLOCKED flag is set. */
@@ -1146,16 +1152,11 @@ typedef struct rdbLoadingCtx {
     functionsLibCtx* functions_lib_ctx;
 }rdbLoadingCtx;
 
-/* Client MULTI/EXEC state */
-typedef struct multiCmd {
-    robj **argv;
-    int argv_len;
-    int argc;
-    struct redisCommand *cmd;
-} multiCmd;
-
+typedef struct pendingCommand pendingCommand;
 typedef struct multiState {
-    multiCmd *commands;     /* Array of MULTI commands */
+    pendingCommand **commands;     /* Array of pointers to MULTI commands */
+    int executing_cmd;      /* The index of the currently executed transaction 
+                               command (index in commands field) */
     int count;              /* Total number of MULTI commands */
     int cmd_flags;          /* The accumulated command flags OR-ed together.
                                So if at least a command has a given flag, it
@@ -1164,7 +1165,7 @@ typedef struct multiState {
                                is possible to know if all the commands have a
                                certain flag. */
     size_t argv_len_sums;    /* mem used by all commands arguments */
-    int alloc_count;         /* total number of multiCmd struct memory reserved. */
+    int alloc_count;         /* total number of pendingCommand struct memory reserved. */
 } multiState;
 
 /* This structure holds the blocking operation state for a client.
@@ -1213,6 +1214,24 @@ typedef struct readyList {
     robj *key;
 } readyList;
 
+/* List of pending commands. */
+typedef struct pendingCommandList {
+    pendingCommand *head;
+    pendingCommand *tail;
+    int len; /* Number of commands in the list */
+    int ready_len; /* Number of commands that are ready to be processed */
+} pendingCommandList;
+
+/* Pending command pool management structure */
+#define PENDING_COMMAND_POOL_SIZE 16
+#define PENDING_COMMAND_POOL_MAX_SIZE 1024
+typedef struct pendingCommandPool {
+    pendingCommand **pool;  /* Pool array for reusing pendingCommand objects */
+    int size;               /* Current number of objects in pool */
+    int capacity;           /* Current capacity of the pool array */
+    int min_size;           /* Minimum size since last check (indicates peak usage) */
+} pendingCommandPool;
+
 /* This structure represents a Redis user. This is useful for ACLs, the
  * user is associated to the connection after the connection is authenticated.
  * If there is no associated user, the connection uses the default user. */
@@ -1243,7 +1262,7 @@ typedef struct readyList {
 
 typedef struct {
     sds name;       /* The username as an SDS string. */
-    uint32_t flags; /* See USER_FLAG_* */
+    redisAtomic uint32_t flags; /* See USER_FLAG_* */
     list *passwords; /* A list of SDS valid passwords for this user. */
     list *selectors; /* A list of selectors this user validates commands
                         against. This list will always contain at least
@@ -1302,6 +1321,16 @@ typedef struct {
     size_t mem_usage_sum;
 } clientMemUsageBucket;
 
+#define DEFERRED_OBJECT_TYPE_PENDING_COMMAND 1
+#define DEFERRED_OBJECT_TYPE_ROBJ 2
+/* Structure to hold objects that need to be freed later by IO threads.
+ * This allows the main thread to defer memory cleanup operations to
+ * IO threads to avoid blocking the main event loop. */
+typedef struct deferredObject {
+    int type;    /* Pointer to the object to be freed */
+    void *ptr;   /* Type of object: DEFERRED_OBJECT_TYPE_* */ 
+} deferredObject;
+
 #define SHOULD_CLUSTER_COMPATIBILITY_SAMPLE() \
             (server.cluster_compatibility_sample_ratio == 100 || \
              (double)rand()/RAND_MAX * 100 < server.cluster_compatibility_sample_ratio)
@@ -1352,11 +1381,13 @@ typedef struct client {
     int argv_len;           /* Size of argv array (may be more than argc) */
     int original_argc;      /* Num of arguments of original command if arguments were rewritten. */
     robj **original_argv;   /* Arguments of original command if arguments were rewritten. */
-    size_t argv_len_sum;    /* Sum of lengths of objects in argv list. */
-    robj **deferred_objects;    /* Array of deferred objects to free. */
+    size_t all_argv_len_sum;    /* Sum of lengths of objects in all pendingCommand argv lists */
+    pendingCommandList pending_cmds;  /* List of parsed pending commands */
+    pendingCommand *current_pending_cmd;
+    deferredObject *deferred_objects; /* Array of deferred objects to free. */
     int deferred_objects_num;   /* Number of deferred objects to free. */
     struct redisCommand *cmd, *lastcmd;  /* Last command executed. */
-    struct redisCommand *iolookedcmd;    /* Command looked up in IO threads. */
+    struct redisCommand *lookedcmd; /* Command looked up in lookahead. */
     struct redisCommand *realcmd; /* The original command that was executed by the client,
                                      Used to update error stats in case the c->cmd was modified
                                      during the command invocation (like on GEOADD for example). */
@@ -1392,6 +1423,7 @@ typedef struct client {
     sds replpreamble;       /* Replication DB preamble. */
     long long read_reploff; /* Read replication offset if this is a master. */
     long long reploff;      /* Applied replication offset if this is a master. */
+    long long reploff_next; /* Next value to set for reploff when a command finishes executing */
     long long repl_applied; /* Applied replication data count in querybuf, if this is a replica. */
     long long repl_ack_off; /* Replication ack offset, if this is a slave. */
     long long repl_aof_off; /* Replication AOF fsync ack offset, if this is a slave. */
@@ -1872,6 +1904,8 @@ struct redisServer {
     int io_threads_clients_num[IO_THREADS_MAX_NUM]; /* Number of clients assigned to each IO thread. */
     int io_threads_do_reads;    /* Read and parse from IO threads? */
     int io_threads_active;      /* Is IO threads currently active? */
+    pendingCommandPool cmd_pool; /* Shared pool for reusing pendingCommand,
+                                  * only when IO threads disabled */
     int prefetch_batch_max_size;/* Maximum number of keys to prefetch in a single batch */
     long long events_processed_while_blocked; /* processEventsWhileBlocked() */
     int enable_protected_configs;    /* Enable the modification of protected configs, see PROTECTED_ACTION_ALLOWED_* */
@@ -1993,6 +2027,7 @@ struct redisServer {
     int active_defrag_cycle_max;       /* maximal effort for defrag in CPU percentage */
     unsigned long active_defrag_max_scan_fields; /* maximum number of fields of set/hash/zset/list to process from within the main dict scan */
     size_t client_max_querybuf_len; /* Limit for client query buffer length */
+    int lookahead;                  /* how many commands in each client pipeline to decode and prefetch */
     int dbnum;                      /* Total number of configured DBs */
     int supervised;                 /* 1 if supervised, 0 otherwise. */
     int supervised_mode;            /* See SUPERVISED_* */
@@ -2364,6 +2399,32 @@ typedef struct {
     keyReference *keys;                          /* Key indices array, points to keysbuf or heap */
 } getKeysResult;
 #define GETKEYS_RESULT_INIT { 0, MAX_KEYS_BUFFER, {{0}}, NULL }
+
+/* pendingCommand flags */
+enum {
+    PENDING_CMD_FLAG_INCOMPLETE = 1 << 0,     /* Command parsing is incomplete, still waiting for more data */
+    PENDING_CMD_FLAG_PREPROCESSED = 1 << 1,   /* This command has passed pre-processing */
+    PENDING_CMD_KEYS_RESULT_VALID = 1 << 2,     /* Command's keys_result is valid and cached */
+};
+
+/* Parser state and parse result of a command from a client's input buffer. */
+struct pendingCommand {
+    int argc;                 /* Num of arguments of current command. */
+    int argv_len;             /* Size of argv array (may be more than argc) */
+    robj **argv;              /* Arguments of current command. */
+    size_t argv_len_sum;      /* Sum of lengths of objects in argv list. */
+    unsigned long long input_bytes;
+    struct redisCommand *cmd;
+    getKeysResult keys_result;
+    long long reploff;        /* c->reploff should be set to this value when the command is processed */
+    int flags;
+    int slot;         /* The slot the command is executing against. Set to INVALID_CLUSTER_SLOT
+                       * if no slot is being used or if the command has a cross slot error */
+    uint8_t read_error;
+
+    struct pendingCommand *next;
+    struct pendingCommand *prev;
+};
 
 /* Key specs definitions.
  *
@@ -2826,6 +2887,14 @@ void *moduleGetHandleByName(char *modulename);
 int moduleIsModuleCommand(void *module_handle, struct redisCommand *cmd);
 int moduleHasSubscribersForKeyspaceEvent(int type);
 
+/* pcmd */
+void initPendingCommand(pendingCommand *pcmd);
+void freePendingCommand(client *c, pendingCommand *pcmd);
+void addPendingCommand(pendingCommandList *queue, pendingCommand *cmd);
+pendingCommand *popPendingCommandFromHead(pendingCommandList *queue);
+pendingCommand *popPendingCommandFromTail(pendingCommandList *queue);
+void shrinkPendingCommandPool(void);
+
 /* Utils */
 long long ustime(void);
 mstime_t mstime(void);
@@ -2851,10 +2920,12 @@ void deauthenticateAndCloseClient(client *c);
 void logInvalidUseAndFreeClientAsync(client *c, const char *fmt, ...);
 int beforeNextClient(client *c);
 void clearClientConnectionState(client *c);
-void resetClient(client *c);
+void resetClient(client *c, int num_pcmds_to_free);
+void resetClientQbufState(client *c);
 void freeClientOriginalArgv(client *c);
 void freeClientArgv(client *c);
-void tryDeferFreeClientObject(client *c, robj *o);
+void freeClientPendingCommands(client *c, int num_pcmds_to_free);
+void tryDeferFreeClientObject(client *c, int type, void *ptr);
 void freeClientDeferredObjects(client *c, int free_array);
 void sendReplyToClient(connection *conn);
 void *addReplyDeferredLen(client *c);
@@ -2863,6 +2934,7 @@ void setDeferredMapLen(client *c, void *node, long length);
 void setDeferredSetLen(client *c, void *node, long length);
 void setDeferredAttributeLen(client *c, void *node, long length);
 void setDeferredPushLen(client *c, void *node, long length);
+int isClientReadErrorFatal(client *c);
 int processInputBuffer(client *c);
 void acceptCommonHandler(connection *conn, int flags, char *ip);
 void readQueryFromClient(connection *conn);
@@ -2958,6 +3030,7 @@ void unprotectClient(client *c);
 client *lookupClientByID(uint64_t id);
 int authRequired(client *c);
 void putClientInPendingWriteQueue(client *c);
+getKeysResult *getClientCachedKeyResult(client *c);
 /* reply macros */
 #define ADD_REPLY_BULK_CBUFFER_STRING_CONSTANT(c, str) addReplyBulkCBuffer(c, str, strlen(str))
 
@@ -3276,7 +3349,7 @@ void ACLClearCommandID(void);
 user *ACLGetUserByName(const char *name, size_t namelen);
 int ACLUserCheckKeyPerm(user *u, const char *key, int keylen, int flags);
 int ACLUserCheckChannelPerm(user *u, sds channel, int literal);
-int ACLCheckAllUserCommandPerm(user *u, struct redisCommand *cmd, robj **argv, int argc, int *idxptr);
+int ACLCheckAllUserCommandPerm(user *u, struct redisCommand *cmd, robj **argv, int argc, getKeysResult *key_result, int *idxptr);
 int ACLUserCheckCmdWithUnrestrictedKeyAccess(user *u, struct redisCommand *cmd, robj **argv, int argc, int flags);
 int ACLCheckAllPerm(client *c, int *idxptr);
 int ACLSetUser(user *u, const char *op, ssize_t oplen);
@@ -3370,8 +3443,10 @@ void updatePeakMemory(size_t used_memory);
 size_t freeMemoryGetNotCountedMemory(void);
 int overMaxmemoryAfterAlloc(size_t moremem);
 uint64_t getCommandFlags(client *c);
+void preprocessCommand(client *c, pendingCommand *pcmd);
 int processCommand(client *c);
 void commandProcessed(client *c);
+void prepareForNextCommand(client *c, int update_slot_stats);
 int processPendingCommandAndInputBuffer(client *c);
 int processCommandAndResetClient(client *c);
 int areCommandKeysInSameSlot(client *c, int *hashslot);
@@ -3776,6 +3851,7 @@ int doesCommandHaveKeys(struct redisCommand *cmd);
 int getChannelsFromCommand(struct redisCommand *cmd, robj **argv, int argc, getKeysResult *result);
 int doesCommandHaveChannelsWithFlags(struct redisCommand *cmd, int flags);
 void getKeysFreeResult(getKeysResult *result);
+int extractKeysAndSlot(struct redisCommand *cmd, robj **argv, int argc, getKeysResult *result, int *slot);
 int sintercardGetKeys(struct redisCommand *cmd,robj **argv, int argc, getKeysResult *result);
 int zunionInterDiffGetKeys(struct redisCommand *cmd,robj **argv, int argc, getKeysResult *result);
 int zunionInterDiffStoreGetKeys(struct redisCommand *cmd,robj **argv, int argc, getKeysResult *result);

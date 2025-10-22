@@ -22,6 +22,7 @@
 #define CLUSTER_SLOT_MASK_BITS 14 /* Number of bits used for slot id. */
 #define CLUSTER_SLOTS (1<<CLUSTER_SLOT_MASK_BITS) /* Total number of slots in cluster mode, which is 16384. */
 #define CLUSTER_SLOT_MASK ((unsigned long long)(CLUSTER_SLOTS - 1)) /* Bit mask for slot id stored in LSB. */
+#define INVALID_CLUSTER_SLOT (-1) /* Invalid slot number. */
 #define CLUSTER_OK 0            /* Everything looks ok */
 #define CLUSTER_FAIL 1          /* The cluster can't work */
 #define CLUSTER_NAMELEN 40      /* sha1 hex length */
@@ -158,7 +159,9 @@ int clusterCanAccessKeysInSlot(int slot);
 struct slotRangeArray *clusterGetLocalSlotRanges(void);
 
 /* functions with shared implementations */
-clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot, uint64_t cmd_flags, int *error_code);
+clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot,
+                            getKeysResult *result, uint8_t read_error, uint64_t cmd_flags, int *error_code);
+int extractSlotFromKeysResult(robj **argv, getKeysResult *keys_result);
 int clusterRedirectBlockedClientIfNeeded(client *c);
 void clusterRedirectClient(client *c, clusterNode *n, int hashslot, int error_code);
 void migrateCloseTimedoutSockets(void);

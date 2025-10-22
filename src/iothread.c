@@ -175,7 +175,7 @@ void assignClientToIOThread(client *c) {
     server.io_threads_clients_num[min_id]++;
 
     /* The client running in IO thread needs to have deferred objects array. */
-    c->deferred_objects = zmalloc(sizeof(robj*) * CLIENT_MAX_DEFERRED_OBJECTS);
+    c->deferred_objects = zmalloc(sizeof(deferredObject) * CLIENT_MAX_DEFERRED_OBJECTS);
 
     /* Unbind connection of client from main thread event loop, disable read and
      * write, and then put it in the list, main thread will send these clients
@@ -355,11 +355,12 @@ int prefetchIOThreadCommands(IOThread *t) {
     listIter li;
     listNode *ln;
     listRewind(mainThreadProcessingClients[t->id], &li);
-    while((ln = listNext(&li)) && clients++ < to_prefetch) {
+    while((ln = listNext(&li)) && clients < to_prefetch) {
         client *c = listNodeValue(ln);
         /* A single command may contain multiple keys. If the batch is full,
          * we stop adding clients to it. */
         if (addCommandToBatch(c) == C_ERR) break;
+        clients++;
     }
 
     /* Prefetch the commands in the batch. */
@@ -423,10 +424,13 @@ int processClientsFromIOThread(IOThread *t) {
 
     listNode *node = NULL;
     while (listLength(mainThreadProcessingClients[t->id])) {
-        /* Prefetch the commands if no clients in the batch. */
-        if (prefetch_clients <= 0) prefetch_clients = prefetchIOThreadCommands(t);
-        /* Reset the prefetching batch if we have processed all clients. */
-        if (--prefetch_clients <= 0) resetCommandsBatch();
+        if (prefetch_clients <= 0) {
+            /* Reset the prefetching batch if we have processed all clients. */
+            resetCommandsBatch();
+            /* Prefetch the commands if no clients in the batch. */
+            prefetch_clients = prefetchIOThreadCommands(t);
+        }
+        prefetch_clients--;
 
         /* Each time we pop up only the first client to process to guarantee
          * reentrancy safety. */
@@ -445,7 +449,7 @@ int processClientsFromIOThread(IOThread *t) {
 
         /* If a read error occurs, handle it in the main thread first, since we
          * want to print logs about client information before freeing. */
-        if (c->read_error) handleClientReadError(c);
+        if (isClientReadErrorFatal(c)) handleClientReadError(c);
 
         /* The client is asked to close in IO thread. */
         if (c->io_flags & CLIENT_IO_CLOSE_ASAP) {
@@ -466,7 +470,7 @@ int processClientsFromIOThread(IOThread *t) {
         }
 
         /* Process the pending command and input buffer. */
-        if (!c->read_error && c->io_flags & CLIENT_IO_PENDING_COMMAND) {
+        if (!isClientReadErrorFatal(c) && c->io_flags & CLIENT_IO_PENDING_COMMAND) {
             c->flags |= CLIENT_PENDING_COMMAND;
             if (processPendingCommandAndInputBuffer(c) == C_ERR) {
                 /* If the client is no longer valid, it must be freed safely. */
@@ -729,8 +733,6 @@ void initThreadedIO(void) {
                              "The maximum number is %d.", IO_THREADS_MAX_NUM);
         exit(1);
     }
-
-    prefetchCommandsBatchInit();
 
     /* Spawn and initialize the I/O threads. */
     for (int i = 1; i < server.io_threads_num; i++) {

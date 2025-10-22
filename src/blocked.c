@@ -130,8 +130,7 @@ void processUnblockedClients(void) {
              * call reqresAppendResponse here (for clients blocked on key,
              * unblockClientOnKey is called, which eventually calls processCommand,
              * which calls reqresAppendResponse) */
-            reqresAppendResponse(c);
-            resetClient(c);
+            prepareForNextCommand(c, 0);
         }
 
         if (c->flags & CLIENT_MODULE) {
