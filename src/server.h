@@ -1609,6 +1609,7 @@ typedef struct zskiplist {
     struct zskiplistNode *header, *tail;
     unsigned long length;
     int level;
+    size_t alloc_size;
 } zskiplist;
 
 typedef struct zset {
@@ -3404,6 +3405,7 @@ typedef struct {
 
 zskiplist *zslCreate(void);
 void zslFree(zskiplist *zsl);
+size_t zslAllocSize(const zskiplist *zsl);
 zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele);
 unsigned char *zzlInsert(unsigned char *zl, sds ele, double score);
 int zslDelete(zskiplist *zsl, double score, sds ele, zskiplistNode **node);
@@ -3569,15 +3571,27 @@ typedef struct listpackEx {
 } listpackEx;
 
 /* Each dict of hash object that has fields with time-Expiration will have the
- * following metadata attached to dict header */
-typedef struct dictExpireMetadata {
+ * following metadata attached to dict header.
+ * Note that alloc_size field must be first because hash objects without expre
+ * already use sizeof(size_t) bytes of metadata for memory accounting. */
+typedef struct htMetadataEx {
+    size_t alloc_size;       /* Total memory used for keys and values */
     ExpireMeta expireMeta;   /* embedded ExpireMeta in dict.
                                 To be used in order to register the hash in the
                                 subexpires DB with next minimum hash-field to expire.
                                 TTL value might be inaccurate up-to few seconds due
                                 to optimization consideration. */
     ebuckets hfe;            /* DS of Hash Fields Expiration, associated to each hash */
-} dictExpireMetadata;
+} htMetadataEx;
+
+/* hash metadata helpers */
+static inline htMetadataEx *htGetMetadataEx(dict *d) {
+    return (htMetadataEx *)dictMetadata(d);
+}
+
+static inline size_t *htGetMetadataSize(dict *d) {
+    return (size_t *)dictMetadata(d);
+}
 
 /* Hash data type */
 #define HASH_SET_TAKE_FIELD (1<<0)
@@ -3613,7 +3627,7 @@ void hashTypeCurrentFromHashTable(hashTypeIterator *hi, int what, char **str,
 void hashTypeCurrentObject(hashTypeIterator *hi, int what, unsigned char **vstr,
                            unsigned int *vlen, long long *vll, uint64_t *expireTime);
 sds hashTypeCurrentObjectNewSds(hashTypeIterator *hi, int what);
-hfield hashTypeCurrentObjectNewHfield(hashTypeIterator *hi);
+hfield hashTypeCurrentObjectNewHfield(hashTypeIterator *hi, size_t *usable);
 int hashTypeGetValueObject(redisDb *db, kvobj *kv, sds field, int hfeFlags,
                            robj **val, uint64_t *expireTime, int *isHashDeleted);
 int hashTypeSet(redisDb *db, kvobj *kv, sds field, sds value, int flags);
@@ -3630,12 +3644,12 @@ void listpackExAddNew(robj *o, char *field, size_t flen,
                       char *value, size_t vlen, uint64_t expireAt);
 
 /* Hash-Field data type (of t_hash.c) */
-hfield hfieldNew(const void *field, size_t fieldlen, int withExpireMeta);
-hfield hfieldTryNew(const void *field, size_t fieldlen, int withExpireMeta);
+hfield hfieldNew(const void *field, size_t fieldlen, int withExpireMeta, size_t *usable);
+hfield hfieldTryNew(const void *field, size_t fieldlen, int withExpireMeta, size_t *usable);
 int hfieldIsExpireAttached(hfield field);
 int hfieldIsExpired(hfield field);
 uint64_t hfieldGetExpireTime(hfield field);
-static inline void hfieldFree(hfield field) { mstrFree(&mstrFieldKind, field); }
+static inline void hfieldFree(hfield field, size_t *usable) { mstrFree(&mstrFieldKind, field, usable); }
 static inline void *hfieldGetAllocPtr(hfield field) { return mstrGetAllocPtr(&mstrFieldKind, field); }
 static inline size_t hfieldlen(hfield field) { return mstrlen(field);}
 

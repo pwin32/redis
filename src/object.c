@@ -533,6 +533,10 @@ void freeListObject(robj *o) {
 void freeSetObject(robj *o) {
     switch (o->encoding) {
     case OBJ_ENCODING_HT:
+#ifdef REDIS_TEST
+        dictEmpty(o->ptr, NULL);
+        serverAssert(*htGetMetadataSize(o->ptr) == 0);
+#endif
         dictRelease((dict*) o->ptr);
         break;
     case OBJ_ENCODING_INTSET:
@@ -1179,30 +1183,6 @@ char *strEncoding(int encoding) {
 
 /* =========================== Memory introspection ========================= */
 
-
-/* This is a helper function with the goal of estimating the memory
- * size of a radix tree that is used to store Stream IDs.
- *
- * Note: to guess the size of the radix tree is not trivial, so we
- * approximate it considering 16 bytes of data overhead for each
- * key (the ID), and then adding the number of bare nodes, plus some
- * overhead due by the data and child pointers. This secret recipe
- * was obtained by checking the average radix tree created by real
- * workloads, and then adjusting the constants to get numbers that
- * more or less match the real memory usage.
- *
- * Actually the number of nodes and keys may be different depending
- * on the insertion speed and thus the ability of the radix tree
- * to compress prefixes. */
-size_t streamRadixTreeMemoryUsage(rax *rax) {
-    size_t size = sizeof(*rax);
-    size = rax->numele * sizeof(streamID);
-    size += rax->numnodes * sizeof(raxNode);
-    /* Add a fixed overhead due to the aux data pointer, children, ... */
-    size += rax->numnodes * sizeof(long)*30;
-    return size;
-}
-
 /* Returns the size in bytes consumed by the object header, key and value in RAM.
  * Note that the returned value is just an approximation, especially in the
  * case of aggregated data types where only "sample_size" elements
@@ -1210,9 +1190,6 @@ size_t streamRadixTreeMemoryUsage(rax *rax) {
 #define OBJ_COMPUTE_SIZE_DEF_SAMPLES 5 /* Default sample size. */
 size_t kvobjComputeSize(robj *key, kvobj *o, size_t sample_size, int dbid) {
     dict *d;
-    dictIterator di;
-    struct dictEntry *de;
-    size_t elesize = 0, elecount = 0, samples = 0;
     
     /* All kv-objects has at least kvobj header and embedded key */
     size_t asize = zmalloc_size((void *)o);
@@ -1229,15 +1206,7 @@ size_t kvobjComputeSize(robj *key, kvobj *o, size_t sample_size, int dbid) {
         }
     } else if (o->type == OBJ_LIST) {
         if (o->encoding == OBJ_ENCODING_QUICKLIST) {
-            quicklist *ql = o->ptr;
-            quicklistNode *node = ql->head;
-            asize += sizeof(quicklist);
-            do {
-                elesize += sizeof(quicklistNode)+zmalloc_size(node->entry);
-                elecount += node->count;
-                samples++;
-            } while ((node = node->next) && samples < sample_size);
-            asize += (double)elesize/elecount*ql->count;
+            asize += quicklistAllocSize(o->ptr);
         } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
             asize += zmalloc_size(o->ptr);
         } else {
@@ -1246,15 +1215,8 @@ size_t kvobjComputeSize(robj *key, kvobj *o, size_t sample_size, int dbid) {
     } else if (o->type == OBJ_SET) {
         if (o->encoding == OBJ_ENCODING_HT) {
             d = o->ptr;
-            dictInitIterator(&di, d);
-            asize += sizeof(dict) + (sizeof(struct dictEntry*) * dictBuckets(d));
-            while((de = dictNext(&di)) != NULL && samples < sample_size) {
-                sds ele = dictGetKey(de);
-                elesize += dictEntryMemUsage(0) + sdsZmallocSize(ele);
-                samples++;
-            }
-            dictResetIterator(&di);
-            if (samples) asize += (double)elesize/samples*dictSize(d);
+            asize += sizeof(dict) + dictMemUsage(d) +
+                *htGetMetadataSize(d);
         } else if (o->encoding == OBJ_ENCODING_INTSET) {
             asize += zmalloc_size(o->ptr);
         } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
@@ -1268,17 +1230,8 @@ size_t kvobjComputeSize(robj *key, kvobj *o, size_t sample_size, int dbid) {
         } else if (o->encoding == OBJ_ENCODING_SKIPLIST) {
             d = ((zset*)o->ptr)->dict;
             zskiplist *zsl = ((zset*)o->ptr)->zsl;
-            zskiplistNode *znode = zsl->header->level[0].forward;
-            asize += sizeof(zset) + sizeof(zskiplist) + sizeof(dict) +
-                    (sizeof(struct dictEntry*)*dictBuckets(d))+
-                    zmalloc_size(zsl->header);
-            while(znode != NULL && samples < sample_size) {
-                elesize += sdsZmallocSize(znode->ele);
-                elesize += dictEntryMemUsage(1)+zmalloc_size(znode);
-                samples++;
-                znode = znode->level[0].forward;
-            }
-            if (samples) asize += (double)elesize/samples*dictSize(d);
+            asize += sizeof(zset) + zslAllocSize(zsl) +
+                sizeof(dict) + dictMemUsage(d);
         } else {
             serverPanic("Unknown sorted set encoding");
         }
@@ -1290,83 +1243,14 @@ size_t kvobjComputeSize(robj *key, kvobj *o, size_t sample_size, int dbid) {
             asize += zmalloc_size(lpt) + zmalloc_size(lpt->lp);
         } else if (o->encoding == OBJ_ENCODING_HT) {
             d = o->ptr;
-            dictInitIterator(&di, d);
-            asize += sizeof(dict) + (sizeof(struct dictEntry*) * dictBuckets(d));
-            while((de = dictNext(&di)) != NULL && samples < sample_size) {
-                hfield ele = dictGetKey(de);
-                sds ele2 = dictGetVal(de);
-                elesize += hfieldZmallocSize(ele) + sdsZmallocSize(ele2);
-                elesize += dictEntryMemUsage(0);
-                samples++;
-            }
-            dictResetIterator(&di);
-            if (samples) asize += (double)elesize/samples*dictSize(d);
+            asize += sizeof(dict) + dictMemUsage(d) +
+                *htGetMetadataSize(d);
         } else {
             serverPanic("Unknown hash encoding");
         }
     } else if (o->type == OBJ_STREAM) {
         stream *s = o->ptr;
-        asize += sizeof(*s);
-        asize += streamRadixTreeMemoryUsage(s->rax);
-
-        /* Now we have to add the listpacks. The last listpack is often non
-         * complete, so we estimate the size of the first N listpacks, and
-         * use the average to compute the size of the first N-1 listpacks, and
-         * finally add the real size of the last node. */
-        raxIterator ri;
-        raxStart(&ri,s->rax);
-        raxSeek(&ri,"^",NULL,0);
-        size_t lpsize = 0, samples = 0;
-        while(samples < sample_size && raxNext(&ri)) {
-            unsigned char *lp = ri.data;
-            /* Use the allocated size, since we overprovision the node initially. */
-            lpsize += zmalloc_size(lp);
-            samples++;
-        }
-        if (s->rax->numele <= samples) {
-            asize += lpsize;
-        } else {
-            if (samples) lpsize /= samples; /* Compute the average. */
-            asize += lpsize * (s->rax->numele-1);
-            /* No need to check if seek succeeded, we enter this branch only
-             * if there are a few elements in the radix tree. */
-            raxSeek(&ri,"$",NULL,0);
-            raxNext(&ri);
-            /* Use the allocated size, since we overprovision the node initially. */
-            asize += zmalloc_size(ri.data);
-        }
-        raxStop(&ri);
-
-        /* Consumer groups also have a non trivial memory overhead if there
-         * are many consumers and many groups, let's count at least the
-         * overhead of the pending entries in the groups and consumers
-         * PELs. */
-        if (s->cgroups) {
-            raxStart(&ri,s->cgroups);
-            raxSeek(&ri,"^",NULL,0);
-            while(raxNext(&ri)) {
-                streamCG *cg = ri.data;
-                asize += sizeof(*cg);
-                asize += streamRadixTreeMemoryUsage(cg->pel);
-                asize += sizeof(streamNACK)*raxSize(cg->pel);
-
-                /* For each consumer we also need to add the basic data
-                 * structures and the PEL memory usage. */
-                raxIterator cri;
-                raxStart(&cri,cg->consumers);
-                raxSeek(&cri,"^",NULL,0);
-                while(raxNext(&cri)) {
-                    streamConsumer *consumer = cri.data;
-                    asize += sizeof(*consumer);
-                    asize += sdslen(consumer->name);
-                    asize += streamRadixTreeMemoryUsage(consumer->pel);
-                    /* Don't count NACKs again, they are shared with the
-                     * consumer group PEL. */
-                }
-                raxStop(&cri);
-            }
-            raxStop(&ri);
-        }
+        asize += s->alloc_size;
     } else if (o->type == OBJ_MODULE) {
         asize += moduleGetMemUsage(key, o, sample_size, dbid);
     } else {
