@@ -50,7 +50,7 @@ estore *estoreCreate(EbucketsType *type, int num_buckets_bits) {
     /* Calculate number of buckets based on num_buckets_bits */
     es->num_buckets_bits = num_buckets_bits;
     es->num_buckets = 1 << num_buckets_bits;
-    es->buckets_sizes = num_buckets_bits > 1 ? fwTreeCreate(num_buckets_bits) : NULL;
+    es->buckets_sizes = es->num_buckets > 1 ? fwTreeCreate(num_buckets_bits) : NULL;
 
     /* Allocate the buckets array */
     es->ebArray = zcalloc(sizeof(ebuckets) * es->num_buckets);
@@ -73,6 +73,7 @@ void estoreEmpty(estore *es) {
         es->ebArray[i] = ebCreate();
     }
 
+    if (es->buckets_sizes) fwTreeClear(es->buckets_sizes);
     es->count = 0;
 }
 
