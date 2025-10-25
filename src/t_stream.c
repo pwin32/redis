@@ -2343,6 +2343,7 @@ void xaddCommand(client *c) {
     stream *s;
     if ((kv = streamTypeLookupWriteOrCreate(c,c->argv[1],parsed_args.no_mkstream)) == NULL) return;
     s = kv->ptr;
+    size_t old_alloc = s->alloc_size;
 
     /* Return ASAP if the stream has reached the last possible ID */
     if (s->last_id.ms == UINT64_MAX && s->last_id.seq == UINT64_MAX) {
@@ -2363,6 +2364,8 @@ void xaddCommand(client *c) {
                             "the target stream top item");
         else
             addReplyError(c,"Elements are too large to be stored");
+        if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+            updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
         return;
     }
     sds replyid = createStreamIDString(&id);
@@ -2373,9 +2376,8 @@ void xaddCommand(client *c) {
 
     /* Trim if needed. */
     if (parsed_args.trim_strategy != TRIM_STRATEGY_NONE) {
-        if (streamTrim(s, &parsed_args)) {
+        if (streamTrim(s, &parsed_args))
             notifyKeyspaceEvent(NOTIFY_STREAM,"xtrim",c->argv[1],c->db->id);
-        }
         if (parsed_args.approx_trim) {
             /* In case our trimming was limited (by LIMIT or by ~) we must
              * re-write the relevant trim argument to make sure there will be
@@ -2386,6 +2388,9 @@ void xaddCommand(client *c) {
             streamRewriteTrimArgument(c,s,parsed_args.trim_strategy,parsed_args.trim_strategy_arg_idx);
         }
     }
+
+    if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+        updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
 
     signalModifiedKey(c,c->db,c->argv[1]);
 
@@ -2419,6 +2424,7 @@ void xrangeGenericCommand(client *c, int rev) {
     robj *startarg = rev ? c->argv[3] : c->argv[2];
     robj *endarg = rev ? c->argv[2] : c->argv[3];
     int startex = 0, endex = 0;
+    size_t old_alloc;
     
     /* Parse start and end IDs. */
     if (streamParseIntervalIDOrReply(c,startarg,&startid,&startex,0) != C_OK)
@@ -2460,7 +2466,10 @@ void xrangeGenericCommand(client *c, int rev) {
         addReplyNullArray(c);
     } else {
         if (count == -1) count = 0;
+        old_alloc = s->alloc_size;
         streamReplyWithRange(c,s,&startid,&endid,count,rev,-1,NULL,NULL,0,NULL,NULL);
+        if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+            updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
     }
 }
 
@@ -2504,6 +2513,7 @@ void xreadCommand(client *c) {
     int xreadgroup = sdslen(c->argv[0]->ptr) == 10; /* XREAD or XREADGROUP? */
     robj *groupname = NULL;
     robj *consumername = NULL;
+    size_t old_alloc;
 
     /* Parse arguments. */
     for (int i = 1; i < c->argc; i++) {
@@ -2732,9 +2742,12 @@ void xreadCommand(client *c) {
             }
             consumer = streamLookupConsumer(groups[i],consumername->ptr);
             if (consumer == NULL) {
+                old_alloc = s->alloc_size;
                 consumer = streamCreateConsumer(s,groups[i],consumername->ptr,
                                                 c->argv[streams_arg+i],
                                                 c->db->id,SCC_DEFAULT);
+                if (server.memory_tracking_per_slot)
+                    updateSlotAllocSize(c->db,getKeySlot(c->argv[streams_arg+i]->ptr),old_alloc,s->alloc_size);
                 if (noack)
                     streamPropagateConsumerCreation(c,spi.keyname,
                                                     spi.groupname,
@@ -2780,9 +2793,12 @@ void xreadCommand(client *c) {
             unsigned long propCount = 0;
             if (noack) flags |= STREAM_RWR_NOACK;
             if (serve_history) flags |= STREAM_RWR_HISTORY;
+            old_alloc = s->alloc_size;
             streamReplyWithRange(c,s,&start,NULL,count,0, min_idle_time,
                                  groups ? groups[i] : NULL,
                                  consumer, flags, &spi, &propCount);
+            if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+                updateSlotAllocSize(c->db,getKeySlot(c->argv[streams_arg+i]->ptr),old_alloc,s->alloc_size);
             if (propCount) server.dirty++;
         }
     }
@@ -3170,6 +3186,7 @@ void xgroupCommand(client *c) {
     int mkstream = 0;
     long long entries_read = SCG_INVALID_ENTRIES_READ;
     robj *o;
+    size_t old_alloc;
 
     /* Everything but the "HELP" option requires a key and group name. */
     if (c->argc >= 4) {
@@ -3273,8 +3290,11 @@ NULL
             entries_read = s->entries_added;
         }
 
+        old_alloc = s->alloc_size;
         streamCG *cg = streamCreateCG(s,grpname,sdslen(grpname),&id,entries_read);
         if (cg) {
+            if (server.memory_tracking_per_slot)
+                updateSlotAllocSize(c->db,getKeySlot(c->argv[2]->ptr),old_alloc,s->alloc_size);
             addReply(c,shared.ok);
             server.dirty++;
             notifyKeyspaceEvent(NOTIFY_STREAM,"xgroup-create",
@@ -3301,8 +3321,11 @@ NULL
         notifyKeyspaceEvent(NOTIFY_STREAM,"xgroup-setid",c->argv[2],c->db->id);
     } else if (!strcasecmp(opt,"DESTROY") && c->argc == 4) {
         if (cg) {
+            old_alloc = s->alloc_size;
             raxRemove(s->cgroups,(unsigned char*)grpname,sdslen(grpname),NULL);
             streamDestroyCG(s, cg);
+            if (server.memory_tracking_per_slot)
+                updateSlotAllocSize(c->db,getKeySlot(c->argv[2]->ptr),old_alloc,s->alloc_size);
             addReply(c,shared.cone);
             server.dirty++;
             notifyKeyspaceEvent(NOTIFY_STREAM,"xgroup-destroy",
@@ -3313,8 +3336,11 @@ NULL
             addReply(c,shared.czero);
         }
     } else if (!strcasecmp(opt,"CREATECONSUMER") && c->argc == 5) {
+        old_alloc = s->alloc_size;
         streamConsumer *created = streamCreateConsumer(s,cg,c->argv[4]->ptr,c->argv[2],
                                                        c->db->id,SCC_DEFAULT);
+        if (server.memory_tracking_per_slot)
+            updateSlotAllocSize(c->db,getKeySlot(c->argv[2]->ptr),old_alloc,s->alloc_size);
         addReplyLongLong(c,created ? 1 : 0);
     } else if (!strcasecmp(opt,"DELCONSUMER") && c->argc == 5) {
         long long pending = 0;
@@ -3322,8 +3348,11 @@ NULL
         if (consumer) {
             /* Delete the consumer and returns the number of pending messages
              * that were yet associated with such a consumer. */
+            old_alloc = s->alloc_size;
             pending = raxSize(consumer->pel);
             streamDelConsumer(s,cg,consumer);
+            if (server.memory_tracking_per_slot)
+                updateSlotAllocSize(c->db,getKeySlot(c->argv[2]->ptr),old_alloc,s->alloc_size);
             server.dirty++;
             notifyKeyspaceEvent(NOTIFY_STREAM,"xgroup-delconsumer",
                                 c->argv[2],c->db->id);
@@ -3445,6 +3474,8 @@ void xackCommand(client *c) {
     }
 
     int acknowledged = 0;
+    stream *s = kv->ptr;
+    size_t old_alloc = s->alloc_size;
     for (int j = 3; j < c->argc; j++) {
         unsigned char buf[sizeof(streamID)];
         streamEncodeID(buf,&ids[j-3]);
@@ -3463,6 +3494,8 @@ void xackCommand(client *c) {
             server.dirty++;
         }
     }
+    if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+        updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
     addReplyLongLong(c,acknowledged);
 cleanup:
     if (ids != static_ids) zfree(ids);
@@ -3510,6 +3543,7 @@ void xackdelCommand(client *c) {
     }
 
     s = kv->ptr;
+    size_t old_alloc = s->alloc_size;
     int first_entry = 0;
     int deleted = 0;
     addReplyArrayLen(c, args.numids);
@@ -3559,6 +3593,9 @@ void xackdelCommand(client *c) {
         }
         addReplyLongLong(c, res);
     }
+
+    if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+        updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
 
     /* Update the stream's first ID. */
     if (deleted) {
@@ -3930,13 +3967,14 @@ void xclaimCommand(client *c) {
     }
 
     /* Do the actual claiming. */
+    stream *s = o->ptr;
+    size_t old_alloc = s->alloc_size;
     streamConsumer *consumer = streamLookupConsumer(group,c->argv[3]->ptr);
     if (consumer == NULL) {
         consumer = streamCreateConsumer(o->ptr,group,c->argv[3]->ptr,c->argv[1],c->db->id,SCC_DEFAULT);
     }
     consumer->seen_time = commandTimeSnapshot();
 
-    stream *s = o->ptr;
     void *arraylenptr = addReplyDeferredLen(c);
     size_t arraylen = 0;
     for (int j = 5; j <= last_id_arg; j++) {
@@ -4032,6 +4070,8 @@ void xclaimCommand(client *c) {
             server.dirty++;
         }
     }
+    if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+        updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
     if (propagate_last_id) {
         streamPropagateGroupID(c,c->argv[1],group,c->argv[2]);
         server.dirty++;
@@ -4121,6 +4161,8 @@ void xautoclaimCommand(client *c) {
     }
 
     /* Do the actual claiming. */
+    stream *s = o->ptr;
+    size_t old_alloc = s->alloc_size;
     streamConsumer *consumer = streamLookupConsumer(group,c->argv[3]->ptr);
     if (consumer == NULL) {
         consumer = streamCreateConsumer(o->ptr,group,c->argv[3]->ptr,c->argv[1],c->db->id,SCC_DEFAULT);
@@ -4133,7 +4175,6 @@ void xautoclaimCommand(client *c) {
     void *endidptr = addReplyDeferredLen(c); /* reply[0] */
     void *arraylenptr = addReplyDeferredLen(c); /* reply[1] */
 
-    stream *s = o->ptr;
     unsigned char startkey[sizeof(streamID)];
     streamEncodeID(startkey,&startid);
     raxIterator ri;
@@ -4218,6 +4259,9 @@ void xautoclaimCommand(client *c) {
     /* We need to return the next entry as a cursor for the next XAUTOCLAIM call */
     raxNext(&ri);
 
+    if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+        updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
+
     streamID endid;
     if (raxEOF(&ri)) {
         endid.ms = endid.seq = 0;
@@ -4247,6 +4291,7 @@ void xdelCommand(client *c) {
     kvobj *kv = lookupKeyWriteOrReply(c, c->argv[1], shared.czero); 
     if (kv == NULL || checkType(c, kv, OBJ_STREAM)) return;
     stream *s = kv->ptr;
+    size_t old_alloc = s->alloc_size;
 
     /* We need to sanity check the IDs passed to start. Even if not
      * a big issue, it is not great that the command is only partially
@@ -4278,6 +4323,9 @@ void xdelCommand(client *c) {
             deleted++;
         };
     }
+
+    if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+        updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
 
     /* Update the stream's first ID. */
     if (deleted) {
@@ -4341,6 +4389,7 @@ void xdelexCommand(client *c) {
     }
 
     stream *s = kv->ptr;
+    size_t old_alloc = s->alloc_size;
     int first_entry = 0;
     int deleted = 0;
     addReplyArrayLen(c, args.numids);
@@ -4384,6 +4433,8 @@ void xdelexCommand(client *c) {
 
     /* Update the stream's first ID. */
     if (deleted) {
+        if (server.memory_tracking_per_slot)
+            updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
         if (s->length == 0) {
             s->first_id.ms = 0;
             s->first_id.seq = 0;
@@ -4443,7 +4494,10 @@ void xtrimCommand(client *c) {
     stream *s = kv->ptr;
 
     /* Perform the trimming. */
+    size_t old_alloc = s->alloc_size;
     int64_t deleted = streamTrim(s, &parsed_args);
+    if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+        updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
     if (deleted) {
         notifyKeyspaceEvent(NOTIFY_STREAM,"xtrim",c->argv[1],c->db->id);
         if (parsed_args.approx_trim) {
@@ -4515,6 +4569,7 @@ void xinfoReplyWithStreamInfo(client *c, stream *s) {
     addReplyBulkCString(c,"recorded-first-entry-id");
     addReplyStreamID(c,&s->first_id);
 
+    size_t old_alloc = s->alloc_size;
     if (!full) {
         /* XINFO STREAM <key> */
 
@@ -4668,6 +4723,8 @@ void xinfoReplyWithStreamInfo(client *c, stream *s) {
             raxStop(&ri_cgroups);
         }
     }
+    if (server.memory_tracking_per_slot && old_alloc != s->alloc_size)
+        updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),old_alloc,s->alloc_size);
 }
 
 /* XINFO CONSUMERS <key> <group>

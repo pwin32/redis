@@ -1392,6 +1392,7 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter, unsigned 
     dictEntry *de;
     ssize_t written = 0;
     ssize_t res;
+    size_t oldsize = 0;
     kvstoreIterator *kvs_it = NULL;
     static long long info_updated_time = 0;
     char *pname = (rdbflags & RDBFLAGS_AOF_PREAMBLE) ? "AOF rewrite" :  "RDB";
@@ -1445,7 +1446,12 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter, unsigned 
 
         initStaticStringObject(key,kvobjGetKey(kv));
         expire = kvobjGetExpire(kv);
-        if ((res = rdbSaveKeyValuePair(rdb, &key, kv, expire, dbid)) < 0) goto werr;
+        if (server.memory_tracking_per_slot)
+            oldsize = kvobjAllocSize(kv);
+        res = rdbSaveKeyValuePair(rdb, &key, kv, expire, dbid);
+        if (server.memory_tracking_per_slot)
+            updateSlotAllocSize(db, curr_slot, oldsize, kvobjAllocSize(kv));
+        if (res < 0) goto werr;
         written += res;
 
         /* In fork child process, we can try to release memory back to the

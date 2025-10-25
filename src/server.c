@@ -352,6 +352,7 @@ int dictSdsCompareKV(dictCmpCache *cache, const void *sdsLookup, const void *kv)
 static void dictDestructorKV(dict *d, void *kv) {
     UNUSED(d);
     if (kv == NULL) return;
+    kvstoreTrackDeallocation(d, kv);
     decrRefCount(kv);
 }
 
@@ -2239,6 +2240,7 @@ void initServerConfig(void) {
     server.executable = NULL;
     server.arch_bits = (sizeof(long) == 8) ? 64 : 32;
     server.dbg_assert_keysizes = 0; /* Disabled by default */
+    server.dbg_assert_alloc_per_slot = 0; /* Disabled by default */
     server.bindaddr_count = CONFIG_DEFAULT_BINDADDR_COUNT;
     for (j = 0; j < CONFIG_DEFAULT_BINDADDR_COUNT; j++)
         server.bindaddr[j] = zstrdup(default_bindaddr[j]);
@@ -2844,6 +2846,7 @@ void initServer(void) {
     server.reply_buffer_peak_reset_time = REPLY_BUFFER_DEFAULT_PEAK_RESET_TIME;
     server.reply_buffer_resizing_enabled = 1;
     server.client_mem_usage_buckets = NULL;
+    server.memory_tracking_per_slot = clusterSlotStatsEnabled();
     resetReplicationBuffer();
 
     /* Make sure the locale is set on startup based on the config file. */
@@ -4029,6 +4032,10 @@ void afterCommand(client *c) {
     /* Assert keysizes histogram if enabled */
     if (unlikely(server.dbg_assert_keysizes))
         dbgAssertKeysizesHist(c->db);
+
+    /* Assert per-slot alloc_size if enabled */
+    if (unlikely(server.dbg_assert_alloc_per_slot))
+        dbgAssertAllocSizePerSlot(c->db);
 }
 
 /* Check if c->cmd exists, fills `err` with details in case it doesn't.

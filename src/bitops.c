@@ -784,6 +784,7 @@ static kvobj *lookupStringForBitCommand(client *c, uint64_t maxbit,
 {
     dictEntryLink link;
     size_t byte = maxbit >> 3;
+    size_t oldAllocSize = 0;
     kvobj *o = lookupKeyWriteWithLink(c->db,c->argv[1],&link);
     if (checkType(c,o,OBJ_STRING)) return NULL;
 
@@ -795,7 +796,11 @@ static kvobj *lookupStringForBitCommand(client *c, uint64_t maxbit,
     } else {
         o = dbUnshareStringValue(c->db,c->argv[1],o);
         *strOldSize  = sdslen(o->ptr);
+        if (server.memory_tracking_per_slot)
+            oldAllocSize = stringObjectAllocSize(o);
         o->ptr = sdsgrowzero(o->ptr,byte+1);
+        if (server.memory_tracking_per_slot)
+            updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), oldAllocSize, stringObjectAllocSize(o));
         *strGrowSize = sdslen(o->ptr) - *strOldSize;
     }
     return o;

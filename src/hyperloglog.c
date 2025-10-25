@@ -1611,6 +1611,7 @@ invalid:
 void pfaddCommand(client *c) {
     uint64_t oldlen;
     dictEntryLink link;
+    size_t oldsize = 0;
     kvobj *kv = lookupKeyWriteWithLink(c->db,c->argv[1], &link);
 
     struct hllhdr *hdr;
@@ -1628,6 +1629,8 @@ void pfaddCommand(client *c) {
         kv = dbUnshareStringValue(c->db,c->argv[1],kv);
     }
     oldlen = stringObjectLen(kv);
+    if (server.memory_tracking_per_slot)
+        oldsize = stringObjectAllocSize(kv);
 
     /* Perform the low level ADD operation for every element. */
     for (j = 2; j < c->argc; j++) {
@@ -1639,12 +1642,16 @@ void pfaddCommand(client *c) {
             break;
         case -1:
             addReplyError(c,invalid_hll_err);
+            if (server.memory_tracking_per_slot)
+                updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), oldsize, stringObjectAllocSize(kv));
             return;
         }
     }
 
     hdr = kv->ptr;
     updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr), OBJ_STRING, oldlen, stringObjectLen(kv));
+    if (server.memory_tracking_per_slot)
+        updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), oldsize, stringObjectAllocSize(kv));
     if (updated) {
         HLL_INVALIDATE_CACHE(hdr);
         signalModifiedKey(c,c->db,c->argv[1]);
@@ -1755,6 +1762,7 @@ void pfmergeCommand(client *c) {
     struct hllhdr *hdr;
     int j;
     int use_dense = 0; /* Use dense representation as target? */
+    size_t oldsize = 0;
 
     /* Compute an HLL with M[i] = MAX(M[i]_j).
      * We store the maximum into the max array of registers. We'll write
@@ -1796,6 +1804,8 @@ void pfmergeCommand(client *c) {
     }
 
     uint64_t oldLen = stringObjectLen(kv);
+    if (server.memory_tracking_per_slot)
+        oldsize = stringObjectAllocSize(kv);
 
     /* Convert the destination object to dense representation if at least
      * one of the inputs was dense. */
@@ -1823,6 +1833,8 @@ void pfmergeCommand(client *c) {
                      last hllSparseSet() call. */
     HLL_INVALIDATE_CACHE(hdr);
 
+    if (server.memory_tracking_per_slot)
+        updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), oldsize, stringObjectAllocSize(kv));
     signalModifiedKey(c,c->db,c->argv[1]);
     /* We generate a PFADD event for PFMERGE for semantical simplicity
      * since in theory this is a mass-add of elements. */
@@ -1955,6 +1967,7 @@ void pfdebugCommand(client *c) {
     struct hllhdr *hdr;
     kvobj *o;
     int j;
+    size_t oldsize = 0;
 
     if (!strcasecmp(cmd, "simd")) {
         if (c->argc != 3) goto arityerr;
@@ -1984,6 +1997,8 @@ void pfdebugCommand(client *c) {
     if (isHLLObjectOrReply(c,o) != C_OK) return;
     o = dbUnshareStringValue(c->db,c->argv[2],o);
     hdr = o->ptr;
+    if (server.memory_tracking_per_slot)
+        oldsize = stringObjectAllocSize(o);
 
     /* PFDEBUG GETREG <key> */
     if (!strcasecmp(cmd,"getreg")) {
@@ -1996,6 +2011,8 @@ void pfdebugCommand(client *c) {
                 return;
             }
             updateKeysizesHist(c->db, getKeySlot(c->argv[2]->ptr), OBJ_STRING, oldlen, stringObjectLen(o));
+            if (server.memory_tracking_per_slot)
+                updateSlotAllocSize(c->db, getKeySlot(c->argv[2]->ptr), oldsize, stringObjectAllocSize(o));
             server.dirty++; /* Force propagation on encoding change. */
         }
 
@@ -2063,6 +2080,8 @@ void pfdebugCommand(client *c) {
                 return;
             }
             updateKeysizesHist(c->db, getKeySlot(c->argv[2]->ptr), OBJ_STRING, oldlen, stringObjectLen(o));
+            if (server.memory_tracking_per_slot)
+                updateSlotAllocSize(c->db, getKeySlot(c->argv[2]->ptr), oldsize, stringObjectAllocSize(o));
             conv = 1;
             server.dirty++; /* Force propagation on encoding change. */
         }
