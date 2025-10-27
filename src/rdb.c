@@ -274,7 +274,7 @@ int rdbEncodeInteger(long long value, unsigned char *enc) {
 /* Loads an integer-encoded object with the specified encoding type "enctype".
  * The returned value changes according to the flags, see
  * rdbGenericLoadStringObject() for more info. */
-void *rdbLoadIntegerObject(rio *rdb, int enctype, int flags, size_t *lenptr) {
+void *rdbLoadIntegerObject(rio *rdb, int enctype, int flags, size_t *lenptr, size_t *usable) {
     int plainFlag = flags & RDB_LOAD_PLAIN;
     int sdsFlag = flags & RDB_LOAD_SDS;
     int hfldFlag = flags & (RDB_LOAD_HFLD|RDB_LOAD_HFLD_TTL);
@@ -308,11 +308,12 @@ void *rdbLoadIntegerObject(rio *rdb, int enctype, int flags, size_t *lenptr) {
         int len = ll2string(buf,sizeof(buf),val);
         if (lenptr) *lenptr = len;
         if (plainFlag) {
-            p = zmalloc(len);
+            p = zmalloc_usable(len, usable);
         } else if (sdsFlag) {
             p = sdsnewlen(SDS_NOINIT,len);
+            if (usable) *usable = sdsAllocSize(buf);
         } else { /* hfldFlag */
-            p = hfieldNew(NULL, len, (flags&RDB_LOAD_HFLD) ? 0 : 1);
+            p = hfieldNew(NULL, len, (flags&RDB_LOAD_HFLD) ? 0 : 1, usable);
         }
         memcpy(p,buf,len);
         return p;
@@ -381,7 +382,7 @@ ssize_t rdbSaveLzfStringObject(rio *rdb, unsigned char *s, size_t len) {
 /* Load an LZF compressed string in RDB format. The returned value
  * changes according to 'flags'. For more info check the
  * rdbGenericLoadStringObject() function. */
-void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
+void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr, size_t *usable) {
     int plainFlag = flags & RDB_LOAD_PLAIN;
     int sdsFlag = flags & RDB_LOAD_SDS;
     int hfldFlag = flags & (RDB_LOAD_HFLD | RDB_LOAD_HFLD_TTL);
@@ -400,11 +401,12 @@ void *rdbLoadLzfStringObject(rio *rdb, int flags, size_t *lenptr) {
 
     /* Allocate our target according to the uncompressed size. */
     if (plainFlag) {
-        val = ztrymalloc(len);
+        val = ztrymalloc_usable(len, usable);
     } else if (sdsFlag || robjFlag) {
         val = sdstrynewlen(SDS_NOINIT,len);
+        if (usable) *usable = sdsAllocSize(val);
     } else { /* hfldFlag */
-        val = hfieldTryNew(NULL, len, (flags&RDB_LOAD_HFLD) ? 0 : 1);
+        val = hfieldTryNew(NULL, len, (flags&RDB_LOAD_HFLD) ? 0 : 1, usable);
     }
 
     if (!val) {
@@ -431,7 +433,7 @@ err:
     } else if (sdsFlag || robjFlag) {
         sdsfree(val);
     } else { /* hfldFlag*/
-        hfieldFree(val);
+        hfieldFree(val, NULL);
     }
     return NULL;
 }
@@ -516,7 +518,7 @@ ssize_t rdbSaveStringObject(rio *rdb, robj *obj) {
  *
  * On I/O error NULL is returned.
  */
-void *rdbGenericLoadStringObject(rio *rdb, int flags, size_t *lenptr) {
+void *rdbGenericLoadStringObjectUsable(rio *rdb, int flags, size_t *lenptr, size_t *usable) {
     void *buf;
     int plainFlag = flags & RDB_LOAD_PLAIN;
     int sdsFlag = flags & RDB_LOAD_SDS;
@@ -534,9 +536,9 @@ void *rdbGenericLoadStringObject(rio *rdb, int flags, size_t *lenptr) {
         case RDB_ENC_INT8:
         case RDB_ENC_INT16:
         case RDB_ENC_INT32:
-            return rdbLoadIntegerObject(rdb,len,flags,lenptr);
+            return rdbLoadIntegerObject(rdb,len,flags,lenptr,usable);
         case RDB_ENC_LZF:
-            return rdbLoadLzfStringObject(rdb,flags,lenptr);
+            return rdbLoadLzfStringObject(rdb,flags,lenptr,usable);
         default:
             rdbReportCorruptRDB("Unknown RDB string encoding type %llu",len);
             return NULL;
@@ -545,6 +547,7 @@ void *rdbGenericLoadStringObject(rio *rdb, int flags, size_t *lenptr) {
 
     /* return robj */
     if (robjFlag) {
+        if (usable) *usable = 0;
         robj *o = tryCreateStringObject(SDS_NOINIT,len);
         if (!o) {
             serverLog(isRestoreContext()? LL_VERBOSE: LL_WARNING, "rdbGenericLoadStringObject failed allocating %llu bytes", len);
@@ -559,11 +562,12 @@ void *rdbGenericLoadStringObject(rio *rdb, int flags, size_t *lenptr) {
 
     /* plain/sds/hfld */
     if (plainFlag) {
-        buf = ztrymalloc(len);
+        buf = ztrymalloc_usable(len, usable);
     } else if (sdsFlag) {
         buf = sdstrynewlen(SDS_NOINIT,len);
+        if (usable) *usable = sdsAllocSize(buf);
     }  else { /* hfldFlag */
-        buf = hfieldTryNew(NULL, len, (flags&RDB_LOAD_HFLD) ? 0 : 1);
+        buf = hfieldTryNew(NULL, len, (flags&RDB_LOAD_HFLD) ? 0 : 1, usable);
     }
     if (!buf) {
         serverLog(isRestoreContext()? LL_VERBOSE: LL_WARNING, "rdbGenericLoadStringObject failed allocating %llu bytes", len);
@@ -577,11 +581,15 @@ void *rdbGenericLoadStringObject(rio *rdb, int flags, size_t *lenptr) {
         else if (sdsFlag) {
             sdsfree(buf);
         } else { /* hfldFlag */
-            hfieldFree(buf);
+            hfieldFree(buf, NULL);
         }
         return NULL;
     }
     return buf;
+}
+
+void *rdbGenericLoadStringObject(rio *rdb, int flags, size_t *lenptr) {
+    return rdbGenericLoadStringObjectUsable(rdb,flags,lenptr,NULL);
 }
 
 robj *rdbLoadStringObject(rio *rdb) {
@@ -1384,6 +1392,7 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter, unsigned 
     dictEntry *de;
     ssize_t written = 0;
     ssize_t res;
+    size_t oldsize = 0;
     kvstoreIterator *kvs_it = NULL;
     static long long info_updated_time = 0;
     char *pname = (rdbflags & RDBFLAGS_AOF_PREAMBLE) ? "AOF rewrite" :  "RDB";
@@ -1437,7 +1446,12 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter, unsigned 
 
         initStaticStringObject(key,kvobjGetKey(kv));
         expire = kvobjGetExpire(kv);
-        if ((res = rdbSaveKeyValuePair(rdb, &key, kv, expire, dbid)) < 0) goto werr;
+        if (server.memory_tracking_per_slot)
+            oldsize = kvobjAllocSize(kv);
+        res = rdbSaveKeyValuePair(rdb, &key, kv, expire, dbid);
+        if (server.memory_tracking_per_slot)
+            updateSlotAllocSize(db, curr_slot, oldsize, kvobjAllocSize(kv));
+        if (res < 0) goto werr;
         written += res;
 
         /* In fork child process, we can try to release memory back to the
@@ -2087,6 +2101,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                     sdsfree(sdsele);
                     return NULL;
                 }
+                *htGetMetadataSize(o->ptr) += sdsAllocSize(sdsele);
             } else {
                 sdsfree(sdsele);
             }
@@ -2189,13 +2204,14 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
         while (o->encoding == OBJ_ENCODING_LISTPACK && len > 0) {
             len--;
             /* Load raw strings */
-            if ((field = rdbGenericLoadStringObject(rdb,RDB_LOAD_HFLD,NULL)) == NULL) {
+            size_t usable;
+            if ((field = rdbGenericLoadStringObjectUsable(rdb,RDB_LOAD_HFLD,NULL,&usable)) == NULL) {
                 decrRefCount(o);
                 if (dupSearchDict) dictRelease(dupSearchDict);
                 return NULL;
             }
             if ((value = rdbGenericLoadStringObject(rdb,RDB_LOAD_SDS,NULL)) == NULL) {
-                hfieldFree(field);
+                hfieldFree(field, NULL);
                 decrRefCount(o);
                 if (dupSearchDict) dictRelease(dupSearchDict);
                 return NULL;
@@ -2209,7 +2225,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                     dictRelease(dupSearchDict);
                     decrRefCount(o);
                     sdsfree(field_dup);
-                    hfieldFree(field);
+                    hfieldFree(field, NULL);
                     sdsfree(value);
                     return NULL;
                 }
@@ -2228,10 +2244,11 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                     rdbReportCorruptRDB("Duplicate hash fields detected");
                     if (dupSearchDict) dictRelease(dupSearchDict);
                     sdsfree(value);
-                    hfieldFree(field);
+                    hfieldFree(field, NULL);
                     decrRefCount(o);
                     return NULL;
                 }
+                *htGetMetadataSize(o->ptr) += usable + sdsAllocSize(value);
                 break;
             }
 
@@ -2239,7 +2256,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
             o->ptr = lpAppend(o->ptr, (unsigned char*)field, hfieldlen(field));
             o->ptr = lpAppend(o->ptr, (unsigned char*)value, sdslen(value));
 
-            hfieldFree(field);
+            hfieldFree(field, NULL);
             sdsfree(value);
         }
 
@@ -2262,12 +2279,13 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
         while (o->encoding == OBJ_ENCODING_HT && len > 0) {
             len--;
             /* Load encoded strings */
-            if ((field = rdbGenericLoadStringObject(rdb,RDB_LOAD_HFLD,NULL)) == NULL) {
+            size_t usable;
+            if ((field = rdbGenericLoadStringObjectUsable(rdb,RDB_LOAD_HFLD,NULL,&usable)) == NULL) {
                 decrRefCount(o);
                 return NULL;
             }
             if ((value = rdbGenericLoadStringObject(rdb,RDB_LOAD_SDS,NULL)) == NULL) {
-                hfieldFree(field);
+                hfieldFree(field, NULL);
                 decrRefCount(o);
                 return NULL;
             }
@@ -2280,10 +2298,11 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
             if (ret == DICT_ERR) {
                 rdbReportCorruptRDB("Duplicate hash fields detected");
                 sdsfree(value);
-                hfieldFree(field);
+                hfieldFree(field, NULL);
                 decrRefCount(o);
                 return NULL;
             }
+            *htGetMetadataSize(o->ptr) += usable + sdsAllocSize(value);
         }
 
         /* All pairs should be read by now */
@@ -2363,10 +2382,11 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
             }
 
             /* if needed create field with TTL metadata  */
+            size_t usable;
             if (expireAt !=0)
-                field = rdbGenericLoadStringObject(rdb, RDB_LOAD_HFLD_TTL, NULL);
+                field = rdbGenericLoadStringObjectUsable(rdb, RDB_LOAD_HFLD_TTL, NULL, &usable);
             else
-                field = rdbGenericLoadStringObject(rdb, RDB_LOAD_HFLD, NULL);
+                field = rdbGenericLoadStringObjectUsable(rdb, RDB_LOAD_HFLD, NULL, &usable);
 
             if (field == NULL) {
                 serverLog(LL_WARNING, "failed reading hash field");
@@ -2380,7 +2400,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                 serverLog(LL_WARNING, "failed reading hash value");
                 decrRefCount(o);
                 if (dupSearchDict != NULL) dictRelease(dupSearchDict);
-                hfieldFree(field);
+                hfieldFree(field, NULL);
                 return NULL;
             }
 
@@ -2396,7 +2416,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                         decrRefCount(o);
                         sdsfree(field_dup);
                         sdsfree(value);
-                        hfieldFree(field);
+                        hfieldFree(field, NULL);
                         return NULL;
                     }
                 }
@@ -2415,7 +2435,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                             decrRefCount(o);
                             if (dupSearchDict != NULL) dictRelease(dupSearchDict);
                             sdsfree(value);
-                            hfieldFree(field);
+                            hfieldFree(field, NULL);
                             return NULL;
                         }
                     }
@@ -2424,7 +2444,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                 } else {
                     listpackExAddNew(o, field, hfieldlen(field),
                                      value, sdslen(value), expireAt);
-                    hfieldFree(field);
+                    hfieldFree(field, NULL);
                     sdsfree(value);
                 }
             }
@@ -2438,17 +2458,18 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
 
                 /* Attach expiry to the hash field and register in hash private HFE DS */
                 if ((ret != DICT_ERR) && expireAt) {
-                    dictExpireMetadata *m = (dictExpireMetadata *) dictMetadata(d);
+                    htMetadataEx *m = htGetMetadataEx(d);
                     ret = ebAdd(&m->hfe, &hashFieldExpireBucketsType, field, expireAt);
                 }
 
                 if (ret == DICT_ERR) {
                     rdbReportCorruptRDB("Duplicate hash fields detected");
                     sdsfree(value);
-                    hfieldFree(field);
+                    hfieldFree(field, NULL);
                     decrRefCount(o);
                     return NULL;
                 }
+                *htGetMetadataSize(d) += usable + sdsAllocSize(value);
             }
         }
 
@@ -2875,6 +2896,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                 zfree(lp);
                 return NULL;
             }
+            s->alloc_size += lpBytes(lp);
         }
         /* Load total number of items inside the stream. */
         s->length = rdbLoadLen(rdb,NULL);
@@ -2990,21 +3012,21 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                     decrRefCount(o);
                     return NULL;
                 }
-                streamNACK *nack = streamCreateNACK(NULL);
+                streamNACK *nack = streamCreateNACK(s, NULL);
                 nack->delivery_time = rdbLoadMillisecondTime(rdb,RDB_VERSION);
                 nack->delivery_count = rdbLoadLen(rdb,NULL);
                 nack->cgroup_ref_node = streamLinkCGroupToEntry(s, cgroup, rawid);
                 if (rioGetReadError(rdb)) {
                     rdbReportReadError("Stream PEL NACK loading failed.");
+                    streamFreeNACK(s, nack);
                     decrRefCount(o);
-                    streamFreeNACK(nack);
                     return NULL;
                 }
                 if (!raxTryInsert(cgroup->pel,rawid,sizeof(rawid),nack,NULL)) {
                     rdbReportCorruptRDB("Duplicated global PEL entry "
                                             "loading stream consumer group");
+                    streamFreeNACK(s, nack);
                     decrRefCount(o);
-                    streamFreeNACK(nack);
                     return NULL;
                 }
 
@@ -3029,7 +3051,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                     decrRefCount(o);
                     return NULL;
                 }
-                streamConsumer *consumer = streamCreateConsumer(cgroup,cname,NULL,0,
+                streamConsumer *consumer = streamCreateConsumer(s,cgroup,cname,NULL,0,
                                                         SCC_NO_NOTIFY|SCC_NO_DIRTIFY);
                 sdsfree(cname);
                 if (!consumer) {
@@ -3091,8 +3113,8 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error)
                         rdbReportCorruptRDB("Duplicated consumer PEL entry "
                                                 " loading a stream consumer "
                                                 "group");
+                        streamFreeNACK(s, nack);
                         decrRefCount(o);
-                        streamFreeNACK(nack);
                         return NULL;
                     }
                 }

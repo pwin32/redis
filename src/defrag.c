@@ -885,9 +885,16 @@ void* defragStreamConsumerPendingEntry(raxIterator *ri, void *privdata) {
     return newnack;
 }
 
+typedef struct {
+    stream *s;
+    streamCG *cg;
+} StreamConsumerContext;
+
 void* defragStreamConsumer(raxIterator *ri, void *privdata) {
+    StreamConsumerContext *ctx = privdata;
+    stream *s = ctx->s;
+    streamCG *cg = ctx->cg;
     streamConsumer *c = ri->data;
-    streamCG *cg = privdata;
     void *newc = activeDefragAlloc(c);
     if (newc) {
         c = newc;
@@ -896,6 +903,8 @@ void* defragStreamConsumer(raxIterator *ri, void *privdata) {
     if (newsds)
         c->name = newsds;
     if (c->pel) {
+        /* Update pel back-pointer to new stream */
+        c->pel->alloc_size = &s->alloc_size;
         PendingEntryContext pel_ctx = {cg, c};
         defragRadixTree(&c->pel, 0, defragStreamConsumerPendingEntry, &pel_ctx);
     }
@@ -903,14 +912,26 @@ void* defragStreamConsumer(raxIterator *ri, void *privdata) {
 }
 
 void* defragStreamConsumerGroup(raxIterator *ri, void *privdata) {
+    stream *s = privdata;
     streamCG *newcg, *cg = ri->data;
-    UNUSED(privdata);
     if ((newcg = activeDefragAlloc(cg)))
         cg = newcg;
-    if (cg->consumers)
-        defragRadixTree(&cg->consumers, 0, defragStreamConsumer, cg);
-    if (cg->pel)
+    if (cg->pel) {
+        /* Update pel back-pointer to new stream */
+        cg->pel->alloc_size = &s->alloc_size;
         defragRadixTree(&cg->pel, 0, NULL, NULL);
+    }
+    if (cg->pel_by_time) {
+        /* Update pel_by_time back-pointer to new stream */
+        cg->pel_by_time->alloc_size = &s->alloc_size;
+        defragRadixTree(&cg->pel_by_time, 0, NULL, NULL);
+    }
+    if (cg->consumers) {
+        /* Update consumers back-pointer to new stream */
+        cg->consumers->alloc_size = &s->alloc_size;
+        StreamConsumerContext consumer_ctx = {s, cg};
+        defragRadixTree(&cg->consumers, 0, defragStreamConsumer, &consumer_ctx);
+    }
     return cg;
 }
 
@@ -922,6 +943,8 @@ void defragStream(defragKeysCtx *ctx, kvobj *ob) {
     if ((news = activeDefragAlloc(s)))
         ob->ptr = s = news;
 
+    /* Update rax back-pointer to new stream */
+    s->rax->alloc_size = &s->alloc_size;
     if (raxSize(s->rax) > server.active_defrag_max_scan_fields) {
         rax *newrax = activeDefragAlloc(s->rax);
         if (newrax)
@@ -930,8 +953,16 @@ void defragStream(defragKeysCtx *ctx, kvobj *ob) {
     } else
         defragRadixTree(&s->rax, 1, NULL, NULL);
 
-    if (s->cgroups)
-        defragRadixTree(&s->cgroups, 0, defragStreamConsumerGroup, NULL);
+    if (s->cgroups) {
+        /* Update cgroups back-pointer to new stream */
+        s->cgroups->alloc_size = &s->alloc_size;
+        defragRadixTree(&s->cgroups, 0, defragStreamConsumerGroup, s);
+    }
+
+    if (s->cgroups_ref) {
+        /* Update cgroups_ref back-pointer to new stream */
+        s->cgroups_ref->alloc_size = &s->alloc_size;
+    }
 }
 
 /* Defrag a module key. This is either done immediately or scheduled
@@ -951,10 +982,14 @@ void defragKey(defragKeysCtx *ctx, dictEntry *de, dictEntryLink link) {
     UNUSED(link);
     dictEntryLink exlink = NULL;
     kvobj *kvnew = NULL, *ob = dictGetKV(de);
+    size_t oldsize = 0;
     redisDb *db = &server.db[ctx->dbid];
     int slot = ctx->kvstate.slot;
     unsigned char *newzl;
-    
+
+    if (server.memory_tracking_per_slot)
+        oldsize = kvobjAllocSize(ob);
+
     long long expire = kvobjGetExpire(ob);
     /* We can't search in db->expires for that KV after we've released
      * the pointer it holds, since it won't be able to do the string
@@ -1031,6 +1066,8 @@ void defragKey(defragKeysCtx *ctx, dictEntry *de, dictEntryLink link) {
     } else {
         serverPanic("Unknown object type");
     }
+    if (server.memory_tracking_per_slot)
+        updateSlotAllocSize(db, slot, oldsize, kvobjAllocSize(ob));
 }
 
 /* Defrag scan callback for the main db dictionary. */
@@ -1158,6 +1195,9 @@ static int defragIsRunning(void) {
 /* A kvstoreHelperPreContinueFn */
 static doneStatus defragLaterStep(void *ctx, monotime endtime) {
     defragKeysCtx *defrag_keys_ctx = ctx;
+    redisDb *db = &server.db[defrag_keys_ctx->dbid];
+    int slot = defrag_keys_ctx->kvstate.slot;
+    size_t oldsize = 0;
 
     unsigned int iterations = 0;
     unsigned long long prev_defragged = server.stat_active_defrag_hits;
@@ -1170,7 +1210,11 @@ static doneStatus defragLaterStep(void *ctx, monotime endtime) {
         kvobj *kv = de ? dictGetKV(de) : NULL;
 
         long long key_defragged = server.stat_active_defrag_hits;
+        if (server.memory_tracking_per_slot && kv)
+            oldsize = kvobjAllocSize(kv);
         int timeout = (defragLaterItem(kv, &defrag_keys_ctx->defrag_later_cursor, endtime, defrag_keys_ctx->dbid) == 1);
+        if (server.memory_tracking_per_slot && kv)
+            updateSlotAllocSize(db, slot, oldsize, kvobjAllocSize(kv));
         if (key_defragged != server.stat_active_defrag_hits) {
             server.stat_active_defrag_key_hits++;
         } else {
