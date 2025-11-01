@@ -21,6 +21,28 @@ The release notes contain PRs from multiple repositories:
 
 
 ================================================================================
+Redis 8.2.3     Released Sun 2 Nov 2025 16:00:00 IST
+================================================================================
+
+Update urgency: `SECURITY`: There are critical bugs that may affect a subset of users.
+
+### Security fixes
+
+- (CVE-2025-62507) Bug in `XACKDEL` may lead to stack overflow and potential RCE
+
+### Bug fixes
+
+- `HGETEX`: A missing `numfields` argument when `FIELDS` is used can lead to Redis crash
+- an overflow in `HyperLogLog` with 2GB+ entries may result in a Redis crash
+- Cuckoo filter - Division by zero in Cuckoo filter insertion
+- Cuckoo filter - Counter overflow
+- Bloom filter - Arbitrary memory read/write with invalid filter
+- Bloom filter - Out-of-bounds access with empty chain
+- Top-k - Out-of-bounds access
+- Bloom filter - Restore invalid filter [We thank AWS security for responsibly disclosing the security bug]
+
+
+================================================================================
 Redis 8.2.2     Released Fri 3 Oct 2025 10:00:00 IST
 ================================================================================
 
