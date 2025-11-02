@@ -24,7 +24,7 @@ The release notes contain PRs from multiple repositories:
 Redis 8.2.3     Released Sun 2 Nov 2025 16:00:00 IST
 ================================================================================
 
-Update urgency: `SECURITY`: There are critical bugs that may affect a subset of users.
+Update urgency: `SECURITY`: There is a security fix in the release.
 
 ### Security fixes
 
