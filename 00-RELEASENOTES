@@ -16,11 +16,11 @@ SECURITY: There are security fixes in the release.
 Redis 7.2.12    Released Sun 2 Nov 2025 10:00:00 IST
 ================================================================================
 
-Update urgency: `HIGH`: There are security fixes in the release.
+Update urgency: `HIGH`: There is a critical bug that may affect a subset of users.
 
 ### Bug fixes
 
-* an overflow in `HyperLogLog` with 2GB+ entries may result in a Redis crash
+* An overflow in `HyperLogLog` with 2GB+ entries may result in a Redis crash
 
 
 ================================================================================
