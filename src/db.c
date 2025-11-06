@@ -415,24 +415,13 @@ int getKeySlot(sds key) {
      * This optimization is only used when current_client flag `CLIENT_EXECUTING_COMMAND` is set.
      * It only gets set during the execution of command under `call` method. Other flows requesting
      * the key slot would fallback to calculateKeySlot.
-     *
-     * Modules and scripts executed on the primary may get replicated as multi-execs that operate on multiple slots,
-     * so we must always recompute the slot for commands coming from the primary.
      */
-    if (server.current_client && server.current_client->slot >= 0 && server.current_client->flags & CLIENT_EXECUTING_COMMAND &&
-        !(server.current_client->flags & CLIENT_MASTER))
-    {
+    if (server.current_client && server.current_client->slot >= 0 && server.current_client->flags & CLIENT_EXECUTING_COMMAND) {
         debugServerAssertWithInfo(server.current_client, NULL,
                                   (int)keyHashSlot(key, (int)sdslen(key)) == server.current_client->slot);
         return server.current_client->slot;
     }
     int slot = keyHashSlot(key, (int)sdslen(key));
-    /* For the case of replicated commands from primary, getNodeByQuery() never gets called,
-     * and thus c->slot never gets populated. That said, if this command ends up accessing a key,
-     * we are able to backfill c->slot here, where the key's hash calculation is made. */
-    if (server.current_client && (server.current_client->flags & CLIENT_MASTER)) {
-        server.current_client->slot = slot;
-    }
     return slot;
 }
 
