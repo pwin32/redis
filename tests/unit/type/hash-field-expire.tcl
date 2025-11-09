@@ -292,6 +292,79 @@ start_server {tags {"external:skip needs:debug"}} {
             assert_range [r HEXPIRETIME myhash FIELDS 1 field1] $lo $hi
             assert_range [r HPEXPIRETIME myhash FIELDS 1 field1] [expr $lo*1000] [expr $hi*1000]
         }
+        
+        test "HPEXPIRETIME persists after RDB reload ($type)" {
+            r del myhash
+            r hset myhash field1 value1 field2 value2
+            r hpexpire myhash 100 NX FIELDS 1 field1
+            set before [r HPEXPIRETIME myhash FIELDS 1 field1]
+            r debug reload
+            set after [r HPEXPIRETIME myhash FIELDS 1 field1]
+            assert_equal $before $after
+            # field2 should not have expiration
+            assert_equal [r HTTL myhash FIELDS 1 field2] $T_NO_EXPIRY
+            assert_equal [get_stat_subexpiry r] 1
+            # Wait for field1 to expire robustly
+            wait_for_condition 50 20 { [get_stat_subexpiry r] == 0 } else { fail "subexpiry should be 0" } 
+            assert_equal [r hget myhash field1] ""
+            # field2 remains without expiration
+            assert_equal [r HTTL myhash FIELDS 1 field2] $T_NO_EXPIRY
+        }
+        
+        # For hash data type that had in the past HFEs, Verify that after RDB
+        # reload it still won't be counted in `subexpiry`.
+        test "Verify hash that had HFEs won't be counted in INFO keyspace also after reload ($type)" {
+            # Prepare a hash with one field that will expire before the RDB is written
+            r flushall
+            r hset myhash field1 value1 field2 value2
+            r hpexpire myhash 1 NX FIELDS 1 field1
+            wait_for_condition 50 20 { [get_stat_subexpiry r] == 0 } else { fail "`field1` should be expired" }
+
+            # Disable active expire to prevent the probability of the key from being
+            # added-and-deleted from `subexpiry` just before verifying get_stat_subexpiry()
+            r debug set-active-expire 0
+
+            r debug reload
+
+            # Now verify no sub-expiry keys exist after reload (i.e. not registered in estore)
+            assert_equal [get_stat_subexpiry r] 0
+
+            # Restore to support active expire
+            r debug set-active-expire 1
+        }
+
+        # Test case where PERSIST was used, and active expire didn't do any cleanup yet
+        test "Verify hash with PERSIST'd field won't be counted in INFO keyspace after reload ($type)" {
+            r debug set-active-expire 0
+            r del myhash
+            r hset myhash f1 v1 f2 v2
+            r hexpire myhash 10000 FIELDS 1 f1
+
+            # Verify subexpiry is 1 (field has expiration)
+            assert_equal [get_stat_subexpiry r] 1
+
+            # Persist the field (remove expiration)
+            assert_equal [r hpersist myhash FIELDS 1 f1] $P_OK
+
+            # subexpiry should still be 1 because active expire hasn't cleaned up yet.
+            # We avoid paying the cost of updating subexpiry data structure (estore)
+            # and leave the cleanup to efficient active expire
+            assert_equal [get_stat_subexpiry r] 1
+
+            # After RDB reload, subexpiry should be 0 (field no longer has expiration
+            # and RESTORE should "accurately" identify that and avoid registering it
+            # in estore)
+            r debug reload
+            assert_equal [get_stat_subexpiry r] 0
+
+            # Verify both fields exist and have no expiration
+            assert_equal [r hget myhash f1] "v1"
+            assert_equal [r hget myhash f2] "v2"
+            assert_equal [r httl myhash FIELDS 2 f1 f2] "$T_NO_EXPIRY $T_NO_EXPIRY"
+
+            # Restore to support active expire
+            r debug set-active-expire 1
+        }
 
         test "HTTL/HPTTL - Verify TTL progress until expiration ($type)" {
             r del myhash
