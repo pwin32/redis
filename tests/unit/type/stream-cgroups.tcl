@@ -1804,6 +1804,21 @@ start_server {
             assert_equal [dict get $group lag] 0
             assert_equal [dict get $group entries-read] 1
         }
+
+        test "XACKDEL with IDs exceeding STREAMID_STATIC_VECTOR_LEN for heap allocation" {
+            r DEL mystream
+            r XGROUP CREATE mystream mygroup $ MKSTREAM
+
+            # Generate IDs exceeding STREAMID_STATIC_VECTOR_LEN (8) to force heap allocation
+            # instead of using the static vector cache, ensuring proper memory allocation.
+            set ids {}
+            for {set i 0} {$i < 50} {incr i} {
+                lappend ids "$i-1"
+            }
+            set result [r XACKDEL mystream mygroup IDS 50 {*}$ids]
+            assert {[llength $result] == 50}
+            r PING
+        }
     }
 
     start_server {tags {"repl external:skip"}} {
@@ -1864,6 +1879,54 @@ start_server {
     }
     
     start_server {} {
+        if {!$::force_resp3} {
+        test "XREADGROUP CLAIM field types are correct" {
+            r DEL mystream
+            r XADD mystream 1-0 f v1
+            r XGROUP CREATE mystream group1 0
+
+            # Read the message with XREADGROUP
+            r XREADGROUP GROUP group1 consumer1 STREAMS mystream >
+
+            # Wait to allow claiming
+            after 100
+
+            # Read again with CLAIM using readraw to check field types
+            r readraw 1
+            r deferred 1
+            
+            r XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >
+
+            # Check the response format line by line
+            # Response structure: *1 (outer array) -> *2 (stream name + messages array)
+            assert_equal [r read] {*1}       ;# Outer array (1 stream)
+            assert_equal [r read] {*2}       ;# Stream data (2 elements: stream name + messages)
+            assert_equal [r read] {$8}       ;# Stream name length
+            assert_equal [r read] {mystream} ;# Stream name
+            assert_equal [r read] {*1}       ;# Messages array (1 message)
+            assert_equal [r read] {*4}       ;# Message with 4 fields
+            assert_equal [r read] {$3}       ;# Field 1: Message ID length
+            assert_equal [r read] {1-0}      ;# Field 1: Message ID value
+            assert_equal [r read] {*2}       ;# Field 2: Field-value pairs array
+            assert_equal [r read] {$1}       ;# Field-value pair: key length
+            assert_equal [r read] {f}        ;# Field-value pair: key
+            assert_equal [r read] {$2}       ;# Field-value pair: value length
+            assert_equal [r read] {v1}       ;# Field-value pair: value
+            
+            # Field 3: Delivery count - should be integer type (:)
+            set delivery_count_type [r read]
+            assert_match {:*} $delivery_count_type "Expected delivery count to be integer type (:), got: $delivery_count_type"
+            
+            # Field 4: Idle time - should be integer type (:)
+            set idle_time_type [r read]
+            assert_match {:*} $idle_time_type "Expected idle time to be integer type (:), got: $idle_time_type"
+        }
+        }
+
+        # Restore connection state
+        r readraw 0
+        r deferred 0
+
         test "XREADGROUP CLAIM returns unacknowledged messages" {
             r DEL mystream
             r XADD mystream 1-0 f v1
@@ -2817,7 +2880,7 @@ start_server {
             $rd close
         }
 
-        test "READGROUP CLAIM verify claiming order" {
+        test "XREADGROUP CLAIM verify claiming order" {
             r DEL mystream
             r XADD mystream 1-0 f v1
             r XADD mystream 2-0 f v2
