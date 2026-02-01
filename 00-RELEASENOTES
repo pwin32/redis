@@ -21,6 +21,80 @@ The release notes contain PRs from multiple repositories:
 
 
 ================================================================================
+Redis 8.2.4     Released Sun 8 Feb 2026 9:00:00 IST
+================================================================================
+
+Update urgency: `SECURITY`: There are security fixes in the release.
+
+### Security fixes
+
+- #T1837, #J1474 Hide Personally Identifiable Information from server log
+
+### Bug fixes
+
+- #J1430 Malformed panic log messages (MOD-9365)
+- #P945 Bloom filter: crash on RDB load on large number of filters (MOD-11590)
+- #Q6973 Correct empty string token counting in byteOffset calculations to ensure accurate text position tracking (MOD-11233)
+- #Q6995 Prevent `FT.INFO` command fanout to replicas to reduce unnecessary cluster traffic
+- #Q7034 Correct goto statement handling on RDB load
+- #Q7154 Display Background Indexing OOM warning in `FT.AGGREGATE` when memory limits are approached (MOD-11817)
+- #Q7219 Resolve concurrency issue in Reducer that caused intermittent errors (MOD-12243)
+- #Q7255 Correct `BM25STD` underflow wraparound to prevent incorrect scoring (MOD-12223)
+- #Q7264 Ensure accurate `totalDocsLen` updates to maintain correct document statistics (MOD-12234)
+- #Q7275 Report used memory as unsigned long to prevent overflow (RED-169833)
+- #Q7350 Allow `FT.CREATE` with LeanVec parameters on non-Intel architectures (RED-176382)
+- #Q7384 Reduce index load from RDB temporary memory overhead (MOD-12212)
+- #Q7435 Ensure full profile output on timeout with `RETURN` policy in `FT.PROFILE` (MOD-12320)
+- #Q7446 Remove outdated validation from debug aggregate in cluster mode (MOD-12435)
+- #Q7458 Correct GC regression that caused stability issues (MOD-12538)
+- #Q7459 Prevent potential double-free in Fork GC error path (MOD-12521)
+- #Q7470 Remove draining from Flush callback to avoid blocking
+- #Q7499 Propagate `HGETALL` command in HDT mode (MOD-12662)
+- #Q7534 Reduce number of worker threads asynchronously to prevent performance degradation (MOD-12252, MOD-11658)
+- #Q7554 Handle Coordinator case when `SCORE` is sent alone without extra fields (MOD-12647)
+- #Q7561 Prevent memory corruption when freeing searchRequestCtx on error (MOD-12699)
+- #Q7685 Resolve cursor logical leak that could lead to resource exhaustion (MOD-12807)
+- #Q7710 Add support for `WITHCOUNT` in `FT.AGGREGATE` (MOD-11751)
+- #Q7794 Correctly handle binary data with embedded NULLs to prevent crashes (MOD-13010)
+- #Q7812 Correct SVS GC for no-workers case (MOD-12983)
+- #Q7873 Handle warnings in empty `FT.AGGREGATE` replies in cluster mode (MOD-12640)
+- #Q7886 Remove non-TEXT fields from spec's keys dictionary to prevent incorrect field handling (MOD-13150)
+- #Q7901 Support multiple warnings in reply to prevent warning loss (MOD-13252)
+- #Q8083 Correct `FULLTEXT` field metric count accuracy (MOD-13432)
+- #Q8153 Resolve config registration issue (RED-171841)
+- #Q7371 Validate `search-min-operation-workers` min value correctly (MOD-12383)
+- #Q8151 Correct `FT.PROFILE` shard total profile time calculation (MOD-13735, MOD-13181)
+- #Q7165 (Redis Enterprise only) `FT.DROPINDEX` as touches-arbitrary-keys for proper cluster handling causing crash on A-A (MOD-11090)
+- #Q7023 (Redis Enterprise only) Ensure all `FT.SUG*` commands are hashslot-aware to prevent cluster routing errors (MOD-11756)
+
+### Performance and resource utilization improvements
+
+- #Q7496 Vector search performance improvements (MOD-12011, MOD-12063, MOD-12629, MOD-12346)
+- #Q7694 Use asynchronous jobs in GC for SVS to reduce blocking (MOD-12668)
+
+### Metrics
+
+- #Q7614 Track timeout errors and warnings in info (MOD-12419)
+- #Q7646 Track `maxprefixexpansions` errors and warnings in info (MOD-12417)
+- #Q7957 Persist query warnings across cursor reads (MOD-12984)
+- #Q7341 Rename `FT.PROFILE` counter fields for clarity (MOD-6056)
+- #Q7436 Enhance `FT.PROFILE` with vector search execution details (MOD-12263)
+- #Q7737 Add `Internal cursor reads` metric to cluster `FT.PROFILE` output (MOD-12414)
+- #Q7692 Declare query error struct on `_FT.CURSOR PROFILE` (MOD-12955)
+- #Q7552 Add `active_io_threads` metric (MOD-12069, MOD-12695)
+- #Q7564 Add `active_worker_threads` metric (MOD-12694, MOD-12069)
+- #Q7623 Add `active_coord_threads` metric (MOD-12694, MOD-12069)
+- #Q7626 Add `*_pending_jobs` metrics for job queues (MOD-12069)
+- #Q7672 Add pending workers admin jobs metric (MOD-12069, MOD-12791)
+- #Q7732 Introduce `active_topology_update_threads` metric (MOD-12069, MOD-12790)
+- #Q7759 Extend indexing metrics for better observability (MOD-12070)
+
+### Configuration parameters
+
+- #Q7083 Add default scorer configuration option (MOD-10037)
+
+
+================================================================================
 Redis 8.2.3     Released Sun 2 Nov 2025 16:00:00 IST
 ================================================================================
 
