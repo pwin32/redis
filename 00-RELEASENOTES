@@ -19,6 +19,112 @@ The release notes contain PRs from multiple repositories:
 #Tn = Time Series (https://github.com/RedisTimeSeries/RedisTimeSeries)
 #Pn = Probabilistic (https://github.com/RedisBloom/RedisBloom)
 
+================================================================================
+Redis 8.4.1    Released Sun 8 Feb 2026 9:00:00 IST
+================================================================================
+
+Update urgency: `SECURITY`: There are security fixes in the release.
+
+### Security fixes
+
+- #T1837, #J1474 Hide Personally Identifiable Information from server log
+- #P936 Cuckoo filter: crash on RDB load on 0 buckets (MOD-11593)
+- #P945 Bloom filter: crash on RDB load on large number of filters (MOD-11590)
+
+### Bug fixes
+
+- #14637 Atomic slot migration: wrong adjacent slot range behavior
+- #14567 Atomic slot migration: support delay trimming slots after finishing migrating slots
+- #T1864 Atomic slot migration: time series limitations (MOD-13611)
+- #14746 `CLUSTER SLOT-STATS`: Fix few memory tracking bugs
+- #Q6973 Correct empty string token counting in byteOffset calculations to ensure accurate text position tracking (MOD-11233)
+- #Q6995 Prevent `FT.INFO` command fanout to replicas to reduce unnecessary cluster traffic
+- #Q7154 Display Background Indexing OOM warning in `FT.AGGREGATE` when memory limits are approached (MOD-11817)
+- #Q7219 Resolve concurrency issue in `FT.AGGREGATE`reducer that caused intermittent errors (MOD-12243)
+- #Q7255 Correct `BM25STD` underflow wraparound to prevent incorrect scoring (MOD-12223)
+- #Q7264 Ensure accurate `totalDocsLen` updates to maintain correct document statistics (MOD-12234)
+- #Q7275 Report used memory as unsigned long to prevent overflow (RED-169833)
+- #Q7350 `FT.CREATE` with LeanVec parameters on non-Intel architectures (RED-176382)
+- #Q7371 Validate `search-min-operation-workers` min value correctly (MOD-12383)
+- #Q7430 Prevent coordinator deadlock in `FT.HYBRID` queries by avoiding index read lock (MOD-12489)
+- #Q7435 Ensure full profile output on timeout with `RETURN` policy in `FT.PROFILE` (MOD-12320)
+- #Q7446 Remove outdated validation from debug aggregate in cluster mode (MOD-12435)
+- #Q7455 Ensure internal cursors are deleted immediately in cluster mode (MOD-12493)
+- #Q7458 Correct GC regression that caused stability issues (MOD-12538)
+- #Q7460 Prevent potential double-free on error path in Fork GC (MOD-12521)
+- #Q7499 Propagate `HGETALL` command in HDT mode (MOD-12662)
+- #Q7534 Reduce number of worker threads asynchronously to prevent performance degradation (MOD-12252, MOD-11658)
+- #Q7553 Handle `WITHSCORES` correctly when SCORE is sent alone without extra fields in coordinator (MOD-12647)
+- #Q7560 Properly handle connection closing in IO thread at shutdown and fix searchRequestCtx freeing on error (MOD-12699)
+- #Q7685 Resolve cursor logical leak that could lead to resource exhaustion (MOD-12807)
+- #Q7710 Support for `WITHCOUNT` in `FT.AGGREGATE` (MOD-11751)
+- #Q7794 Correctly handle binary data with embedded NULLs to prevent crashes (MOD-13010)
+- #Q7812 Correct SVS GC for no-workers case (MOD-12983)
+- #Q7815 Fix command routing in cluster mode by not relying on shard index (MOD-13049)
+- #Q7823 Support vector blob only through parameter in `FT.HYBRID`(MOD-13123)
+- #Q7873 Handle warnings in empty `FT.AGGREGATE` replies in cluster mode (MOD-12640)
+- #Q7897 Remove asserts from DownloadFile to prevent crash (MOD-13096)
+- #Q7901 Support multiple warnings in reply to prevent warning loss (MOD-13252)
+- #Q7903 Eliminate memory leak in `FT.HYBRID` queries with Active-Active enabled (MOD-13143)
+- #Q7886 Remove non-TEXT fields from spec's keys dictionary to prevent incorrect field handling (MOD-13150)
+- #Q7905 Remove non-TEXT fields from spec's keys dictionary and refactor keys dict (MOD-13150, MOD-13151)
+- #Q7978 Avoid using negative key position values during command registration (MOD-13332)
+- #Q8052 Resolve incorrect results when using `LOAD *` with `FT.HYBRID` (MOD-12736, MOD-13556)
+- #Q8083 Correct `FULLTEXT` field metric count accuracy (MOD-13432)
+- #Q8089 Handle edge case in clusterset (MOD-13562)
+- #Q8151 Correct `FT.PROFILE` shard total profile time calculation (MOD-13735, MOD-13181)
+- #Q8153 Resolve config registration issue (RED-171841)
+- #Q7449 Ensure `FT.HYBRID` respects timeout settings (MOD-11004)
+- #Q7238 Initialize GIL_TIME properly for `FT.PROFILE` (MOD-12553)
+- #Q7453 Error behavior on early bailout and split OOM warning for shard and coordinator (MOD-12449)
+- #Q7615 Parameter `numDocs` from non-optimized Wildcard iterator (MOD-12392)
+- #Q7165 (Redis Enterprise only) `FT.DROPINDEX` as touches-arbitrary-keys for proper cluster handling causing crash on A-A (MOD-11090)
+- #Q7023 (Redis Enterprise only) Ensure all `FT.SUG*` commands are hashslot-aware to prevent cluster routing errors (MOD-11756)
+
+### Performance and resource utilization improvements
+
+- #Q7496 Vector search performance improvements (MOD-12011, MOD-12063, MOD-12629, MOD-12346)
+- #Q7519 Reduce number of worker threads asynchronously to improve resource utilization (MOD-12252, MOD-11658)
+- #Q7694 Use asynchronous jobs in GC for SVS to reduce blocking (MOD-12668)
+- #Q7730 Support `filter_policy` and `batch_size` parameters for vector similarity search tuning (MOD-13007, MOD-12371)
+- #Q7782 Resolve SVS GC failures when worker threads are disabled (MOD-12983)
+- #Q7572 Implement ASM state machine on notifications (MOD-12170)
+- #Q7829 ASM-aware search flow for Active-Active deployments (MOD-12171, MOD-12169)
+- #Q7589 Support multiple slot ranges in `search.CLUSTERSET` for flexible cluster topology updates (MOD-11657)
+- #Q7862 Support subquery count in `FT.HYBRID` (MOD-11858, MOD-13146)
+- #Q7893 Request policy support for cursor operations (MOD-13146, MOD-9573, MOD-8104)
+- #Q8087 Warning when cursor may give inaccurate results due to Active-Active replication (MOD-12899)
+- #Q7445 Remove outdated validation from Debug Aggregate in cluster mode (MOD-12435)
+- #Q7384 Reduce index load from RDB temporary memory overhead (MOD-12212)
+
+### Metrics
+
+- #Q7960 Persist query warnings across cursor reads (MOD-12984)
+- #Q7612 Track `maxprefixexpansions` errors and warnings in info (MOD-12417)
+- #Q7872 Handle warnings in empty `FT.AGGREGATE` replies in cluster mode (MOD-12640)
+- #Q7900 Support multiple warnings in reply (MOD-13252)
+- #Q7576 Track OOM errors and warnings in info (MOD-12418)
+- #Q7507 Track timeout errors and warnings in info (MOD-12419)
+- #Q7341 Rename `FT.PROFILE` counter fields for clarity (MOD-6056)
+- #Q7436, #Q7427 Enhance `FT.PROFILE` with vector search execution details (MOD-12263)
+- #Q7573 Debug support for `FT.PROFILE` command (MOD-12627)
+- #Q7736 Add `Internal cursor reads` metric to cluster `FT.PROFILE` output (MOD-12414)
+- #Q7692 Declare query error struct on `_FT.CURSOR PROFILE` (MOD-12955)
+- #Q7848 Store and display shard ID in profile output (MOD-12321)
+- #Q7422 Track syntax and argument errors in query error metrics (MOD-12416)
+- #Q7552 Add `active_io_threads` metric (MOD-12069, MOD-12695)
+- #Q7622 Add `active_coord_threads` metric (MOD-12694, MOD-12069)
+- #Q7564 Add `active_worker_threads` metric (MOD-12694, MOD-12069)
+- #Q7626 Add `*_pending_jobs` metrics for job queues (MOD-12069)
+- #Q7658 Add pending workers admin jobs metric (MOD-12069, MOD-12791)
+- #Q7731 Add `active_topology_update_threads` metric (MOD-12069, MOD-12790)
+- #Q7760 Extend indexing metrics for more detailed performance data (MOD-12070)
+
+### Configuration parameters
+
+- #Q7083 Add default scorer configuration option (MOD-10037)
+
+
 ===========================================================
 8.4 GA (v8.4.0)    Released Tue 18 Nov 2025 15:00:00 IST
 ===========================================================
