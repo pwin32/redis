@@ -13,6 +13,17 @@ SECURITY: There are security fixes in the release.
 
 
 ================================================================================
+Redis 7.2.13    Released Mon 23 Feb 2026 10:00:00 IST
+================================================================================
+
+SECURITY: There is a security fix in the release
+
+### Security fixes
+
+* A user can manipulate data read by a connection by injecting \r\n sequences into a Redis error reply
+
+
+================================================================================
 Redis 7.2.12    Released Sun 2 Nov 2025 10:00:00 IST
 ================================================================================
 
