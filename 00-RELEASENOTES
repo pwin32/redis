@@ -21,6 +21,17 @@ The release notes contain PRs from multiple repositories:
 
 
 ================================================================================
+Redis 8.2.5    Released Mon 23 Feb 2026 10:00:00 IST
+================================================================================
+
+SECURITY: There is a security fix in the release
+
+### Security fixes
+
+- A user can manipulate data read by a connection by injecting \r\n sequences into a Redis error reply
+
+
+================================================================================
 Redis 8.2.4     Released Sun 8 Feb 2026 9:00:00 IST
 ================================================================================
 
