@@ -19,6 +19,18 @@ The release notes contain PRs from multiple repositories:
 #Tn = Time Series (https://github.com/RedisTimeSeries/RedisTimeSeries)
 #Pn = Probabilistic (https://github.com/RedisBloom/RedisBloom)
 
+
+================================================================================
+Redis 8.4.2    Released Mon 23 Feb 2026 10:00:00 IST
+================================================================================
+
+SECURITY: There is a security fix in the release
+
+### Security fixes
+
+- A user can manipulate data read by a connection by injecting \r\n sequences into a Redis error reply
+
+
 ================================================================================
 Redis 8.4.1    Released Sun 8 Feb 2026 9:00:00 IST
 ================================================================================
