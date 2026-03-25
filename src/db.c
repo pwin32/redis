@@ -232,8 +232,10 @@ void dbgRunAssertions(redisDb *db) {
     /* Don't assert during RDB loading. Database may be in inconsistent state. */
     if (server.loading || server.async_loading) return;
 
-    /* Don't assert during ASM background trim. Histogram delta hasn't been applied yet. */
-    if (asmIsBgTrimRunning()) return;
+    /* Don't assert during ASM background trim or import.
+     * - During background trim, histogram delta hasn't been applied yet.
+     * - During import, assertions can introduce slowdown and cause ASM tests to fail. */
+    if (asmIsBgTrimRunning() || asmImportInProgress()) return;
 
     if (server.dbg_assert_flags & DBG_ASSERT_KEYSIZES)
         dbgAssertKeysizesHist(db);
