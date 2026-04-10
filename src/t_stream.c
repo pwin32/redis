@@ -5983,7 +5983,7 @@ void streamKeyLoaded(redisDb *db, robj *key, robj *val) {
     }
 }
 
-/* To be used when a steam key was removed from ram, un-redigster from stream_idmp_keys if needed */
+/* To be used when a stream key was removed from ram, un-register from stream_idmp_keys if needed */
 void streamKeyRemoved(redisDb *db, robj *key, robj *val) {
     UNUSED(val);
     dictDelete(db->stream_idmp_keys, key);
