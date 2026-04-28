@@ -21,6 +21,64 @@ The release notes contain PRs from multiple repositories:
 
 
 =================================================================
+Redis 8.8-M03 (v8.7.226)    Released Tue 28 Apr 2026 16:00:00 IST
+=================================================================
+
+This is the third Milestone of Redis 8.8 in Redis Open Source.
+
+Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
+
+### New Features (compared to 8.8-M02)
+
+- #14958 Subkey notification for hash fields - field-level notifications
+- #Q8227 `FT.HYBRID` `KNN` clause: new argument to request fewer candidates per shard
+- #Q8060 `FT.PROFILE` `HYBRID`: profiling support for `FT.HYBRID`
+
+### Bug fixes (compared to 8.8-M02)
+
+- #15034, #15081 Issues processing corrupt RDB data
+- #15059 Use-after-free
+- #15073 `CLIENT TRACKING`: self-overlap returning non-zero loop index
+- #14982 `SCAN` commands: integer overflow in `COUNT` parameter
+- #14956 Crash on `HSETEX` when a field appears more than once and an expiry is specified
+- #15015 Change log level for unknown extension types from `LL_WARNING` to `LL_VERBOSE`
+- #14995 Unnecessary `-ERR` and `\r\n`
+- #Q8708 Crash when many keys receive expirations under heavy TTL activity
+- #Q8774 Coordinator deadlock under mixed `FT.SEARCH` and `FT.AGGREGATE` load
+- #Q8415 Crash on `FT.SEARCH` when topology validation fails (for example, some nodes unreachable)
+- #Q8322 Crash when indexing negative zero (-0.0)
+- #Q8843 HNSW vector index memory growth under high-churn workloads until shard restart
+- #Q8396 `FILTER` returns inconsistent results with multiple indexes sharing field aliases
+- #Q8205 `FT.HYBRID` `VSIM RANGE` + `FILTER` incorrectly returns zero results
+- #Q8817 Instability and crashes in long-running search cursors during concurrent index updates
+- #Q8388 `FT.SEARCH` fails with “Query requires unavailable slots” after shard restart or failover
+- #Q8548 `FILTER` behavior depends on property order in the expression
+- #Q8320 Index `FILTER` applied inconsistently when documents are missing filtered fields
+- #Q8752 Missing blocked-client FAIL timeout mechanism for coordinator-level `FT.AGGREGATE`
+- #Q8657 Missing shard-level FAIL timeout handling for `FT.HYBRID` queries
+- #Q8420 Missing coordinator-level FAIL timeout handling for `FT.HYBRID` queries
+- #Q8335 Legacy shard-level FAIL handling for `FT.SEARCH` / `FT.AGGREGATE`
+- #Q8191 `FT.SEARCH` coordinator lacks strict FAIL timeout enforcement
+
+### Performance and resource utilization improvements (compared to 8.8-M02)
+
+- #15114 Optimize SET key value GET
+- #15065, #15118 Scan commands key collection: replace list with append-only pointer vector
+- #15061 Widen `fast_float_strtod` fast path to 17-19 digit mantissas
+- #Q8378 Optimize filter expression evaluation: skip indexes not matching the document type (MOD-14064)
+
+### Metrics (compared to 8.8-M02)
+- #Q8246 ‘frontend_buffer_size’, ‘HNSW_main_thread_insertion’: metrics for tiered vector indexes (MOD-13819)
+- #Q8210 `FT.PROFILE`: added queue time tracking (MOD-13602)
+- #Q8283 `INFO`: Skip metrics when there are no indices (MOD-13903)
+- #Q7417 Add unique error message ids for improved debugging and troubleshooting (MOD-11806)
+
+### Configuration parameters 
+- #Q8876 ‘search-workers’: change default to 16 (MOD-14486)
+- #Q8352 `BG_INDEX_SLEEP_DURATION_US`: sleep duration during background indexing (MOD-13994)
+
+
+=================================================================
 Redis 8.8-M02 (v8.7.225)    Released Thu 16 Apr 2026 16:00:00 IST
 =================================================================
 
