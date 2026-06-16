@@ -5316,6 +5316,7 @@ void addReplyFlagsForCommand(client *c, struct redisCommand *cmd) {
         {CMD_MOVABLE_KEYS,      "movablekeys"},
         {CMD_ALLOW_BUSY,        "allow_busy"},
         /* {CMD_TOUCHES_ARBITRARY_KEYS,  "TOUCHES_ARBITRARY_KEYS"}, Hidden on purpose */
+        {CMD_SCRIPT_RUNNER,     "script_runner"},
         {0,NULL}
     };
     addReplyCommandFlags(c, cmd->flags, flagNames);
