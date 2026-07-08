@@ -273,6 +273,13 @@ SERVER_OBJS := \
 
 HIREDIS_OBJS := $(addprefix $(BUILD)/hiredis/,$(HIREDIS_SOURCES:.c=.o))
 LUA_OBJS := $(addprefix $(BUILD)/lua/,$(LUA_SOURCES:.c=.o))
+HIREDIS_TEST_OBJS := \
+	$(BUILD)/hiredis-test/deps/hiredis/test.o \
+	$(BUILD)/hiredis-test/src/adlist.o \
+	$(BUILD)/hiredis-test/src/ae.o \
+	$(BUILD)/hiredis-test/src/zmalloc.o \
+	$(addprefix $(BUILD)/hiredis-test/,$(TOOL_WIN32_INTEROP_C_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD)/hiredis-test/,$(TOOL_WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
 
 CLI_SOURCES := \
 	deps/linenoise/linenoise.c \
@@ -310,11 +317,13 @@ HIREDIS_LIB := $(BUILD)/lib/libhiredis.a
 LUA_LIB := $(BUILD)/lib/liblua.a
 JEMALLOC_LIB := $(JEMALLOC_BUILD)/lib/jemalloc.lib
 
-.PHONY: all clean distclean deps
+.PHONY: all clean distclean deps hiredis-test
 
 all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe
 
 deps: $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB)
+
+hiredis-test: $(BUILD)/hiredis-test.exe
 
 src/release.h:
 	cd src && ./mkreleasehdr.sh
@@ -353,6 +362,9 @@ $(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB)
 $(BUILD)/redis-benchmark.exe: Makefile.mingw $(BENCHMARK_OBJS) $(HIREDIS_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
 
+$(BUILD)/hiredis-test.exe: Makefile.mingw $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB)
+	$(CXX) $(LDFLAGS_COMMON) -o $@ $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
+
 $(BUILD)/server/%.o: %.c src/release.h $(REDIS_HEADERS) $(JEMALLOC_LIB)
 	mkdir -p $(dir $@)
 	$(CC) $(SERVER_CFLAGS) -c $< -o $@
@@ -385,9 +397,18 @@ $(BUILD)/benchmark/%.o: %.cpp $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
 	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
 
+$(BUILD)/hiredis-test/%.o: %.c src/release.h $(REDIS_HEADERS)
+	mkdir -p $(dir $@)
+	$(CC) $(TOOL_CFLAGS) -c $< -o $@
+
+$(BUILD)/hiredis-test/%.o: %.cpp $(REDIS_HEADERS)
+	mkdir -p $(dir $@)
+	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
+
 clean:
 	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/cli $(BUILD)/benchmark
-	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe
+	rm -rf $(BUILD)/hiredis-test
+	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(BUILD)/hiredis-test.exe
 	rm -rf $(BUILD)/lib
 
 distclean: clean

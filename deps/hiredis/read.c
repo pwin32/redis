@@ -39,6 +39,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <ctype.h>
+#include <limits.h>
 
 #include "read.h"
 #include "sds.h"
@@ -330,6 +331,11 @@ static int processMultiBulkItem(redisReader *r) {
 
             moveToNextTask(r);
         } else {
+            if (elements > INT_MAX) {
+                __redisReaderSetErrorOOM(r);
+                return REDIS_ERR;
+            }
+
             if (r->fn && r->fn->createArray)
                 obj = r->fn->createArray(cur,elements);
             else
