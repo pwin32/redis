@@ -98,6 +98,10 @@ LDLIBS_COMMON := \
 	-lgdi32 \
 	-lwinspool
 
+REDIS_HEADERS := $(wildcard src/*.h src/Win32_Interop/*.h deps/geohash-int/*.h deps/hiredis/*.h deps/linenoise/*.h)
+HIREDIS_HEADERS := $(wildcard deps/hiredis/*.h)
+LUA_HEADERS := $(wildcard deps/lua/src/*.h)
+
 SERVER_C_SOURCES := \
 	src/adlist.c \
 	src/ae.c \
@@ -349,35 +353,35 @@ $(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB)
 $(BUILD)/redis-benchmark.exe: Makefile.mingw $(BENCHMARK_OBJS) $(HIREDIS_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
 
-$(BUILD)/server/%.o: %.c src/release.h $(JEMALLOC_LIB)
+$(BUILD)/server/%.o: %.c src/release.h $(REDIS_HEADERS) $(JEMALLOC_LIB)
 	mkdir -p $(dir $@)
 	$(CC) $(SERVER_CFLAGS) -c $< -o $@
 
-$(BUILD)/server/%.o: %.cpp $(JEMALLOC_LIB)
+$(BUILD)/server/%.o: %.cpp $(REDIS_HEADERS) $(JEMALLOC_LIB)
 	mkdir -p $(dir $@)
 	$(CXX) $(SERVER_CXXFLAGS) -c $< -o $@
 
-$(BUILD)/hiredis/%.o: %.c
+$(BUILD)/hiredis/%.o: %.c $(HIREDIS_HEADERS)
 	mkdir -p $(dir $@)
 	$(CC) $(HIREDIS_CFLAGS) -c $< -o $@
 
-$(BUILD)/lua/%.o: %.c
+$(BUILD)/lua/%.o: %.c $(LUA_HEADERS)
 	mkdir -p $(dir $@)
 	$(CC) $(LUA_CFLAGS) -DLUA_ANSI -c $< -o $@
 
-$(BUILD)/cli/%.o: %.c src/release.h
+$(BUILD)/cli/%.o: %.c src/release.h $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
 	$(CC) $(TOOL_CFLAGS) -c $< -o $@
 
-$(BUILD)/cli/%.o: %.cpp
+$(BUILD)/cli/%.o: %.cpp $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
 	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
 
-$(BUILD)/benchmark/%.o: %.c src/release.h
+$(BUILD)/benchmark/%.o: %.c src/release.h $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
 	$(CC) $(TOOL_CFLAGS) -c $< -o $@
 
-$(BUILD)/benchmark/%.o: %.cpp
+$(BUILD)/benchmark/%.o: %.cpp $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
 	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
 
