@@ -25,7 +25,11 @@
 #include <errno.h>
 #define INCL_WINSOCK_API_PROTOTYPES 0 // Important! Do not include Winsock API definitions to avoid conflicts with API entry points defined below.
 #include <WinSock2.h>
+#ifdef __MINGW32__
+#include_next <ws2tcpip.h>
+#else
 #include "ws2tcpip.h"
+#endif
 #include <map>
 #include <queue>
 

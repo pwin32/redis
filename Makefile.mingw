@@ -1,0 +1,390 @@
+# MinGW build harness for the Redis Windows port.
+#
+# This is intentionally separate from the upstream-style POSIX Makefile and the
+# Visual Studio project files. It compiles the Windows port through MSYS2/MinGW
+# while preserving the current first-class VS build.
+
+BUILD ?= build/mingw64
+JEMALLOC_SRC := deps/jemalloc-5.2.1
+JEMALLOC_BUILD := $(BUILD)/jemalloc
+JEMALLOC_ABS_SRC := $(abspath $(JEMALLOC_SRC))
+WIN32_INTEROP_ABS := $(abspath src/Win32_Interop)
+
+CC ?= gcc
+CXX ?= g++
+AR ?= ar
+RANLIB ?= ranlib
+
+BASE_DEFS := \
+	-DWIN32 \
+	-D_WIN32 \
+	-DWIN32_LEAN_AND_MEAN \
+	-DNOGDI \
+	-D__USE_W32_SOCKETS \
+	-D_FILE_OFFSET_BITS=64 \
+	-D__USE_MINGW_ANSI_STDIO=1 \
+	-DLACKS_STDLIB_H \
+	-D_CRT_SECURE_NO_WARNINGS \
+	-DREDIS_STATIC='' \
+	-DPSAPI_VERSION=1 \
+	-DENABLE_CJSON_GLOBAL
+
+BASE_INCLUDES := \
+	-Isrc \
+	-Ideps/hiredis \
+	-Ideps/linenoise \
+	-Ideps/lua/src \
+	-Ideps/geohash-int \
+	-I$(JEMALLOC_BUILD)/include \
+	-I$(JEMALLOC_SRC)/include
+
+WARNINGS := \
+	-Wall \
+	-Wextra \
+	-Wno-unknown-pragmas \
+	-Wno-unused-parameter
+
+OPT ?= -O2 -g
+
+BASE_CFLAGS := $(OPT) $(WARNINGS) $(BASE_DEFS) $(BASE_INCLUDES)
+BASE_CXXFLAGS := $(OPT) $(WARNINGS) $(BASE_DEFS) $(BASE_INCLUDES)
+
+FDAPI_SYSTEM_REDEFS := \
+	-Daccept=redis_mingw_system_accept \
+	-Daccess=redis_mingw_system_access \
+	-Dbind=redis_mingw_system_bind \
+	-Dconnect=redis_mingw_system_connect \
+	-Dfreeaddrinfo=redis_mingw_system_freeaddrinfo \
+	-Dgetaddrinfo=redis_mingw_system_getaddrinfo \
+	-Dgetpeername=redis_mingw_system_getpeername \
+	-Dgetsockname=redis_mingw_system_getsockname \
+	-Dgetsockopt=redis_mingw_system_getsockopt \
+	-Dhtonl=redis_mingw_system_htonl \
+	-Dhtons=redis_mingw_system_htons \
+	-Dinet_ntop=redis_mingw_system_inet_ntop \
+	-Dinet_pton=redis_mingw_system_inet_pton \
+	-Disatty=redis_mingw_system_isatty \
+	-Dlisten=redis_mingw_system_listen \
+	-Dlseek64=redis_mingw_system_lseek64 \
+	-Dntohl=redis_mingw_system_ntohl \
+	-Dntohs=redis_mingw_system_ntohs \
+	-Dopen=redis_mingw_system_open \
+	-Dread=redis_mingw_system_read \
+	-Dselect=redis_mingw_system_select \
+	-Dsetsockopt=redis_mingw_system_setsockopt \
+	-Dsocket=redis_mingw_system_socket \
+	-Dwrite=redis_mingw_system_write \
+	-Dgai_strerror=redis_mingw_system_gai_strerror \
+	-Dgai_strerrorA=redis_mingw_system_gai_strerrorA \
+	-Dgai_strerrorW=redis_mingw_system_gai_strerrorW
+
+SERVER_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DUSE_JEMALLOC
+SERVER_CXXFLAGS := $(BASE_CXXFLAGS) -std=gnu++11 -DUSE_JEMALLOC -DUSE_STATIC
+TOOL_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DNO_QFORKIMPL
+TOOL_CXXFLAGS := $(BASE_CXXFLAGS) -std=gnu++11 -DNO_QFORKIMPL
+HIREDIS_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DNO_QFORKIMPL
+LUA_CFLAGS := $(BASE_CFLAGS) -std=gnu99 -DNO_QFORKIMPL
+
+LDFLAGS_COMMON := -static-libgcc -static-libstdc++
+
+LDLIBS_COMMON := \
+	-lws2_32 \
+	-lpsapi \
+	-ldbghelp \
+	-lshlwapi \
+	-ladvapi32 \
+	-lshell32 \
+	-luser32 \
+	-lgdi32 \
+	-lwinspool
+
+SERVER_C_SOURCES := \
+	src/adlist.c \
+	src/ae.c \
+	src/anet.c \
+	src/aof.c \
+	src/bio.c \
+	src/bitops.c \
+	src/blocked.c \
+	src/childinfo.c \
+	src/cluster.c \
+	src/config.c \
+	src/crc16.c \
+	src/crc64.c \
+	src/db.c \
+	src/debug.c \
+	src/defrag.c \
+	src/dict.c \
+	src/endianconv.c \
+	src/evict.c \
+	src/expire.c \
+	src/geo.c \
+	src/geohash.c \
+	src/geohash_helper.c \
+	src/hyperloglog.c \
+	src/intset.c \
+	src/latency.c \
+	src/lazyfree.c \
+	src/listpack.c \
+	src/lolwut.c \
+	src/lolwut5.c \
+	src/lzf_c.c \
+	src/lzf_d.c \
+	src/memtest.c \
+	src/module.c \
+	src/multi.c \
+	src/networking.c \
+	src/notify.c \
+	src/object.c \
+	src/pqsort.c \
+	src/pubsub.c \
+	src/quicklist.c \
+	src/rand.c \
+	src/rax.c \
+	src/rdb.c \
+	src/redis-check-aof.c \
+	src/redis-check-rdb.c \
+	src/release.c \
+	src/replication.c \
+	src/rio.c \
+	src/scripting.c \
+	src/sds.c \
+	src/sentinel.c \
+	src/server.c \
+	src/setproctitle.c \
+	src/sha1.c \
+	src/siphash.c \
+	src/slowlog.c \
+	src/sort.c \
+	src/sparkline.c \
+	src/syncio.c \
+	src/t_hash.c \
+	src/t_list.c \
+	src/t_set.c \
+	src/t_stream.c \
+	src/t_string.c \
+	src/t_zset.c \
+	src/util.c \
+	src/ziplist.c \
+	src/zipmap.c \
+	src/zmalloc.c
+
+WIN32_INTEROP_C_SOURCES := \
+	src/Win32_Interop/win32fixes.c \
+	src/Win32_Interop/Win32_ANSI.c \
+	src/Win32_Interop/Win32_APIs.c \
+	src/Win32_Interop/Win32_Error.c \
+	src/Win32_Interop/Win32_PThread.c \
+	src/Win32_Interop/Win32_QFork_impl.c \
+	src/Win32_Interop/Win32_RedisLog.c \
+	src/Win32_Interop/Win32_Signal_Process.c \
+	src/Win32_Interop/Win32_ThreadControl.c \
+	src/Win32_Interop/Win32_Time.c \
+	src/Win32_Interop/win32_wsiocp.c \
+	src/Win32_Interop/dlfcn.c
+
+WIN32_INTEROP_CXX_SOURCES := \
+	src/Win32_Interop/Win32_CommandLine.cpp \
+	src/Win32_Interop/Win32_Common.cpp \
+	src/Win32_Interop/Win32_EventLog.cpp \
+	src/Win32_Interop/Win32_FDAPI.cpp \
+	src/Win32_Interop/Win32_fdapi_crt.cpp \
+	src/Win32_Interop/Win32_QFork.cpp \
+	src/Win32_Interop/win32_rfdmap.cpp \
+	src/Win32_Interop/Win32_service.cpp \
+	src/Win32_Interop/Win32_StackTrace.cpp \
+	src/Win32_Interop/Win32_variadicFunctor.cpp
+
+TOOL_WIN32_INTEROP_C_SOURCES := \
+	src/Win32_Interop/win32fixes.c \
+	src/Win32_Interop/Win32_ANSI.c \
+	src/Win32_Interop/Win32_APIs.c \
+	src/Win32_Interop/Win32_Error.c \
+	src/Win32_Interop/Win32_PThread.c \
+	src/Win32_Interop/Win32_RedisLog.c \
+	src/Win32_Interop/Win32_Signal_Process.c \
+	src/Win32_Interop/Win32_ThreadControl.c \
+	src/Win32_Interop/Win32_Time.c \
+	src/Win32_Interop/win32_wsiocp.c \
+	src/Win32_Interop/dlfcn.c
+
+TOOL_WIN32_INTEROP_CXX_SOURCES := \
+	src/Win32_Interop/Win32_CommandLine.cpp \
+	src/Win32_Interop/Win32_Common.cpp \
+	src/Win32_Interop/Win32_EventLog.cpp \
+	src/Win32_Interop/Win32_FDAPI.cpp \
+	src/Win32_Interop/Win32_fdapi_crt.cpp \
+	src/Win32_Interop/win32_rfdmap.cpp \
+	src/Win32_Interop/Win32_service.cpp \
+	src/Win32_Interop/Win32_variadicFunctor.cpp
+
+HIREDIS_SOURCES := \
+	deps/hiredis/async.c \
+	deps/hiredis/hiredis.c \
+	deps/hiredis/net.c \
+	deps/hiredis/read.c \
+	deps/hiredis/sds.c
+
+LUA_SOURCES := \
+	deps/lua/src/fpconv.c \
+	deps/lua/src/lapi.c \
+	deps/lua/src/lauxlib.c \
+	deps/lua/src/lbaselib.c \
+	deps/lua/src/lcode.c \
+	deps/lua/src/ldblib.c \
+	deps/lua/src/ldebug.c \
+	deps/lua/src/ldo.c \
+	deps/lua/src/ldump.c \
+	deps/lua/src/lfunc.c \
+	deps/lua/src/lgc.c \
+	deps/lua/src/linit.c \
+	deps/lua/src/liolib.c \
+	deps/lua/src/llex.c \
+	deps/lua/src/lmathlib.c \
+	deps/lua/src/lmem.c \
+	deps/lua/src/loadlib.c \
+	deps/lua/src/lobject.c \
+	deps/lua/src/lopcodes.c \
+	deps/lua/src/loslib.c \
+	deps/lua/src/lparser.c \
+	deps/lua/src/lstate.c \
+	deps/lua/src/lstring.c \
+	deps/lua/src/lstrlib.c \
+	deps/lua/src/ltable.c \
+	deps/lua/src/ltablib.c \
+	deps/lua/src/ltm.c \
+	deps/lua/src/lua_bit.c \
+	deps/lua/src/lua_cjson.c \
+	deps/lua/src/lua_cmsgpack.c \
+	deps/lua/src/lua_struct.c \
+	deps/lua/src/lundump.c \
+	deps/lua/src/lvm.c \
+	deps/lua/src/lzio.c \
+	deps/lua/src/strbuf.c
+
+SERVER_OBJS := \
+	$(addprefix $(BUILD)/server/,$(SERVER_C_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD)/server/,$(WIN32_INTEROP_C_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD)/server/,$(WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
+
+HIREDIS_OBJS := $(addprefix $(BUILD)/hiredis/,$(HIREDIS_SOURCES:.c=.o))
+LUA_OBJS := $(addprefix $(BUILD)/lua/,$(LUA_SOURCES:.c=.o))
+
+CLI_SOURCES := \
+	deps/linenoise/linenoise.c \
+	src/adlist.c \
+	src/ae.c \
+	src/anet.c \
+	src/crc16.c \
+	src/crc64.c \
+	src/dict.c \
+	src/redis-cli.c \
+	src/release.c \
+	src/sds.c \
+	src/siphash.c \
+	src/zmalloc.c
+
+BENCHMARK_SOURCES := \
+	src/adlist.c \
+	src/ae.c \
+	src/anet.c \
+	src/redis-benchmark.c \
+	src/sds.c \
+	src/zmalloc.c
+
+CLI_OBJS := \
+	$(addprefix $(BUILD)/cli/,$(CLI_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD)/cli/,$(TOOL_WIN32_INTEROP_C_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD)/cli/,$(TOOL_WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
+
+BENCHMARK_OBJS := \
+	$(addprefix $(BUILD)/benchmark/,$(BENCHMARK_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD)/benchmark/,$(TOOL_WIN32_INTEROP_C_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD)/benchmark/,$(TOOL_WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
+
+HIREDIS_LIB := $(BUILD)/lib/libhiredis.a
+LUA_LIB := $(BUILD)/lib/liblua.a
+JEMALLOC_LIB := $(JEMALLOC_BUILD)/lib/jemalloc.lib
+
+.PHONY: all clean distclean deps
+
+all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe
+
+deps: $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB)
+
+src/release.h:
+	cd src && ./mkreleasehdr.sh
+
+$(JEMALLOC_SRC)/configure: $(JEMALLOC_SRC)/configure.ac
+	cd $(JEMALLOC_SRC) && autoconf
+
+$(JEMALLOC_BUILD)/Makefile: $(JEMALLOC_SRC)/configure
+	mkdir -p $(JEMALLOC_BUILD)
+	cd $(JEMALLOC_BUILD) && $(JEMALLOC_ABS_SRC)/configure \
+		--disable-shared \
+		--enable-static \
+		--with-jemalloc-prefix=je_ \
+		--with-lg-quantum=3 \
+		CFLAGS="$(OPT) -DUSE_WIN32_EXTERNAL_HEAP_ALLOC -I$(WIN32_INTEROP_ABS)"
+
+$(JEMALLOC_LIB): $(JEMALLOC_BUILD)/Makefile
+	$(MAKE) -C $(JEMALLOC_BUILD) lib/jemalloc.lib
+
+$(HIREDIS_LIB): $(HIREDIS_OBJS)
+	mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+	$(RANLIB) $@
+
+$(LUA_LIB): $(LUA_OBJS)
+	mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+	$(RANLIB) $@
+
+$(BUILD)/redis-server.exe: Makefile.mingw $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB)
+	$(CXX) $(LDFLAGS_COMMON) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB) $(LDLIBS_COMMON)
+
+$(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB)
+	$(CXX) $(LDFLAGS_COMMON) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
+
+$(BUILD)/redis-benchmark.exe: Makefile.mingw $(BENCHMARK_OBJS) $(HIREDIS_LIB)
+	$(CXX) $(LDFLAGS_COMMON) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
+
+$(BUILD)/server/%.o: %.c src/release.h $(JEMALLOC_LIB)
+	mkdir -p $(dir $@)
+	$(CC) $(SERVER_CFLAGS) -c $< -o $@
+
+$(BUILD)/server/%.o: %.cpp $(JEMALLOC_LIB)
+	mkdir -p $(dir $@)
+	$(CXX) $(SERVER_CXXFLAGS) -c $< -o $@
+
+$(BUILD)/hiredis/%.o: %.c
+	mkdir -p $(dir $@)
+	$(CC) $(HIREDIS_CFLAGS) -c $< -o $@
+
+$(BUILD)/lua/%.o: %.c
+	mkdir -p $(dir $@)
+	$(CC) $(LUA_CFLAGS) -DLUA_ANSI -c $< -o $@
+
+$(BUILD)/cli/%.o: %.c src/release.h
+	mkdir -p $(dir $@)
+	$(CC) $(TOOL_CFLAGS) -c $< -o $@
+
+$(BUILD)/cli/%.o: %.cpp
+	mkdir -p $(dir $@)
+	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
+
+$(BUILD)/benchmark/%.o: %.c src/release.h
+	mkdir -p $(dir $@)
+	$(CC) $(TOOL_CFLAGS) -c $< -o $@
+
+$(BUILD)/benchmark/%.o: %.cpp
+	mkdir -p $(dir $@)
+	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
+
+clean:
+	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/cli $(BUILD)/benchmark
+	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe
+	rm -rf $(BUILD)/lib
+
+distclean: clean
+	rm -rf $(JEMALLOC_BUILD)

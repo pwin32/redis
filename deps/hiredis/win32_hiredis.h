@@ -35,7 +35,13 @@
 #ifndef snprintf
 #define snprintf c99_snprintf
 
-__inline int c99_vsnprintf(char* str, size_t size, const char* format, va_list ap)
+#ifdef __GNUC__
+#define HIREDIS_INLINE static inline
+#else
+#define HIREDIS_INLINE __inline
+#endif
+
+HIREDIS_INLINE int c99_vsnprintf(char* str, size_t size, const char* format, va_list ap)
 {
     int count = -1;
 
@@ -47,7 +53,7 @@ __inline int c99_vsnprintf(char* str, size_t size, const char* format, va_list a
     return count;
 }
 
-__inline int c99_snprintf(char* str, size_t size, const char* format, ...)
+HIREDIS_INLINE int c99_snprintf(char* str, size_t size, const char* format, ...)
 {
     int count;
     va_list ap;
@@ -58,6 +64,8 @@ __inline int c99_snprintf(char* str, size_t size, const char* format, ...)
 
     return count;
 }
+
+#undef HIREDIS_INLINE
 #endif
 
 #ifndef va_copy

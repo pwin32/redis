@@ -1317,7 +1317,7 @@ struct redisServer {
 };
 
 #ifdef _WIN32
-dict* modules; /* Hash table of modules. SDS -> RedisModule ptr.*/
+extern dict *modules; /* Hash table of modules. SDS -> RedisModule ptr.*/
 #endif
 
 typedef struct pubsubPattern {

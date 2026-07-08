@@ -22,13 +22,14 @@
 #define __USE_W32_SOCKETS
 
 #include "win32_types.h"
+#include "Win32_FDAPI.h"
+
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <fcntl.h>      // for _O_BINARY
 #include <limits.h>     // for INT_MAX
 
 #include "Win32_APIs.h"
-#include "Win32_FDAPI.h"    
 
 #define WNOHANG 1
 

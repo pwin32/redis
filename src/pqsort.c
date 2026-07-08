@@ -50,8 +50,8 @@ static inline char	*med3 (char *, char *, char *,
     int (*)(const void *, const void *));
 static inline void	 swapfunc (char *, char *, size_t, int);
 
-#ifndef _WIN32
-#define min(a, b)	(a) < (b) ? a : b
+#ifndef min
+#define min(a, b)	((a) < (b) ? (a) : (b))
 #endif
 
 /*

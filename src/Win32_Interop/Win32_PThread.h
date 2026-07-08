@@ -4,11 +4,18 @@
 #include <windows.h>
 #include <errno.h>
 
+#ifdef __MINGW32__
+#include <sys/types.h>
+#ifndef sigset_t
+#define sigset_t _sigset_t
+#endif
+#else
 #ifndef _SIGSET_T_
 #define _SIGSET_T_
 typedef size_t _sigset_t;
 #define sigset_t _sigset_t
 #endif /* _SIGSET_T_ */
+#endif
 
 #ifndef SIG_SETMASK
 #define SIG_SETMASK (0)
@@ -53,6 +60,9 @@ int pthread_cond_signal(pthread_cond_t *cond);
 int pthread_cond_broadcast(pthread_cond_t *cond);
 
 int pthread_detach(pthread_t thread);
+#ifdef pthread_sigmask
+#undef pthread_sigmask
+#endif
 int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
 
 #endif

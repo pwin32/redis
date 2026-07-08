@@ -58,6 +58,7 @@ this should preceed the other arguments passed to redis. For instance:
 #include <windows.h>
 #include <windowsx.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <tchar.h>
 #include <strsafe.h>
 #include <aclapi.h>
@@ -454,7 +455,7 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
             throw std::runtime_error("new() failed");
 
         int argIndex = 0;
-        for each(string arg in serviceRunArguments) {
+        for (const string& arg : serviceRunArguments) {
             argv[argIndex] = new char[arg.length() + 1];
             if (argv[argIndex] == nullptr)
                 throw std::runtime_error("new() failed");
@@ -737,4 +738,3 @@ extern "C" BOOL RunningAsService() {
 extern "C" const char* GetServiceName()  {
     return g_serviceName;
 }
-

@@ -85,6 +85,9 @@
 
 #include <Windows.h>
 #include <WinNT.h>
+#ifdef __MINGW32__
+typedef unsigned char byte;
+#endif
 #include <errno.h>
 #include <Psapi.h>
 #include <iostream>
@@ -107,6 +110,10 @@
 #include <string>
 
 using namespace std;
+
+extern "C" {
+BOOL g_IsForkedProcess = FALSE;
+}
 
 //#define DEBUG_WITH_PROCMON
 #ifdef DEBUG_WITH_PROCMON
@@ -210,6 +217,7 @@ BOOL g_BypassMemoryMapOnAlloc;
  * are both false, so it is true for the parent process and the child process
  * when persistence is available */
 BOOL g_HasMemoryMappedHeap;
+BOOL g_QForkHeapReady;
 //[tporadowski/#2]
 BOOL g_StartedAsCheckAofOrRdbTool;
 
@@ -286,6 +294,7 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
                 g_pQForkControl->heapBlockList[i].state = BlockState::bsINVALID;
             }
         }
+        g_QForkHeapReady = TRUE;
 
         // Copy redis globals into fork process
         SetupRedisGlobals(g_pQForkControl->globalData.redisData,
@@ -435,6 +444,7 @@ BOOL QForkParentInit() {
         for (int i = g_pQForkControl->maxAvailableBlocks; i < cMaxBlocks; i++) {
             g_pQForkControl->heapBlockList[i].state = BlockState::bsINVALID;
         }
+        g_QForkHeapReady = TRUE;
 
         g_pQForkControl->typeOfOperation = OperationType::otINVALID;
         g_pQForkControl->operationComplete = CreateEvent(NULL, TRUE, FALSE, NULL);
@@ -499,6 +509,7 @@ BOOL QForkShutdown() {
 
     if (g_pQForkControl != NULL)
     {
+        g_QForkHeapReady = FALSE;
         CloseEventHandle(&g_pQForkControl->operationComplete);
         CloseEventHandle(&g_pQForkControl->operationFailed);
 
@@ -881,7 +892,7 @@ HANDLE CreateBlockMap(int blockIndex) {
 }
 
 LPVOID AllocHeapBlock(LPVOID addr, size_t size, BOOL zero) {
-    if (g_BypassMemoryMapOnAlloc) {
+    if (g_pQForkControl == NULL || !g_QForkHeapReady || g_BypassMemoryMapOnAlloc) {
         return VirtualAlloc(addr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     }
 
@@ -953,24 +964,23 @@ BOOL FreeHeapBlock(LPVOID addr, size_t size) {
         return FALSE;
     }
 
-    // If g_HasMemoryMappedHeap is FALSE this can only be a system heap address
-    if (!g_HasMemoryMappedHeap) {
+    // If QFork has not initialized yet, or no memory mapped heap is active,
+    // this can only be a system heap address.
+    if (g_pQForkControl == NULL || !g_QForkHeapReady || !g_HasMemoryMappedHeap) {
         return VirtualFree(addr, 0, MEM_RELEASE);
     }
 
     // Check if the address belongs to the memory map heap or to the system heap
     BOOL addressInRedisHeap = ((addr >= g_pQForkControl->heapStart) && (addr < g_pQForkControl->heapEnd));
+    if (!addressInRedisHeap) {
+        return VirtualFree(addr, 0, MEM_RELEASE);
+    }
 
     // g_BypassMemoryMapOnAlloc is true for the forked process, in this case
     // we need to handle the address differently based on the heap that was
     // used to allocate it.
     if (g_BypassMemoryMapOnAlloc) {
-        if (!addressInRedisHeap) {
-            return VirtualFree(addr, 0, MEM_RELEASE);
-        }
-        else {
-            serverLog(LL_DEBUG, "FreeHeapBlock: address in memory map heap 0x%p", addr);
-        }
+        serverLog(LL_DEBUG, "FreeHeapBlock: address in memory map heap 0x%p", addr);
     }
 
     // Check the address alignment and that belongs to the memory map heap
@@ -1053,8 +1063,7 @@ void SetupQForkGlobals(int argc, char* argv[]) {
 
 extern "C"
 {
-#include "Win32_PThread.h"
-    extern pthread_mutex_t used_memory_mutex;
+    extern CRITICAL_SECTION used_memory_mutex;
 
     // The external main() is redefined as redis_main() by Win32_QFork.h.
     // The CRT will call this replacement main() before the previous main()
@@ -1062,7 +1071,7 @@ extern "C"
     // Redis will allocate.
     int main(int argc, char* argv[]) {
         try {
-            pthread_mutex_init(&used_memory_mutex, NULL);
+            InitializeCriticalSectionAndSpinCount(&used_memory_mutex, 0x80000400);
 
             //[tporadowski/#2] check if started as "redis-check-rdb" tool
             string executable(argv[0]);

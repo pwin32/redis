@@ -1,10 +1,13 @@
 
 #include <process.h>
+#include <stdint.h>
 #include "Win32_PThread.h"
 #include "Win32_ThreadControl.h"
 
 #define REDIS_THREAD_STACK_SIZE (1024*1024*4)
+#ifndef STACK_SIZE_PARAM_IS_A_RESERVATION
 #define STACK_SIZE_PARAM_IS_A_RESERVATION   0x00010000    // Threads only
+#endif
 
 #ifndef UNUSED
 #define UNUSED(V) ((void) V)
@@ -19,6 +22,14 @@ typedef struct thread_params {
 /* Proxy function by windows thread requirements */
 static unsigned __stdcall win32_proxy_threadproc(void *arg) {
     IncrementWorkerThreadCount();
+#ifdef __MINGW32__
+    thread_params *p = (thread_params *) arg;
+    p->func(p->arg);
+
+    /* Dealocate params */
+    free(p);
+    DecrementWorkerThreadCount();
+#else
     __try {
         thread_params *p = (thread_params *) arg;
         p->func(p->arg);
@@ -29,6 +40,7 @@ static unsigned __stdcall win32_proxy_threadproc(void *arg) {
     __finally {
         DecrementWorkerThreadCount();
     }
+#endif
 
     _endthreadex(0);
     return 0;
@@ -212,3 +224,133 @@ int pthread_cond_broadcast(pthread_cond_t *cond) {
     //TODO
     return 0;
 }
+
+#ifdef __MINGW32__
+#undef pthread_mutex_t
+#undef pthread_mutex_init
+#undef pthread_mutex_destroy
+#undef pthread_mutex_lock
+#undef pthread_mutex_unlock
+
+typedef intptr_t win32_pthread_abi_mutex_t;
+typedef long win32_pthread_abi_once_t;
+typedef unsigned win32_pthread_abi_key_t;
+
+static INIT_ONCE pthread_abi_init_once = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION pthread_abi_lock;
+
+static BOOL CALLBACK pthread_abi_init(PINIT_ONCE init_once, PVOID parameter, PVOID *context) {
+    UNUSED(init_once);
+    UNUSED(parameter);
+    UNUSED(context);
+    InitializeCriticalSectionAndSpinCount(&pthread_abi_lock, 0x80000400);
+    return TRUE;
+}
+
+static void pthread_abi_ensure_init(void) {
+    InitOnceExecuteOnce(&pthread_abi_init_once, pthread_abi_init, NULL, NULL);
+}
+
+static CRITICAL_SECTION *pthread_abi_get_mutex(win32_pthread_abi_mutex_t *mutex) {
+    CRITICAL_SECTION *cs;
+
+    if (*mutex > 0) {
+        return (CRITICAL_SECTION *) (uintptr_t) *mutex;
+    }
+
+    pthread_abi_ensure_init();
+    EnterCriticalSection(&pthread_abi_lock);
+    if (*mutex <= 0) {
+        cs = (CRITICAL_SECTION *) malloc(sizeof(*cs));
+        if (cs != NULL) {
+            InitializeCriticalSectionAndSpinCount(cs, 0x80000400);
+            *mutex = (win32_pthread_abi_mutex_t) (uintptr_t) cs;
+        }
+    }
+    LeaveCriticalSection(&pthread_abi_lock);
+
+    return (CRITICAL_SECTION *) (uintptr_t) *mutex;
+}
+
+int pthread_mutex_init(win32_pthread_abi_mutex_t *mutex, const void *unused) {
+    CRITICAL_SECTION *cs;
+    UNUSED(unused);
+
+    cs = (CRITICAL_SECTION *) malloc(sizeof(*cs));
+    if (cs == NULL) {
+        return ENOMEM;
+    }
+
+    InitializeCriticalSectionAndSpinCount(cs, 0x80000400);
+    *mutex = (win32_pthread_abi_mutex_t) (uintptr_t) cs;
+    return 0;
+}
+
+int pthread_mutex_destroy(win32_pthread_abi_mutex_t *mutex) {
+    if (*mutex > 0) {
+        CRITICAL_SECTION *cs = (CRITICAL_SECTION *) (uintptr_t) *mutex;
+        DeleteCriticalSection(cs);
+        free(cs);
+    }
+    *mutex = 0;
+    return 0;
+}
+
+int pthread_mutex_lock(win32_pthread_abi_mutex_t *mutex) {
+    CRITICAL_SECTION *cs = pthread_abi_get_mutex(mutex);
+    if (cs == NULL) {
+        return ENOMEM;
+    }
+    EnterCriticalSection(cs);
+    return 0;
+}
+
+int pthread_mutex_unlock(win32_pthread_abi_mutex_t *mutex) {
+    if (*mutex <= 0) {
+        return EINVAL;
+    }
+    LeaveCriticalSection((CRITICAL_SECTION *) (uintptr_t) *mutex);
+    return 0;
+}
+
+int pthread_once(win32_pthread_abi_once_t *once_control, void (*init_routine)(void)) {
+    volatile LONG *state = (volatile LONG *) once_control;
+    LONG old_state = InterlockedCompareExchange(state, 1, 0);
+
+    if (old_state == 0) {
+        init_routine();
+        InterlockedExchange(state, 2);
+        return 0;
+    }
+
+    while (*state != 2) {
+        Sleep(0);
+    }
+    return 0;
+}
+
+int pthread_key_create(win32_pthread_abi_key_t *key, void (*destructor)(void *)) {
+    DWORD tls_key;
+    UNUSED(destructor);
+
+    tls_key = TlsAlloc();
+    if (tls_key == TLS_OUT_OF_INDEXES) {
+        return EAGAIN;
+    }
+
+    *key = (win32_pthread_abi_key_t) tls_key;
+    return 0;
+}
+
+int pthread_key_delete(win32_pthread_abi_key_t key) {
+    return TlsFree((DWORD) key) ? 0 : EINVAL;
+}
+
+void *pthread_getspecific(win32_pthread_abi_key_t key) {
+    return TlsGetValue((DWORD) key);
+}
+
+int pthread_setspecific(win32_pthread_abi_key_t key, const void *value) {
+    return TlsSetValue((DWORD) key, (LPVOID) value) ? 0 : EINVAL;
+}
+#endif

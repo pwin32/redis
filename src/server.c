@@ -1860,7 +1860,12 @@ int restartServer(int flags, mstime_t delay) {
     if (delay) usleep(delay*1000);
     zfree(server.exec_argv[0]);
     server.exec_argv[0] = zstrdup(server.executable);
+#if _WIN32
+    _execve(server.executable,(const char * const *)server.exec_argv,
+        (const char * const *)environ);
+#else
     IF_WIN32(_execve,execve)(server.executable,server.exec_argv,environ);
+#endif
 
     /* If an error occurred here, there is nothing we can do, but exit. */
     _exit(1);

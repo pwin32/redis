@@ -58,7 +58,12 @@
 #define __RTL_GENRANDOM 1
 typedef BOOLEAN(_stdcall* RtlGenRandomFunc)(void * RandomBuffer, ULONG RandomBufferLength);
 #endif
-RtlGenRandomFunc RtlGenRandom;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern RtlGenRandomFunc RtlGenRandom;
 
 #define random()    replace_random()
 #define rand()      replace_random()
@@ -69,6 +74,10 @@ int replace_random();
 int replace_rename(const char *src, const char *dest);
 
 int truncate(const char *path, PORT_LONGLONG length);
+
+#ifdef __cplusplus
+}
+#endif
 
 #define lseek lseek64
 

@@ -20,6 +20,17 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <algorithm>
+#include <exception>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
 #include "win32fixes.h"
 #include <mswsock.h>
 
@@ -30,15 +41,9 @@
 // also redefines the CRT close(FD) call as a macro. This conflicts with the fstream close
 // definition. #undef solves the warning messages.
 #undef close
+#undef open
 
 #include <Shlwapi.h>
-
-#include <algorithm>
-#include <fstream>
-#include <iostream>
-#include <sstream>
-#include <exception>
-#include <functional>
 using namespace std;
 
 #pragma comment (lib, "Shlwapi.lib")

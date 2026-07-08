@@ -23,6 +23,8 @@
 #include "Win32_APIs.h"
 #include <errno.h>
 
+RtlGenRandomFunc RtlGenRandom;
+
 /* Replace MS C rtl rand which is 15bit with 32 bit */
 int replace_random() {
     unsigned int x = 0;

@@ -48,7 +48,7 @@ LPVOID DLLMap::getProcAddress(string dll, string functionName)
 	}
 
 	HMODULE mod = (*this)[dll];
-	LPVOID fp = GetProcAddress(mod, functionName.c_str());
+	LPVOID fp = reinterpret_cast<LPVOID>(GetProcAddress(mod, functionName.c_str()));
 	if (fp == nullptr) {
 		throw system_error(GetLastError(), system_category(), "LoadLibrary failed");
 	}
@@ -58,7 +58,7 @@ LPVOID DLLMap::getProcAddress(string dll, string functionName)
 
 DLLMap::~DLLMap()
 {
-	for each(auto modPair in (*this))
+	for (const auto& modPair : *this)
 	{
 		FreeLibrary(modPair.second);
 	}

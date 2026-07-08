@@ -87,11 +87,17 @@ int getrusage(int who, struct rusage * rusage);
 
 typedef	void(*__p_sig_fn_t)(int);
 
+#ifdef __MINGW32__
+#ifndef sigset_t
+#define sigset_t _sigset_t
+#endif
+#else
 #ifndef _SIGSET_T_
 #define _SIGSET_T_
 typedef size_t _sigset_t;
 #define sigset_t _sigset_t
 #endif /* _SIGSET_T_ */
+#endif
 
 struct sigaction {
     int          sa_flags;

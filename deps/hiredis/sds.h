@@ -46,7 +46,13 @@
 typedef char *sds;
 
 #ifdef _WIN32
+#ifdef _MSC_VER
 #define PACK( __Declaration__ ) __pragma( pack(push, 1) ) __Declaration__ __pragma( pack(pop) )
+#elif defined(__GNUC__)
+#define PACK( __Declaration__ ) _Pragma("pack(push, 1)") __Declaration__ _Pragma("pack(pop)")
+#else
+#define PACK( __Declaration__ ) __Declaration__
+#endif
 
 /* Note: sdshdr5 is never used, we just access the flags byte directly.
 * However is here to document the layout of type 5 SDS strings. */

@@ -29,7 +29,7 @@
 extern "C" {
 #endif
 
-    BOOL g_IsForkedProcess;
+    extern BOOL g_IsForkedProcess;
 
     typedef enum operationType {
         otINVALID = 0,

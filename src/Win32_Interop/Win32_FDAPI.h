@@ -33,6 +33,44 @@ typedef unsigned long nfds_t;
 // Important! Do not include Winsock API definitions to avoid conflicts
 // with API entry points defined below.
 #define INCL_WINSOCK_API_PROTOTYPES 0
+
+#ifdef __MINGW32__
+/*
+ * MinGW-w64 does not suppress the classic winsock/CRT prototypes via
+ * INCL_WINSOCK_API_PROTOTYPES. Rename them only while including system
+ * headers, then undefine the names before declaring the FDAPI replacement
+ * variables below.
+ */
+#define accept redis_mingw_system_accept
+#define access redis_mingw_system_access
+#define bind redis_mingw_system_bind
+#define connect redis_mingw_system_connect
+#define freeaddrinfo redis_mingw_system_freeaddrinfo
+#define getaddrinfo redis_mingw_system_getaddrinfo
+#define getpeername redis_mingw_system_getpeername
+#define getsockname redis_mingw_system_getsockname
+#define getsockopt redis_mingw_system_getsockopt
+#define htonl redis_mingw_system_htonl
+#define htons redis_mingw_system_htons
+#define inet_ntop redis_mingw_system_inet_ntop
+#define inet_pton redis_mingw_system_inet_pton
+#define isatty redis_mingw_system_isatty
+#define listen redis_mingw_system_listen
+#define lseek64 redis_mingw_system_lseek64
+#define ntohl redis_mingw_system_ntohl
+#define ntohs redis_mingw_system_ntohs
+#define open redis_mingw_system_open
+#define read redis_mingw_system_read
+#define select redis_mingw_system_select
+#define setsockopt redis_mingw_system_setsockopt
+#define socket redis_mingw_system_socket
+#define write redis_mingw_system_write
+#define gai_strerror redis_mingw_system_gai_strerror
+#define gai_strerrorA redis_mingw_system_gai_strerrorA
+#define gai_strerrorW redis_mingw_system_gai_strerrorW
+#define __WINSOCK_WS1_SHARED
+#endif
+
 #include "win32_types.h"
 #include <WinSock2.h>
 #include <fcntl.h>
@@ -41,7 +79,41 @@ typedef unsigned long nfds_t;
 
 // Including a version of this file modified to eliminate prototype
 // definitions not removed by INCL_WINSOCK_API_PROTOTYPES
+#ifdef __MINGW32__
+#include_next <ws2tcpip.h>
+#else
 #include "WS2tcpip.h"
+#endif
+
+#ifdef __MINGW32__
+#undef accept
+#undef access
+#undef bind
+#undef connect
+#undef freeaddrinfo
+#undef getaddrinfo
+#undef getpeername
+#undef getsockname
+#undef getsockopt
+#undef htonl
+#undef htons
+#undef inet_ntop
+#undef inet_pton
+#undef isatty
+#undef listen
+#undef lseek64
+#undef ntohl
+#undef ntohs
+#undef open
+#undef read
+#undef select
+#undef setsockopt
+#undef socket
+#undef write
+#undef gai_strerror
+#undef gai_strerrorA
+#undef gai_strerrorW
+#endif
 
 // Reintroducing the inline APIs removed by INCL_WINSOCK_API_PROTOTYPES
 // that Redis is using
@@ -144,6 +216,9 @@ typedef int (*fdapi_fstat)(int fd, struct __stat64 *buffer);
 typedef BOOL fnWSIOCP_CloseSocketStateRFD(int rfd);
 
 // access() mode definitions 
+#ifdef X_OK
+#undef X_OK
+#endif
 #define X_OK    0
 #define W_OK    2
 #define R_OK    4

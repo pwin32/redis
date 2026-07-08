@@ -28,7 +28,11 @@
 #include <windows.h>
 #include <assert.h>
 
+#ifdef __MINGW32__
+#define DELTA_EPOCH_IN_MICROSECS  11644473600000000ULL
+#else
 #define DELTA_EPOCH_IN_MICROSECS  11644473600000000Ui64
+#endif
 
 /* fnGetSystemTimePreciseAsFileTime is NULL if and only if it hasn't been initialized. */
 static VOID(WINAPI *fnGetSystemTimePreciseAsFileTime)(LPFILETIME) = NULL;

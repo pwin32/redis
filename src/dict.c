@@ -36,7 +36,9 @@
 #include "Win32_Interop/Win32_Portability.h"
 #include "Win32_Interop/Win32_Time.h"
 #include "Win32_Interop/win32fixes.h"
+#ifndef NO_QFORKIMPL
 extern BOOL g_IsForkedProcess;
+#endif
 #endif
 
 #include "fmacros.h"
@@ -197,7 +199,9 @@ int dictRehash(dict *d, int n) {
 
     // On Windows we choose not to execute the dict rehash since it's not
     // necessary and it may have a performance impact.
-    WIN32_ONLY(if (g_IsForkedProcess) return 0;)
+#if defined(_WIN32) && !defined(NO_QFORKIMPL)
+    if (g_IsForkedProcess) return 0;
+#endif
 
     int empty_visits = n*10; /* Max number of empty buckets to visit. */
     if (!dictIsRehashing(d)) return 0;

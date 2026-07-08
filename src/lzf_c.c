@@ -124,7 +124,7 @@ lzf_compress (const void *const in_data, unsigned int in_len,
    * and fails to support both assumptions is windows 64 bit, we make a
    * special workaround for it.
    */
-#if defined (WIN32) && defined (_M_X64)
+#if defined (WIN32) && defined (_M_X64) && !defined(__MINGW32__)
   unsigned _int64 off; /* workaround for missing POSIX compliance */
 #else
   PORT_ULONG off;
@@ -293,4 +293,3 @@ lzf_compress (const void *const in_data, unsigned int in_len,
 
   return (unsigned int)(op - (u8 *)out_data);                                   WIN_PORT_FIX /* cast (unsigned int) */
 }
-

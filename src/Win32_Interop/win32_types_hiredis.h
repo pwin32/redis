@@ -32,6 +32,32 @@
  * This enables us to have merge check script to verify that no new instances of 'long' go unnoticed.
 */
 
+#ifdef __MINGW32__
+#include <limits.h>
+#include <stdint.h>
+#include <sys/types.h>
+
+typedef long long           PORT_LONGLONG;
+typedef unsigned long long  PORT_ULONGLONG;
+typedef double              PORT_LONGDOUBLE;
+
+typedef long long           PORT_LONG;
+typedef unsigned long long  PORT_ULONG;
+
+#define PORT_LONG_MAX     LLONG_MAX
+#define PORT_LONG_MIN     LLONG_MIN
+#define PORT_ULONG_MAX    ULLONG_MAX
+
+/* The maximum possible size_t value has all bits set */
+#define MAX_SIZE_T        (~(size_t)0)
+
+/* sha1 */
+#ifndef u_int32_t
+typedef uint32_t          u_int32_t;
+#endif
+
+#else
+
 typedef __int64           PORT_LONGLONG;
 typedef unsigned __int64  PORT_ULONGLONG;
 typedef double            PORT_LONGDOUBLE;
@@ -69,5 +95,7 @@ typedef int               pid_t;
 #ifndef u_int32_t
 typedef unsigned __int32  u_int32_t;
 #endif
+
+#endif /* __MINGW32__ */
 
 #endif

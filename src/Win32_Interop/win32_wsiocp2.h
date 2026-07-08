@@ -24,7 +24,11 @@
 #define WIN32_INTEROP_WSIOCP2_H
 
 #include <WinSock2.h>   // For SOCKADDR_STORAGE
+#ifdef __MINGW32__
+#include_next <ws2tcpip.h>   // For socklen_t
+#else
 #include "WS2tcpip.h"   // For socklen_t
+#endif
 
 /* need callback on write complete. WSIOCP_Request is used to pass parameters */
 typedef struct WSIOCP_Request {

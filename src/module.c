@@ -71,7 +71,9 @@ struct RedisModuleSharedAPI {
 };
 typedef struct RedisModuleSharedAPI RedisModuleSharedAPI;
 
-#ifndef _WIN32
+#ifdef _WIN32
+dict *modules; /* Hash table of modules. SDS -> RedisModule ptr.*/
+#else
 static dict *modules; /* Hash table of modules. SDS -> RedisModule ptr.*/
 #endif
 
