@@ -320,10 +320,11 @@ BENCHMARK_OBJS := \
 HIREDIS_LIB := $(BUILD)/lib/libhiredis.a
 LUA_LIB := $(BUILD)/lib/liblua.a
 JEMALLOC_LIB := $(JEMALLOC_BUILD)/lib/jemalloc.lib
+REDIS_CHECK_ALIASES := $(BUILD)/redis-check-aof.exe $(BUILD)/redis-check-rdb.exe
 
 .PHONY: all clean distclean deps hiredis-test
 
-all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe
+all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES)
 
 deps: $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB)
 
@@ -368,6 +369,9 @@ $(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB)
 
 $(BUILD)/redis-benchmark.exe: Makefile.mingw $(BENCHMARK_OBJS) $(HIREDIS_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
+
+$(REDIS_CHECK_ALIASES): $(BUILD)/redis-server.exe
+	cp -f $< $@
 
 $(BUILD)/hiredis-test.exe: Makefile.mingw $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
@@ -415,7 +419,7 @@ $(BUILD)/hiredis-test/%.o: %.cpp $(REDIS_HEADERS)
 clean:
 	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/cli $(BUILD)/benchmark
 	rm -rf $(BUILD)/hiredis-test
-	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(BUILD)/hiredis-test.exe
+	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(BUILD)/hiredis-test.exe
 	rm -rf $(BUILD)/lib
 
 distclean: clean

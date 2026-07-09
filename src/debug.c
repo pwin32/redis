@@ -314,6 +314,7 @@ void debugCommand(client *c) {
 "LOG <message> -- write message to the server log.",
 "HTSTATS <dbid> -- Return hash table statistics of the specified Redis database.",
 "HTSTATS-KEY <key> -- Like htstats but for the hash table stored as key's value.",
+"FLUSHLOAD -- Flush all keys from memory and reload the current RDB.",
 "LOADAOF -- Flush the AOF buffers on disk and reload the AOF in memory.",
 "LUA-ALWAYS-REPLICATE-COMMANDS <0|1> -- Setting it to 1 makes Lua replication defaulting to replicating single commands, without the script having to enable effects replication.",
 "OBJECT <key> -- Show low level info about key and associated value.",
@@ -374,6 +375,18 @@ NULL
             return;
         }
         serverLog(LL_WARNING,"DB reloaded by DEBUG RELOAD");
+        addReply(c,shared.ok);
+    } else if (!strcasecmp(c->argv[1]->ptr,"flushload")) {
+        emptyDb(-1,EMPTYDB_NO_FLAGS,NULL);
+        protectClient(c);
+        int ret = rdbLoad(server.rdb_filename,NULL);
+        unprotectClient(c);
+        if (ret != C_OK) {
+            addReplyError(c,"Error trying to load the RDB dump");
+            return;
+        }
+        server.dirty = 0; /* Prevent AOF / replication */
+        serverLog(LL_WARNING,"DB loaded by DEBUG FLUSHLOAD");
         addReply(c,shared.ok);
     } else if (!strcasecmp(c->argv[1]->ptr,"loadaof")) {
         if (server.aof_state != AOF_OFF) flushAppendOnlyFile(1);

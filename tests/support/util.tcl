@@ -1,3 +1,11 @@
+if {![info exists ::test_null_device]} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        set ::test_null_device "NUL"
+    } else {
+        set ::test_null_device "/dev/null"
+    }
+}
+
 proc randstring {min max {type binary}} {
     set len [expr {$min+int(rand()*($max-$min+1))}]
     set output {}
@@ -109,7 +117,7 @@ proc count_message_lines {file pattern} {
     set res 0
     # exec fails when grep exists with status other than 0 (when the patter wasn't found)
     catch {
-        set res [string trim [exec grep $pattern $file 2> /dev/null | wc -l]]
+        set res [string trim [exec grep $pattern $file 2> $::test_null_device | wc -l]]
     }
     return $res
 }

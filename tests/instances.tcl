@@ -38,17 +38,19 @@ if {[catch {cd tmp}]} {
 # the provided configuration file. Returns the PID of the process.
 proc exec_instance {type cfgfile} {
     if {$type eq "redis"} {
-        set prgname redis-server
+        set prg $::redis_server_path
+        set args [list $cfgfile]
     } elseif {$type eq "sentinel"} {
-        set prgname redis-sentinel
+        set prg $::redis_server_path
+        set args [list $cfgfile --sentinel]
     } else {
         error "Unknown instance type."
     }
 
     if {$::valgrind} {
-        set pid [exec valgrind --track-origins=yes --suppressions=../../../src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full ../../../src/${prgname} $cfgfile &]
+        set pid [exec valgrind --track-origins=yes --suppressions=../../../src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full $prg {*}$args &]
     } else {
-        set pid [exec ../../../src/${prgname} $cfgfile &]
+        set pid [exec $prg {*}$args &]
     }
     return $pid
 }
@@ -83,13 +85,7 @@ proc spawn_instance {type base_port count {conf {}}} {
         close $cfg
 
         # Finally exec it and remember the pid for later cleanup.
-        if {$type eq "redis"} {
-            set pid [exec ../../../src/redis-server $cfgfile &]             ;# WIN_PORT_FIX
-        } elseif {$type eq "sentinel"} {
-            set pid [exec ../../../src/redis-server $cfgfile --sentinel &]  ;# WIN_PORT_FIX
-        } else {
-            error "Unknown instance type."
-        }
+        set pid [exec_instance $type $cfgfile]
         lappend ::pids $pid
 
         # Check availability
@@ -509,11 +505,7 @@ proc restart_instance {type id} {
 
     # Execute the instance with its old setup and append the new pid
     # file for cleanup.
-    if {$type eq "redis"} {
-        set pid [exec ../../../src/redis-server $cfgfile &]               ;# WIN_PORT_FIX
-    } else {
-        set pid [exec ../../../src/redis-server $cfgfile --sentinel &]    ;# WIN_PORT_FIX
-    }
+    set pid [exec_instance $type $cfgfile]
     set_instance_attrib $type $id pid $pid
     lappend ::pids $pid
 

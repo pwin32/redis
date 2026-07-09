@@ -2,6 +2,21 @@ set ::global_overrides {}
 set ::tags {}
 set ::valgrind_errors {}
 
+set ::redis_test_root [file normalize [file join [file dirname [info script]] ../..]]
+
+proc redis_test_binary {envvar relative_path} {
+    if {[info exists ::env($envvar)] && [string length $::env($envvar)] > 0} {
+        return $::env($envvar)
+    }
+    return [file normalize [file join $::redis_test_root {*}$relative_path]]
+}
+
+set ::redis_server_path [redis_test_binary REDIS_SERVER {src redis-server}]
+set ::redis_cli_path [redis_test_binary REDIS_CLI {src redis-cli}]
+set ::redis_benchmark_path [redis_test_binary REDIS_BENCHMARK {src redis-benchmark}]
+set ::redis_check_aof_path [redis_test_binary REDIS_CHECK_AOF {src redis-check-aof}]
+set ::redis_check_rdb_path [redis_test_binary REDIS_CHECK_RDB {src redis-check-rdb}]
+
 proc start_server_error {config_file error} {
     set err {}
     append err "Cant' start the Redis server\n"
@@ -281,9 +296,9 @@ proc start_server {options {code undefined}} {
     set stderr [format "%s/%s" [dict get $config "dir"] "stderr"]
 
     if {$::valgrind} {
-        set pid [exec valgrind --track-origins=yes --suppressions=src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full src/redis-server $config_file > $stdout 2> $stderr &]
+        set pid [exec valgrind --track-origins=yes --suppressions=src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full $::redis_server_path $config_file > $stdout 2> $stderr &]
     } else {
-        set pid [exec src/redis-server $config_file > $stdout 2> $stderr &]
+        set pid [exec $::redis_server_path $config_file > $stdout 2> $stderr &]
     }
 
     # Tell the test server about this new instance.
