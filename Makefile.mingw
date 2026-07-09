@@ -85,7 +85,11 @@ TOOL_CXXFLAGS := $(BASE_CXXFLAGS) -std=gnu++11 -DNO_QFORKIMPL
 HIREDIS_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DNO_QFORKIMPL
 LUA_CFLAGS := $(BASE_CFLAGS) -std=gnu99 -DNO_QFORKIMPL
 
-LDFLAGS_COMMON := -static-libgcc -static-libstdc++
+LDFLAGS_COMMON := \
+	-static-libgcc \
+	-static-libstdc++ \
+	-Wl,--disable-dynamicbase \
+	-Wl,--disable-high-entropy-va
 
 LDLIBS_COMMON := \
 	-lws2_32 \
@@ -331,13 +335,15 @@ src/release.h:
 $(JEMALLOC_SRC)/configure: $(JEMALLOC_SRC)/configure.ac
 	cd $(JEMALLOC_SRC) && autoconf
 
-$(JEMALLOC_BUILD)/Makefile: $(JEMALLOC_SRC)/configure
+$(JEMALLOC_BUILD)/Makefile: $(JEMALLOC_SRC)/configure Makefile.mingw
 	mkdir -p $(JEMALLOC_BUILD)
 	cd $(JEMALLOC_BUILD) && $(JEMALLOC_ABS_SRC)/configure \
 		--disable-shared \
 		--enable-static \
 		--with-jemalloc-prefix=je_ \
 		--with-lg-quantum=3 \
+		--with-lg-page=22 \
+		--with-lg-hugepage=22 \
 		CFLAGS="$(OPT) -DUSE_WIN32_EXTERNAL_HEAP_ALLOC -I$(WIN32_INTEROP_ABS)"
 
 $(JEMALLOC_LIB): $(JEMALLOC_BUILD)/Makefile
