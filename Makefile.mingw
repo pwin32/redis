@@ -340,6 +340,7 @@ $(JEMALLOC_BUILD)/Makefile: $(JEMALLOC_SRC)/configure Makefile.mingw
 	cd $(JEMALLOC_BUILD) && $(JEMALLOC_ABS_SRC)/configure \
 		--disable-shared \
 		--enable-static \
+		--disable-retain \
 		--with-jemalloc-prefix=je_ \
 		--with-lg-quantum=3 \
 		--with-lg-page=22 \

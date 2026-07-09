@@ -221,6 +221,32 @@ BOOL g_QForkHeapReady;
 //[tporadowski/#2]
 BOOL g_StartedAsCheckAofOrRdbTool;
 
+static void FlushJemallocThreadCache(const char* context) {
+    int err = je_mallctl("thread.tcache.flush", NULL, NULL, NULL, 0);
+    if (err != 0 && err != EFAULT) {
+        throw system_error(err, generic_category(), context);
+    }
+}
+
+static void SwitchToQForkJemallocArena() {
+    unsigned arena = 0;
+    size_t arenaSize = sizeof(arena);
+
+    FlushJemallocThreadCache("QForkMasterInit: could not flush startup jemalloc thread cache");
+
+    int err = je_mallctl("arenas.create", &arena, &arenaSize, NULL, 0);
+    if (err != 0) {
+        throw system_error(err, generic_category(), "QForkMasterInit: could not create QFork jemalloc arena");
+    }
+
+    err = je_mallctl("thread.arena", NULL, NULL, &arena, sizeof(arena));
+    if (err != 0) {
+        throw system_error(err, generic_category(), "QForkMasterInit: could not set QFork jemalloc arena");
+    }
+
+    FlushJemallocThreadCache("QForkMasterInit: could not flush QFork jemalloc thread cache");
+}
+
 bool ReportSpecialSystemErrors(int error) {
     switch (error)
     {
@@ -445,6 +471,9 @@ BOOL QForkParentInit() {
             g_pQForkControl->heapBlockList[i].state = BlockState::bsINVALID;
         }
         g_QForkHeapReady = TRUE;
+        // Startup allocations may have initialized jemalloc before QFork is ready.
+        // Move Redis data allocations to a fresh arena backed by the QFork heap.
+        SwitchToQForkJemallocArena();
 
         g_pQForkControl->typeOfOperation = OperationType::otINVALID;
         g_pQForkControl->operationComplete = CreateEvent(NULL, TRUE, FALSE, NULL);

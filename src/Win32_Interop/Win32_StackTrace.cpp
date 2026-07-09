@@ -182,6 +182,18 @@ LONG WINAPI UnhandledExceptiontHandler(PEXCEPTION_POINTERS info) {
             bugReportStart();
             headerLogged = true;
             serverLog(LL_WARNING, "--- %s", exDescription);
+            if (info != NULL && info->ExceptionRecord != NULL) {
+                ULONG_PTR faultAddress = 0;
+                if (info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+                    info->ExceptionRecord->NumberParameters >= 2) {
+                    faultAddress = info->ExceptionRecord->ExceptionInformation[1];
+                }
+                serverLog(LL_WARNING,
+                    "--- exception context: code=0x%08x address=%p fault=%p",
+                    info->ExceptionRecord->ExceptionCode,
+                    info->ExceptionRecord->ExceptionAddress,
+                    (void*) faultAddress);
+            }
             StackTraceInfo();
             ServerInfo();
         }

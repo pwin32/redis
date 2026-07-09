@@ -3502,6 +3502,7 @@ loaderr:
  * who asked for it. */
 ssize_t rdbSaveModulesAux(rio *rdb, int when) {
     size_t total_written = 0;
+    if (dictSize(modules) == 0) return 0;
     dictIterator *di = dictGetIterator(modules);
     dictEntry *de;
 
