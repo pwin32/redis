@@ -1565,8 +1565,13 @@ NULL
             ldbDisable(c);
             addReply(c,shared.ok);
         } else if (!strcasecmp(c->argv[2]->ptr,"yes")) {
+#ifdef _WIN32
+            addReplyError(c,
+                "SCRIPT DEBUG yes is not supported on Windows, use SCRIPT DEBUG sync");
+#else
             ldbEnable(c);
             addReply(c,shared.ok);
+#endif
         } else if (!strcasecmp(c->argv[2]->ptr,"sync")) {
             ldbEnable(c);
             addReply(c,shared.ok);
@@ -1715,6 +1720,16 @@ int ldbStartSession(client *c) {
         serverLog(LL_WARNING,
             "Redis synchronous debugging eval session started");
     }
+#else
+    ldb.forked = 0;
+    if ((c->flags & CLIENT_LUA_DEBUG_SYNC) == 0) {
+        addReplyError(c,
+            "Lua debugging without sync mode is not supported on Windows");
+        return 0;
+    }
+    serverLog(LL_WARNING,
+        "Redis synchronous debugging eval session started");
+#endif
 
     /* Setup our debugging session. */
     anetBlock(NULL,ldb.fd);
@@ -1734,8 +1749,6 @@ int ldbStartSession(client *c) {
     ldb.src = sdssplitlen(srcstring,sdslen(srcstring),"\n",1,&ldb.lines);
     sdsfree(srcstring);
     return 1;
-#endif 
-    return 0;
 }
 
 /* End a debugging session after the EVAL call with debugging enabled
