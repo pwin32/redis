@@ -14,6 +14,12 @@ CC ?= gcc
 CXX ?= g++
 AR ?= ar
 RANLIB ?= ranlib
+WINDRES ?= windres
+
+EVENTLOG_RC := src/Win32_Interop/resources/EventLog.rc
+EVENTLOG_MESSAGE := src/Win32_Interop/resources/EventLog_MSG00409.bin
+EVENTLOG_OBJ := $(BUILD)/eventlog/EventLog.o
+EVENTLOG_DLL := $(BUILD)/EventLog.dll
 
 BASE_DEFS := \
 	-DWIN32 \
@@ -275,7 +281,8 @@ LUA_SOURCES := \
 SERVER_OBJS := \
 	$(addprefix $(BUILD)/server/,$(SERVER_C_SOURCES:.c=.o)) \
 	$(addprefix $(BUILD)/server/,$(WIN32_INTEROP_C_SOURCES:.c=.o)) \
-	$(addprefix $(BUILD)/server/,$(WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
+	$(addprefix $(BUILD)/server/,$(WIN32_INTEROP_CXX_SOURCES:.cpp=.o)) \
+	$(EVENTLOG_OBJ)
 
 HIREDIS_OBJS := $(addprefix $(BUILD)/hiredis/,$(HIREDIS_SOURCES:.c=.o))
 LUA_OBJS := $(addprefix $(BUILD)/lua/,$(LUA_SOURCES:.c=.o))
@@ -343,11 +350,13 @@ TEST_MODULES := \
 	$(BUILD)/tests/modules/commandfilter.so \
 	$(BUILD)/tests/modules/testrdb.so
 
-.PHONY: all clean distclean deps hiredis-test interop-test test-modules
+.PHONY: all clean distclean deps eventlog hiredis-test interop-test test-modules
 
-all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES)
+all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL)
 
 deps: $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB)
+
+eventlog: $(EVENTLOG_DLL)
 
 hiredis-test: $(BUILD)/hiredis-test.exe
 
@@ -386,6 +395,13 @@ $(LUA_LIB): $(LUA_OBJS)
 	mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
 	$(RANLIB) $@
+
+$(EVENTLOG_OBJ): $(EVENTLOG_RC) $(EVENTLOG_MESSAGE) Makefile.mingw
+	mkdir -p $(dir $@)
+	$(WINDRES) -I $(dir $(EVENTLOG_RC)) -i $(EVENTLOG_RC) -o $@ -O coff
+
+$(EVENTLOG_DLL): Makefile.mingw $(EVENTLOG_OBJ)
+	$(CC) -shared -nostdlib -Wl,--entry,0 -o $@ $(EVENTLOG_OBJ)
 
 $(BUILD)/redis-server.exe: Makefile.mingw $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB) $(LDLIBS_COMMON)
@@ -459,9 +475,9 @@ $(BUILD)/interop-test/%.o: %.cpp $(REDIS_HEADERS)
 
 clean:
 	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/cli $(BUILD)/benchmark
-	rm -rf $(BUILD)/hiredis-test $(BUILD)/interop-test
+	rm -rf $(BUILD)/eventlog $(BUILD)/hiredis-test $(BUILD)/interop-test
 	rm -rf $(BUILD)/tests/modules
-	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe
+	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe
 	rm -rf $(BUILD)/lib
 
 distclean: clean
