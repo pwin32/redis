@@ -62,6 +62,17 @@ test "ODOWN is not possible without N (quorum) Sentinels reports" {
     set addr [S 0 SENTINEL GET-MASTER-ADDR-BY-NAME mymaster]
     assert {[lindex $addr 1] == $old_port}
     restart_instance redis $master_id
+
+    # Wait until every Sentinel has observed the restarted master. Native
+    # Windows process termination is sequential, so stale down state could
+    # otherwise trigger a failover while the next test kills the majority.
+    foreach_sentinel_id id {
+        wait_for_condition 1000 50 {
+            [dict get [S $id SENTINEL MASTER mymaster] flags] eq "master"
+        } else {
+            fail "Sentinel $id did not clear the master down state"
+        }
+    }
 }
 
 test "Failover is not possible without majority agreement" {
