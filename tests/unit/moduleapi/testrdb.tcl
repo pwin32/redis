@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/testrdb.so]
+set testmodule [redis_test_module testrdb]
 
 proc restart_and_wait {} {
     catch {
@@ -14,6 +14,10 @@ proc restart_and_wait {} {
             break
         }
         incr retry -1
+    }
+
+    if {$::uses_windows_processes} {
+        track_windows_process [s process_id]
     }
 }
 
@@ -60,3 +64,5 @@ tags "modules" {
     # TODO: test short read handling
 
 }
+
+windows_restart_clean_up

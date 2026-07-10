@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/commandfilter.so]
+set testmodule [redis_test_module commandfilter]
 
 start_server {tags {"modules"}} {
     r module load $testmodule log-key 0

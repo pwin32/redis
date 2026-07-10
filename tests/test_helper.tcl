@@ -466,6 +466,13 @@ if {!$::uses_windows_processes && $::tcl_platform(platform) == "unix"} {
     }
 }
 
+proc track_windows_process {pid} {
+    if {$::uses_windows_processes &&
+        [lsearch -exact $::winpids $pid] == -1} {
+        lappend ::winpids $pid
+    }
+}
+
 # parse arguments
 for {set j 0} {$j < [llength $argv]} {incr j} {
     set opt [lindex $argv $j]

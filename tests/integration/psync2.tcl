@@ -184,7 +184,7 @@ start_server {} {
         if {$::uses_windows_processes} {
             # read Windows PID from "INFO" to be cleaned up at the end
             set pid [status $R($slave_id) process_id]
-            lappend ::winpids $pid
+            track_windows_process $pid
         }
     }
 
@@ -236,7 +236,7 @@ start_server {} {
         if {$::uses_windows_processes} {
             # read Windows PID from "INFO" to be cleaned up at the end
             set pid [status $R($slave_id) process_id]
-            lappend ::winpids $pid
+            track_windows_process $pid
         }
 
         # The master should be back at 4 slaves eventually

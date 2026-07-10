@@ -11,6 +11,16 @@ proc redis_test_binary {envvar relative_path} {
     return [file normalize [file join $::redis_test_root {*}$relative_path]]
 }
 
+proc redis_test_module {name} {
+    if {[info exists ::env(REDIS_TEST_MODULE_DIR)] &&
+        [string length $::env(REDIS_TEST_MODULE_DIR)] > 0} {
+        set module_dir $::env(REDIS_TEST_MODULE_DIR)
+    } else {
+        set module_dir [file join $::redis_test_root tests modules]
+    }
+    return [file normalize [file join $module_dir "$name.so"]]
+}
+
 set ::redis_server_path [redis_test_binary REDIS_SERVER {src redis-server}]
 set ::redis_cli_path [redis_test_binary REDIS_CLI {src redis-cli}]
 set ::redis_benchmark_path [redis_test_binary REDIS_BENCHMARK {src redis-benchmark}]

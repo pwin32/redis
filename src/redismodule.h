@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#ifdef _WIN32
+#include "Win32_Interop/win32_types_hiredis.h"
+#endif
+
 /* ---------------- Defines common between core and modules --------------- */
 
 /* Error status return values. */

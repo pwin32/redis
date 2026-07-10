@@ -84,6 +84,8 @@ TOOL_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DNO_QFORKIMPL
 TOOL_CXXFLAGS := $(BASE_CXXFLAGS) -std=gnu++11 -DNO_QFORKIMPL
 HIREDIS_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DNO_QFORKIMPL
 LUA_CFLAGS := $(BASE_CFLAGS) -std=gnu99 -DNO_QFORKIMPL
+TEST_MODULE_CFLAGS := $(OPT) $(WARNINGS) -std=gnu99 -Isrc
+TEST_MODULE_LDFLAGS := -shared -static-libgcc -Wl,--export-all-symbols
 
 LDFLAGS_COMMON := \
 	-static-libgcc \
@@ -321,14 +323,19 @@ HIREDIS_LIB := $(BUILD)/lib/libhiredis.a
 LUA_LIB := $(BUILD)/lib/liblua.a
 JEMALLOC_LIB := $(JEMALLOC_BUILD)/lib/jemalloc.lib
 REDIS_CHECK_ALIASES := $(BUILD)/redis-check-aof.exe $(BUILD)/redis-check-rdb.exe
+TEST_MODULES := \
+	$(BUILD)/tests/modules/commandfilter.so \
+	$(BUILD)/tests/modules/testrdb.so
 
-.PHONY: all clean distclean deps hiredis-test
+.PHONY: all clean distclean deps hiredis-test test-modules
 
 all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES)
 
 deps: $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB)
 
 hiredis-test: $(BUILD)/hiredis-test.exe
+
+test-modules: $(TEST_MODULES)
 
 src/release.h:
 	cd src && ./mkreleasehdr.sh
@@ -376,6 +383,10 @@ $(REDIS_CHECK_ALIASES): $(BUILD)/redis-server.exe
 $(BUILD)/hiredis-test.exe: Makefile.mingw $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
 
+$(BUILD)/tests/modules/%.so: tests/modules/%.c src/redismodule.h src/Win32_Interop/win32_types_hiredis.h Makefile.mingw
+	mkdir -p $(dir $@)
+	$(CC) $(TEST_MODULE_CFLAGS) $(TEST_MODULE_LDFLAGS) -o $@ $<
+
 $(BUILD)/server/%.o: %.c src/release.h $(REDIS_HEADERS) $(JEMALLOC_LIB)
 	mkdir -p $(dir $@)
 	$(CC) $(SERVER_CFLAGS) -c $< -o $@
@@ -419,6 +430,7 @@ $(BUILD)/hiredis-test/%.o: %.cpp $(REDIS_HEADERS)
 clean:
 	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/cli $(BUILD)/benchmark
 	rm -rf $(BUILD)/hiredis-test
+	rm -rf $(BUILD)/tests/modules
 	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(BUILD)/hiredis-test.exe
 	rm -rf $(BUILD)/lib
 
