@@ -1113,13 +1113,32 @@ const char* FDAPI_inet_ntop(int af, const void *src, char *dst, size_t size) {
         return f_inet_ntop(af, src, dst, size);
     } else {
         static auto f_WSAAddressToStringA = dllfunctor_stdcall<int, LPSOCKADDR, DWORD, LPWSAPROTOCOL_INFO, LPSTR, LPDWORD>("ws2_32.dll", "WSAAddressToStringA");
-        struct sockaddr_in srcaddr;
+        struct sockaddr_storage srcaddr;
+        DWORD srcaddr_size;
+        DWORD dst_size = size > (size_t)MAXDWORD ? MAXDWORD : (DWORD)size;
 
-        memset(&srcaddr, 0, sizeof(struct sockaddr_in));
-        memcpy(&(srcaddr.sin_addr), src, sizeof(srcaddr.sin_addr));
+        ZeroMemory(&srcaddr, sizeof(srcaddr));
+        switch (af) {
+            case AF_INET: {
+                struct sockaddr_in *addr = (struct sockaddr_in *)&srcaddr;
+                addr->sin_family = AF_INET;
+                memcpy(&addr->sin_addr, src, sizeof(addr->sin_addr));
+                srcaddr_size = (DWORD)sizeof(*addr);
+                break;
+            }
+            case AF_INET6: {
+                struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&srcaddr;
+                addr->sin6_family = AF_INET6;
+                memcpy(&addr->sin6_addr, src, sizeof(addr->sin6_addr));
+                srcaddr_size = (DWORD)sizeof(*addr);
+                break;
+            }
+            default:
+                errno = EAFNOSUPPORT;
+                return NULL;
+        }
 
-        srcaddr.sin_family = af;
-        if (f_WSAAddressToStringA((struct sockaddr*) &srcaddr, sizeof(struct sockaddr_in), 0, dst, (LPDWORD)&size) != 0) {
+        if (f_WSAAddressToStringA((struct sockaddr *)&srcaddr, srcaddr_size, NULL, dst, &dst_size) != 0) {
             return NULL;
         }
         return dst;
@@ -1128,11 +1147,11 @@ const char* FDAPI_inet_ntop(int af, const void *src, char *dst, size_t size) {
 
 int FDAPI_inet_pton(int family, const char* src, void* dst) {
     if (WindowsVersion::getInstance().IsAtLeast_6_0()) {
-        static auto f_inet_pton = dllfunctor_stdcall<int, int, const char*, const void*>("ws2_32.dll", "inet_pton");
+        static auto f_inet_pton = dllfunctor_stdcall<int, int, const char*, void*>("ws2_32.dll", "inet_pton");
         return f_inet_pton(family, src, dst);
     } else {
         static auto f_WSAStringToAddressA = dllfunctor_stdcall<int, LPSTR, INT, LPWSAPROTOCOL_INFO, LPSOCKADDR, LPINT>("ws2_32.dll", "WSAStringToAddressA");
-        struct sockaddr ss;
+        struct sockaddr_storage ss;
         int size = sizeof(ss);
         ZeroMemory(&ss, sizeof(ss));
 
@@ -1250,4 +1269,3 @@ private:
 
 // guarantee global initialization
 static class Win32_FDSockMap& init = Win32_FDSockMap::getInstance();
-

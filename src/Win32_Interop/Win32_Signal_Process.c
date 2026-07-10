@@ -82,9 +82,7 @@ int getrusage(int who, struct rusage * r) {
             errno = EFAULT;
             return -1;
         }
-    }
-
-    if (who == RUSAGE_CHILDREN) {
+    } else if (who == RUSAGE_CHILDREN) {
         /* Childless on windows */
         starttime.dwLowDateTime = 0;
         starttime.dwHighDateTime = 0;
@@ -94,6 +92,9 @@ int getrusage(int who, struct rusage * r) {
         kerneltime.dwHighDateTime = 0;
         usertime.dwLowDateTime = 0;
         usertime.dwHighDateTime = 0;
+    } else {
+        errno = EINVAL;
+        return -1;
     }
     memcpy(&li, &kerneltime, sizeof(FILETIME));
     li.QuadPart /= 10L;

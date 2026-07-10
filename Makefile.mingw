@@ -287,6 +287,22 @@ HIREDIS_TEST_OBJS := \
 	$(addprefix $(BUILD)/hiredis-test/,$(TOOL_WIN32_INTEROP_C_SOURCES:.c=.o)) \
 	$(addprefix $(BUILD)/hiredis-test/,$(TOOL_WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
 
+INTEROP_TEST_C_SOURCES := \
+	src/Win32_Interop/Win32_PThread.c \
+	src/Win32_Interop/Win32_Signal_Process.c \
+	src/Win32_Interop/Win32_ThreadControl.c
+
+INTEROP_TEST_CXX_SOURCES := \
+	tests/windows/interop.cpp \
+	src/Win32_Interop/Win32_FDAPI.cpp \
+	src/Win32_Interop/Win32_fdapi_crt.cpp \
+	src/Win32_Interop/win32_rfdmap.cpp \
+	src/Win32_Interop/Win32_variadicFunctor.cpp
+
+INTEROP_TEST_OBJS := \
+	$(addprefix $(BUILD)/interop-test/,$(INTEROP_TEST_C_SOURCES:.c=.o)) \
+	$(addprefix $(BUILD)/interop-test/,$(INTEROP_TEST_CXX_SOURCES:.cpp=.o))
+
 CLI_SOURCES := \
 	deps/linenoise/linenoise.c \
 	src/adlist.c \
@@ -327,13 +343,15 @@ TEST_MODULES := \
 	$(BUILD)/tests/modules/commandfilter.so \
 	$(BUILD)/tests/modules/testrdb.so
 
-.PHONY: all clean distclean deps hiredis-test test-modules
+.PHONY: all clean distclean deps hiredis-test interop-test test-modules
 
 all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES)
 
 deps: $(HIREDIS_LIB) $(LUA_LIB) $(JEMALLOC_LIB)
 
 hiredis-test: $(BUILD)/hiredis-test.exe
+
+interop-test: $(BUILD)/interop-test.exe
 
 test-modules: $(TEST_MODULES)
 
@@ -384,6 +402,9 @@ $(REDIS_CHECK_ALIASES): $(BUILD)/redis-server.exe
 $(BUILD)/hiredis-test.exe: Makefile.mingw $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
 
+$(BUILD)/interop-test.exe: Makefile.mingw $(INTEROP_TEST_OBJS)
+	$(CXX) $(LDFLAGS_COMMON) -o $@ $(INTEROP_TEST_OBJS) $(LDLIBS_COMMON)
+
 $(BUILD)/tests/modules/%.so: tests/modules/%.c src/redismodule.h src/Win32_Interop/win32_types_hiredis.h Makefile.mingw
 	mkdir -p $(dir $@)
 	$(CC) $(TEST_MODULE_CFLAGS) $(TEST_MODULE_LDFLAGS) -o $@ $<
@@ -428,11 +449,19 @@ $(BUILD)/hiredis-test/%.o: %.cpp $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
 	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
 
+$(BUILD)/interop-test/%.o: %.c src/release.h $(REDIS_HEADERS)
+	mkdir -p $(dir $@)
+	$(CC) $(TOOL_CFLAGS) -c $< -o $@
+
+$(BUILD)/interop-test/%.o: %.cpp $(REDIS_HEADERS)
+	mkdir -p $(dir $@)
+	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
+
 clean:
 	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/cli $(BUILD)/benchmark
-	rm -rf $(BUILD)/hiredis-test
+	rm -rf $(BUILD)/hiredis-test $(BUILD)/interop-test
 	rm -rf $(BUILD)/tests/modules
-	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(BUILD)/hiredis-test.exe
+	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe
 	rm -rf $(BUILD)/lib
 
 distclean: clean
