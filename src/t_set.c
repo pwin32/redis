@@ -385,6 +385,23 @@ void sismemberCommand(client *c) {
         addReply(c,shared.czero);
 }
 
+void smismemberCommand(client *c) {
+    robj *set;
+    int j;
+
+    /* Missing keys are empty sets, so return one zero for each member. */
+    set = lookupKeyRead(c->db,c->argv[1]);
+    if (set && checkType(c,set,OBJ_SET)) return;
+
+    addReplyMultiBulkLen(c,c->argc-2);
+    for (j = 2; j < c->argc; j++) {
+        if (set && setTypeIsMember(set,c->argv[j]->ptr))
+            addReply(c,shared.cone);
+        else
+            addReply(c,shared.czero);
+    }
+}
+
 void scardCommand(client *c) {
     robj *o;
 
