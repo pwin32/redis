@@ -351,7 +351,7 @@
 /* #undef JEMALLOC_EXPORT */
 
 /* config.malloc_conf options string. */
-#define JEMALLOC_CONFIG_MALLOC_CONF ""
+#define JEMALLOC_CONFIG_MALLOC_CONF "slab_sizes:1-16777216:1"
 
 /* If defined, jemalloc takes the malloc/free/etc. symbol names. */
 /* #undef JEMALLOC_IS_MALLOC */

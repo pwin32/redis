@@ -349,6 +349,7 @@ $(JEMALLOC_BUILD)/Makefile: $(JEMALLOC_SRC)/configure Makefile.mingw
 		--disable-shared \
 		--enable-static \
 		--disable-retain \
+		--with-malloc-conf=slab_sizes:1-16777216:1 \
 		--with-jemalloc-prefix=je_ \
 		--with-lg-quantum=3 \
 		--with-lg-page=22 \
