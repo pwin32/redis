@@ -4,9 +4,10 @@
 # This software is released under the BSD License. See the COPYING file for
 # more information.
 
-# Returns a parsed CLUSTER NODES output as a list of dictionaries.
-proc get_cluster_nodes id {
-    set lines [split [R $id cluster nodes] "\r\n"]
+# Parse CLUSTER NODES output. Optional status can be specified to return only
+# entries with a matching link state.
+proc parse_cluster_nodes {reply {status "*"}} {
+    set lines [split $reply "\r\n"]
     set nodes {}
     foreach l $lines {
         set l [string trim $l]
@@ -23,9 +24,35 @@ proc get_cluster_nodes id {
             linkstate [lindex $args 7] \
             slots [lrange $args 8 -1] \
         ]
-        lappend nodes $node
+        if {[string match $status [lindex $args 7]]} {
+            lappend nodes $node
+        }
     }
     return $nodes
+}
+
+# Returns the parsed CLUSTER NODES output for an existing harness connection.
+proc get_cluster_nodes {id {status "*"}} {
+    parse_cluster_nodes [R $id cluster nodes] $status
+}
+
+# Returns CLUSTER NODES through a short-lived connection. Cluster resets can
+# leave the harness' persistent socket waiting on an obsolete connection.
+proc get_cluster_nodes_fresh {id {status "*"}} {
+    set host [get_instance_attrib redis $id host]
+    set port [get_instance_attrib redis $id port]
+    set link {}
+    set errcode [catch {
+        set link [redis $host $port]
+        set reply [$link cluster nodes]
+    } result]
+    if {$link ne {}} {
+        catch {$link close}
+    }
+    if {$errcode} {
+        return -code $errcode $result
+    }
+    parse_cluster_nodes $reply $status
 }
 
 # Test node for flag.
