@@ -1,8 +1,8 @@
 # MinGW build harness for the Redis Windows port.
 #
 # This is intentionally separate from the upstream-style POSIX Makefile and the
-# Visual Studio project files. It compiles the Windows port through MSYS2/MinGW
-# while preserving the current first-class VS build.
+# legacy Visual Studio project files. It is the first-class build for the
+# current WSL/MSYS2 development environment.
 
 BUILD ?= build/mingw64
 JEMALLOC_SRC := deps/jemalloc-5.2.1
