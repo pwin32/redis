@@ -454,15 +454,15 @@ proc print_help_screen {} {
     } "\n"]
 }
 
-# [tporadowski] "debug restart" command in Redis for Windows causes a new process
-#  with new PID to be started, so we need to properly clean this up when running tests
-#  from Cygwin
+# [tporadowski] "debug restart" command in Redis for Windows causes a new
+# process with a new PID to be started. Track replacement PIDs whenever the
+# test runtime launches native Windows processes (Windows Tcl or Cygwin).
 set ::winpids {}
-set ::uses_cygwin 0
-if {$::tcl_platform(platform) == "unix"} {
+set ::uses_windows_processes [expr {$::tcl_platform(platform) == "windows"}]
+if {!$::uses_windows_processes && $::tcl_platform(platform) == "unix"} {
     set uname [exec uname -s]
     if {[string first "CYGWIN" $uname] != -1} {
-        set ::uses_cygwin 1
+        set ::uses_windows_processes 1
     }
 }
 

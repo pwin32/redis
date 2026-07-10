@@ -181,7 +181,7 @@ start_server {} {
         set new_sync_count [status $R($master_id) sync_full]
         assert {$sync_count == $new_sync_count}
 
-        if {$::uses_cygwin} {
+        if {$::uses_windows_processes} {
             # read Windows PID from "INFO" to be cleaned up at the end
             set pid [status $R($slave_id) process_id]
             lappend ::winpids $pid
@@ -233,7 +233,7 @@ start_server {} {
             incr retry -1
         }
 
-        if {$::uses_cygwin} {
+        if {$::uses_windows_processes} {
             # read Windows PID from "INFO" to be cleaned up at the end
             set pid [status $R($slave_id) process_id]
             lappend ::winpids $pid
@@ -263,6 +263,5 @@ start_server {} {
 
 }}}}}
 
-# clean up any additional processes started by "debug restart" under Windows
-#   when running tests from Cygwin
-cygwin_clean_up
+# Clean up additional native Windows processes started by "debug restart".
+windows_restart_clean_up

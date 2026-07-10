@@ -257,7 +257,7 @@ int64_t getSignedBitfield(unsigned char *p, uint64_t offset, uint64_t bits) {
     /* If the top significant bit is 1, propagate it to all the
      * higher bits for two's complement representation of signed
      * integers. */
-    if (value & ((uint64_t)1 << (bits-1)))
+    if (bits < 64 && (value & ((uint64_t)1 << (bits-1))))
         value |= ((uint64_t)-1) << bits;
     return value;
 }
@@ -328,8 +328,8 @@ int checkSignedBitfieldOverflow(int64_t value, int64_t incr, uint64_t bits, int 
 
     /* Note that maxincr and minincr could overflow, but we use the values
      * only after checking 'value' range, so when we use it no overflow
-     * happens. */
-    int64_t maxincr = max-value;
+     * happens. The uint64_t cast prevents undefined signed overflow. */
+    int64_t maxincr = (uint64_t)max-value;
     int64_t minincr = min-value;
 
     if (value > max || (bits != 64 && incr > maxincr) || (value >= 0 && incr > 0 && incr > maxincr))
@@ -356,7 +356,6 @@ int checkSignedBitfieldOverflow(int64_t value, int64_t incr, uint64_t bits, int 
 
 handle_wrap:
     {
-        uint64_t mask = ((uint64_t)-1) << bits;
         uint64_t msb = (uint64_t)1 << (bits-1);
         uint64_t a = value, b = incr, c;
         c = a+b; /* Perform addition as unsigned so that's defined. */
@@ -364,10 +363,13 @@ handle_wrap:
         /* If the sign bit is set, propagate to all the higher order
          * bits, to cap the negative value. If it's clear, mask to
          * the positive integer limit. */
-        if (c & msb) {
-            c |= mask;
-        } else {
-            c &= ~mask;
+        if (bits < 64) {
+            uint64_t mask = ((uint64_t)-1) << bits;
+            if (c & msb) {
+                c |= mask;
+            } else {
+                c &= ~mask;
+            }
         }
         *limit = c;
     }
@@ -1033,10 +1035,9 @@ void bitfieldCommand(client *c) {
                         thisop->bits);
 
                 if (thisop->opcode == BITFIELDOP_INCRBY) {
-                    newval = oldval + thisop->i64;
                     overflow = checkSignedBitfieldOverflow(oldval,
                             thisop->i64,thisop->bits,thisop->owtype,&wrapped);
-                    if (overflow) newval = wrapped;
+                    newval = overflow ? wrapped : oldval + thisop->i64;
                     retval = newval;
                 } else {
                     newval = thisop->i64;

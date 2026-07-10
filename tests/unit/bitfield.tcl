@@ -83,6 +83,20 @@ start_server {tags {"bitops"}} {
         lappend results [r bitfield bits get i8 #0]
     } {127 127 -128 -128}
 
+    test {BITFIELD signed i64 minimum overflow regression} {
+        set min -9223372036854775808
+
+        r del bits
+        set fail [r bitfield bits overflow fail \
+            set i64 0 $min incrby i64 0 $min]
+
+        r del bits
+        set wrap [r bitfield bits overflow wrap \
+            set i64 0 $min incrby i64 0 $min get i64 0]
+
+        list $fail $wrap
+    } {{0 {}} {0 0 0}}
+
     test {BITFIELD overflow detection fuzzing} {
         for {set j 0} {$j < 1000} {incr j} {
             set bits [expr {[randomInt 64]+1}]

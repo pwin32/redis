@@ -416,8 +416,8 @@ proc start_server {options {code undefined}} {
     }
 }
 
-proc cygwin_clean_up {} {
-    # clean up any new processes started with "debug restart" using Windows-specific tools
+proc windows_restart_clean_up {} {
+    # Clean up processes started with "debug restart" using Windows tools.
     foreach newpid $::winpids {
         set config [dict create "pid" $newpid]
 
