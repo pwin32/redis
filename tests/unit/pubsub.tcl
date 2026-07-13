@@ -1,52 +1,4 @@
-start_server {tags {"pubsub"}} {
-    proc __consume_subscribe_messages {client type channels} {
-        set numsub -1
-        set counts {}
-
-        for {set i [llength $channels]} {$i > 0} {incr i -1} {
-            set msg [$client read]
-            assert_equal $type [lindex $msg 0]
-
-            # when receiving subscribe messages the channels names
-            # are ordered. when receiving unsubscribe messages
-            # they are unordered
-            set idx [lsearch -exact $channels [lindex $msg 1]]
-            if {[string match "*unsubscribe" $type]} {
-                assert {$idx >= 0}
-            } else {
-                assert {$idx == 0}
-            }
-            set channels [lreplace $channels $idx $idx]
-
-            # aggregate the subscription count to return to the caller
-            lappend counts [lindex $msg 2]
-        }
-
-        # we should have received messages for channels
-        assert {[llength $channels] == 0}
-        return $counts
-    }
-
-    proc subscribe {client channels} {
-        $client subscribe {*}$channels
-        __consume_subscribe_messages $client subscribe $channels
-    }
-
-    proc unsubscribe {client {channels {}}} {
-        $client unsubscribe {*}$channels
-        __consume_subscribe_messages $client unsubscribe $channels
-    }
-
-    proc psubscribe {client channels} {
-        $client psubscribe {*}$channels
-        __consume_subscribe_messages $client psubscribe $channels
-    }
-
-    proc punsubscribe {client {channels {}}} {
-        $client punsubscribe {*}$channels
-        __consume_subscribe_messages $client punsubscribe $channels
-    }
-
+start_server {tags {"pubsub network"}} {
     test "Pub/Sub PING" {
         set rd1 [redis_deferring_client]
         subscribe $rd1 somechannel
@@ -188,6 +140,30 @@ start_server {tags {"pubsub"}} {
         $rd1 close
     }
 
+    test "PubSub messages with CLIENT REPLY OFF" {
+        set rd [redis_deferring_client]
+        $rd hello 3
+        $rd read ;# Discard the hello reply
+
+        # Test that the subscribe/psubscribe notification is ok
+        $rd client reply off
+        assert_equal {1} [subscribe $rd channel]
+        assert_equal {2} [psubscribe $rd ch*]
+
+        # Test that the publish notification is ok
+        $rd client reply off
+        assert_equal 2 [r publish channel hello]
+        assert_equal {message channel hello} [$rd read]
+        assert_equal {pmessage ch* channel hello} [$rd read]
+
+        # Test that the unsubscribe/punsubscribe notification is ok
+        $rd client reply off
+        assert_equal {1} [unsubscribe $rd channel]
+        assert_equal {0} [punsubscribe $rd ch*]
+
+        $rd close
+    }
+
     test "PUNSUBSCRIBE from non-subscribed channels" {
         set rd1 [redis_deferring_client]
         assert_equal {0 0 0} [punsubscribe $rd1 {foo.* bar.* quux.*}]
@@ -199,6 +175,24 @@ start_server {tags {"pubsub"}} {
     test "NUMSUB returns numbers, not strings (#1561)" {
         r pubsub numsub abc def
     } {abc 0 def 0}
+
+    test "NUMPATs returns the number of unique patterns" {
+        set rd1 [redis_deferring_client]
+        set rd2 [redis_deferring_client]
+
+        # Three unique patterns and one that overlaps
+        psubscribe $rd1 "foo*"
+        psubscribe $rd2 "foo*"
+        psubscribe $rd1 "bar*"
+        psubscribe $rd2 "baz*"
+
+        set patterns [r pubsub numpat]
+
+        # clean up clients
+        punsubscribe $rd1
+        punsubscribe $rd2
+        assert_equal 3 $patterns
+    }
 
     test "Mix SUBSCRIBE and PSUBSCRIBE" {
         set rd1 [redis_deferring_client]
@@ -228,6 +222,7 @@ start_server {tags {"pubsub"}} {
     test "Keyspace notifications: we receive keyspace notifications" {
         r config set notify-keyspace-events KA
         set rd1 [redis_deferring_client]
+        $rd1 CLIENT REPLY OFF ;# Make sure it works even if replies are silenced
         assert_equal {1} [psubscribe $rd1 *]
         r set foo bar
         assert_equal {pmessage * __keyspace@9__:foo set} [$rd1 read]
@@ -237,6 +232,7 @@ start_server {tags {"pubsub"}} {
     test "Keyspace notifications: we receive keyevent notifications" {
         r config set notify-keyspace-events EA
         set rd1 [redis_deferring_client]
+        $rd1 CLIENT REPLY SKIP ;# Make sure it works even if replies are silenced
         assert_equal {1} [psubscribe $rd1 *]
         r set foo bar
         assert_equal {pmessage * __keyevent@9__:set foo} [$rd1 read]
@@ -246,6 +242,8 @@ start_server {tags {"pubsub"}} {
     test "Keyspace notifications: we can receive both kind of events" {
         r config set notify-keyspace-events KEA
         set rd1 [redis_deferring_client]
+        $rd1 CLIENT REPLY ON ;# Just coverage
+        assert_equal {OK} [$rd1 read]
         assert_equal {1} [psubscribe $rd1 *]
         r set foo bar
         assert_equal {pmessage * __keyspace@9__:foo set} [$rd1 read]
@@ -387,4 +385,130 @@ start_server {tags {"pubsub"}} {
         r config set notify-keyspace-events EA
         assert_equal {AE} [lindex [r config get notify-keyspace-events] 1]
     }
+}
+
+start_server {tags {"pubsub network"}} {
+    # Helper proc for tests that subscribe multiple times until hitting OOM
+    proc test_subscribe_oom_loop {cmd description clients} {
+        test "$cmd $description fails with OOM when memory limit exceeded" {
+            # Set 10MB memory limit
+            r config set maxmemory 10485760
+            r config set maxmemory-policy noeviction
+            
+            # Create clients
+            if {$clients == 1} {
+                set rd [redis_deferring_client]
+            } else {
+                set rd1 [redis_deferring_client]
+                set rd2 [redis_deferring_client]
+            }
+            
+            set base_str [string repeat "a" 2048]
+            set success_count 0
+            set oom_occurred 0
+            
+            # Try to subscribe until we hit OOM
+            for {set i 0} {$i < 5000} {incr i} {
+                # Select client
+                if {$clients == 1} {
+                    set client $rd
+                } else {
+                    set client [expr {$i % 2 ? $rd1 : $rd2}]
+                }
+                
+                # Build channel/pattern name
+                if {$cmd eq "psubscribe"} {
+                    set channel_name "${base_str}${i}*"
+                } else {
+                    set channel_name "${base_str}${i}"
+                }
+                
+                $client $cmd $channel_name
+                if {[catch {$client read} err]} {
+                    if {[string match "*OOM command not allowed*" $err]} {
+                        set oom_occurred 1
+                        break
+                    }
+                    error "Unexpected error: $err"
+                }
+                incr success_count
+            }
+            
+            # Verify we had at least one success and hit OOM
+            assert {$success_count > 10}
+            assert {$oom_occurred == 1}
+            
+            # Close clients
+            if {$clients == 1} {
+                $rd close
+            } else {
+                $rd1 close
+                $rd2 close
+            }
+        }
+    }
+
+    # Helper proc for tests with single large channel that immediately fails
+    proc test_subscribe_large_channel_oom {cmd channel_type} {
+        test "$cmd with large $channel_type name fails due to OOM" {
+            # Set maxmemory to 2MB
+            r config set maxmemory 2097152
+            r config set maxmemory-policy noeviction
+            
+            # Create large channel/pattern name: 2MB
+            set channel_name [string repeat "a" 2097152]
+            
+            # Create a single pubsub client
+            set rd [redis_deferring_client]
+            
+            # Subscribe should fail with OOM error
+            $rd $cmd $channel_name
+            assert_error "*OOM command not allowed when used memory > 'maxmemory'*" {$rd read}
+            
+            # Cleanup
+            $rd close
+        }
+    }
+
+    # Helper proc for tests with small success then large failure
+    proc test_subscribe_small_then_large_oom {cmd channel_type} {
+        test "$cmd succeeds with small $channel_type but fails with large $channel_type due to OOM" {
+            # Set maxmemory to 10MB
+            r config set maxmemory 10485760
+            r config set maxmemory-policy noeviction
+            
+            # Create channel names: first 10KB, second 5MB
+            set channel1 [string repeat "a" 10240]
+            set channel2 [string repeat "b" 10485760]
+            
+            # Create a single pubsub client
+            set rd [redis_deferring_client]
+            
+            # First subscribe should succeed (10KB)
+            $rd $cmd $channel1
+            set reply1 [$rd read]
+            assert_equal [list $cmd] [lindex $reply1 0]
+            
+            # Second subscribe should fail with OOM error (5MB exceeds limit)
+            $rd $cmd $channel2
+            assert_error "*OOM command not allowed when used memory > 'maxmemory'*" {$rd read}
+            
+            # Cleanup
+            $rd close
+        }
+    }
+
+    # Multiple subscriptions until OOM tests
+    test_subscribe_oom_loop "subscribe" "" 1
+    test_subscribe_oom_loop "psubscribe" "" 1
+    test_subscribe_oom_loop "subscribe" "with 2 clients" 2
+    test_subscribe_oom_loop "psubscribe" "with 2 clients" 2
+
+    # Single large channel immediate OOM tests
+    test_subscribe_large_channel_oom "subscribe" "channel"
+    test_subscribe_large_channel_oom "psubscribe" "pattern"
+
+    # Small success then large failure tests
+    test_subscribe_small_then_large_oom "subscribe" "channel"
+    test_subscribe_small_then_large_oom "psubscribe" "pattern"
 }

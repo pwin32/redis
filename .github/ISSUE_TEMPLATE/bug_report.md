@@ -1,30 +1,24 @@
 ---
 name: Bug report
-about: Create a report about a problem with Redis for Windows
-title: ''
+about: Help us improve Redis by reporting a bug
+title: '[BUG]'
 labels: ''
 assignees: ''
 
 ---
 
-**Describe the bug/issue**
-A clear and concise description of what the bug/issue is.
+**Describe the bug**
 
-**To Reproduce**
-Please provide more information about:
-- version of Redis for Windows you are using
-- configuration of your instance if it's not out-of-the-box one (i.e. persistence type)
-- typical workload handled by your instance
-- any other details that might be helpful in reproducing the issue.
+A short description of the bug.
 
-**Crash report**
-If Redis generated a crash report - please paste it here.
+**To reproduce**
 
-**INFO output**
-If possible - please provide output of `INFO` command that might be helpful in analyzing your issue.
+Steps to reproduce the behavior and/or a minimal code sample.
 
-**Event Log**
-Please check your system's Event Log to see if there are additional details logged related to this issue.
+**Expected behavior**
 
-**Additional context**
-Please provide Windows version you are using, mode in which you are starting Redis (standalone, cluster, Sentinel), etc.
+A description of what you expected to happen.
+
+**Additional information**
+
+Any additional information that is relevant to the problem.

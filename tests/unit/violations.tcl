@@ -136,7 +136,7 @@ start_server [list overrides [list save ""] ] {
         r sadd myset 1 2
         r mset D1 1 D2 2
         catch {r sort myset by D* get S* store mylist}
-        # assert_equal [count_log_message 0 "crashed by signal"] 0   - not suitable for 6.0
+        assert_equal [count_log_message 0 "crashed by signal"] 0
         assert_equal [count_log_message 0 "ASSERTION FAILED"] 1
     }
 }

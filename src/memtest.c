@@ -26,11 +26,6 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-#ifdef _WIN32
-#include "Win32_Interop/Win32_Portability.h"
-#include "Win32_Interop/win32_types.h"
-#include "Win32_Interop/Win32_Error.h"
-#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -90,7 +85,7 @@ void memtest_progress_start(char *title, int pass) {
     printf("\x1b[H\x1b[2K");          /* Cursor home, clear current line.  */
     printf("%s [%d]\n", title, pass); /* Print title. */
     progress_printed = 0;
-    progress_full = ws.ws_col*(ws.ws_row-3);
+    progress_full = (size_t)ws.ws_col*(ws.ws_row-3);
     fflush(stdout);
 }
 
@@ -109,9 +104,9 @@ void memtest_progress_step(size_t curr, size_t size, char c) {
 /* Test that addressing is fine. Every location is populated with its own
  * address, and finally verified. This test is very fast but may detect
  * ASAP big issues with the memory subsystem. */
-int memtest_addressing(PORT_ULONG *l, size_t bytes, int interactive) {
-    PORT_ULONG words = (PORT_ULONG)(bytes/sizeof(PORT_ULONG));
-    PORT_ULONG j, *p;
+int memtest_addressing(unsigned long *l, size_t bytes, int interactive) {
+    unsigned long words = bytes/sizeof(unsigned long);
+    unsigned long j, *p;
 
     /* Fill */
     p = l;
@@ -124,9 +119,9 @@ int memtest_addressing(PORT_ULONG *l, size_t bytes, int interactive) {
     /* Test */
     p = l;
     for (j = 0; j < words; j++) {
-        if (*p != (PORT_ULONG)p) {
+        if (*p != (unsigned long)p) {
             if (interactive) {
-                printf("\n*** MEMORY ADDRESSING ERROR: %p contains %Iu\n",      WIN_PORT_FIX /* %lu -> %Iu */
+                printf("\n*** MEMORY ADDRESSING ERROR: %p contains %lu\n",
                     (void*) p, *p);
                 exit(1);
             }
@@ -154,11 +149,11 @@ int memtest_addressing(PORT_ULONG *l, size_t bytes, int interactive) {
         rout = rseed * UINT64_C(2685821657736338717); \
 } while(0)
 
-void memtest_fill_random(PORT_ULONG *l, size_t bytes, int interactive) {
-    PORT_ULONG step = (PORT_ULONG)(4096/sizeof(PORT_ULONG));
-    PORT_ULONG words = (PORT_ULONG)(bytes/sizeof(PORT_ULONG)/2);
-    PORT_ULONG iwords = words/step;  /* words per iteration */
-    PORT_ULONG off, w, *l1, *l2;
+void memtest_fill_random(unsigned long *l, size_t bytes, int interactive) {
+    unsigned long step = 4096/sizeof(unsigned long);
+    unsigned long words = bytes/sizeof(unsigned long)/2;
+    unsigned long iwords = words/step;  /* words per iteration */
+    unsigned long off, w, *l1, *l2;
     uint64_t rseed = UINT64_C(0xd13133de9afdb566); /* Just a random seed. */
     uint64_t rout = 0;
 
@@ -168,7 +163,7 @@ void memtest_fill_random(PORT_ULONG *l, size_t bytes, int interactive) {
         l2 = l1+words;
         for (w = 0; w < iwords; w++) {
             xorshift64star_next();
-            *l1 = *l2 = (PORT_ULONG) rout;
+            *l1 = *l2 = (unsigned long) rout;
             l1 += step;
             l2 += step;
             if ((w & 0xffff) == 0 && interactive)
@@ -179,8 +174,8 @@ void memtest_fill_random(PORT_ULONG *l, size_t bytes, int interactive) {
 
 /* Like memtest_fill_random() but uses the two specified values to fill
  * memory, in an alternated way (v1|v2|v1|v2|...) */
-void memtest_fill_value(PORT_ULONG *l, size_t bytes, PORT_ULONG v1,
-                        PORT_ULONG v2, char sym, int interactive)
+void memtest_fill_value(unsigned long *l, size_t bytes, unsigned long v1,
+                        unsigned long v2, char sym, int interactive)
 {
     PORT_ULONG step = (PORT_ULONG)(4096/sizeof(PORT_ULONG));
     PORT_ULONG words = (PORT_ULONG)(bytes/sizeof(PORT_ULONG)/2);
@@ -210,9 +205,9 @@ void memtest_fill_value(PORT_ULONG *l, size_t bytes, PORT_ULONG v1,
     }
 }
 
-int memtest_compare(PORT_ULONG *l, size_t bytes, int interactive) {
-    PORT_ULONG words = (PORT_ULONG)(bytes/sizeof(PORT_ULONG)/2);
-    PORT_ULONG w, *l1, *l2;
+int memtest_compare(unsigned long *l, size_t bytes, int interactive) {
+    unsigned long words = bytes/sizeof(unsigned long)/2;
+    unsigned long w, *l1, *l2;
 
     assert((bytes & 4095) == 0);
     l1 = l;
@@ -220,7 +215,7 @@ int memtest_compare(PORT_ULONG *l, size_t bytes, int interactive) {
     for (w = 0; w < words; w++) {
         if (*l1 != *l2) {
             if (interactive) {
-                printf("\n*** MEMORY ERROR DETECTED: %p != %p (%Iu vs %Iu)\n",  WIN_PORT_FIX /* %lu -> %Iu */
+                printf("\n*** MEMORY ERROR DETECTED: %p != %p (%lu vs %lu)\n",
                     (void*)l1, (void*)l2, *l1, *l2);
                 exit(1);
             }
@@ -234,7 +229,7 @@ int memtest_compare(PORT_ULONG *l, size_t bytes, int interactive) {
     return 0;
 }
 
-int memtest_compare_times(PORT_ULONG *m, size_t bytes, int pass, int times,
+int memtest_compare_times(unsigned long *m, size_t bytes, int pass, int times,
                           int interactive)
 {
     int j;
@@ -253,7 +248,7 @@ int memtest_compare_times(PORT_ULONG *m, size_t bytes, int pass, int times,
  * ASCII arts to show progresses. Instead when interactive is 0, it can
  * be used as an API call, and returns 1 if memory errors were found or
  * 0 if there were no errors detected. */
-int memtest_test(PORT_ULONG *m, size_t bytes, int passes, int interactive) {
+int memtest_test(unsigned long *m, size_t bytes, int passes, int interactive) {
     int pass = 0;
     int errors = 0;
 
@@ -270,7 +265,7 @@ int memtest_test(PORT_ULONG *m, size_t bytes, int passes, int interactive) {
         errors += memtest_compare_times(m,bytes,pass,4,interactive);
 
         if (interactive) memtest_progress_start("Solid fill",pass);
-        memtest_fill_value(m,bytes,0,(PORT_ULONG)-1,'S',interactive);
+        memtest_fill_value(m,bytes,0,(unsigned long)-1,'S',interactive);
         if (interactive) memtest_progress_end();
         errors += memtest_compare_times(m,bytes,pass,4,interactive);
 
@@ -291,15 +286,15 @@ int memtest_test(PORT_ULONG *m, size_t bytes, int passes, int interactive) {
  * may not be usable or we may be already in an out of memory condition).
  * So what we do is to try to trash the cache with useless memory accesses
  * between the fill and compare cycles. */
-#define MEMTEST_BACKUP_WORDS (1024*(1024/sizeof(PORT_LONG)))
+#define MEMTEST_BACKUP_WORDS (1024*(1024/sizeof(long)))
 /* Random accesses of MEMTEST_DECACHE_SIZE are performed at the start and
  * end of the region between fill and compare cycles in order to trash
  * the cache. */
 #define MEMTEST_DECACHE_SIZE (1024*8)
-int memtest_preserving_test(PORT_ULONG *m, size_t bytes, int passes) {
-    PORT_ULONG backup[MEMTEST_BACKUP_WORDS];
-    PORT_ULONG *p = m;
-    PORT_ULONG *end = (PORT_ULONG*) (((unsigned char*)m)+(bytes-MEMTEST_DECACHE_SIZE));
+int memtest_preserving_test(unsigned long *m, size_t bytes, int passes) {
+    unsigned long backup[MEMTEST_BACKUP_WORDS];
+    unsigned long *p = m;
+    unsigned long *end = (unsigned long*) (((unsigned char*)m)+(bytes-MEMTEST_DECACHE_SIZE));
     size_t left = bytes;
     int errors = 0;
 
@@ -312,7 +307,7 @@ int memtest_preserving_test(PORT_ULONG *m, size_t bytes, int passes) {
          * page but at least two. */
         if (left == 4096) {
             left += 4096;
-            p -= 4096/sizeof(PORT_ULONG);
+            p -= 4096/sizeof(unsigned long);
         }
 
         int pass = 0;
@@ -331,7 +326,7 @@ int memtest_preserving_test(PORT_ULONG *m, size_t bytes, int passes) {
                 memtest_compare_times(end,MEMTEST_DECACHE_SIZE,pass,1,0);
             }
             errors += memtest_compare_times(p,len,pass,4,0);
-            memtest_fill_value(p,len,0,(PORT_ULONG)-1,'S',0);
+            memtest_fill_value(p,len,0,(unsigned long)-1,'S',0);
             if (bytes >= MEMTEST_DECACHE_SIZE) {
                 memtest_compare_times(m,MEMTEST_DECACHE_SIZE,pass,1,0);
                 memtest_compare_times(end,MEMTEST_DECACHE_SIZE,pass,1,0);
@@ -346,7 +341,7 @@ int memtest_preserving_test(PORT_ULONG *m, size_t bytes, int passes) {
         }
         memcpy(p,backup,len); /* Restore. */
         left -= len;
-        p += len/sizeof(PORT_ULONG);
+        p += len/sizeof(unsigned long);
     }
     return errors;
 }
@@ -354,11 +349,11 @@ int memtest_preserving_test(PORT_ULONG *m, size_t bytes, int passes) {
 /* Perform an interactive test allocating the specified number of megabytes. */
 void memtest_alloc_and_test(size_t megabytes, int passes) {
     size_t bytes = megabytes*1024*1024;
-    PORT_ULONG *m = malloc(bytes);
+    unsigned long *m = malloc(bytes);
 
     if (m == NULL) {
-        fprintf(stderr,"Unable to allocate %Iu megabytes: %s",                 WIN_PORT_FIX /* %zu -> %Iu */
-            megabytes, IF_WIN32(wsa_strerror(errno), strerror(errno)));
+        fprintf(stderr,"Unable to allocate %zu megabytes: %s",
+            megabytes, strerror(errno));
         exit(1);
     }
     memtest_test(m,bytes,passes,1);
@@ -366,23 +361,14 @@ void memtest_alloc_and_test(size_t megabytes, int passes) {
 }
 
 void memtest(size_t megabytes, int passes) {
-#ifdef _WIN32
-    HANDLE hOut;
-    CONSOLE_SCREEN_BUFFER_INFO b;
-
-    hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (GetConsoleScreenBufferInfo(hOut, &b)) {
-        ws.ws_col = b.dwSize.X;
-        ws.ws_row = b.dwSize.Y;
-    } else {
-        ws.ws_col = 80;
-        ws.ws_row = 20;
-    }
-#else
+#if !defined(__HAIKU__)
     if (ioctl(1, TIOCGWINSZ, &ws) == -1) {
         ws.ws_col = 80;
         ws.ws_row = 20;
     }
+#else
+    ws.ws_col = 80;
+    ws.ws_row = 20;
 #endif
     memtest_alloc_and_test(megabytes,passes);
     printf("\nYour memory passed this test.\n");

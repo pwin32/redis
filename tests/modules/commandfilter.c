@@ -61,8 +61,7 @@ int CommandFilter_LogCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int 
 
     size_t cmdlen;
     const char *cmdname = RedisModule_StringPtrLen(argv[1], &cmdlen);
-    RedisModuleCallReply *reply = RedisModule_Call(ctx, cmdname, "v", &argv[2],
-            (size_t)(argc - 2));
+    RedisModuleCallReply *reply = RedisModule_Call(ctx, cmdname, "v", &argv[2], argc - 2);
     if (reply) {
         RedisModule_ReplyWithCallReply(ctx, reply);
         RedisModule_FreeCallReply(reply);
@@ -146,5 +145,10 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
                     noself ? REDISMODULE_CMDFILTER_NOSELF : 0))
             == NULL) return REDISMODULE_ERR;
 
+    return REDISMODULE_OK;
+}
+
+int RedisModule_OnUnload(RedisModuleCtx *ctx) {
+    RedisModule_FreeString(ctx, log_key_name);
     return REDISMODULE_OK;
 }

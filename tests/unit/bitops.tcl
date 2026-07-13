@@ -350,8 +350,6 @@ start_server {tags {"bitops"}} {
     }
 }
 
-# test disabled because in this version bitops doesn't use proto-max-bulk-len
-if {0} {
 start_server {tags {"bitops large-memory"}} {
     test "BIT pos larger than UINT_MAX" {
         set bytes [expr (1 << 29) + 1]
@@ -378,5 +376,4 @@ start_server {tags {"bitops large-memory"}} {
         r config set proto-max-bulk-len $oldval
         r del mykey
     } {1}
-}
 }

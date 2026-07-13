@@ -35,12 +35,7 @@
 #ifndef __LISTPACK_H
 #define __LISTPACK_H
 
-
-#ifdef _WIN32
-#include "Win32_Interop/Win32_Portability.h"
-#include "Win32_Interop/win32_types.h"
-#endif
-
+#include <stdlib.h>
 #include <stdint.h>
 
 #define LP_INTBUF_SIZE 21 /* 20 digits of -2^63 + 1 null term = 21. */
@@ -50,8 +45,9 @@
 #define LP_AFTER 1
 #define LP_REPLACE 2
 
-unsigned char *lpNew(void);
+unsigned char *lpNew(size_t capacity);
 void lpFree(unsigned char *lp);
+unsigned char* lpShrinkToFit(unsigned char *lp);
 unsigned char *lpInsert(unsigned char *lp, unsigned char *ele, uint32_t size, unsigned char *p, int where, unsigned char **newp);
 unsigned char *lpAppend(unsigned char *lp, unsigned char *ele, uint32_t size);
 unsigned char *lpDelete(unsigned char *lp, unsigned char *p, unsigned char **newp);
@@ -62,6 +58,9 @@ unsigned char *lpLast(unsigned char *lp);
 unsigned char *lpNext(unsigned char *lp, unsigned char *p);
 unsigned char *lpPrev(unsigned char *lp, unsigned char *p);
 uint32_t lpBytes(unsigned char *lp);
-unsigned char *lpSeek(unsigned char *lp, PORT_LONG index);
+unsigned char *lpSeek(unsigned char *lp, long index);
+int lpValidateIntegrity(unsigned char *lp, size_t size, int deep);
+unsigned char *lpValidateFirst(unsigned char *lp);
+int lpValidateNext(unsigned char *lp, unsigned char **pp, size_t lpbytes);
 
 #endif

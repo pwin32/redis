@@ -28,35 +28,25 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef _WIN32
-#include "Win32_Interop/Win32_Portability.h"
-#include "Win32_Interop/win32_types.h"
-#include "Win32_Interop/Win32_Error.h"
-#include "Win32_Interop/win32fixes.h"
-#endif
-
 #include "server.h"
 #include <sys/stat.h>
-
-#ifdef _WIN32
-#define strcasecmp _stricmp
-#define strncasecmp _strnicmp
-#endif
 
 #define ERROR(...) { \
     char __buf[1024]; \
     snprintf(__buf, sizeof(__buf), __VA_ARGS__); \
-    snprintf(error, sizeof(error), "0x%16llx: %s", (PORT_LONGLONG)epos, __buf); \
+    snprintf(error, sizeof(error), "0x%16llx: %s", (long long)epos, __buf); \
 }
 
 static char error[1044];
 static off_t epos;
+static long long line = 1;
 
 int consumeNewline(char *buf) {
     if (strncmp(buf,"\r\n",2) != 0) {
         ERROR("Expected \\r\\n, got: %02x%02x",buf[0],buf[1]);
         return 0;
     }
+    line += 1;
     return 1;
 }
 
@@ -219,8 +209,8 @@ int redis_check_aof_main(int argc, char **argv) {
 
     off_t pos = process(fp);
     off_t diff = size-pos;
-    printf("AOF analyzed: size=%lld, ok_up_to=%lld, diff=%lld\n",
-        (PORT_LONGLONG) size, (PORT_LONGLONG) pos, (PORT_LONGLONG) diff);
+    printf("AOF analyzed: size=%lld, ok_up_to=%lld, ok_up_to_line=%lld, diff=%lld\n",
+        (long long) size, (long long) pos, line, (long long) diff);
     if (diff > 0) {
         if (fix) {
             char buf[2];

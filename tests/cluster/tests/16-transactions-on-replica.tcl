@@ -15,6 +15,7 @@ set replica [Rn 1]
 
 test "Cant read from replica without READONLY" {
     $primary SET a 1
+    wait_for_ofs_sync $primary $replica
     catch {$replica GET a} err
     assert {[string range $err 0 4] eq {MOVED}}
 }
@@ -28,19 +29,19 @@ test "Can preform HSET primary and HGET from replica" {
     $primary HSET h a 1
     $primary HSET h b 2
     $primary HSET h c 3
+    wait_for_ofs_sync $primary $replica
     assert {[$replica HGET h a] eq {1}}
     assert {[$replica HGET h b] eq {2}}
     assert {[$replica HGET h c] eq {3}}
 }
 
-# didn't cherry pick b120366d4 to 5.0 yet
-#test "Can MULTI-EXEC transaction of HGET operations from replica" {
-#    $replica MULTI
-#    assert {[$replica HGET h a] eq {QUEUED}}
-#    assert {[$replica HGET h b] eq {QUEUED}}
-#    assert {[$replica HGET h c] eq {QUEUED}}
-#    assert {[$replica EXEC] eq {1 2 3}}
-#}
+test "Can MULTI-EXEC transaction of HGET operations from replica" {
+    $replica MULTI
+    assert {[$replica HGET h a] eq {QUEUED}}
+    assert {[$replica HGET h b] eq {QUEUED}}
+    assert {[$replica HGET h c] eq {QUEUED}}
+    assert {[$replica EXEC] eq {1 2 3}}
+}
 
 test "MULTI-EXEC with write operations is MOVED" {
     $replica MULTI

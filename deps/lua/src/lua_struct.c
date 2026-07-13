@@ -313,7 +313,7 @@ static int b_unpack (lua_State *L) {
       case 'b': case 'B': case 'h': case 'H':
       case 'l': case 'L': case 'T': case 'i':  case 'I': {  /* integer types */
         int issigned = islower(opt);
-        lua_Number res = getinteger(data+pos, h.endian, issigned, (int)size);
+        lua_Number res = getinteger(data+pos, h.endian, issigned, size);
         lua_pushnumber(L, res); n++;
         break;
       }

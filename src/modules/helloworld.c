@@ -39,9 +39,6 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
-#ifdef _WIN32
-#include "../Win32_Interop/win32_types_hiredis.h"
-#endif
 
 /* HELLO.SIMPLE is among the simplest commands you can implement.
  * It just returns the currently selected DB id, a functionality which is
@@ -87,14 +84,14 @@ int HelloPushCall_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, in
     RedisModuleCallReply *reply;
 
     reply = RedisModule_Call(ctx,"RPUSH","ss",argv[1],argv[2]);
-    PORT_LONGLONG len = RedisModule_CallReplyInteger(reply);
+    long long len = RedisModule_CallReplyInteger(reply);
     RedisModule_FreeCallReply(reply);
     RedisModule_ReplyWithLongLong(ctx,len);
     return REDISMODULE_OK;
 }
 
 /* HELLO.PUSH.CALL2
- * This is exaxctly as HELLO.PUSH.CALL, but shows how we can reply to the
+ * This is exactly as HELLO.PUSH.CALL, but shows how we can reply to the
  * client using directly a reply object that Call() returned. */
 int HelloPushCall2_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
@@ -117,7 +114,7 @@ int HelloListSumLen_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, 
 
     RedisModuleCallReply *reply;
 
-    reply = RedisModule_Call(ctx,"LRANGE","sll",argv[1],(PORT_LONGLONG)0,(PORT_LONGLONG)-1);
+    reply = RedisModule_Call(ctx,"LRANGE","sll",argv[1],(long long)0,(long long)-1);
     size_t strlen = 0;
     size_t items = RedisModule_CallReplyLength(reply);
     size_t j;
@@ -153,7 +150,7 @@ int HelloListSplice_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, 
         return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
     }
 
-    PORT_LONGLONG count;
+    long long count;
     if ((RedisModule_StringToLongLong(argv[3],&count) != REDISMODULE_OK) ||
         (count < 0)) {
         RedisModule_CloseKey(srckey);
@@ -198,7 +195,7 @@ int HelloListSpliceAuto_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **ar
         return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
     }
 
-    PORT_LONGLONG count;
+    long long count;
     if ((RedisModule_StringToLongLong(argv[3],&count) != REDISMODULE_OK) ||
         (count < 0))
     {
@@ -223,7 +220,7 @@ int HelloListSpliceAuto_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **ar
  * It just outputs <count> random numbers. */
 int HelloRandArray_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     if (argc != 2) return RedisModule_WrongArity(ctx);
-    PORT_LONGLONG count;
+    long long count;
     if (RedisModule_StringToLongLong(argv[1],&count) != REDISMODULE_OK ||
         count < 0)
         return RedisModule_ReplyWithError(ctx,"ERR invalid count");
@@ -289,12 +286,12 @@ int HelloRepl2_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int a
         return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
 
     size_t listlen = RedisModule_ValueLength(key);
-    PORT_LONGLONG sum = 0;
+    long long sum = 0;
 
     /* Rotate and increment. */
     while(listlen--) {
         RedisModuleString *ele = RedisModule_ListPop(key,REDISMODULE_LIST_TAIL);
-        PORT_LONGLONG val;
+        long long val;
         if (RedisModule_StringToLongLong(ele,&val) != REDISMODULE_OK) val = 0;
         val++;
         sum += val;
@@ -348,7 +345,7 @@ int HelloToggleCase_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, 
 
 /* HELLO.MORE.EXPIRE key milliseconds.
  *
- * If they key has already an associated TTL, extends it by "milliseconds"
+ * If the key has already an associated TTL, extends it by "milliseconds"
  * milliseconds. Otherwise no operation is performed. */
 int HelloMoreExpire_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
@@ -511,7 +508,7 @@ int HelloHCopy_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int a
  * active. */
 int HelloLeftPad_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
-    PORT_LONGLONG padlen;
+    long long padlen;
 
     if (argc != 4) return RedisModule_WrongArity(ctx);
 
@@ -536,7 +533,7 @@ int HelloLeftPad_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
     /* Here we use our pool allocator, for our throw-away allocation. */
     padlen -= strlen;
     char *buf = RedisModule_PoolAlloc(ctx,padlen+strlen);
-    for (PORT_LONGLONG j = 0; j < padlen; j++) buf[j] = *ch;
+    for (long long j = 0; j < padlen; j++) buf[j] = *ch;
     memcpy(buf+padlen,str,strlen);
 
     RedisModule_ReplyWithStringBuffer(ctx,buf,padlen+strlen);

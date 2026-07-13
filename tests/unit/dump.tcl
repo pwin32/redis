@@ -12,7 +12,7 @@ start_server {tags {"dump"}} {
         r del foo
         r restore foo 5000 $encoded
         set ttl [r pttl foo]
-        assert {$ttl >= 3000 && $ttl <= 5000}
+        assert_range $ttl 3000 5000
         r get foo
     } {bar}
 
@@ -22,7 +22,51 @@ start_server {tags {"dump"}} {
         r del foo
         r restore foo 2569591501 $encoded
         set ttl [r pttl foo]
-        assert {$ttl >= (2569591501-3000) && $ttl <= 2569591501}
+        assert_range $ttl (2569591501-3000) 2569591501
+        r get foo
+    } {bar}
+    
+    test {RESTORE can set an absolute expire} {
+        r set foo bar
+        set encoded [r dump foo]
+        r del foo
+        set now [clock milliseconds]
+        r restore foo [expr $now+3000] $encoded absttl
+        set ttl [r pttl foo]
+        assert_range $ttl 2000 3100
+        r get foo
+    } {bar}
+
+    test {RESTORE with ABSTTL in the past} {
+        r set foo bar
+        set encoded [r dump foo]
+        set now [clock milliseconds]
+        r debug set-active-expire 0
+        r restore foo [expr $now-3000] $encoded absttl REPLACE
+        catch {r debug object foo} e
+        r debug set-active-expire 1
+        set e
+    } {ERR no such key}
+
+    test {RESTORE can set LRU} {
+        r set foo bar
+        set encoded [r dump foo]
+        r del foo
+        r config set maxmemory-policy allkeys-lru
+        r restore foo 0 $encoded idletime 1000
+        set idle [r object idletime foo]
+        assert {$idle >= 1000 && $idle <= 1010}
+        r get foo
+    } {bar}
+    
+    test {RESTORE can set LFU} {
+        r set foo bar
+        set encoded [r dump foo]
+        r del foo
+        r config set maxmemory-policy allkeys-lfu
+        r restore foo 0 $encoded freq 100
+        set freq [r object freq foo]
+        assert {$freq == 100}
         r get foo
     } {bar}
     
@@ -92,6 +136,21 @@ start_server {tags {"dump"}} {
         catch {r restore foo 0 "..." invalid-option} e
         set e
     } {*syntax*}
+
+    test {RESTORE fail with invalid payload size} {
+        r debug set-skip-checksum-validation 1
+        # Payload with mismatched size: claims 0xFFFFFFFFFFFFFFF7 bytes (max uint64 - 8) but provides no data
+        # \x00 = String type
+        # \x81 = 64-bit length marker
+        # \xFF\xFF\xFF\xFF\xFF\xFF\xFF\xF7 = 18446744073709551607 in big-endian
+        # \x0c\x00 = RDB version
+        # \x00... = fake CRC64
+        set encoded "\x00\x81\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xF7\x09\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        r del test
+        catch {r restore test 0 $encoded} e
+        r debug set-skip-checksum-validation 0
+        set e
+    } {*Bad data format*} {needs:debug}
 
     test {DUMP of non existing key returns nil} {
         r dump nonexisting_key
@@ -170,7 +229,7 @@ start_server {tags {"dump"}} {
             $second set list somevalue
             catch {r -1 migrate $second_host $second_port list 9 5000 copy} e
             assert_match {ERR*} $e
-            set res [r -1 migrate $second_host $second_port list 9 5000 copy replace]
+            set ret [r -1 migrate $second_host $second_port list 9 5000 copy replace]
             assert {$ret eq {OK}}
             assert {[$first exists list] == 1}
             assert {[$second exists list] == 1}
@@ -373,7 +432,7 @@ start_server {tags {"dump"}} {
             r -1 lpush list a b c d
             $second config set requirepass foobar2
             catch {r -1 migrate $second_host $second_port list 9 5000 AUTH foobar} err
-            assert_match {*invalid password*} $err
+            assert_match {*WRONGPASS*} $err
         }
     }
 }

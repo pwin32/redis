@@ -31,11 +31,6 @@
 #ifndef RAX_H
 #define RAX_H
 
-#ifdef _WIN32
-#include "Win32_Interop/Win32_Portability.h"
-#include "Win32_Interop/win32_types.h"
-#endif
-
 #include <stdint.h>
 
 /* Representation of a radix tree as implemented in this file, that contains
@@ -63,7 +58,7 @@
  * successive nodes having a single child are "compressed" into the node
  * itself as a string of characters, each representing a next-level child,
  * and only the link to the node representing the last character node is
- * provided inside the representation. So the above representation is turend
+ * provided inside the representation. So the above representation is turned
  * into:
  *
  *                  ["foo"] ""
@@ -128,7 +123,7 @@ typedef struct raxNode {
      * nodes).
      *
      * If the node has an associated key (iskey=1) and is not NULL
-     * (isnull=0), then after the raxNode pointers poiting to the
+     * (isnull=0), then after the raxNode pointers pointing to the
      * children, an additional value pointer is present (as you can see
      * in the representation above as "value-ptr" field).
      */
@@ -211,7 +206,7 @@ void raxStop(raxIterator *it);
 int raxEOF(raxIterator *it);
 void raxShow(rax *rax);
 uint64_t raxSize(rax *rax);
-PORT_ULONG raxTouch(raxNode *n);
+unsigned long raxTouch(raxNode *n);
 void raxSetDebugMsg(int onoff);
 
 /* Internal API. May be used by the node callback in order to access rax nodes
