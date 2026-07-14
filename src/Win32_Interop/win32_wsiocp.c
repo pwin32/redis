@@ -81,14 +81,15 @@ BOOL WSIOCP_CloseSocketStateRFD(int rfd) {
     return WSIOCP_CloseSocketState(WSIOCP_GetExistingSocketState(rfd));
 }
 
-/* For each asynch socket, need to associate completion port */
-int WSIOCP_SocketAttach(int fd, iocpSockState *socketState) {
+/* For each async socket, associate the owning event loop's completion port. */
+int WSIOCP_SocketAttachToPort(int fd, iocpSockState *socketState,
+                             HANDLE completionPort) {
     if (socketState == NULL) {
         socketState = WSIOCP_GetSocketState(fd);
     }
 
-    if (iocph != NULL && socketState != NULL) {
-        if (FDAPI_SocketAttachIOCP(fd, iocph)) {
+    if (completionPort != NULL && socketState != NULL) {
+        if (FDAPI_SocketAttachIOCP(fd, completionPort)) {
             socketState->masks = SOCKET_ATTACHED;
             socketState->wreqs = 0;
             return 0;
@@ -98,6 +99,10 @@ int WSIOCP_SocketAttach(int fd, iocpSockState *socketState) {
     }
 
     return -1;
+}
+
+int WSIOCP_SocketAttach(int fd, iocpSockState *socketState) {
+    return WSIOCP_SocketAttachToPort(fd, socketState, iocph);
 }
 
 const int ACCEPTEX_ADDRESS_BUFFER_SIZE = sizeof(struct sockaddr_storage) + 32;
@@ -493,20 +498,32 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
 }
 
 void WSIOCP_Init(HANDLE iocp) {
-    iocph = iocp;
+    if (iocph == NULL) iocph = iocp;
     FDAPI_SetCloseSocketState(WSIOCP_CloseSocketStateRFD);
 }
 
-void WSIOCP_Cleanup() {
-    iocph = NULL;
+void WSIOCP_Cleanup(HANDLE iocp) {
+    if (iocph == iocp) iocph = NULL;
 }
 
 static HANDLE privateheap;
+static INIT_ONCE privateHeapInitOnce = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK InitializePrivateHeapOnce(PINIT_ONCE once,
+                                               PVOID parameter,
+                                               PVOID *context) {
+    (void)once;
+    (void)parameter;
+    (void)context;
+
+    privateheap = HeapCreate(HEAP_GENERATE_EXCEPTIONS, 0, 0);
+    return privateheap != NULL;
+}
 
 void* CallocMemoryNoCOW(size_t size) {
-    if (!privateheap) {
-        privateheap = HeapCreate(HEAP_GENERATE_EXCEPTIONS | HEAP_NO_SERIALIZE, 0, 0);
-    }
+    if (!InitOnceExecuteOnce(&privateHeapInitOnce,
+                            InitializePrivateHeapOnce, NULL, NULL))
+        return NULL;
     return HeapAlloc(privateheap, HEAP_ZERO_MEMORY, size);
 }
 

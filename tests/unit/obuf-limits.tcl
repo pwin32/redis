@@ -111,7 +111,14 @@ start_server {tags {"obuf-limits"}} {
 
         # Read nothing
         set fd [$rd channel]
-        assert_equal {} [$rd rawread]
+        if {[catch {$rd rawread} reply]} {
+            if {$::tcl_platform(platform) ne "windows" ||
+                ![string match {*I/O error*} $reply]} {
+                error $reply
+            }
+            set reply {}
+        }
+        assert_equal {} $reply
     }
 
     # Note: This test assumes that what's written with one write, will be read by redis in one read.
@@ -151,7 +158,14 @@ start_server {tags {"obuf-limits"}} {
         assert_equal "PONG" [r ping]
         set clients [r client list]
         assert_no_match "*name=multicommands*" $clients
-        assert_equal {} [$rd2 rawread]
+        if {[catch {$rd2 rawread} reply]} {
+            if {$::tcl_platform(platform) ne "windows" ||
+                ![string match {*I/O error*} $reply]} {
+                error $reply
+            }
+            set reply {}
+        }
+        assert_equal {} $reply
     }
 
     test {Execute transactions completely even if client output buffer limit is enforced} {

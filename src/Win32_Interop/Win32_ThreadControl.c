@@ -34,23 +34,41 @@ volatile LONG g_SuspensionRequested = 0;
 HANDLE g_hResumeFromSuspension;
 
 CRITICAL_SECTION g_ThreadControlMutex;
+static INIT_ONCE g_ThreadControlInitOnce = INIT_ONCE_STATIC_INIT;
 
+static BOOL CALLBACK InitializeThreadControlOnce(PINIT_ONCE once,
+                                                 PVOID parameter,
+                                                 PVOID *context) {
+    (void)once;
+    (void)parameter;
+    (void)context;
 
-void InitThreadControl() {    
-    InitializeCriticalSection(&g_ThreadControlMutex);
     g_hResumeFromSuspension = CreateEvent(NULL, TRUE, TRUE, NULL);
-    if (!g_hResumeFromSuspension) {
+    if (g_hResumeFromSuspension == NULL) return FALSE;
+
+    InitializeCriticalSection(&g_ThreadControlMutex);
+    return TRUE;
+}
+
+static void EnsureThreadControlInitialized(void) {
+    if (!InitOnceExecuteOnce(&g_ThreadControlInitOnce,
+                            InitializeThreadControlOnce, NULL, NULL))
         exit(GetLastError());
-    }
+}
+
+void InitThreadControl() {
+    EnsureThreadControlInitialized();
 }
 
 void IncrementWorkerThreadCount() {
+    EnsureThreadControlInitialized();
     EnterCriticalSection(&g_ThreadControlMutex);
     g_NumWorkerThreads++;
     LeaveCriticalSection(&g_ThreadControlMutex);
 }
 
 void DecrementWorkerThreadCount() {
+    EnsureThreadControlInitialized();
     EnterCriticalSection(&g_ThreadControlMutex);
     g_NumWorkerThreads--;
     LeaveCriticalSection(&g_ThreadControlMutex);
@@ -60,6 +78,7 @@ void DecrementWorkerThreadCount() {
 // Returns TRUE if threads are already in safe mode or suspended
 BOOL SuspensionCompleted() { 
     BOOL result;
+    EnsureThreadControlInitialized();
     EnterCriticalSection(&g_ThreadControlMutex);
     result = (g_NumWorkerThreadsInSafeMode == g_NumWorkerThreads);
     LeaveCriticalSection(&g_ThreadControlMutex);
@@ -68,6 +87,7 @@ BOOL SuspensionCompleted() {
 
 // This is meant to be called from the main thread only. 
 void RequestSuspension() {
+    EnsureThreadControlInitialized();
     if (!g_SuspensionRequested) {
         if (!ResetEvent(g_hResumeFromSuspension)) {
             exit(GetLastError());
@@ -78,6 +98,7 @@ void RequestSuspension() {
 
 void ResumeFromSuspension() {
     // This is meant to be called from the main thread only. 
+    EnsureThreadControlInitialized();
     assert(g_SuspensionRequested && SuspensionCompleted());
 
     _InterlockedAnd(&g_SuspensionRequested, 0);
@@ -87,12 +108,14 @@ void ResumeFromSuspension() {
 }
 
 void WorkerThread_EnterSafeMode() {
+    EnsureThreadControlInitialized();
     EnterCriticalSection(&g_ThreadControlMutex);
     g_NumWorkerThreadsInSafeMode++;
     LeaveCriticalSection(&g_ThreadControlMutex);
 }
 
 void WorkerThread_ExitSafeMode() {
+    EnsureThreadControlInitialized();
     for(;;) {
         EnterCriticalSection(&g_ThreadControlMutex);
         if (g_SuspensionRequested) {
@@ -108,4 +131,3 @@ void WorkerThread_ExitSafeMode() {
         }
     }
 }
-

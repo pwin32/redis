@@ -104,20 +104,21 @@ static int aeApiResize(aeEventLoop *eventLoop, int setsize) {
 /* Termination */
 static void aeApiFree(aeEventLoop *eventLoop) {
     aeApiState *state = (aeApiState *) eventLoop->apidata;
+    WSIOCP_Cleanup(state->iocp);
     CloseHandle(state->iocp);
     FreeMemoryNoCOW(state);
-    WSIOCP_Cleanup();
 }
 
 /* Monitor state changes for a socket */
 static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
+    aeApiState *state = (aeApiState *) eventLoop->apidata;
     iocpSockState *sockstate = WSIOCP_GetSocketState(fd);
     if (sockstate == NULL) {
         errno = WSAEINVAL;
         return -1;
     }
     if ((sockstate->masks & SOCKET_ATTACHED) == 0 &&
-        WSIOCP_SocketAttach(fd, sockstate) != 0) {
+        WSIOCP_SocketAttachToPort(fd, sockstate, state->iocp) != 0) {
         return -1;
     }
 
@@ -140,7 +141,6 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
             // If no write active, then need to queue write ready
             if (sockstate->wreqs == 0) {
                 asendreq *areq = (asendreq *) CallocMemoryNoCOW(sizeof(asendreq));
-                aeApiState *state = (aeApiState *) eventLoop->apidata;
                 if (PostQueuedCompletionStatus(state->iocp,
                                                0,
                                                fd,

@@ -1118,6 +1118,26 @@ void clientAcceptHandler(connection *conn) {
 }
 
 #define MAX_ACCEPTS_PER_CALL 1000
+#ifdef _WIN32
+static int closeRejectedConnection(aeEventLoop *el, long long id,
+                                   void *clientData) {
+    UNUSED(el);
+    UNUSED(id);
+    connClose(clientData);
+    return AE_NOMORE;
+}
+
+static void closeRejectedConnectionAfterReply(connection *conn) {
+    if (FDAPI_shutdown(conn->fd, SD_SEND) == 0 &&
+        aeCreateTimeEvent(server.el, 100, closeRejectedConnection,
+                          conn, NULL) != AE_ERR)
+    {
+        return;
+    }
+    connClose(conn);
+}
+#endif
+
 static void acceptCommonHandler(connection *conn, int flags, char *ip) {
     client *c;
     char conninfo[100];
@@ -1154,7 +1174,11 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
             /* Nothing to do, Just to avoid the warning... */
         }
         server.stat_rejected_conn++;
+#ifdef _WIN32
+        closeRejectedConnectionAfterReply(conn);
+#else
         connClose(conn);
+#endif
         return;
     }
 
@@ -1715,6 +1739,11 @@ int writeToClient(client *c, int handler_installed) {
 
         /* Close connection after entire reply has been sent. */
         if (c->flags & CLIENT_CLOSE_AFTER_REPLY) {
+#ifdef _WIN32
+            /* Start a graceful close before the delayed closesocket below.
+             * Otherwise Winsock can discard its queued final reply. */
+            FDAPI_shutdown(c->conn->fd, SD_SEND);
+#endif
             freeClientAsync(c);
             return C_ERR;
         }

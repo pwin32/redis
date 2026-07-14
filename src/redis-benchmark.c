@@ -661,8 +661,8 @@ static void writeHandlerDone(aeEventLoop *el, int fd, void *privdata, int nwritt
 
     c->written += nwritten;
     if (sdslen(c->obuf) == c->written) {
-        aeDeleteFileEvent(config.el, (int) c->context->fd, AE_WRITABLE);
-        aeCreateFileEvent(config.el, (int) c->context->fd, AE_READABLE, readHandler, c);
+        aeDeleteFileEvent(el, (int) c->context->fd, AE_WRITABLE);
+        aeCreateFileEvent(el, (int) c->context->fd, AE_READABLE, readHandler, c);
     }
 }
 #endif

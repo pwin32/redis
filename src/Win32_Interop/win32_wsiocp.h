@@ -68,10 +68,12 @@ typedef struct iocpSockState {
 #define CLOSE_PENDING       0x004000
 
 void           WSIOCP_Init(HANDLE iocp);
-void           WSIOCP_Cleanup();
+void           WSIOCP_Cleanup(HANDLE iocp);
 iocpSockState* WSIOCP_GetExistingSocketState(int fd);
 iocpSockState* WSIOCP_GetSocketState(int fd);
 int            WSIOCP_SocketAttach(int fd, iocpSockState *socketState);
+int            WSIOCP_SocketAttachToPort(int fd, iocpSockState *socketState,
+                                         HANDLE iocp);
 BOOL           WSIOCP_CloseSocketState(iocpSockState* pSocketState);
 BOOL           WSIOCP_CloseSocketStateRFD(int rfd);
 
