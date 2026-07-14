@@ -276,12 +276,13 @@ int     FDAPI_WSASend(int rfd, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD 
 int     FDAPI_WSARecv(int rfd, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 BOOL    FDAPI_WSAGetOverlappedResult(int rfd, LPWSAOVERLAPPED lpOverlapped, LPDWORD lpcbTransfer, BOOL fWait, LPDWORD lpdwFlags);
 BOOL    FDAPI_CloseDuplicatedSocket(int rfd);
-int     FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFO lpProtocolInfo);
-int     FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFO lpProtocolInfo, GROUP g, DWORD dwFlags);
+int     FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFOW lpProtocolInfo);
+int     FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFOW lpProtocolInfo, GROUP g, DWORD dwFlags);
 int     FDAPI_WSAGetLastError(void);
 
 intptr_t FDAPI_get_osfhandle(int fd);
 int      FDAPI_open_osfhandle(intptr_t osfhandle, int flags);
+int      FDAPI_mkstemp(char *filename_template);
 
 // FDAPI helper function
 void FDAPI_SetCloseSocketState(fnWSIOCP_CloseSocketStateRFD* func);
@@ -290,12 +291,14 @@ void FDAPI_SetCloseSocketState(fnWSIOCP_CloseSocketStateRFD* func);
 BOOL ParseStorageAddress(const char *ip, int port, SOCKADDR_STORAGE* pSotrageAddr);
 
 extern int FDAPI_close(int rfd);
+extern int FDAPI_shutdown(int rfd, int how);
 extern int FDAPI_fclose(FILE *file);
 extern int FDAPI_setmode(int fd, int mode);
 extern size_t FDAPI_fwrite(const void *buffer, size_t size, size_t count, FILE *file);
 extern int FDAPI_fileno(FILE *file);
 
-int FDAPI_pipe_for_modules(int* pfds);
+int FDAPI_pipe_for_eventloop(int *pfds);
+int FDAPI_pipe_for_modules(int *pfds);
 
 // Macroize CRT definitions to point to our own
 #ifndef FDAPI_NOCRTREDEFS

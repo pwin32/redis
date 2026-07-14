@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/misc.so]
+set testmodule [redis_test_module misc]
 
 
 start_server {tags {"modules"}} {

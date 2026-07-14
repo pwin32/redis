@@ -12,7 +12,7 @@ proc redisbenchmark_tls_config {testsdir} {
 }
 
 proc redisbenchmark {host port {opts {}}} {
-    set cmd [list src/redis-benchmark -h $host -p $port]
+    set cmd [list $::redis_benchmark_path -h $host -p $port]
     lappend cmd {*}[redisbenchmark_tls_config "tests"]
     lappend cmd {*}$opts
     return $cmd

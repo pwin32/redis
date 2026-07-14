@@ -163,10 +163,11 @@ int gettimeofday_fast(struct timeval *tv, struct timezone *tz) {
     return 0;
 }
 
-int gettimeofday_highres(struct timeval *tv, struct timezone *tz) {
+int gettimeofday_highres(struct timeval *tv, void *tzptr) {
     FILETIME ft;
     unsigned __int64 tmpres = 0;
     static int tzflag;
+    struct timezone *tz = tzptr;
 
     if (NULL == fnGetSystemTimePreciseAsFileTime) {
         InitHighResAbsoluteTime();

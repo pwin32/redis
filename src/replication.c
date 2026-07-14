@@ -93,7 +93,7 @@ char *replicationGetSlaveName(client *c) {
  * the foreground unlink() will only remove the fs name, and deleting the
  * file's storage space will only happen once the last reference is lost. */
 int bg_unlink(const char *filename) {
-    int fd = open(filename,O_RDONLY|O_NONBLOCK);
+    int fd = open(filename,O_RDONLY|O_NONBLOCK,0);
     if (fd == -1) {
         /* Can't open the file? Fall back to unlinking in the main thread. */
         return unlink(filename);
@@ -395,7 +395,7 @@ void replicationFeedMonitors(client *c, list *monitors, int dictid, robj **argv,
     struct timeval tv;
 
     gettimeofday(&tv,NULL);
-    cmdrepr = sdscatprintf(cmdrepr,"%Id.%06Id ",(PORT_LONG)tv.tv_sec,(PORT_LONG)tv.tv_usec);           WIN_PORT_FIX /* %ld -> %Id */
+    cmdrepr = sdscatprintf(cmdrepr,"%lld.%06lld ",(PORT_LONG)tv.tv_sec,(PORT_LONG)tv.tv_usec); WIN_PORT_FIX /* PORT_LONG */
     if (c->flags & CLIENT_LUA) {
         cmdrepr = sdscatprintf(cmdrepr,"[%d lua] ",dictid);
     } else if (c->flags & CLIENT_UNIX_SOCKET) {
@@ -406,7 +406,7 @@ void replicationFeedMonitors(client *c, list *monitors, int dictid, robj **argv,
 
     for (j = 0; j < argc; j++) {
         if (argv[j]->encoding == OBJ_ENCODING_INT) {
-            cmdrepr = sdscatprintf(cmdrepr, "\"%Id\"", (PORT_LONG) argv[j]->ptr);   WIN_PORT_FIX /* %ld -> %Id */
+            cmdrepr = sdscatprintf(cmdrepr, "\"%lld\"", (long long)(intptr_t)argv[j]->ptr); WIN_PORT_FIX /* integer encoding */
         } else {
             cmdrepr = sdscatrepr(cmdrepr,(char*)argv[j]->ptr,
                         sdslen(argv[j]->ptr));
@@ -957,7 +957,8 @@ void replconfCommand(client *c) {
                 c->slave_addr = sdsdup(addr);
             } else {
                 addReplyErrorFormat(c,"REPLCONF ip-address provided by "
-                    "replica instance is too long: %zd bytes", sdslen(addr));
+                    "replica instance is too long: %llu bytes",
+                    (unsigned long long)sdslen(addr));
                 return;
             }
         } else if (!strcasecmp(c->argv[j]->ptr,"capa")) {
@@ -1000,7 +1001,7 @@ void replconfCommand(client *c) {
         } else if (!strcasecmp(c->argv[j]->ptr,"rdb-only")) {
            /* REPLCONF RDB-ONLY is used to identify the client only wants
             * RDB snapshot without replication buffer. */
-            long rdb_only = 0;
+            PORT_LONG rdb_only = 0;
             if (getRangeLongFromObjectOrReply(c,c->argv[j+1],
                     0,1,&rdb_only,NULL) != C_OK)
                 return;
@@ -1039,6 +1040,13 @@ void putSlaveOnline(client *slave) {
         serverLog(LL_NOTICE,
             "Close the connection with replica %s as RDB transfer is complete",
             replicationGetSlaveName(slave));
+#ifdef _WIN32
+        /* closesocket() can discard queued bytes on an IOCP socket. Half-close
+         * the write side so Winsock sends the complete RDB and FIN, then let
+         * the normal read handler free the client when its peer closes. */
+        if (FDAPI_shutdown(slave->conn->fd, SD_SEND) == 0)
+            return;
+#endif
         freeClientAsync(slave);
         return;
     }
@@ -1091,8 +1099,8 @@ void removeRDBUsedToSyncReplicas(void) {
             }
         }
         if (delrdb) {
-            struct stat sb;
-            if (lstat(server.rdb_filename,&sb) != -1) {
+            struct redis_stat sb;
+            if (redis_stat(server.rdb_filename,&sb) != -1) {
                 RDBGeneratedByReplication = 0;
                 serverLog(LL_NOTICE,
                     "Removing the RDB file used to feed replicas "
@@ -1157,15 +1165,67 @@ void sendBulkToSlave(connection *conn) {
         putSlaveOnline(slave);
     }
 }
-#endif
 
 /* Remove one write handler from the list of connections waiting to be writable
  * during rdb pipe transfer. */
+void rdbPipeWriteHandler(struct connection *conn);
+
+#ifdef _WIN32
+static long long rdb_pipe_write_retry_timer = -1;
+
+static int rdbPipeWriteRetryHandler(struct aeEventLoop *eventLoop, long long id,
+                                    void *clientData) {
+    UNUSED(eventLoop);
+    UNUSED(id);
+    UNUSED(clientData);
+
+    if (server.rdb_pipe_conns == NULL ||
+        server.rdb_pipe_numconns_writing == 0)
+    {
+        rdb_pipe_write_retry_timer = -1;
+        return AE_NOMORE;
+    }
+
+    for (int i = 0; i < server.rdb_pipe_numconns; i++) {
+        connection *conn = server.rdb_pipe_conns[i];
+        if (conn == NULL) continue;
+
+        client *slave = connGetPrivateData(conn);
+        if (slave->repl_last_partial_write == 0) continue;
+        if (aeWait(conn->fd, AE_WRITABLE, 0) & AE_WRITABLE)
+            rdbPipeWriteHandler(conn);
+
+        if (server.rdb_pipe_conns == NULL) break;
+    }
+
+    if (server.rdb_pipe_conns != NULL &&
+        server.rdb_pipe_numconns_writing != 0)
+        return 1;
+
+    rdb_pipe_write_retry_timer = -1;
+    return AE_NOMORE;
+}
+
+static void rdbPipeScheduleWriteRetry(void) {
+    if (rdb_pipe_write_retry_timer != -1) return;
+
+    rdb_pipe_write_retry_timer = aeCreateTimeEvent(
+        server.el, 1, rdbPipeWriteRetryHandler, NULL, NULL);
+    if (rdb_pipe_write_retry_timer == AE_ERR)
+        serverPanic("Unrecoverable error creating diskless RDB write retry timer.");
+}
+#endif
+
 void rdbPipeWriteHandlerConnRemoved(struct connection *conn) {
+    client *slave = connGetPrivateData(conn);
+#ifdef _WIN32
+    if (slave->repl_last_partial_write == 0)
+        return;
+#else
     if (!connHasWriteHandler(conn))
         return;
     connSetWriteHandler(conn, NULL);
-    client *slave = connGetPrivateData(conn);
+#endif
     slave->repl_last_partial_write = 0;
     server.rdb_pipe_numconns_writing--;
     /* if there are no more writes for now for this conn, or write error: */
@@ -1215,8 +1275,19 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
     while (1) {
         server.rdb_pipe_bufflen = read(fd, server.rdb_pipe_buff, PROTO_IOBUF_LEN);
         if (server.rdb_pipe_bufflen < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+#ifdef _WIN32
+                if (WSIOCP_QueueNextRead(fd) != 0) {
+                    serverLog(LL_WARNING,
+                        "Diskless rdb transfer, failed to rearm pipe read: %s",
+                        wsa_strerror(errno));
+                } else {
+                    return;
+                }
+#else
                 return;
+#endif
+            }
             serverLog(LL_WARNING,"Diskless rdb transfer, read error sending DB to replicas: %s", strerror(errno));
             for (i=0; i < server.rdb_pipe_numconns; i++) {
                 connection *conn = server.rdb_pipe_conns[i];
@@ -1280,7 +1351,11 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
             if (nwritten != server.rdb_pipe_bufflen) {
                 slave->repl_last_partial_write = server.unixtime;
                 server.rdb_pipe_numconns_writing++;
+#ifdef _WIN32
+                rdbPipeScheduleWriteRetry();
+#else
                 connSetWriteHandler(conn, rdbPipeWriteHandler);
+#endif
             }
             stillAlive++;
         }
@@ -1288,6 +1363,9 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
         if (stillAlive == 0) {
             serverLog(LL_WARNING,"Diskless rdb transfer, last replica dropped, killing fork child.");
             killRDBChild();
+#ifdef _WIN32
+            return;
+#endif
         }
         /*  Remove the pipe read handler if at least one write handler was set. */
         if (server.rdb_pipe_numconns_writing || stillAlive == 0) {
@@ -1369,8 +1447,7 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
                 slave->repl_put_online_on_ack = 1;
                 slave->repl_ack_time = server.unixtime; /* Timeout otherwise. */
             } else {
-                if ((slave->repldbfd = open(server.rdb_filename,O_RDONLY)) == -1 ||
-#endif
+                if ((slave->repldbfd = open(server.rdb_filename,O_RDONLY,0)) == -1 ||
                     redis_fstat(slave->repldbfd,&buf) == -1) {
                     freeClientAsync(slave);
                     serverLog(LL_WARNING,"SYNC failed. Can't open/stat DB after BGSAVE: %s", strerror(errno));
@@ -1581,7 +1658,7 @@ void readSyncBulkPayload(connection *conn) {
             goto error;
         }
 
-        WIN32_ONLY(WSIOCP_QueueNextRead(fd);)
+        WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
 
         if (buf[0] == '-') {
             serverLog(LL_WARNING,
@@ -1644,6 +1721,10 @@ void readSyncBulkPayload(connection *conn) {
         if (nread <= 0) {
             if (connGetState(conn) == CONN_STATE_CONNECTED) {
                 /* equivalent to EAGAIN */
+#ifdef _WIN32
+                if (WSIOCP_QueueNextRead(conn->fd) != 0)
+                    goto error;
+#endif
                 return;
             }
             serverLog(LL_WARNING,"I/O error trying to sync with MASTER: %s",
@@ -1718,7 +1799,13 @@ void readSyncBulkPayload(connection *conn) {
 
         /* If the transfer is yet not complete, we need to read more, so
          * return ASAP and wait for the handler to be called again. */
-        if (!eof_reached) return;
+        if (!eof_reached) {
+#ifdef _WIN32
+            if (WSIOCP_QueueNextRead(conn->fd) != 0)
+                goto error;
+#endif
+            return;
+        }
     }
 
     /* We reach this point in one of the following cases:
@@ -1844,13 +1931,20 @@ void readSyncBulkPayload(connection *conn) {
             return;
         }
 
+        /* Windows cannot rename the transfer file while its descriptor is open. */
+#ifdef _WIN32
+        close(server.repl_transfer_fd);
+        server.repl_transfer_fd = -1;
+        int old_rdb_fd = -1;
+#else
         /* Rename rdb like renaming rewrite aof asynchronously. */
-        int old_rdb_fd = open(server.rdb_filename,O_RDONLY|O_NONBLOCK);
+        int old_rdb_fd = open(server.rdb_filename,O_RDONLY|O_NONBLOCK,0);
+#endif
         if (rename(server.repl_transfer_tmpfile,server.rdb_filename) == -1) {
             serverLog(LL_WARNING,
                 "Failed trying to rename the temp DB into %s in "
                 "MASTER <-> REPLICA synchronization: %s",
-                server.rdb_filename, strerror(errno));
+                server.rdb_filename, IF_WIN32(wsa_strerror(errno),strerror(errno)));
             cancelReplicationHandshake(1);
             if (old_rdb_fd != -1) close(old_rdb_fd);
             return;
@@ -1883,7 +1977,7 @@ void readSyncBulkPayload(connection *conn) {
         }
 
         zfree(server.repl_transfer_tmpfile);
-        close(server.repl_transfer_fd);
+        if (server.repl_transfer_fd != -1) close(server.repl_transfer_fd);
         server.repl_transfer_fd = -1;
         server.repl_transfer_tmpfile = NULL;
     }
@@ -1974,11 +2068,12 @@ char *sendCommand(connection *conn, ...) {
     while(1) {
         arg = va_arg(ap, char*);
         if (arg == NULL) break;
-        cmdargs = sdscatprintf(cmdargs,"$%zu\r\n%s\r\n",strlen(arg),arg);
+        cmdargs = sdscatprintf(cmdargs,"$%llu\r\n%s\r\n",
+            (unsigned long long)strlen(arg),arg);
         argslen++;
     }
 
-    cmd = sdscatprintf(cmd,"*%zu\r\n",argslen);
+    cmd = sdscatprintf(cmd,"*%llu\r\n",(unsigned long long)argslen);
     cmd = sdscatsds(cmd,cmdargs);
     sdsfree(cmdargs);
 
@@ -2114,7 +2209,7 @@ int slaveTryPartialResynchronization(connection *conn, int read_reply) {
             connSetReadHandler(conn, NULL);
             return PSYNC_WRITE_ERROR;
         }
-        WIN32_ONLY(WSIOCP_QueueNextRead(fd);)
+        WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
         return PSYNC_WAIT_REPLY;
     }
 
@@ -2124,7 +2219,7 @@ int slaveTryPartialResynchronization(connection *conn, int read_reply) {
         /* The master may send empty newlines after it receives PSYNC
          * and before to reply, just to keep the connection alive. */
         sdsfree(reply);
-        WIN32_ONLY(WSIOCP_QueueNextRead(fd);)
+        WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
         return PSYNC_WAIT_REPLY;
     }
 
@@ -2276,7 +2371,7 @@ void syncWithMaster(connection *conn) {
          * that will take care about this. */
         err = sendCommand(conn,"PING",NULL);
         if (err) goto write_error;
-        WIN32_ONLY(WSIOCP_QueueNextRead(fd);)
+        WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
         return;
     }
 
@@ -2361,6 +2456,7 @@ void syncWithMaster(connection *conn) {
         if (err) goto write_error;
 
         server.repl_state = REPL_STATE_RECEIVE_AUTH_REPLY;
+        WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
         return;
     }
 
@@ -2378,6 +2474,7 @@ void syncWithMaster(connection *conn) {
         sdsfree(err);
         err = NULL;
         server.repl_state = REPL_STATE_RECEIVE_PORT_REPLY;
+        WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
         return;
     }
 
@@ -2392,6 +2489,7 @@ void syncWithMaster(connection *conn) {
         }
         sdsfree(err);
         server.repl_state = REPL_STATE_RECEIVE_IP_REPLY;
+        WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
         return;
     }
 
@@ -2409,6 +2507,7 @@ void syncWithMaster(connection *conn) {
         }
         sdsfree(err);
         server.repl_state = REPL_STATE_RECEIVE_CAPA_REPLY;
+        WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
         return;
     }
 
@@ -2587,13 +2686,14 @@ void undoConnectWithMaster(void) {
 void replicationAbortSyncTransfer(void) {
     serverAssert(server.repl_state == REPL_STATE_TRANSFER);
     undoConnectWithMaster();
-    if (server.repl_transfer_fd!=-1) {
+    if (server.repl_transfer_fd != -1)
         close(server.repl_transfer_fd);
+    if (server.repl_transfer_tmpfile) {
         bg_unlink(server.repl_transfer_tmpfile);
         zfree(server.repl_transfer_tmpfile);
         server.repl_transfer_tmpfile = NULL;
-        server.repl_transfer_fd = -1;
     }
+    server.repl_transfer_fd = -1;
 }
 
 /* This function aborts a non blocking replication attempt if there is one
@@ -3380,13 +3480,13 @@ void replicationCron(void) {
         listLength(server.slaves))
     {
         /* Note that we don't send the PING if the clients are paused during
-         * a Redis Cluster manual failover: the PING we send will otherwise
+         * a manual failover: the PING we send will otherwise
          * alter the replication offsets of master and slave, and will no longer
          * match the one stored into 'mf_master_offset' state. */
         int manual_failover_in_progress =
             ((server.cluster_enabled &&
               server.cluster->mf_end) ||
-            server.failover_end_time) &&
+            server.failover_state != NO_FAILOVER) &&
             checkClientPauseTimeoutAndReturnIfPaused();
 
         if (!manual_failover_in_progress) {
@@ -3664,9 +3764,9 @@ void failoverCommand(client *c) {
         return;
     }
 
-    long timeout_in_ms = 0;
+    PORT_LONG timeout_in_ms = 0;
     int force_flag = 0;
-    long port = 0;
+    PORT_LONG port = 0;
     char *host = NULL;
 
     /* Parse the command for syntax and arguments. */
@@ -3735,7 +3835,8 @@ void failoverCommand(client *c) {
 
         server.target_replica_host = zstrdup(host);
         server.target_replica_port = port;
-        serverLog(LL_NOTICE,"FAILOVER requested to %s:%ld.",host,port);
+        serverLog(LL_NOTICE,"FAILOVER requested to %s:%lld.",
+            host,(long long)port);
     } else {
         serverLog(LL_NOTICE,"FAILOVER requested to any replica.");
     }

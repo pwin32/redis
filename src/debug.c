@@ -41,9 +41,8 @@
 #include "Win32_Interop/dlfcn.h"
 #endif
 #include <signal.h>
-#include <dlfcn.h>
 #include <fcntl.h>
-#include <unistd.h>
+POSIX_ONLY(#include <unistd.h>)
 
 #ifdef HAVE_BACKTRACE
 #include <execinfo.h>
@@ -66,7 +65,20 @@ typedef ucontext_t sigcontext_t;
 
 /* Globals */
 static int bug_report_start = 0; /* True if bug report header was already logged. */
+#ifdef _WIN32
+static pthread_mutex_t bug_report_start_mutex;
+static INIT_ONCE bug_report_start_mutex_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK initBugReportStartMutex(PINIT_ONCE once, PVOID param, PVOID *context) {
+    UNUSED(once);
+    UNUSED(param);
+    UNUSED(context);
+    pthread_mutex_init(&bug_report_start_mutex,NULL);
+    return TRUE;
+}
+#else
 static pthread_mutex_t bug_report_start_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /* Forward declarations */
 void bugReportStart(void);
@@ -554,18 +566,6 @@ NULL
         }
         serverLog(LL_WARNING,"DB reloaded by DEBUG RELOAD");
         addReply(c,shared.ok);
-    } else if (!strcasecmp(c->argv[1]->ptr,"flushload")) {
-        emptyDb(-1,EMPTYDB_NO_FLAGS,NULL);
-        protectClient(c);
-        int ret = rdbLoad(server.rdb_filename,NULL);
-        unprotectClient(c);
-        if (ret != C_OK) {
-            addReplyError(c,"Error trying to load the RDB dump");
-            return;
-        }
-        server.dirty = 0; /* Prevent AOF / replication */
-        serverLog(LL_WARNING,"DB loaded by DEBUG FLUSHLOAD");
-        addReply(c,shared.ok);
     } else if (!strcasecmp(c->argv[1]->ptr,"loadaof")) {
         if (server.aof_state != AOF_OFF) flushAppendOnlyFile(1);
         emptyDb(-1,EMPTYDB_NO_FLAGS,NULL);
@@ -619,14 +619,14 @@ NULL
             for (quicklistNode *node = ql->head; node; node = node->next) {
                 sz += node->sz;
             }
-            used = snprintf(nextra, remaining, " ql_uncompressed_size:%Iu", sz);        WIN_PORT_FIX /* %lu -> %Iu */
+            used = snprintf(nextra, remaining, " ql_uncompressed_size:%llu", sz); WIN_PORT_FIX /* PORT_ULONG */
             nextra += used;
             remaining -= used;
         }
 
         addReplyStatusFormat(c,
             "Value at:%p refcount:%d "
-            "encoding:%s serializedlength:%Iu "                                 WIN_PORT_FIX /* %zu -> %Iu */
+            "encoding:%s serializedlength:%zu "
             "lru:%d lru_seconds_idle:%llu%s",
             (void*)val, val->refcount,
             strenc, rdbSavedObjectLen(val, c->argv[2]),
@@ -670,7 +670,7 @@ NULL
         }
     } else if (!strcasecmp(c->argv[1]->ptr,"populate") &&
                c->argc >= 3 && c->argc <= 5) {
-        long keys, j;
+        PORT_LONG keys, j;
         robj *key, *val;
         char buf[128];
 
@@ -678,23 +678,20 @@ NULL
             return;
 
         dictExpand(c->db->dict,keys);
-        long valsize = 0;
+        PORT_LONG valsize = 0;
         if ( c->argc == 5 && getPositiveLongFromObjectOrReply(c, c->argv[4], &valsize, NULL) != C_OK ) 
             return;
 
         for (j = 0; j < keys; j++) {
-            PORT_LONG valsize = 0;
-            snprintf(buf,sizeof(buf),"%s:%Iu",                                  WIN_PORT_FIX /* %lu -> %Iu */
-                (c->argc == 3) ? "key" : (char*)c->argv[3]->ptr, j);
+            snprintf(buf,sizeof(buf),"%s:%lld",
+                (c->argc == 3) ? "key" : (char*)c->argv[3]->ptr,
+                (long long)j);
             key = createStringObject(buf,strlen(buf));
-            if (c->argc == 5)
-                if (getLongFromObjectOrReply(c, c->argv[4], &valsize, NULL) != C_OK)
-                    return;
             if (lookupKeyWrite(c->db,key) != NULL) {
                 decrRefCount(key);
                 continue;
             }
-            snprintf(buf,sizeof(buf),"value:%lu",j);
+            snprintf(buf,sizeof(buf),"value:%lld",(long long)j);
             if (valsize==0)
                 val = createStringObject(buf,strlen(buf));
             else {
@@ -988,7 +985,7 @@ void serverLogObjectDebugInfo(const robj *o) {
      * invalid memory access which will bother valgrind and also possibly cause
      * random memory portion to be "leaked" into the logfile. */
     if (o->type == OBJ_STRING && sdsEncodedObject(o)) {
-        serverLog(LL_WARNING,"Object raw string len: %Iu", sdslen(o->ptr));   WIN_PORT_FIX /* %zu -> %Iu */
+        serverLog(LL_WARNING,"Object raw string len: %zu", sdslen(o->ptr));
         if (sdslen(o->ptr) < 4096) {
             sds repr = sdscatrepr(sdsempty(),o->ptr,sdslen(o->ptr));
             serverLog(LL_WARNING,"Object raw string content: %s", repr);
@@ -1033,9 +1030,14 @@ void _serverPanic(const char *file, int line, const char *msg, ...) {
     serverLog(LL_WARNING,"------------------------------------------------");
 #ifdef _WIN32
     serverLog(LL_WARNING, "Fatal Error: %s #%s:%d", fmtmsg, file, line);
+    /* Also emit the upstream "Guru Meditation" marker so that tests which
+     * grep server logs for a controlled panic (e.g. corrupt-dump integration
+     * tests) behave identically on Windows and POSIX. */
+    serverLog(LL_WARNING,"Guru Meditation: %s #%s:%d",fmtmsg,file,line);
 #else
     serverLog(LL_WARNING,"!!! Software Failure. Press left mouse button to continue");
     serverLog(LL_WARNING,"Guru Meditation: %s #%s:%d",fmtmsg,file,line);
+#endif
 
     if (server.crashlog_enabled) {
 #ifdef HAVE_BACKTRACE
@@ -1050,6 +1052,10 @@ void _serverPanic(const char *file, int line, const char *msg, ...) {
 }
 
 void bugReportStart(void) {
+#ifdef _WIN32
+    InitOnceExecuteOnce(&bug_report_start_mutex_once,
+                       initBugReportStartMutex,NULL,NULL);
+#endif
     pthread_mutex_lock(&bug_report_start_mutex);
     if (bug_report_start == 0) {
         serverLogRaw(LL_WARNING|LL_RAW,
@@ -1761,6 +1767,7 @@ int memtest_test_linux_anonymous_maps(void) {
 }
 #endif /* HAVE_PROC_MAPS */
 
+#ifndef _WIN32
 static void killMainThread(void) {
     int err;
     if (pthread_self() != server.main_thread_id && pthread_cancel(server.main_thread_id) == 0) {
@@ -1771,6 +1778,10 @@ static void killMainThread(void) {
         }
     }
 }
+#else
+static void killMainThread(void) {
+}
+#endif
 
 /* Kill the running threads (other than current) in an unclean way. This function
  * should be used only when it's critical to stop the threads for some reason.
@@ -1799,6 +1810,7 @@ void doFastMemoryTest(void) {
 #endif /* HAVE_PROC_MAPS */
 }
 
+#ifndef _WIN32
 /* Scans the (assumed) x86 code starting at addr, for a max of `len`
  * bytes, searching for E8 (callq) opcodes, and dumping the symbols
  * and the call offset if they appear to be valid. */
@@ -1859,32 +1871,6 @@ void invalidFunctionWasCalled() {}
 
 typedef void (*invalidFunctionWasCalledType)();
 
-/* Scans the (assumed) x86 code starting at addr, for a max of `len`
- * bytes, searching for E8 (callq) opcodes, and dumping the symbols
- * and the call offset if they appear to be valid. */
-void dumpX86Calls(void *addr, size_t len) {
-    size_t j;
-    unsigned char *p = addr;
-    Dl_info info;
-    /* Hash table to best-effort avoid printing the same symbol
-     * multiple times. */
-    PORT_ULONG ht[256] = {0};
-
-    if (len < 5) return;
-    for (j = 0; j < len-4; j++) {
-        if (p[j] != 0xE8) continue; /* Not an E8 CALL opcode. */
-        PORT_ULONG target = (PORT_ULONG)addr+j+5;
-        target += *((int32_t*)(p+j+1));
-        if (dladdr((void*)target, &info) != 0 && info.dli_sname != NULL) {
-            if (ht[target&0xff] != target) {
-                printf("Function at 0x%lx is %s\n",target,info.dli_sname);
-                ht[target&0xff] = target;
-            }
-            j += 4; /* Skip the 32 bit immediate. */
-        }
-    }
-}
-
 void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     UNUSED(secret);
     UNUSED(info);
@@ -1939,6 +1925,7 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
 
     bugReportEnd(1, sig);
 }
+#endif
 
 void printCrashReport(void) {
     /* Log INFO and CLIENT LIST */
@@ -1955,7 +1942,9 @@ void printCrashReport(void) {
 }
 
 void bugReportEnd(int killViaSignal, int sig) {
+#ifndef _WIN32
     struct sigaction act;
+#endif
 
     serverLogRaw(LL_WARNING|LL_RAW,
 "\n=== REDIS BUG REPORT END. Make sure to include from START to END. ===\n\n"
@@ -1975,6 +1964,10 @@ void bugReportEnd(int killViaSignal, int sig) {
         abort();
     }
 
+#ifdef _WIN32
+    UNUSED(sig);
+    abort();
+#else
     /* Make sure we exit with the right signal at the end. So for instance
      * the core will be dumped if enabled. */
     sigemptyset (&act.sa_mask);
@@ -1982,6 +1975,7 @@ void bugReportEnd(int killViaSignal, int sig) {
     act.sa_handler = SIG_DFL;
     sigaction (sig, &act, NULL);
     kill(getpid(),sig);
+#endif
 }
 
 /* ==================== Logging functions for debugging ===================== */
@@ -1991,7 +1985,8 @@ void serverLogHexDump(int level, char *descr, void *value, size_t len) {
     unsigned char *v = value;
     char charset[] = "0123456789abcdef";
 
-    serverLog(level,"%s (hexdump of %zu bytes):", descr, len);
+    serverLog(level,"%s (hexdump of %llu bytes):",
+              descr, (unsigned long long)len);
     b = buf;
     while(len) {
         b[0] = charset[(*v)>>4];
@@ -2092,6 +2087,7 @@ void disableWatchdog(void) {
     sigaction(SIGALRM, &act, NULL);
     server.watchdog_period = 0;
 }
+#endif
 
 /* Positive input is sleep time in microseconds. Negative input is fractions
  * of microseconds, i.e. -10 means 100 nanoseconds. */
@@ -2099,5 +2095,27 @@ void debugDelay(int usec) {
     /* Since even the shortest sleep results in context switch and system call,
      * the way we achive short sleeps is by statistically sleeping less often. */
     if (usec < 0) usec = (rand() % -usec) == 0 ? 1: 0;
-    if (usec) usleep(usec);
+    if (!usec) return;
+#ifdef _WIN32
+    /* QFork children cannot use the normal monotonic clock state. Query QPC
+     * directly so rdb-key-save-delay remains safe in the child while still
+     * honoring sub-millisecond test delays. */
+    LARGE_INTEGER frequency, start, now;
+    if (!QueryPerformanceFrequency(&frequency) ||
+        frequency.QuadPart <= 0 ||
+        !QueryPerformanceCounter(&start))
+    {
+        return;
+    }
+    unsigned long long target_ticks =
+        ((unsigned long long)frequency.QuadPart * (unsigned int)usec +
+         999999ULL) / 1000000ULL;
+    while (QueryPerformanceCounter(&now)) {
+        if (now.QuadPart < start.QuadPart) return;
+        if ((unsigned long long)(now.QuadPart - start.QuadPart) >= target_ticks)
+            return;
+    }
+#else
+    usleep(usec);
+#endif
 }

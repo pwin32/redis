@@ -56,9 +56,14 @@
 #include "slowlog.h"
 #include "rdb.h"
 #include "monotonic.h"
+#ifndef _WIN32
 #include <dlfcn.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
+#else
+#include "Win32_Interop/dlfcn.h"
+#include "Win32_Interop/Win32_Error.h"
+#endif
+#include <sys/stat.h>
 
 /* --------------------------------------------------------------------------
  * Private data structures used by the modules system. Those are data
@@ -108,6 +113,18 @@ struct RedisModuleSharedAPI {
 typedef struct RedisModuleSharedAPI RedisModuleSharedAPI;
 
 static dict *modules; /* Hash table of modules. SDS -> RedisModule ptr.*/
+
+#ifdef _WIN32
+/* QFork starts a fresh process and restores the Redis heap snapshot before
+ * running the persistence child. Keep the module registry in that snapshot. */
+void *moduleGetForkData(void) {
+    return modules;
+}
+
+void moduleSetForkData(void *data) {
+    modules = data;
+}
+#endif
 
 /* Entries in the context->amqueue array, representing objects to free
  * when the callback returns. */
@@ -185,7 +202,7 @@ struct RedisModuleCtx {
 };
 typedef struct RedisModuleCtx RedisModuleCtx;
 
-#define REDISMODULE_CTX_INIT {(void*)(unsigned long)&RM_GetApi, NULL, NULL, NULL, NULL, 0, 0, 0, NULL, 0, NULL, NULL, NULL, NULL, {0}}
+#define REDISMODULE_CTX_INIT {(void*)(uintptr_t)&RM_GetApi, NULL, NULL, NULL, NULL, 0, 0, 0, NULL, 0, NULL, NULL, NULL, NULL, {0}}
 #define REDISMODULE_CTX_AUTO_MEMORY (1<<0)
 #define REDISMODULE_CTX_KEYS_POS_REQUEST (1<<1)
 #define REDISMODULE_CTX_BLOCKED_REPLY (1<<2)
@@ -295,12 +312,20 @@ typedef struct RedisModuleBlockedClient {
                                      Used for measuring latency of blocking cmds */
 } RedisModuleBlockedClient;
 
+#ifndef _WIN32
 static pthread_mutex_t moduleUnblockedClientsMutex = PTHREAD_MUTEX_INITIALIZER;
+#else
+static pthread_mutex_t moduleUnblockedClientsMutex;
+#endif
 static list *moduleUnblockedClients;
 
 /* We need a mutex that is unlocked / relocked in beforeSleep() in order to
  * allow thread safe contexts to execute commands at a safe moment. */
+#ifndef _WIN32
 static pthread_mutex_t moduleGIL = PTHREAD_MUTEX_INITIALIZER;
+#else
+static pthread_mutex_t moduleGIL;
+#endif
 
 
 /* Function pointer type for keyspace event notification subscriptions from modules. */
@@ -686,7 +711,7 @@ void moduleFreeContext(RedisModuleCtx *ctx) {
 /* This Redis command binds the normal Redis command invocation with commands
  * exported by modules. */
 void RedisModuleCommandDispatcher(client *c) {
-    RedisModuleCommandProxy *cp = (void*)(unsigned long)c->cmd->getkeys_proc;
+    RedisModuleCommandProxy *cp = (void*)(uintptr_t)c->cmd->getkeys_proc;
     RedisModuleCtx ctx = REDISMODULE_CTX_INIT;
 
     ctx.flags |= REDISMODULE_CTX_MODULE_COMMAND_CALL;
@@ -722,7 +747,7 @@ void RedisModuleCommandDispatcher(client *c) {
  * the context in a way that the command can recognize this is a special
  * "get keys" call by calling RedisModule_IsKeysPositionRequest(ctx). */
 int moduleGetCommandKeysViaAPI(struct redisCommand *cmd, robj **argv, int argc, getKeysResult *result) {
-    RedisModuleCommandProxy *cp = (void*)(unsigned long)cmd->getkeys_proc;
+    RedisModuleCommandProxy *cp = (void*)(uintptr_t)cmd->getkeys_proc;
     RedisModuleCtx ctx = REDISMODULE_CTX_INIT;
 
     ctx.module = cp->module;
@@ -909,7 +934,7 @@ int RM_CreateCommand(RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc c
     cp->rediscmd->proc = RedisModuleCommandDispatcher;
     cp->rediscmd->arity = -1;
     cp->rediscmd->flags = flags | CMD_MODULE;
-    cp->rediscmd->getkeys_proc = (redisGetKeysProc*)(unsigned long)cp;
+    cp->rediscmd->getkeys_proc = (redisGetKeysProc*)(uintptr_t)cp;
     cp->rediscmd->firstkey = firstkey;
     cp->rediscmd->lastkey = lastkey;
     cp->rediscmd->keystep = keystep;
@@ -1376,7 +1401,9 @@ int RM_StringToDouble(const RedisModuleString *str, double *d) {
  * Returns REDISMODULE_OK on success or REDISMODULE_ERR if the string is
  * not a valid string representation of a double value. */
 int RM_StringToLongDouble(const RedisModuleString *str, long double *ld) {
-    int retval = string2ld(str->ptr,sdslen(str->ptr),ld);
+    PORT_LONGDOUBLE value;
+    int retval = string2ld(str->ptr,sdslen(str->ptr),&value);
+    if (retval) *ld = value;
     return retval ? REDISMODULE_OK : REDISMODULE_ERR;
 }
 
@@ -1420,7 +1447,7 @@ RedisModuleString *moduleAssertUnsharedString(RedisModuleString *str) {
         str->encoding = OBJ_ENCODING_RAW;
     } else if (str->encoding == OBJ_ENCODING_INT) {
         /* Convert the string from integer to raw encoding. */
-        str->ptr = sdsfromlonglong((long)str->ptr);
+        str->ptr = sdsfromlonglong((PORT_LONG)(uintptr_t)str->ptr);
         str->encoding = OBJ_ENCODING_RAW;
     }
     return str;
@@ -4880,7 +4907,7 @@ void RM_SaveLongDouble(RedisModuleIO *io, long double value) {
     char buf[MAX_LONG_DOUBLE_CHARS];
     /* Long double has different number of bits in different platforms, so we
      * save it as a string type. */
-    size_t len = ld2string(buf,sizeof(buf),value,LD_STR_HEX);
+    size_t len = ld2string(buf,sizeof(buf),(PORT_LONGDOUBLE)value,LD_STR_HEX);
     RM_SaveStringBuffer(io,buf,len);
 }
 
@@ -4888,13 +4915,13 @@ void RM_SaveLongDouble(RedisModuleIO *io, long double value) {
  * long double value saved by RedisModule_SaveLongDouble(). */
 long double RM_LoadLongDouble(RedisModuleIO *io) {
     if (io->error) return 0;
-    long double value;
+    PORT_LONGDOUBLE value;
     size_t len;
     char* str = RM_LoadStringBuffer(io,&len);
     if (!str) return 0;
     string2ld(str,len,&value);
     RM_Free(str);
-    return value;
+    return (long double)value;
 }
 
 /* Iterate over modules, and trigger rdb aux saving for the ones modules types
@@ -5222,15 +5249,29 @@ void RM_LatencyAddSample(const char *event, mstime_t latency) {
  * https://redis.io/topics/modules-blocking-ops.
  * -------------------------------------------------------------------------- */
 
-/* Readable handler for the awake pipe. We do nothing here, the awake bytes
- * will be actually read in a more appropriate place in the
- * moduleHandleBlockedClients() function that is where clients are actually
- * served. */
+/* Readable handler for the awake pipe. The Windows IOCP path consumes a
+ * bounded batch before rearming; moduleHandleBlockedClients() drains any
+ * remaining wake bytes where clients are actually served. */
 void moduleBlockedClientPipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
     UNUSED(el);
-    UNUSED(fd);
     UNUSED(mask);
     UNUSED(privdata);
+#ifdef _WIN32
+    char buf[64];
+    ssize_t nread = read(fd,buf,sizeof(buf));
+    if (nread < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        serverLog(LL_WARNING,
+            "Error reading the module blocked-client wake socket: %s",
+            wsa_strerror(errno));
+    }
+    if (WSIOCP_QueueNextRead(fd) != 0) {
+        serverLog(LL_WARNING,
+            "Error rearming the module blocked-client wake socket: %s",
+            wsa_strerror(errno));
+    }
+#else
+    UNUSED(fd);
+#endif
 }
 
 /* This is called from blocked.c in order to unblock a client: may be called
@@ -7918,6 +7959,11 @@ int RM_ExitFromChild(int retcode) {
  * pid matches, and returns C_OK. Otherwise if there is no active module
  * child or the pid does not match, return C_ERR without doing anything. */
 int TerminateModuleForkChild(int child_pid, int wait) {
+#ifdef _WIN32
+    UNUSED(child_pid);
+    UNUSED(wait);
+    return C_ERR;
+#else
     /* Module child should be active and pid should match. */
     if (server.child_type != CHILD_TYPE_MODULE ||
         server.child_pid != child_pid) return C_ERR;
@@ -7934,6 +7980,7 @@ int TerminateModuleForkChild(int child_pid, int wait) {
     moduleForkInfo.done_handler = NULL;
     moduleForkInfo.done_handler_user_data = NULL;
     return C_OK;
+#endif
 }
 
 /* Can be used to kill the forked child process from the parent process.
@@ -8282,10 +8329,16 @@ int RM_IsSubEventSupported(RedisModuleEvent event, int64_t subevent) {
  * 'eid' and 'subid' are just the main event ID and the sub event associated
  * with the event, depending on what exactly happened. */
 void moduleFireServerEvent(uint64_t eid, int subid, void *data) {
+#ifdef _WIN32
+    /* QFork children start as fresh processes and do not initialize or load
+     * the module subsystem. Parent-side fork events are still delivered. */
+    if (server.in_fork_child != CHILD_TYPE_NONE) return;
+#endif
     /* Fast path to return ASAP if there is nothing to do, avoiding to
      * setup the iterator and so forth: we want this call to be extremely
      * cheap if there are no registered modules. */
-    if (listLength(RedisModule_EventListeners) == 0) return;
+    if (RedisModule_EventListeners == NULL ||
+        listLength(RedisModule_EventListeners) == 0) return;
 
     int real_client_used = 0;
     listIter li;
@@ -8446,7 +8499,7 @@ int moduleRegisterApi(const char *funcname, void *funcptr) {
 }
 
 #define REGISTER_API(name) \
-    moduleRegisterApi("RedisModule_" #name, (void *)(unsigned long)RM_ ## name)
+    moduleRegisterApi("RedisModule_" #name, (void *)(uintptr_t)RM_ ## name)
 
 /* Global initialization at Redis startup. */
 void moduleRegisterCoreAPI(void);
@@ -8462,6 +8515,10 @@ void moduleInitModulesSystemLast(void) {
 }
 
 void moduleInitModulesSystem(void) {
+#ifdef _WIN32
+    pthread_mutex_init(&moduleUnblockedClientsMutex,NULL);
+    pthread_mutex_init(&moduleGIL,NULL);
+#endif
     moduleUnblockedClients = listCreate();
     server.loadmodule_queue = listCreate();
     modules = dictCreate(&modulesDictType,NULL);
@@ -8476,10 +8533,10 @@ void moduleInitModulesSystem(void) {
     server.module_client = NULL;
 
     moduleRegisterCoreAPI();
-    if (pipe(server.module_blocked_pipe) == -1) {
+    if (IF_WIN32(FDAPI_pipe_for_modules,pipe)(server.module_blocked_pipe) == -1) {
         serverLog(LL_WARNING,
             "Can't create the pipe for module blocking commands: %s",
-            strerror(errno));
+            IF_WIN32(wsa_strerror(errno), strerror(errno)));
         exit(1);
     }
     /* Make the pipe non blocking. This is just a best effort aware mechanism
@@ -8547,7 +8604,7 @@ void moduleUnregisterCommands(struct RedisModule *module) {
         struct redisCommand *cmd = dictGetVal(de);
         if (cmd->proc == RedisModuleCommandDispatcher) {
             RedisModuleCommandProxy *cp =
-                (void*)(unsigned long)cmd->getkeys_proc;
+                (void*)(uintptr_t)cmd->getkeys_proc;
             sds cmdname = cp->rediscmd->name;
             if (cp->module == module) {
                 dictDelete(server.commands,cmdname);
@@ -8570,21 +8627,23 @@ int moduleLoad(const char *path, void **module_argv, int module_argc) {
     ctx.client = moduleFreeContextReusedClient;
     selectDb(ctx.client, 0);
 
+#ifndef _WIN32
     struct stat st;
-    if (stat(path, &st) == 0)
-    {   // this check is best effort
-        if (!(st.st_mode & (S_IXUSR  | S_IXGRP | S_IXOTH))) {
+    if (stat(path, &st) == 0) {
+        /* This check is best effort. */
+        if (!(st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
             serverLog(LL_WARNING, "Module %s failed to load: It does not have execute permissions.", path);
             return C_ERR;
         }
     }
+#endif
 
     handle = dlopen(path,RTLD_NOW|RTLD_LOCAL);
     if (handle == NULL) {
         serverLog(LL_WARNING, "Module %s failed to load: %s", path, dlerror());
         return C_ERR;
     }
-    onload = (int (*)(void *, void **, int))(unsigned long) dlsym(handle,"RedisModule_OnLoad");
+    onload = (int (*)(void *, void **, int))(uintptr_t)dlsym(handle,"RedisModule_OnLoad");
     if (onload == NULL) {
         dlclose(handle);
         serverLog(LL_WARNING,
@@ -8645,7 +8704,7 @@ int moduleUnload(sds name) {
 
     /* Give module a chance to clean up. */
     int (*onunload)(void *);
-    onunload = (int (*)(void *))(unsigned long) dlsym(module->handle, "RedisModule_OnUnload");
+    onunload = (int (*)(void *))(uintptr_t)dlsym(module->handle, "RedisModule_OnUnload");
     if (onunload) {
         RedisModuleCtx ctx = REDISMODULE_CTX_INIT;
         ctx.module = module;
@@ -9471,10 +9530,12 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(CommandFilterArgInsert);
     REGISTER_API(CommandFilterArgReplace);
     REGISTER_API(CommandFilterArgDelete);
+#ifndef _WIN32
     REGISTER_API(Fork);
     REGISTER_API(SendChildHeartbeat);
     REGISTER_API(ExitFromChild);
     REGISTER_API(KillForkChild);
+#endif
     REGISTER_API(RegisterInfoFunc);
     REGISTER_API(InfoAddSection);
     REGISTER_API(InfoBeginDictField);

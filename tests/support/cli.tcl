@@ -12,7 +12,7 @@ proc rediscli_tls_config {testsdir} {
 }
 
 proc rediscli {host port {opts {}}} {
-    set cmd [list src/redis-cli -h $host -p $port]
+    set cmd [list $::redis_cli_path -h $host -p $port]
     lappend cmd {*}[rediscli_tls_config "tests"]
     lappend cmd {*}$opts
     return $cmd

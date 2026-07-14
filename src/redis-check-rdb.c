@@ -33,7 +33,9 @@
 
 #include <stdarg.h>
 #include <sys/time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 void createSharedObjects(void);
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len);
@@ -153,6 +155,7 @@ void rdbCheckSetError(const char *fmt, ...) {
     rdbstate.error_set = 1;
 }
 
+#ifndef _WIN32
 /* During RDB check we setup a special signal handler for memory violations
  * and similar conditions, so that we can log the offending part of the RDB
  * if the crash is due to broken content. */
@@ -177,6 +180,7 @@ void rdbCheckSetupSignals(void) {
     sigaction(SIGILL, &act, NULL);
     sigaction(SIGABRT, &act, NULL);
 }
+#endif
 
 /* Check the specified RDB file. Return 0 if the RDB looks sane, otherwise
  * 1 is returned.
@@ -190,7 +194,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     static rio rdb; /* Pointed by global struct riostate. */
 
     int closefile = (fp == NULL);
-    if (fp == NULL && (fp = fopen(rdbfilename,"r")) == NULL) return 1;
+    if (fp == NULL && (fp = fopen(rdbfilename,IF_WIN32("rb","r"))) == NULL) return 1;
 
     startLoadingFile(fp, rdbfilename, RDBFLAGS_NONE);
     rioInitWithFile(&rdb,fp);
@@ -384,7 +388,7 @@ int redis_check_rdb_main(int argc, char **argv, FILE *fp) {
     server.sanitize_dump_payload = SANITIZE_DUMP_YES;
     rdbCheckMode = 1;
     rdbCheckInfo("Checking RDB file %s", argv[1]);
-    rdbCheckSetupSignals();
+    POSIX_ONLY(rdbCheckSetupSignals();)
     int retval = redis_check_rdb(argv[1],fp);
     if (retval == 0) {
         rdbCheckInfo("\\o/ RDB looks OK! \\o/");

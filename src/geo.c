@@ -869,16 +869,6 @@ void geosearchstoreCommand(client *c) {
     georadiusGeneric(c, 2, GEOSEARCH|GEOSEARCHSTORE);
 }
 
-/* GEORADIUS_RO wrapper function. */
-void georadiusroCommand(client *c) {
-    georadiusGeneric(c, RADIUS_COORDS|RADIUS_NOSTORE);
-}
-
-/* GEORADIUSBYMEMBER_RO wrapper function. */
-void georadiusbymemberroCommand(client *c) {
-    georadiusGeneric(c, RADIUS_MEMBER|RADIUS_NOSTORE);
-}
-
 /* GEOHASH key ele1 ele2 ... eleN
  *
  * Returns an array with an 11 characters geohash representation of the

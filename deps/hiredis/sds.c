@@ -573,9 +573,9 @@ hisds hi_sdscatprintf(hisds s, const char *fmt, ...) {
  * %s - C String
  * %S - SDS string
  * %i - signed int
- * %I - 64 bit signed integer (PORT_LONGLONG, int64_t)
+ * %I - 64 bit signed integer (long long, int64_t)
  * %u - unsigned int
- * %U - 64 bit unsigned integer (PORT_ULONGLONG, uint64_t)
+ * %U - 64 bit unsigned integer (unsigned long long, uint64_t)
  * %% - Verbatim "%" character.
  */
 hisds hi_sdscatfmt(hisds s, char const *fmt, ...) {
@@ -757,14 +757,14 @@ int hi_sdsrange(hisds s, ssize_t start, ssize_t end) {
 void hi_sdstolower(hisds s) {
     int len = hi_sdslen(s), j;
 
-		for (j = 0; j < len; j++) s[j] = tolower(s[j]);
+    for (j = 0; j < len; j++) s[j] = tolower(s[j]);
 }
 
 /* Apply toupper() to every character of the hisds string 's'. */
 void hi_sdstoupper(hisds s) {
     int len = hi_sdslen(s), j;
 
-		for (j = 0; j < len; j++) s[j] = toupper(s[j]);
+    for (j = 0; j < len; j++) s[j] = toupper(s[j]);
 }
 
 /* Compare two hisds strings s1 and s2 with memcmp().

@@ -96,10 +96,13 @@ int pthread_sigmask(int how, const sigset_t *set, sigset_t *oset) {
     return 0;
 }
 
-int win32_pthread_join(pthread_t *thread, void **value_ptr) {
+int pthread_join(pthread_t thread, void **value_ptr) {
     int result;
-    HANDLE h = OpenThread(SYNCHRONIZE, FALSE, *thread);
+    HANDLE h = OpenThread(SYNCHRONIZE, FALSE, thread);
     UNUSED(value_ptr);
+
+    if (h == NULL)
+        return GetLastError();
 
     switch (WaitForSingleObject(h, INFINITE)) {
         case WAIT_OBJECT_0:

@@ -27,55 +27,7 @@
 #include "../../src/Win32_Interop/Win32_types_hiredis.h"
 #include "../../src/Win32_Interop/Win32_Error.h"
 #include "../../src/Win32_Interop/Win32_FDAPI.h"
-#define INCL_WINSOCK_API_PROTOTYPES 0 // Important! Do not include Winsock API definitions to avoid conflicts with API entry points defined below.
-#include <WinSock2.h>                 // For SOCKADDR_STORAGE
 
 #include "hiredis.h"
-
-#ifndef snprintf
-#define snprintf c99_snprintf
-
-#ifdef __GNUC__
-#define HIREDIS_INLINE static inline
-#else
-#define HIREDIS_INLINE __inline
-#endif
-
-HIREDIS_INLINE int c99_vsnprintf(char* str, size_t size, const char* format, va_list ap)
-{
-    int count = -1;
-
-    if (size != 0)
-        count = _vsnprintf_s(str, size, _TRUNCATE, format, ap);
-    if (count == -1)
-        count = _vscprintf(format, ap);
-
-    return count;
-}
-
-HIREDIS_INLINE int c99_snprintf(char* str, size_t size, const char* format, ...)
-{
-    int count;
-    va_list ap;
-
-    va_start(ap, format);
-    count = c99_vsnprintf(str, size, format, ap);
-    va_end(ap);
-
-    return count;
-}
-
-#undef HIREDIS_INLINE
-#endif
-
-#ifndef va_copy
-#define va_copy(d,s) ((d) = (s))
-#endif
-
-redisContext *redisPreConnectNonBlock(const char *ip, int port, SOCKADDR_STORAGE *sa);
-int redisBufferReadDone(redisContext *c, char *buf, ssize_t nread);
-int redisBufferWriteDone(redisContext *c, int nwritten, int *done);
-
-int redisContextPreConnectTcp(redisContext *c, const char *addr, int port, struct timeval *timeout, SOCKADDR_STORAGE *ss);
 
 #endif

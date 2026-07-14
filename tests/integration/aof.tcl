@@ -165,7 +165,7 @@ tags {"aof"} {
         }
 
         catch {
-            exec src/redis-check-aof $aof_path
+            exec $::redis_check_aof_path $aof_path
         } result
         assert_match "*ok_up_to_line=8*" $result
     }

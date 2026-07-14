@@ -643,7 +643,7 @@ void decrbyCommand(client *c) {
 }
 
 void incrbyfloatCommand(client *c) {
-    long double incr, value;
+    PORT_LONGDOUBLE incr, value;
     robj *o, *new;
 
     o = lookupKeyWrite(c->db,c->argv[1]);
@@ -958,4 +958,3 @@ cleanup:
     if (objb) decrRefCount(objb);
     return;
 }
-

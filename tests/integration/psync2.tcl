@@ -5,7 +5,22 @@ proc show_cluster_status {} {
         # time info. Logs are in the following form:
         #
         # 11296:M 25 May 2020 17:37:14.652 # Server initialized
-        set log_regexp {^[0-9]+:[A-Z] [0-9]+ [A-z]+ [0-9]+ ([0-9:.]+) .*}
+        #
+        # The Windows/MinGW redis-server uses a different prefix shape:
+        #
+        # [9360] 14 Jul 15:59:16.006 # Server initialized
+        #
+        # i.e. the pid is bracketed, there is no ":<role>" char, and the
+        # year field is omitted. Use a matching regexp on Windows so the
+        # per-instance log arrays actually get populated (otherwise the
+        # POSIX regexp matches zero lines and log($j) stays unset).
+        # (detection idiom matches the pause_process/windows_control_process
+        # branch in tests/support/util.tcl)
+        if {$::tcl_platform(platform) eq "windows"} {
+            set log_regexp {^\[[0-9]+\] [0-9]+ [A-z]+ ([0-9:.]+) .*}
+        } else {
+            set log_regexp {^[0-9]+:[A-Z] [0-9]+ [A-z]+ [0-9]+ ([0-9:.]+) .*}
+        }
         set repl_regexp {(master|repl|sync|backlog|meaningful|offset)}
 
         puts "Master ID is $master_id"
@@ -24,8 +39,16 @@ proc show_cluster_status {} {
         # First: load the lines as lists for each instance.
         array set log {}
         for {set j 0} {$j < 5} {incr j} {
+            # Ensure every element exists even if no line matches, so the
+            # later "llength $log($j)" is always safe (Windows logs use a
+            # different prefix shape and may otherwise match nothing).
+            set log($j) {}
             set fd [open $R_log($j)]
             while {[gets $fd l] >= 0} {
+                # Windows redis-server writes CRLF line endings; drop a
+                # trailing CR so the trailing ".*" and later comparisons
+                # are not thrown off.
+                set l [string trimright $l "\r"]
                 if {[regexp $log_regexp $l] &&
                     [regexp -nocase $repl_regexp $l]} {
                     lappend log($j) $l
@@ -283,6 +306,13 @@ start_server {} {
         set sync_partial [status $R($master_id) sync_partial_ok]
         set sync_partial_err [status $R($master_id) sync_partial_err]
         catch {
+            # POSIX kill_server sends SIGTERM, so Redis saves the current RDB
+            # before restart. The Windows helper uses taskkill /F and cannot
+            # run that shutdown path; save explicitly so this test exercises
+            # the same current RDB AUX replication metadata.
+            if {$::tcl_platform(platform) eq "windows"} {
+                $R($slave_id) save
+            }
             $R($slave_id) config rewrite
             restart_server [expr {0-$slave_id}] true false
             set R($slave_id) [srv [expr {0-$slave_id}] client]

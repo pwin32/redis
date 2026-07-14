@@ -48,6 +48,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 #include <limits.h>
@@ -59,6 +60,9 @@ POSIX_ONLY(#include <unistd.h>)
 #include <syslog.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#else
+#include "Win32_Interop/Win32_PThread.h"
+#endif
 #include <lua.h>
 #include <signal.h>
 
@@ -66,8 +70,13 @@ POSIX_ONLY(#include <unistd.h>)
 #include <systemd/sd-daemon.h>
 #endif
 
+#ifdef _WIN32
+typedef PORT_LONGLONG mstime_t; /* millisecond time type. */
+typedef PORT_LONGLONG ustime_t; /* microsecond time type. */
+#else
 typedef long long mstime_t; /* millisecond time type. */
 typedef long long ustime_t; /* microsecond time type. */
+#endif
 
 #include "ae.h"      /* Event driven programming library */
 #include "sds.h"     /* Dynamic safe strings */
@@ -787,13 +796,6 @@ typedef struct blockingState {
     robj *xread_consumer;   /* XREADGROUP consumer name. */
     int xread_group_noack;
 
-    /* BLOCK_STREAM */
-    size_t xread_count;     /* XREAD COUNT option. */
-    robj *xread_group;      /* XREADGROUP group name. */
-    robj *xread_consumer;   /* XREADGROUP consumer name. */
-    mstime_t xread_retry_time, xread_retry_ttl;
-    int xread_group_noack;
-
     /* BLOCKED_WAIT */
     int numreplicas;        /* Number of replicas we are waiting for ACK. */
     long long reploffset;   /* Replication offset to reach. */
@@ -915,6 +917,9 @@ typedef struct client {
     long duration;          /* Current command duration. Used for measuring latency of blocking/non-blocking cmds */
     time_t lastinteraction; /* Time of the last interaction, used for timeout */
     time_t obuf_soft_limit_reached_time;
+#ifdef _WIN32
+    mstime_t close_after_reply_time;
+#endif
     uint64_t flags;         /* Client flags: CLIENT_* macros. */
     int authenticated;      /* Needed when the default user requires auth. */
     int replstate;          /* Replication state if this is a slave. */
@@ -1843,11 +1848,11 @@ void resetClient(client *c);
 void freeClientOriginalArgv(client *c);
 void sendReplyToClient(connection *conn);
 void *addReplyDeferredLen(client *c);
-void setDeferredArrayLen(client *c, void *node, long length);
-void setDeferredMapLen(client *c, void *node, long length);
-void setDeferredSetLen(client *c, void *node, long length);
-void setDeferredAttributeLen(client *c, void *node, long length);
-void setDeferredPushLen(client *c, void *node, long length);
+void setDeferredArrayLen(client *c, void *node, PORT_LONG length);
+void setDeferredMapLen(client *c, void *node, PORT_LONG length);
+void setDeferredSetLen(client *c, void *node, PORT_LONG length);
+void setDeferredAttributeLen(client *c, void *node, PORT_LONG length);
+void setDeferredPushLen(client *c, void *node, PORT_LONG length);
 void processInputBuffer(client *c);
 void processGopherRequest(client *c);
 void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask);
@@ -1877,11 +1882,11 @@ void addReplyDouble(client *c, double d);
 void addReplyBigNum(client *c, const char* num, size_t len);
 void addReplyHumanLongDouble(client *c, long double d);
 void addReplyLongLong(client *c, long long ll);
-void addReplyArrayLen(client *c, long length);
-void addReplyMapLen(client *c, long length);
-void addReplySetLen(client *c, long length);
-void addReplyAttributeLen(client *c, long length);
-void addReplyPushLen(client *c, long length);
+void addReplyArrayLen(client *c, PORT_LONG length);
+void addReplyMapLen(client *c, PORT_LONG length);
+void addReplySetLen(client *c, PORT_LONG length);
+void addReplyAttributeLen(client *c, PORT_LONG length);
+void addReplyPushLen(client *c, PORT_LONG length);
 void addReplyHelp(client *c, const char **help);
 void addReplySubcommandSyntaxError(client *c);
 void addReplyLoadedModules(client *c);
@@ -1891,8 +1896,8 @@ size_t sdsZmallocSize(sds s);
 size_t getStringObjectSdsUsedMemory(robj *o);
 void freeClientReplyValue(void *o);
 void *dupClientReplyValue(void *o);
-void getClientsMaxBuffers(unsigned long *longest_output_list,
-                          unsigned long *biggest_input_buffer);
+void getClientsMaxBuffers(PORT_ULONG *longest_output_list,
+                          PORT_ULONG *biggest_input_buffer);
 char *getClientPeerId(client *client);
 char *getClientSockName(client *client);
 sds catClientInfoString(sds s, client *client);
@@ -1933,7 +1938,12 @@ void initThreadedIO(void);
 client *lookupClientByID(uint64_t id);
 int authRequired(client *c);
 
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+void addReplyErrorFormat(client *c, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
+void addReplyStatusFormat(client *c, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
+#elif defined(__GNUC__)
 void addReplyErrorFormat(client *c, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 void addReplyStatusFormat(client *c, const char *fmt, ...)
@@ -1964,8 +1974,8 @@ int checkPrefixCollisionsOrReply(client *c, robj **prefix, size_t numprefix);
 void listTypeTryConversion(robj *subject, robj *value);
 void listTypePush(robj *subject, robj *value, int where);
 robj *listTypePop(robj *subject, int where);
-unsigned long listTypeLength(const robj *subject);
-listTypeIterator *listTypeInitIterator(robj *subject, long index, unsigned char direction);
+PORT_ULONG listTypeLength(const robj *subject);
+listTypeIterator *listTypeInitIterator(robj *subject, PORT_LONG index, unsigned char direction);
 void listTypeReleaseIterator(listTypeIterator *li);
 int listTypeNext(listTypeIterator *li, listTypeEntry *entry);
 robj *listTypeGet(listTypeEntry *entry);
@@ -1976,7 +1986,7 @@ void listTypeConvert(robj *subject, int enc);
 robj *listTypeDup(robj *o);
 void unblockClientWaitingData(client *c);
 void popGenericCommand(client *c, int where);
-void listElementsRemoved(client *c, robj *key, int where, robj *o, long count);
+void listElementsRemoved(client *c, robj *key, int where, robj *o, PORT_LONG count);
 
 /* MULTI/EXEC/WATCH... */
 void unwatchAllKeys(client *c);
@@ -2029,16 +2039,16 @@ robj *createZsetObject(void);
 robj *createZsetZiplistObject(void);
 robj *createStreamObject(void);
 robj *createModuleObject(moduleType *mt, void *value);
-int getLongFromObjectOrReply(client *c, robj *o, long *target, const char *msg);
-int getPositiveLongFromObjectOrReply(client *c, robj *o, long *target, const char *msg);
-int getRangeLongFromObjectOrReply(client *c, robj *o, long min, long max, long *target, const char *msg);
+int getLongFromObjectOrReply(client *c, robj *o, PORT_LONG *target, const char *msg);
+int getPositiveLongFromObjectOrReply(client *c, robj *o, PORT_LONG *target, const char *msg);
+int getRangeLongFromObjectOrReply(client *c, robj *o, PORT_LONG min, PORT_LONG max, PORT_LONG *target, const char *msg);
 int checkType(client *c, robj *o, int type);
 int getLongLongFromObjectOrReply(client *c, robj *o, PORT_LONGLONG *target, const char *msg);
 int getDoubleFromObjectOrReply(client *c, robj *o, double *target, const char *msg);
 int getDoubleFromObject(const robj *o, double *target);
 int getLongLongFromObject(robj *o, long long *target);
-int getLongDoubleFromObject(robj *o, long double *target);
-int getLongDoubleFromObjectOrReply(client *c, robj *o, long double *target, const char *msg);
+int getLongDoubleFromObject(robj *o, PORT_LONGDOUBLE *target);
+int getLongDoubleFromObjectOrReply(client *c, robj *o, PORT_LONGDOUBLE *target, const char *msg);
 int getIntFromObjectOrReply(client *c, robj *o, int *target, const char *msg);
 char *strEncoding(int encoding);
 int compareStringObjects(robj *a, robj *b);
@@ -2214,13 +2224,13 @@ void zzlNext(unsigned char *zl, unsigned char **eptr, unsigned char **sptr);
 void zzlPrev(unsigned char *zl, unsigned char **eptr, unsigned char **sptr);
 unsigned char *zzlFirstInRange(unsigned char *zl, zrangespec *range);
 unsigned char *zzlLastInRange(unsigned char *zl, zrangespec *range);
-unsigned long zsetLength(const robj *zobj);
+PORT_ULONG zsetLength(const robj *zobj);
 void zsetConvert(robj *zobj, int encoding);
 void zsetConvertToZiplistIfNeeded(robj *zobj, size_t maxelelen, size_t totelelen);
 int zsetScore(robj *zobj, sds member, double *score);
-unsigned long zslGetRank(zskiplist *zsl, double score, sds o);
+PORT_ULONG zslGetRank(zskiplist *zsl, double score, sds o);
 int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, double *newscore);
-long zsetRank(robj *zobj, sds ele, int reverse);
+PORT_LONG zsetRank(robj *zobj, sds ele, int reverse);
 int zsetDel(robj *zobj, sds ele);
 robj *zsetDup(robj *o);
 int zsetZiplistValidateIntegrity(unsigned char *zl, size_t size, int deep);
@@ -2266,7 +2276,10 @@ void slowlogPushCurrentCommand(client *c, struct redisCommand *cmd, ustime_t dur
 int prepareForShutdown(int flags);
 void afterCommand(client *c);
 int inNestedCall(void);
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+void _serverLog(int level, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
+#elif defined(__GNUC__)
 void _serverLog(int level, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 #else
@@ -2416,8 +2429,8 @@ unsigned int getKeysInSlot(unsigned int hashslot, robj **keys, unsigned int coun
 unsigned int countKeysInSlot(unsigned int hashslot);
 unsigned int delKeysInSlot(unsigned int hashslot);
 int verifyClusterConfigWithData(void);
-void scanGenericCommand(client *c, robj *o, unsigned long cursor);
-int parseScanCursorOrReply(client *c, robj *o, unsigned long *cursor);
+void scanGenericCommand(client *c, robj *o, PORT_ULONG cursor);
+int parseScanCursorOrReply(client *c, robj *o, PORT_ULONG *cursor);
 void slotToKeyAdd(sds key);
 void slotToKeyDel(sds key);
 int dbAsyncDelete(redisDb *db, robj *key);
@@ -2756,14 +2769,17 @@ void *realloc(void *ptr, size_t size) __attribute__ ((deprecated));
 /* Debugging stuff */
 void _serverAssertWithInfo(const client *c, const robj *o, const char *estr, const char *file, int line);
 void _serverAssert(const char *estr, const char *file, int line);
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+void _serverPanic(const char *file, int line, const char *msg, ...)
+    __attribute__ ((format (gnu_printf, 3, 4)));
+#elif defined(__GNUC__)
 void _serverPanic(const char *file, int line, const char *msg, ...)
     __attribute__ ((format (printf, 3, 4)));
 #else
 void _serverPanic(const char *file, int line, const char *msg, ...);
 #endif
 void serverLogObjectDebugInfo(const robj *o);
-void sigsegvHandler(int sig, siginfo_t *info, void *secret);
+POSIX_ONLY(void sigsegvHandler(int sig, siginfo_t *info, void *secret);)
 const char *getSafeInfoString(const char *s, size_t len, char **tmp);
 sds genRedisInfoString(const char *section);
 sds genModulesInfoString(sds info);

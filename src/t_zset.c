@@ -472,7 +472,7 @@ PORT_ULONG zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned int
  * Returns 0 when the element cannot be found, rank otherwise.
  * Note that the rank is 1-based due to the span of zsl->header to the
  * first element. */
-unsigned long zslGetRank(zskiplist *zsl, double score, sds ele) {
+PORT_ULONG zslGetRank(zskiplist *zsl, double score, sds ele) {
     zskiplistNode *x;
     PORT_ULONG rank = 0;
     int i;
@@ -1158,8 +1158,8 @@ unsigned char *zzlDeleteRangeByRank(unsigned char *zl, unsigned int start, unsig
  * Common sorted set API
  *----------------------------------------------------------------------------*/
 
-unsigned long zsetLength(const robj *zobj) {
-    unsigned long length = 0;
+PORT_ULONG zsetLength(const robj *zobj) {
+    PORT_ULONG length = 0;
     if (zobj->encoding == OBJ_ENCODING_ZIPLIST) {
         length = zzlLength(zobj->ptr);
     } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
@@ -1517,9 +1517,9 @@ int zsetDel(robj *zobj, sds ele) {
  * the one with the lowest score. Otherwise if 'reverse' is non-zero
  * the rank is computed considering as element with rank 0 the one with
  * the highest score. */
-long zsetRank(robj *zobj, sds ele, int reverse) {
-    unsigned long llen;
-    unsigned long rank;
+PORT_LONG zsetRank(robj *zobj, sds ele, int reverse) {
+    PORT_ULONG llen;
+    PORT_ULONG rank;
 
     llen = zsetLength(zobj);
 
@@ -1600,7 +1600,7 @@ robj *zsetDup(robj *o) {
         zskiplist *zsl = zs->zsl;
         zskiplistNode *ln;
         sds ele;
-        long llen = zsetLength(o);
+        PORT_ULONG llen = zsetLength(o);
 
         /* We copy the skiplist elements from the greatest to the
          * smallest (that's trivial since the elements are already ordered in
@@ -1896,7 +1896,7 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
     PORT_ULONG deleted = 0;
     zrangespec range;
     zlexrangespec lexrange;
-    long start, end, llen;
+    PORT_LONG start, end, llen;
     char *notify_type = NULL;
 
     /* Step 1: Parse the range. */
@@ -2871,7 +2871,7 @@ typedef enum {
 
 typedef struct zrange_result_handler zrange_result_handler;
 
-typedef void (*zrangeResultBeginFunction)(zrange_result_handler *c, long length);
+typedef void (*zrangeResultBeginFunction)(zrange_result_handler *c, PORT_LONG length);
 typedef void (*zrangeResultFinalizeFunction)(
     zrange_result_handler *c, size_t result_count);
 typedef void (*zrangeResultEmitCBufferFunction)(
@@ -2903,7 +2903,7 @@ struct zrange_result_handler {
  * length can be used to provide the result length in advance (avoids deferred reply overhead).
  * length can be set to -1 if the result length is not know in advance.
  */
-static void zrangeResultBeginClient(zrange_result_handler *handler, long length) {
+static void zrangeResultBeginClient(zrange_result_handler *handler, PORT_LONG length) {
     if (length > 0) {
         /* In case of WITHSCORES, respond with a single array in RESP2, and
         * nested arrays in RESP3. We can't use a map response type since the
@@ -2963,9 +2963,9 @@ static void zrangeResultFinalizeClient(zrange_result_handler *handler,
 }
 
 /* Result handler methods for storing the ZRANGESTORE to a zset. */
-static void zrangeResultBeginStore(zrange_result_handler *handler, long length)
+static void zrangeResultBeginStore(zrange_result_handler *handler, PORT_LONG length)
 {
-    if (length > (long)server.zset_max_ziplist_entries)
+    if (length > (PORT_LONG)server.zset_max_ziplist_entries)
         handler->dstobj = createZsetObject();
     else
         handler->dstobj = createZsetZiplistObject();
@@ -3049,11 +3049,11 @@ static void zrangeResultHandlerDestinationKeySet (zrange_result_handler *handler
 
 /* This command implements ZRANGE, ZREVRANGE. */
 void genericZrangebyrankCommand(zrange_result_handler *handler,
-    robj *zobj, long start, long end, int withscores, int reverse) {
+    robj *zobj, PORT_LONG start, PORT_LONG end, int withscores, int reverse) {
 
     client *c = handler->client;
-    long llen;
-    long rangelen;
+    PORT_LONG llen;
+    PORT_LONG rangelen;
     size_t result_cardinality;
 
     /* Sanitize indexes. */
@@ -3164,16 +3164,16 @@ void zrevrangeCommand(client *c) {
 
 /* This command implements ZRANGEBYSCORE, ZREVRANGEBYSCORE. */
 void genericZrangebyscoreCommand(zrange_result_handler *handler,
-    zrangespec *range, robj *zobj, long offset, long limit, 
+    zrangespec *range, robj *zobj, PORT_LONG offset, PORT_LONG limit,
     int reverse) {
 
     client *c = handler->client;
-    unsigned long rangelen = 0;
+    PORT_ULONG rangelen = 0;
 
     handler->beginResultEmission(handler, -1);
 
     /* For invalid offset, return directly. */
-    if (offset > 0 && offset >= (long)zsetLength(zobj)) {
+    if (offset > 0 && offset >= (PORT_LONG)zsetLength(zobj)) {
         handler->finalizeResultEmission(handler, 0);
         return;
     }
@@ -3453,11 +3453,11 @@ void zlexcountCommand(client *c) {
 
 /* This command implements ZRANGEBYLEX, ZREVRANGEBYLEX. */
 void genericZrangebylexCommand(zrange_result_handler *handler,
-    zlexrangespec *range, robj *zobj, int withscores, long offset, long limit,
+    zlexrangespec *range, robj *zobj, int withscores, PORT_LONG offset, PORT_LONG limit,
     int reverse)
 {
     client *c = handler->client;
-    unsigned long rangelen = 0;
+    PORT_ULONG rangelen = 0;
 
     handler->beginResultEmission(handler, -1);
 
@@ -3602,11 +3602,11 @@ void zrangeGenericCommand(zrange_result_handler *handler, int argc_start, int st
     int maxidx = argc_start + 2;
 
     /* Options common to all */
-    long opt_start = 0;
-    long opt_end = 0;
+    PORT_LONG opt_start = 0;
+    PORT_LONG opt_end = 0;
     int opt_withscores = 0;
-    long opt_offset = 0;
-    long opt_limit = -1;
+    PORT_LONG opt_offset = 0;
+    PORT_LONG opt_limit = -1;
 
     /* Step 1: Skip the <src> <min> <max> args and parse remaining optional arguments. */
     for (int j=argc_start + 3; j < c->argc; j++) {
@@ -3787,7 +3787,7 @@ void zrankGenericCommand(client *c, int reverse) {
     robj *key = c->argv[1];
     robj *ele = c->argv[2];
     robj *zobj;
-    long rank;
+    PORT_LONG rank;
 
     if ((zobj = lookupKeyReadOrReply(c,key,shared.null[c->resp])) == NULL ||
         checkType(c,zobj,OBJ_ZSET)) return;
@@ -3834,7 +3834,7 @@ void genericZpopCommand(client *c, robj **keyv, int keyc, int where, int emitkey
     robj *zobj = NULL;
     sds ele;
     double score;
-    long count = 1;
+    PORT_LONG count = 1;
 
     /* If a count argument as passed, parse it or return an error. */
     if (countarg) {
@@ -3863,7 +3863,7 @@ void genericZpopCommand(client *c, robj **keyv, int keyc, int where, int emitkey
     }
 
     void *arraylen_ptr = addReplyDeferredLen(c);
-    long result_count = 0;
+    PORT_LONG result_count = 0;
 
     /* We emit the key only for the blocking variant. */
     if (emitkey) addReplyBulk(c,key);
@@ -4036,8 +4036,8 @@ static void zarndmemberReplyWithZiplist(client *c, unsigned int count, ziplistEn
  * the number of randoms per time. */
 #define ZRANDMEMBER_RANDOM_SAMPLE_LIMIT 1000
 
-void zrandmemberWithCountCommand(client *c, long l, int withscores) {
-    unsigned long count, size;
+void zrandmemberWithCountCommand(client *c, PORT_LONG l, int withscores) {
+    PORT_ULONG count, size;
     int uniq = 1;
     robj *zsetobj;
 
@@ -4046,7 +4046,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
     size = zsetLength(zsetobj);
 
     if(l >= 0) {
-        count = (unsigned long) l;
+        count = (PORT_ULONG) l;
     } else {
         count = -l;
         uniq = 0;
@@ -4111,7 +4111,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
     memset(&zval, 0, sizeof(zval));
 
     /* Initiate reply count, RESP3 responds with nested array, RESP2 with flat one. */
-    long reply_size = count < size ? count : size;
+    PORT_LONG reply_size = count < size ? count : size;
     if (withscores && c->resp == 2)
         addReplyArrayLen(c, reply_size*2);
     else
@@ -4232,19 +4232,19 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
 
 /* ZRANDMEMBER key [<count> [WITHSCORES]] */
 void zrandmemberCommand(client *c) {
-    long l;
+    PORT_LONG l;
     int withscores = 0;
     robj *zset;
     ziplistEntry ele;
 
     if (c->argc >= 3) {
-        if (getRangeLongFromObjectOrReply(c,c->argv[2],-LONG_MAX,LONG_MAX,&l,NULL) != C_OK) return;
+        if (getRangeLongFromObjectOrReply(c,c->argv[2],-PORT_LONG_MAX,PORT_LONG_MAX,&l,NULL) != C_OK) return;
         if (c->argc > 4 || (c->argc == 4 && strcasecmp(c->argv[3]->ptr,"withscores"))) {
             addReplyErrorObject(c,shared.syntaxerr);
             return;
         } else if (c->argc == 4) {
             withscores = 1;
-            if (l < -LONG_MAX/2 || l > LONG_MAX/2) {
+            if (l < -PORT_LONG_MAX/2 || l > PORT_LONG_MAX/2) {
                 addReplyError(c,"value is out of range");
                 return;
             }

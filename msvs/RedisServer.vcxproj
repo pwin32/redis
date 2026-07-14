@@ -96,9 +96,10 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <PreprocessorDefinitions>USE_JEMALLOC;_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;_DEBUG;_CONSOLE;__x86_64__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\geohash-int;$(SolutionDir);..\deps\hiredis;..\deps\jemalloc-5.2.1\include;..\deps\jemalloc-5.2.1\include\msvc_compat</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;..\deps\jemalloc-5.2.1\include;..\deps\jemalloc-5.2.1\include\msvc_compat</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <DisableSpecificWarnings>4996;4146</DisableSpecificWarnings>
@@ -123,9 +124,10 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <PreprocessorDefinitions>USE_JEMALLOC;_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;_DEBUG;_CONSOLE;__x86_64__;%(PreprocessorDefinitions);_WIN32_WINNT=0x0501</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\geohash-int;$(SolutionDir);..\deps\hiredis;..\deps\jemalloc-5.2.1\include;..\deps\jemalloc-5.2.1\include\msvc_compat</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;..\deps\jemalloc-5.2.1\include;..\deps\jemalloc-5.2.1\include\msvc_compat</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <DisableSpecificWarnings>4996;4146</DisableSpecificWarnings>
@@ -144,9 +146,10 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <PreprocessorDefinitions>USE_JEMALLOC;_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;NDEBUG;_CONSOLE;__x86_64__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\geohash-int;$(SolutionDir);..\deps\hiredis;$(SolutionDir)..\deps\jemalloc-5.2.1\include;$(SolutionDir)..\deps\jemalloc-5.2.1\include\msvc_compat</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;$(SolutionDir)..\deps\jemalloc-5.2.1\include;$(SolutionDir)..\deps\jemalloc-5.2.1\include\msvc_compat</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <DisableSpecificWarnings>4996;4146</DisableSpecificWarnings>
       <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -182,9 +185,10 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <PreprocessorDefinitions>USE_JEMALLOC;_OFF_T_DEFINED;_WIN32;LACKS_STDLIB_H;NDEBUG;_CONSOLE;__x86_64__;%(PreprocessorDefinitions);_WIN32_WINNT=0x0501</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\geohash-int;$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\jemalloc-5.2.1\include;..\deps\jemalloc-5.2.1\include\msvc_compat</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\jemalloc-5.2.1\include;..\deps\jemalloc-5.2.1\include\msvc_compat</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <DisableSpecificWarnings>4996;4146</DisableSpecificWarnings>
       <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -205,6 +209,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\src\acl.c" />
     <ClCompile Include="..\src\adlist.c" />
     <ClCompile Include="..\src\ae.c" />
     <ClCompile Include="..\src\anet.c" />
@@ -215,8 +220,10 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\childinfo.c" />
     <ClCompile Include="..\src\cluster.c" />
     <ClCompile Include="..\src\config.c" />
+    <ClCompile Include="..\src\connection.c" />
     <ClCompile Include="..\src\crc16.c" />
     <ClCompile Include="..\src\crc64.c" />
+    <ClCompile Include="..\src\crcspeed.c" />
     <ClCompile Include="..\src\db.c" />
     <ClCompile Include="..\src\debug.c" />
     <ClCompile Include="..\src\defrag.c" />
@@ -226,18 +233,26 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\expire.c" />
     <ClCompile Include="..\src\geo.c" />
     <ClCompile Include="..\src\geohash.c" />
-    <ClCompile Include="..\src\geohash_helper.c" />
+    <ClCompile Include="..\src\geohash_helper.c">
+      <PreprocessorDefinitions>_USE_MATH_DEFINES;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="..\src\gopher.c" />
     <ClCompile Include="..\src\hyperloglog.c" />
     <ClCompile Include="..\src\intset.c" />
     <ClCompile Include="..\src\latency.c" />
     <ClCompile Include="..\src\lazyfree.c" />
     <ClCompile Include="..\src\listpack.c" />
-    <ClCompile Include="..\src\lolwut.c" />
+    <ClCompile Include="..\src\lolwut.c">
+      <PreprocessorDefinitions>_USE_MATH_DEFINES;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="..\src\lolwut5.c" />
+    <ClCompile Include="..\src\lolwut6.c" />
     <ClCompile Include="..\src\lzf_c.c" />
     <ClCompile Include="..\src\lzf_d.c" />
     <ClCompile Include="..\src\memtest.c" />
     <ClCompile Include="..\src\module.c" />
+    <ClCompile Include="..\src\monotonic.c" />
+    <ClCompile Include="..\src\mt19937-64.c" />
     <ClCompile Include="..\src\multi.c" />
     <ClCompile Include="..\src\networking.c" />
     <ClCompile Include="..\src\notify.c" />
@@ -257,8 +272,10 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\sds.c" />
     <ClCompile Include="..\src\sentinel.c" />
     <ClCompile Include="..\src\server.c" />
+    <ClCompile Include="..\src\setcpuaffinity.c" />
     <ClCompile Include="..\src\setproctitle.c" />
     <ClCompile Include="..\src\sha1.c" />
+    <ClCompile Include="..\src\sha256.c" />
     <ClCompile Include="..\src\siphash.c" />
     <ClCompile Include="..\src\slowlog.c" />
     <ClCompile Include="..\src\sort.c" />
@@ -270,6 +287,9 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\t_stream.c" />
     <ClCompile Include="..\src\t_string.c" />
     <ClCompile Include="..\src\t_zset.c" />
+    <ClCompile Include="..\src\timeout.c" />
+    <ClCompile Include="..\src\tls.c" />
+    <ClCompile Include="..\src\tracking.c" />
     <ClCompile Include="..\src\util.c" />
     <ClCompile Include="..\src\Win32_Interop\dlfcn.c" />
     <ClCompile Include="..\src\ziplist.c" />
@@ -285,7 +305,11 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\bio.h" />
     <ClInclude Include="..\src\cluster.h" />
     <ClInclude Include="..\src\config.h" />
+    <ClInclude Include="..\src\connection.h" />
+    <ClInclude Include="..\src\connhelpers.h" />
+    <ClInclude Include="..\src\crc16_slottable.h" />
     <ClInclude Include="..\src\crc64.h" />
+    <ClInclude Include="..\src\crcspeed.h" />
     <ClInclude Include="..\src\debugmacro.h" />
     <ClInclude Include="..\src\dict.h" />
     <ClInclude Include="..\src\endianconv.h" />
@@ -298,8 +322,11 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\latency.h" />
     <ClInclude Include="..\src\listpack.h" />
     <ClInclude Include="..\src\listpack_malloc.h" />
+    <ClInclude Include="..\src\lolwut.h" />
     <ClInclude Include="..\src\lzf.h" />
     <ClInclude Include="..\src\lzfP.h" />
+    <ClInclude Include="..\src\monotonic.h" />
+    <ClInclude Include="..\src\mt19937-64.h" />
     <ClInclude Include="..\src\pqsort.h" />
     <ClInclude Include="..\src\quicklist.h" />
     <ClInclude Include="..\src\rand.h" />
@@ -314,6 +341,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\sdsalloc.h" />
     <ClInclude Include="..\src\server.h" />
     <ClInclude Include="..\src\sha1.h" />
+    <ClInclude Include="..\src\sha256.h" />
     <ClInclude Include="..\src\slowlog.h" />
     <ClInclude Include="..\src\solarisfixes.h" />
     <ClInclude Include="..\src\sparkline.h" />
@@ -334,9 +362,6 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     </ProjectReference>
     <ProjectReference Include="..\src\Win32_Interop\Win32_Interop.vcxproj">
       <Project>{8c07f811-c81c-432c-b334-1ae6faecf951}</Project>
-    </ProjectReference>
-    <ProjectReference Include="geohash\geohash.vcxproj">
-      <Project>{2b888c28-52cf-4e94-993c-b43d77e0b91a}</Project>
     </ProjectReference>
     <ProjectReference Include="hiredis\hiredis.vcxproj">
       <Project>{13e85053-54b3-487b-8ddb-3430b1c1b3bf}</Project>

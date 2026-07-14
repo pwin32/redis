@@ -87,6 +87,7 @@
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;_LIB;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -101,6 +102,7 @@
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;_LIB;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -114,6 +116,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -133,6 +136,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -150,19 +154,27 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\deps\hiredis\alloc.c" />
     <ClCompile Include="..\..\deps\hiredis\async.c" />
     <ClCompile Include="..\..\deps\hiredis\hiredis.c" />
     <ClCompile Include="..\..\deps\hiredis\net.c" />
     <ClCompile Include="..\..\deps\hiredis\read.c" />
     <ClCompile Include="..\..\deps\hiredis\sds.c" />
+    <ClCompile Include="..\..\deps\hiredis\sockcompat.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\deps\hiredis\alloc.h" />
     <ClInclude Include="..\..\deps\hiredis\async.h" />
+    <ClInclude Include="..\..\deps\hiredis\async_private.h" />
     <ClInclude Include="..\..\deps\hiredis\fmacros.h" />
     <ClInclude Include="..\..\deps\hiredis\hiredis.h" />
     <ClInclude Include="..\..\deps\hiredis\net.h" />
     <ClInclude Include="..\..\deps\hiredis\read.h" />
     <ClInclude Include="..\..\deps\hiredis\sds.h" />
+    <ClInclude Include="..\..\deps\hiredis\sdsalloc.h" />
+    <ClInclude Include="..\..\deps\hiredis\sdscompat.h" />
+    <ClInclude Include="..\..\deps\hiredis\sockcompat.h" />
+    <ClInclude Include="..\..\deps\hiredis\win32.h" />
     <ClInclude Include="..\..\deps\hiredis\win32_hiredis.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

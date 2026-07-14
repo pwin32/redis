@@ -2155,6 +2155,7 @@ void ldbSendLogs(void) {
  * The caller should call ldbEndSession() only if ldbStartSession()
  * returned 1. */
 int ldbStartSession(client *c) {
+#ifndef _WIN32
     ldb.forked = (c->flags & CLIENT_LUA_DEBUG_SYNC) == 0;
     if (ldb.forked) {
         pid_t cp = redisFork(CHILD_TYPE_LDB);
@@ -2176,7 +2177,7 @@ int ldbStartSession(client *c) {
             serverLog(LL_WARNING,"Redis forked for debugging eval");
         } else {
             /* Parent */
-            listAddNodeTail(ldb.children,(void*)(unsigned long)cp);
+            listAddNodeTail(ldb.children,(void*)(uintptr_t)cp);
             freeClientAsync(c); /* Close the client in the parent side. */
             return 0;
         }
@@ -2184,6 +2185,16 @@ int ldbStartSession(client *c) {
         serverLog(LL_WARNING,
             "Redis synchronous debugging eval session started");
     }
+#else
+    ldb.forked = 0;
+    if ((c->flags & CLIENT_LUA_DEBUG_SYNC) == 0) {
+        addReplyError(c,
+            "Lua debugging without sync mode is not supported on Windows");
+        return 0;
+    }
+    serverLog(LL_WARNING,
+        "Redis synchronous debugging eval session started");
+#endif
 
     /* Setup our debugging session. */
     connBlock(ldb.conn);
@@ -2240,7 +2251,7 @@ void ldbEndSession(client *c) {
  * forked debugging sessions, it is removed from the children list.
  * If the pid was found non-zero is returned. */
 int ldbRemoveChild(pid_t pid) {
-    listNode *ln = listSearchKey(ldb.children,(void*)(unsigned long)pid);
+    listNode *ln = listSearchKey(ldb.children,(void*)(uintptr_t)pid);
     if (ln) {
         listDelNode(ldb.children,ln);
         return 1;
@@ -2256,17 +2267,19 @@ int ldbPendingChildren(void) {
 
 /* Kill all the forked sessions. */
 void ldbKillForkedSessions(void) {
+#ifndef _WIN32
     listIter li;
     listNode *ln;
 
     listRewind(ldb.children,&li);
     while((ln = listNext(&li))) {
-        pid_t pid = (unsigned long) ln->value;
+        pid_t pid = (pid_t)(uintptr_t)ln->value;
         serverLog(LL_WARNING,"Killing debugging session %ld",(long)pid);
         kill(pid,SIGKILL);
     }
     listRelease(ldb.children);
     ldb.children = listCreate();
+#endif
 }
 
 /* Wrapper for EVAL / EVALSHA that enables debugging, and makes sure
@@ -2741,7 +2754,7 @@ void ldbBreak(sds *argv, int argc) {
         int j;
         for (j = 1; j < argc; j++) {
             char *arg = argv[j];
-            long line;
+            PORT_LONG line;
             if (!string2l(arg,sdslen(arg),&line)) {
                 ldbLog(sdscatfmt(sdsempty(),"Invalid argument:'%s'",arg));
             } else {

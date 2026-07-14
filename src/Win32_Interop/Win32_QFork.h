@@ -70,10 +70,8 @@ extern "C" {
         LPVOID modules);
 
     pid_t BeginForkOperation_Socket(
-        int *fds,
-        int numfds,
-        uint64_t *clientids,
-        int pipe_write_fd,
+        int rdb_pipe_write_fd,
+        int safe_to_exit_pipe_fd,
         LPVOID redisData,
         int sizeOfRedisData,
         uint8_t *dictHashSeed,

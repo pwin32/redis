@@ -34,6 +34,7 @@ src/nodes.conf
 deps/lua/src/lua
 deps/lua/src/luac
 deps/lua/src/liblua.a
+deps/jemalloc-5.2.1/configure~
 tests/tls/*
 .make-*
 .prerequisites

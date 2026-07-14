@@ -44,7 +44,7 @@ struct timezone {
 void     InitTimeFunctions();
 uint64_t GetHighResRelativeTime(double scale);
 time_t   gettimeofdaysecs(unsigned int *usec);
-int      gettimeofday_highres(struct timeval *tv, struct timezone *tz);
+int      gettimeofday_highres(struct timeval *tv, void *tz);
 char*    ctime_r(const time_t *clock, char *buf);
 
 #endif

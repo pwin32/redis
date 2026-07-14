@@ -1,6 +1,6 @@
 # source tests/support/util.tcl
 
-set testmodule [file normalize tests/modules/blockedclient.so]
+set testmodule [redis_test_module blockedclient]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

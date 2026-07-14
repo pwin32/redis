@@ -153,15 +153,15 @@ struct QForkInfo {
     size_t redisDataSize;
     uint8_t dictHashSeed[16];
     LPVOID modules;
+    size_t usedMemory;
     char filename[MAX_PATH];
-    int *fds;
-    int numfds;
-    uint64_t *clientids;
-    HANDLE pipe_write_handle;
+    int rdb_pipe_write_fd;
+    WSAPROTOCOL_INFOW rdb_pipe_write_protocol_info;
+    int rdb_child_exit_pipe_read_fd;
+    WSAPROTOCOL_INFOW rdb_child_exit_pipe_read_protocol_info;
     HANDLE aof_pipe_write_ack_handle;
     HANDLE aof_pipe_read_ack_handle;
     HANDLE aof_pipe_read_data_handle;
-    LPVOID protocolInfo;
 };
 
 extern "C"
@@ -169,6 +169,7 @@ extern "C"
     int checkForSentinelMode(int argc, char **argv);
     void InitTimeFunctions();
     PORT_LONGLONG memtoll(const char *p, int *err);     // Forward def from util.h
+    size_t zmalloc_used_memory(void);
 }
 
 const size_t cAllocationGranularity = 1 << LG_PAGE;    // 4MB per heap block (matches the default allocation threshold of jemalloc)
@@ -326,7 +327,8 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
         SetupRedisGlobals(g_pQForkControl->globalData.redisData,
             g_pQForkControl->globalData.redisDataSize,
             g_pQForkControl->globalData.dictHashSeed,
-            g_pQForkControl->globalData.modules);
+            g_pQForkControl->globalData.modules,
+            g_pQForkControl->globalData.usedMemory);
 
         // Execute requested operation
         if (g_pQForkControl->typeOfOperation == OperationType::otRDB) {
@@ -343,29 +345,33 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
             );
         }
         else if (g_pQForkControl->typeOfOperation == OperationType::otSocket) {
-            LPWSAPROTOCOL_INFO lpProtocolInfo = (LPWSAPROTOCOL_INFO) g_pQForkControl->globalData.protocolInfo;
-            int pipe_write_fd = FDAPI_open_osfhandle((intptr_t) g_pQForkControl->globalData.pipe_write_handle, _O_APPEND);
-            int* fds = (int*) malloc(sizeof(int) * g_pQForkControl->globalData.numfds);
-            for (int i = 0; i < g_pQForkControl->globalData.numfds; i++) {
-                fds[i] = FDAPI_WSASocket(FROM_PROTOCOL_INFO,
-                    FROM_PROTOCOL_INFO,
-                    FROM_PROTOCOL_INFO,
-                    &lpProtocolInfo[i],
-                    0,
-                    WSA_FLAG_OVERLAPPED);
+            int rdb_pipe_write_fd = FDAPI_WSASocket(
+                FROM_PROTOCOL_INFO,
+                FROM_PROTOCOL_INFO,
+                FROM_PROTOCOL_INFO,
+                &g_pQForkControl->globalData.rdb_pipe_write_protocol_info,
+                0,
+                WSA_FLAG_OVERLAPPED);
+            if (rdb_pipe_write_fd == -1) {
+                throw system_error(FDAPI_WSAGetLastError(), system_category(),
+                    "Could not recreate diskless RDB pipe writer in QFork child");
             }
 
-            g_ChildExitCode = do_socketSave(fds,
-                g_pQForkControl->globalData.numfds,
-                g_pQForkControl->globalData.clientids,
-                pipe_write_fd);
-            // After the socket replication has finished, close the duplicated sockets.
-            // Failing to close the sockets properly will produce a socket read error
-            // on both the parent process and the slave.
-            for (int i = 0; i < g_pQForkControl->globalData.numfds; i++) {
-                FDAPI_CloseDuplicatedSocket(fds[i]);
+            int safe_to_exit_pipe_fd = FDAPI_WSASocket(
+                FROM_PROTOCOL_INFO,
+                FROM_PROTOCOL_INFO,
+                FROM_PROTOCOL_INFO,
+                &g_pQForkControl->globalData.rdb_child_exit_pipe_read_protocol_info,
+                0,
+                WSA_FLAG_OVERLAPPED);
+            if (safe_to_exit_pipe_fd == -1) {
+                FDAPI_CloseDuplicatedSocket(rdb_pipe_write_fd);
+                throw system_error(FDAPI_WSAGetLastError(), system_category(),
+                    "Could not recreate diskless RDB exit pipe reader in QFork child");
             }
-            free(fds);
+
+            g_ChildExitCode = do_socketSave(rdb_pipe_write_fd,
+                                             safe_to_exit_pipe_fd);
         }
         else {
             throw runtime_error("unexpected operation type");
@@ -573,6 +579,7 @@ void CopyForkOperationData(OperationType type, LPVOID redisData, int redisDataSi
     memcpy(&(g_pQForkControl->globalData.redisData), redisData, redisDataSize);
     g_pQForkControl->globalData.redisDataSize = redisDataSize;
     g_pQForkControl->globalData.modules = modules;
+    g_pQForkControl->globalData.usedMemory = zmalloc_used_memory();
     memcpy(&(g_pQForkControl->globalData.dictHashSeed), dictHashSeed, sizeof(g_pQForkControl->globalData.dictHashSeed));
 
     // Protect the qfork control map from propagating local changes
@@ -636,13 +643,15 @@ pid_t BeginForkOperation(OperationType type,
     PROCESS_INFORMATION pi;
     try {
         pi.hProcess = INVALID_HANDLE_VALUE;
+        pi.hThread = INVALID_HANDLE_VALUE;
         pi.dwProcessId = -1;
 
         if (type == OperationType::otSocket) {
             CreateChildProcess(&pi, CREATE_SUSPENDED);
             BeginForkOperation_Socket_Duplicate(pi.dwProcessId);
             CopyForkOperationData(type, redisData, redisDataSize, dictHashSeed, modules);
-            ResumeThread(pi.hThread);
+            IFFAILTHROW(ResumeThread(pi.hThread) != (DWORD)-1,
+                "Problem resuming QFork child process");
         }
         else {
             CopyForkOperationData(type, redisData, redisDataSize, dictHashSeed, modules);
@@ -662,8 +671,14 @@ pid_t BeginForkOperation(OperationType type,
     catch (...) {
         serverLog(LL_WARNING, "BeginForkOperation: other exception caught.\n");
     }
+    if (pi.hThread != INVALID_HANDLE_VALUE) {
+        CloseHandle(pi.hThread);
+    }
     if (pi.hProcess != INVALID_HANDLE_VALUE) {
         TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, cDeadForkWait);
+        CloseHandle(pi.hProcess);
+        if (g_hForkedProcess == pi.hProcess) g_hForkedProcess = 0;
     }
     return -1;
 }
@@ -701,32 +716,31 @@ pid_t BeginForkOperation_Aof(int aof_pipe_write_ack_to_parent,
 }
 
 void BeginForkOperation_Socket_Duplicate(DWORD dwProcessId) {
-    WSAPROTOCOL_INFO* protocolInfo = (WSAPROTOCOL_INFO*) je_malloc(sizeof(WSAPROTOCOL_INFO) * g_pQForkControl->globalData.numfds);
-    g_pQForkControl->globalData.protocolInfo = protocolInfo;
-    for (int i = 0; i < g_pQForkControl->globalData.numfds; i++) {
-        FDAPI_WSADuplicateSocket(g_pQForkControl->globalData.fds[i],
+    if (FDAPI_WSADuplicateSocket(
+            g_pQForkControl->globalData.rdb_pipe_write_fd,
             dwProcessId,
-            &protocolInfo[i]);
-    }
+            &g_pQForkControl->globalData.rdb_pipe_write_protocol_info) == SOCKET_ERROR)
+        throw system_error(FDAPI_WSAGetLastError(), system_category(),
+            "Could not duplicate diskless RDB pipe writer into QFork child");
+
+    if (FDAPI_WSADuplicateSocket(
+            g_pQForkControl->globalData.rdb_child_exit_pipe_read_fd,
+            dwProcessId,
+            &g_pQForkControl->globalData.rdb_child_exit_pipe_read_protocol_info) == SOCKET_ERROR)
+        throw system_error(FDAPI_WSAGetLastError(), system_category(),
+            "Could not duplicate diskless RDB exit pipe reader into QFork child");
 }
 
-pid_t BeginForkOperation_Socket(int *fds,
-    int numfds,
-    uint64_t *clientids,
-    int pipe_write_fd,
+pid_t BeginForkOperation_Socket(int rdb_pipe_write_fd,
+    int safe_to_exit_pipe_fd,
     LPVOID redisData,
     int redisDataSize,
     uint8_t *dictHashSeed,
     LPVOID modules)
 {
-    g_pQForkControl->globalData.fds = fds;
-    g_pQForkControl->globalData.numfds = numfds;
-    g_pQForkControl->globalData.clientids = clientids;
-
-    HANDLE pipe_write_handle = (HANDLE) FDAPI_get_osfhandle(pipe_write_fd);
-
-    // The handle is already inheritable so there is no need to duplicate it
-    g_pQForkControl->globalData.pipe_write_handle = (pipe_write_handle);
+    g_pQForkControl->globalData.rdb_pipe_write_fd = rdb_pipe_write_fd;
+    g_pQForkControl->globalData.rdb_child_exit_pipe_read_fd =
+        safe_to_exit_pipe_fd;
 
     return BeginForkOperation(otSocket, redisData, redisDataSize, dictHashSeed, modules);
 }
@@ -764,8 +778,28 @@ BOOL AbortForkOperation() {
     try {
         if (g_hForkedProcess != 0)
         {
-            IFFAILTHROW(TerminateProcess(g_hForkedProcess, 1),
-                "EndForkOperation: Killing forked process failed.");
+            DWORD wait_result = WaitForSingleObject(g_hForkedProcess, 0);
+            if (wait_result == WAIT_TIMEOUT &&
+                !TerminateProcess(g_hForkedProcess, 1) &&
+                WaitForSingleObject(g_hForkedProcess, 0) != WAIT_OBJECT_0)
+            {
+                throw system_error(GetLastError(), system_category(),
+                    "AbortForkOperation: killing forked process failed");
+            }
+            if (wait_result == WAIT_FAILED) {
+                throw system_error(GetLastError(), system_category(),
+                    "AbortForkOperation: checking forked process failed");
+            }
+            if (wait_result == WAIT_TIMEOUT) {
+                DWORD exit_wait = WaitForSingleObject(g_hForkedProcess,
+                                                       cDeadForkWait);
+                if (exit_wait != WAIT_OBJECT_0) {
+                    DWORD error = exit_wait == WAIT_FAILED ?
+                        GetLastError() : ERROR_TIMEOUT;
+                    throw system_error(error, system_category(),
+                        "AbortForkOperation: waiting for forked process failed");
+                }
+            }
             CloseHandle(g_hForkedProcess);
             g_hForkedProcess = 0;
         }
@@ -930,7 +964,23 @@ LPVOID AllocHeapBlock(LPVOID addr, size_t size, BOOL zero) {
         return NULL;
     }
 
-    int contiguousBlocksToAllocate = (int) (size / cAllocationGranularity);
+    // Reject impossible sizes before narrowing the block count to int. A
+    // request larger than the reserved heap can never be satisfied, and the
+    // (int) cast below would otherwise wrap: an 80PB RDB string length divided
+    // by the 4MB granularity is 5*2^32, whose low 32 bits are 0, so the search
+    // loop trivially "succeeds" and returns a pointer to a zero-size, unbacked
+    // region. jemalloc then treats that as an ~80PB allocation and faults on
+    // first write. Returning NULL here lets the caller (je_malloc ->
+    // ztrymalloc_usable -> sdstrynewlen) observe the failure and degrade to a
+    // graceful "Bad data format" error instead of crashing.
+    size_t requestedBlocks = size / cAllocationGranularity;
+    if (requestedBlocks == 0 ||
+        requestedBlocks > (size_t) g_pQForkControl->maxAvailableBlocks) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    int contiguousBlocksToAllocate = (int) requestedBlocks;
 
     int startSearch = g_pQForkControl->blockSearchStart;
     int endSearch = g_pQForkControl->maxAvailableBlocks - contiguousBlocksToAllocate;
@@ -1092,16 +1142,12 @@ void SetupQForkGlobals(int argc, char* argv[]) {
 
 extern "C"
 {
-    extern CRITICAL_SECTION used_memory_mutex;
-
     // The external main() is redefined as redis_main() by Win32_QFork.h.
     // The CRT will call this replacement main() before the previous main()
     // is invoked so that the QFork allocator can be setup prior to anything
     // Redis will allocate.
     int main(int argc, char* argv[]) {
         try {
-            InitializeCriticalSectionAndSpinCount(&used_memory_mutex, 0x80000400);
-
             //[tporadowski/#2] check if started as "redis-check-rdb" tool
             string executable(argv[0]);
             transform(executable.begin(), executable.end(), executable.begin(), ::tolower);

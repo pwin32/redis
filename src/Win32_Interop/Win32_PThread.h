@@ -31,6 +31,7 @@ typedef size_t _sigset_t;
 #define pthread_mutex_destroy(a) DeleteCriticalSection((a))
 #define pthread_mutex_lock EnterCriticalSection
 #define pthread_mutex_unlock LeaveCriticalSection
+#define pthread_mutex_trylock(a) (TryEnterCriticalSection((a)) ? 0 : EBUSY)
 
 #define pthread_equal(t1, t2) ((t1) == (t2))
 
@@ -41,6 +42,7 @@ typedef size_t _sigset_t;
 #define pthread_t unsigned int
 
 int pthread_create(pthread_t *thread, const void *unused, void *(*start_routine)(void*), void *arg);
+int pthread_join(pthread_t thread, void **value_ptr);
 
 pthread_t pthread_self(void);
 

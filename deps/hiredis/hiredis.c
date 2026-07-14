@@ -31,6 +31,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "win32_hiredis.h"
+#endif
 #include "fmacros.h"
 #include <string.h>
 #include <stdlib.h>
@@ -54,10 +57,6 @@ static redisContextFuncs redisContextDefaultFuncs = {
     .read = redisNetRead,
     .write = redisNetWrite
 };
-
-#ifdef _WIN32
-#include "win32_hiredis.h"
-#endif
 
 static redisReply *createReplyObject(int type);
 static void *createStringObject(const redisReadTask *task, char *str, size_t len);
@@ -83,11 +82,11 @@ static redisReplyObjectFunctions defaultFunctions = {
 static redisReply *createReplyObject(int type) {
     redisReply *r = hi_calloc(1,sizeof(*r));
 
-	if (r == NULL)
-		return NULL;
+    if (r == NULL)
+        return NULL;
 
-	r->type = type;
-	return r;
+    r->type = type;
+    return r;
 }
 
 /* Free a reply object */
@@ -198,14 +197,14 @@ static void *createArrayObject(const redisReadTask *task, size_t elements) {
     return r;
 }
 
-static void *createIntegerObject(const redisReadTask *task, PORT_LONGLONG value) {
-	redisReply *r, *parent;
+static void *createIntegerObject(const redisReadTask *task, long long value) {
+    redisReply *r, *parent;
 
-	r = createReplyObject(REDIS_REPLY_INTEGER);
-	if (r == NULL)
-		return NULL;
+    r = createReplyObject(REDIS_REPLY_INTEGER);
+    if (r == NULL)
+        return NULL;
 
-	r->integer = value;
+    r->integer = value;
 
     if (task->parent) {
         parent = task->parent->obj;
@@ -669,14 +668,14 @@ void redisFreeCommand(char *cmd) {
 }
 
 void __redisSetError(redisContext *c, int type, const char *str) {
-	size_t len;
+    size_t len;
 
-	c->err = type;
-	if (str != NULL) {
-		len = strlen(str);
-		len = len < (sizeof(c->errstr) - 1) ? len : (sizeof(c->errstr) - 1);
-		memcpy(c->errstr, str, len);
-		c->errstr[len] = '\0';
+    c->err = type;
+    if (str != NULL) {
+        len = strlen(str);
+        len = len < (sizeof(c->errstr)-1) ? len : (sizeof(c->errstr)-1);
+        memcpy(c->errstr,str,len);
+        c->errstr[len] = '\0';
     } else {
         /* Only REDIS_ERR_IO may lack a description! */
         assert(type == REDIS_ERR_IO);
@@ -908,28 +907,18 @@ redisContext *redisConnectFd(redisFD fd) {
     return redisConnectWithOptions(&options);
 }
 
-#ifdef _WIN32
-redisContext *redisPreConnectNonBlock(const char *ip, int port, SOCKADDR_STORAGE *ss) {
-	redisContext *c = redisContextInit();
-	c->fd = -1;
-	c->flags &= ~REDIS_BLOCK;
-	redisContextPreConnectTcp(c, ip, port, NULL, ss);
-	return c;
-}
-#endif
-
 /* Set read/write timeout on a blocking socket. */
 int redisSetTimeout(redisContext *c, const struct timeval tv) {
-	if (c->flags & REDIS_BLOCK)
-		return redisContextSetTimeout(c, tv);
-	return REDIS_ERR;
+    if (c->flags & REDIS_BLOCK)
+        return redisContextSetTimeout(c,tv);
+    return REDIS_ERR;
 }
 
 /* Enable connection KeepAlive. */
 int redisEnableKeepAlive(redisContext *c) {
-	if (redisKeepAlive(c, REDIS_KEEPALIVE_INTERVAL) != REDIS_OK)
-		return REDIS_ERR;
-	return REDIS_OK;
+    if (redisKeepAlive(c, REDIS_KEEPALIVE_INTERVAL) != REDIS_OK)
+        return REDIS_ERR;
+    return REDIS_OK;
 }
 
 /* Set a user provided RESP3 PUSH handler and return any old one set. */
@@ -966,32 +955,30 @@ int redisBufferRead(redisContext *c) {
 }
 
 #ifdef _WIN32
-/* Use this function if the caller has already read the data. It will
- * feed bytes to the reply parser.
- *
- * After this function is called, you may use redisContextReadReply to
- * see if there is a reply available. */
-int redisBufferReadDone(redisContext *c, char *buf, ssize_t nread) {
-	if (nread == -1) {
-		if (errno == EAGAIN && !(c->flags & REDIS_BLOCK)) {
-			/* Try again later */
-		}
-		else {
-			__redisSetError(c, REDIS_ERR_IO, NULL);
-			return REDIS_ERR;
-		}
-	}
-	else if (nread == 0) {
-		__redisSetError(c, REDIS_ERR_EOF, sdsnew("Server closed the connection"));
-		return REDIS_ERR;
-	}
-	else {
-		if (redisReaderFeed(c->reader, buf, nread) != REDIS_OK) {
-			__redisSetError(c, c->reader->err, c->reader->errstr);
-			return REDIS_ERR;
-		}
-	}
-	return REDIS_OK;
+/* Feed data already read by the Windows IOCP/FDAPI path into the parser. */
+int redisBufferReadDone(redisContext *c, const char *buf, ssize_t nread) {
+    if (c->err)
+        return REDIS_ERR;
+
+    if (nread < 0) {
+        if (!(c->flags & REDIS_BLOCK) &&
+            (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+            return REDIS_OK;
+
+        __redisSetError(c, REDIS_ERR_IO, NULL);
+        return REDIS_ERR;
+    }
+
+    if (nread == 0) {
+        __redisSetError(c, REDIS_ERR_EOF, "Server closed the connection");
+        return REDIS_ERR;
+    }
+
+    if (redisReaderFeed(c->reader, buf, (size_t)nread) != REDIS_OK) {
+        __redisSetError(c, c->reader->err, c->reader->errstr);
+        return REDIS_ERR;
+    }
+    return REDIS_OK;
 }
 #endif
 
@@ -1034,20 +1021,41 @@ oom:
 }
 
 #ifdef _WIN32
-/* Use this function if the caller has already written the data.
- */
-int redisBufferWriteDone(redisContext *c, int nwritten, int *done) {
-	if (nwritten > 0) {
-		if (nwritten == (signed)sdslen(c->obuf)) {
-			sdsfree(c->obuf);
-			c->obuf = sdsempty();
-		}
-		else {
-			sdsrange(c->obuf, nwritten, -1);
-		}
-	}
-	if (done != NULL) *done = (sdslen(c->obuf) == 0);
-	return REDIS_OK;
+/* Consume bytes completed by the Windows IOCP write path. */
+int redisBufferWriteDone(redisContext *c, ssize_t nwritten, int *done) {
+    size_t obuf_len;
+
+    if (c->err)
+        return REDIS_ERR;
+    if (nwritten < 0) {
+        __redisSetError(c, REDIS_ERR_IO, NULL);
+        return REDIS_ERR;
+    }
+
+    obuf_len = hi_sdslen(c->obuf);
+    if ((size_t)nwritten > obuf_len) {
+        __redisSetError(c, REDIS_ERR_OTHER, "Invalid write completion length");
+        return REDIS_ERR;
+    }
+
+    if (nwritten > 0) {
+        if ((size_t)nwritten == obuf_len) {
+            hi_sdsfree(c->obuf);
+            c->obuf = hi_sdsempty();
+            if (c->obuf == NULL)
+                goto oom;
+        } else if (hi_sdsrange(c->obuf, nwritten, -1) < 0) {
+            goto oom;
+        }
+    }
+
+    if (done != NULL)
+        *done = (hi_sdslen(c->obuf) == 0);
+    return REDIS_OK;
+
+oom:
+    __redisSetError(c, REDIS_ERR_OOM, "Out of memory");
+    return REDIS_ERR;
 }
 #endif
 
@@ -1113,6 +1121,7 @@ int redisGetReply(redisContext *c, void **reply) {
     return REDIS_OK;
 }
 
+
 /* Helper function for the redisAppendCommand* family of functions.
  *
  * Write a formatted command to the output buffer. When this family
@@ -1128,16 +1137,17 @@ int __redisAppendCommand(redisContext *c, const char *cmd, size_t len) {
         return REDIS_ERR;
     }
 
-	c->obuf = newbuf;
-	return REDIS_OK;
+    c->obuf = newbuf;
+    return REDIS_OK;
 }
 
 int redisAppendFormattedCommand(redisContext *c, const char *cmd, size_t len) {
-	if (__redisAppendCommand(c, cmd, len) != REDIS_OK) {
-		return REDIS_ERR;
-	}
 
-	return REDIS_OK;
+    if (__redisAppendCommand(c, cmd, len) != REDIS_OK) {
+        return REDIS_ERR;
+    }
+
+    return REDIS_OK;
 }
 
 int redisvAppendCommand(redisContext *c, const char *format, va_list ap) {
@@ -1163,13 +1173,13 @@ int redisvAppendCommand(redisContext *c, const char *format, va_list ap) {
 }
 
 int redisAppendCommand(redisContext *c, const char *format, ...) {
-	va_list ap;
-	int ret;
+    va_list ap;
+    int ret;
 
-	va_start(ap, format);
-	ret = redisvAppendCommand(c, format, ap);
-	va_end(ap);
-	return ret;
+    va_start(ap,format);
+    ret = redisvAppendCommand(c,format,ap);
+    va_end(ap);
+    return ret;
 }
 
 int redisAppendCommandArgv(redisContext *c, int argc, const char **argv, const size_t *argvlen) {
@@ -1203,20 +1213,20 @@ int redisAppendCommandArgv(redisContext *c, int argc, const char **argv, const s
  * in the context will be set.
  */
 static void *__redisBlockForReply(redisContext *c) {
-	void *reply;
+    void *reply;
 
-	if (c->flags & REDIS_BLOCK) {
-		if (redisGetReply(c, &reply) != REDIS_OK)
-			return NULL;
-		return reply;
-	}
-	return NULL;
+    if (c->flags & REDIS_BLOCK) {
+        if (redisGetReply(c,&reply) != REDIS_OK)
+            return NULL;
+        return reply;
+    }
+    return NULL;
 }
 
 void *redisvCommand(redisContext *c, const char *format, va_list ap) {
-	if (redisvAppendCommand(c, format, ap) != REDIS_OK)
-		return NULL;
-	return __redisBlockForReply(c);
+    if (redisvAppendCommand(c,format,ap) != REDIS_OK)
+        return NULL;
+    return __redisBlockForReply(c);
 }
 
 void *redisCommand(redisContext *c, const char *format, ...) {
@@ -1228,7 +1238,7 @@ void *redisCommand(redisContext *c, const char *format, ...) {
 }
 
 void *redisCommandArgv(redisContext *c, int argc, const char **argv, const size_t *argvlen) {
-	if (redisAppendCommandArgv(c, argc, argv, argvlen) != REDIS_OK)
-		return NULL;
-	return __redisBlockForReply(c);
+    if (redisAppendCommandArgv(c,argc,argv,argvlen) != REDIS_OK)
+        return NULL;
+    return __redisBlockForReply(c);
 }

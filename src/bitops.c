@@ -98,12 +98,12 @@ long long redisPopcount(void *s, long count) {
  * no zero bit is found, it returns count*8 assuming the string is zero
  * padded on the right. However if 'bit' is 1 it is possible that there is
  * not a single set bit in the bitmap. In this special case -1 is returned. */
-long long redisBitpos(void *s, unsigned long count, int bit) {
-    unsigned long *l;
+long long redisBitpos(void *s, PORT_ULONG count, int bit) {
+    PORT_ULONG *l;
     unsigned char *c;
-    unsigned long skipval, word = 0, one;
+    PORT_ULONG skipval, word = 0, one;
     long long pos = 0; /* Position of bit, to return to the caller. */
-    unsigned long j;
+    PORT_ULONG j;
     int found;
 
     /* Process whole words first, seeking for first word that is not
@@ -119,7 +119,7 @@ long long redisBitpos(void *s, unsigned long count, int bit) {
     skipval = bit ? 0 : UCHAR_MAX;
     c = (unsigned char*) s;
     found = 0;
-    while((unsigned long)c & (sizeof(*l)-1) && count) {
+    while((uintptr_t)c & (sizeof(*l)-1) && count) {
         if (*c != skipval) {
             found = 1;
             break;
@@ -130,9 +130,9 @@ long long redisBitpos(void *s, unsigned long count, int bit) {
     }
 
     /* Skip bits with full word step. */
-    l = (unsigned long*) c;
+    l = (PORT_ULONG*) c;
     if (!found) {
-        skipval = bit ? 0 : ULONG_MAX;
+        skipval = bit ? 0 : PORT_ULONG_MAX;
         while (count >= sizeof(*l)) {
             if (*l != skipval) break;
             l++;
@@ -506,7 +506,7 @@ robj *lookupStringForBitCommand(client *c, uint64_t maxbit) {
  *
  * If the source object is NULL the function is guaranteed to return NULL
  * and set 'len' to 0. */
-unsigned char *getObjectReadOnlyString(robj *o, long *len, char *llbuf) {
+unsigned char *getObjectReadOnlyString(robj *o, PORT_LONG *len, char *llbuf) {
     serverAssert(o->type == OBJ_STRING);
     unsigned char *p = NULL;
 
@@ -514,7 +514,7 @@ unsigned char *getObjectReadOnlyString(robj *o, long *len, char *llbuf) {
      * array if our string was integer encoded. */
     if (o && o->encoding == OBJ_ENCODING_INT) {
         p = (unsigned char*) llbuf;
-        if (len) *len = ll2string(llbuf,LONG_STR_SIZE,(long)o->ptr);
+        if (len) *len = ll2string(llbuf,LONG_STR_SIZE,(PORT_LONG)o->ptr);
     } else if (o) {
         p = (unsigned char*) o->ptr;
         if (len) *len = sdslen(o->ptr);
@@ -889,7 +889,7 @@ void bitposCommand(client *c) {
         addReplyLongLong(c, -1);
     } else {
         long bytes = end-start+1;
-        long long pos = redisBitpos(p+start,bytes,bit);
+        long long pos = redisBitpos(p+start,(PORT_ULONG)bytes,(int)bit);
 
         /* If we are looking for clear bits, and the user specified an exact
          * range with start-end, we can't consider the right of the range as
@@ -1116,7 +1116,7 @@ void bitfieldGeneric(client *c, int flags) {
         } else {
             /* GET */
             unsigned char buf[9];
-            long strlen = 0;
+            PORT_LONG strlen = 0;
             unsigned char *src = NULL;
             char llbuf[LONG_STR_SIZE];
 

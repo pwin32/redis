@@ -1,14 +1,16 @@
-set system_name [string tolower [exec uname -s]]
 set system_supported 0
 
 # We only support darwin or Linux with glibc
-if {$system_name eq {darwin}} {
-    set system_supported 1
-} elseif {$system_name eq {linux}} {
-    # Avoid the test on libmusl, which does not support backtrace
-    set ldd [exec ldd src/redis-server]
-    if {![string match {*libc.musl*} $ldd]} {
+if {$::tcl_platform(platform) ne {windows}} {
+    set system_name [string tolower [exec uname -s]]
+    if {$system_name eq {darwin}} {
         set system_supported 1
+    } elseif {$system_name eq {linux}} {
+        # Avoid the test on libmusl, which does not support backtrace
+        if {![catch {exec ldd $::redis_server_path} ldd] &&
+            ![string match {*libc.musl*} $ldd]} {
+            set system_supported 1
+        }
     }
 }
 

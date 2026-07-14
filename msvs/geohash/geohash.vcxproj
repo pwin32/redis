@@ -19,12 +19,12 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\deps\geohash-int\geohash.c" />
-    <ClCompile Include="..\..\deps\geohash-int\geohash_helper.c" />
+    <ClCompile Include="..\..\src\geohash.c" />
+    <ClCompile Include="..\..\src\geohash_helper.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\deps\geohash-int\geohash.h" />
-    <ClInclude Include="..\..\deps\geohash-int\geohash_helper.h" />
+    <ClInclude Include="..\..\src\geohash.h" />
+    <ClInclude Include="..\..\src\geohash_helper.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{2B888C28-52CF-4E94-993C-B43D77E0B91A}</ProjectGuid>

@@ -538,7 +538,7 @@ proc start_write_load {host port seconds} {
 
 # Stop a process generating write load executed with start_write_load.
 proc stop_write_load {handle} {
-    catch {exec /bin/kill -9 $handle}
+    kill_proc2 $handle
 }
 
 proc wait_load_handlers_disconnected {{level 0}} {
@@ -574,7 +574,7 @@ proc start_bg_complex_data {host port db ops} {
 
 # Stop a process generating write load executed with start_bg_complex_data.
 proc stop_bg_complex_data {handle} {
-    catch {exec /bin/kill -9 $handle}
+    kill_proc2 $handle
 }
 
 # Write num keys with the given key prefix and value size (in bytes). If idx is
@@ -593,7 +593,11 @@ proc populate {num {prefix key:} {size 3} {idx 0}} {
 
 proc get_child_pid {idx} {
     set pid [srv $idx pid]
-    if {[file exists "/usr/bin/pgrep"]} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        set script "Get-CimInstance Win32_Process -Filter 'ParentProcessId = $pid' | Select-Object -First 1 -ExpandProperty ProcessId"
+        set child_pid [string trim [exec powershell.exe -NoProfile -Command $script]]
+        return $child_pid
+    } elseif {[file exists "/usr/bin/pgrep"]} {
         set fd [open "|pgrep -P $pid" "r"]
         set child_pid [string trim [lindex [split [read $fd] \n] 0]]
     } else {
@@ -606,11 +610,46 @@ proc get_child_pid {idx} {
 }
 
 proc process_is_alive pid {
-    if {[catch {exec ps -p $pid -f} err]} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        set script "if (Get-Process -Id $pid -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
+        return [expr {![catch {exec powershell.exe -NoProfile -Command $script}]}]
+    } elseif {[catch {exec ps -p $pid -f} err]} {
         return 0
     } else {
         if {[string match "*<defunct>*" $err]} { return 0 }
         return 1
+    }
+}
+
+if {$::tcl_platform(platform) eq "windows"} {
+    proc windows_control_process {action pid} {
+        set script [file normalize tests/support/windows_process_control.ps1]
+        set executable [file normalize $::redis_server_path]
+        exec powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+            -File $script -Action $action -TargetProcessId $pid \
+            -ExpectedExecutable $executable
+    }
+
+    proc pause_process pid {
+        windows_control_process Suspend $pid
+    }
+
+    proc resume_process pid {
+        windows_control_process Resume $pid
+    }
+} else {
+    proc pause_process pid {
+        exec kill -SIGSTOP $pid
+        wait_for_condition 50 100 {
+            [string match {*T*} [lindex [exec ps j $pid] 16]]
+        } else {
+            puts [exec ps j $pid]
+            fail "process didn't stop"
+        }
+    }
+
+    proc resume_process pid {
+        exec kill -SIGCONT $pid
     }
 }
 

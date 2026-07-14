@@ -64,8 +64,7 @@ POSIX_ONLY(#include <sys/un.h>)
 POSIX_ONLY(#include <sys/resource.h>)
 POSIX_ONLY(#include <sys/utsname.h>)
 #include <locale.h>
-#include <sys/socket.h>
-#include <sys/resource.h>
+POSIX_ONLY(#include <sys/socket.h>)
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -80,6 +79,10 @@ struct sharedObjectsStruct shared;
  * at runtime to avoid strange compiler optimizations. */
 
 double R_Zero, R_PosInf, R_NegInf, R_Nan;
+
+#ifdef _WIN32
+void bugReportStart(void);
+#endif
 
 /*================================= Globals ================================= */
 
@@ -1125,6 +1128,8 @@ struct redisCommand redisCommandTable[] = {
  * function of Redis may be called from other threads. */
 void nolocks_localtime(struct tm *tmp, time_t t, time_t tz, int dst);
 
+#ifndef _WIN32 /* Implemented by Win32_RedisLog.c on Windows. */
+
 /* Low level logging. To use only for very big messages, otherwise
  * serverLog() is to prefer. */
 void serverLogRaw(int level, const char *msg) {
@@ -1347,7 +1352,7 @@ uint64_t dictEncObjHash(const void *key) {
         char buf[32];
         int len;
 
-        len = ll2string(buf,32,(long)o->ptr);
+        len = ll2string(buf,32,(long long)(intptr_t)o->ptr);
         return dictGenHashFunction((unsigned char*)buf, len);
     } else {
         serverPanic("Unknown string encoding");
@@ -1527,18 +1532,6 @@ dictType modulesDictType = {
     dictSdsDestructor,          /* key destructor */
     NULL,                       /* val destructor */
     NULL                        /* allow to expand */
-};
-
-/* Cluster re-addition blacklist. This maps node IDs to the time
- * we can re-add this node. The goal is to avoid readding a removed
- * node for some time. */
-dictType modulesDictType = {
-    dictSdsCaseHash,            /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictSdsKeyCaseCompare,      /* key compare */
-    dictSdsDestructor,          /* key destructor */
-    NULL                        /* val destructor */
 };
 
 /* Migrate cache dict type. */
@@ -1940,7 +1933,11 @@ static inline void updateCachedTimeWithUs(int update_daylight_info, const long l
     if (update_daylight_info) {
         struct tm tm;
         time_t ut = server.unixtime;
+#ifdef _WIN32
+        localtime_s(&tm,&ut);
+#else
         localtime_r(&ut,&tm);
+#endif
         server.daylight_active = tm.tm_isdst;
     }
 }
@@ -1961,6 +1958,36 @@ void updateCachedTime(int update_daylight_info) {
 }
 
 void checkChildrenDone(void) {
+#ifdef _WIN32
+    if (!hasActiveChildProcess()) return;
+
+    OperationStatus status = GetForkOperationStatus();
+    if (status != osCOMPLETE && status != osFAILED) return;
+
+    RequestSuspension();
+    if (!SuspensionCompleted()) return;
+
+    int exitcode = 1;
+    int bysignal = status == osFAILED;
+    EndForkOperation(&exitcode);
+    ResumeFromSuspension();
+
+    if (server.child_type == CHILD_TYPE_RDB) {
+        backgroundSaveDoneHandler(exitcode, bysignal);
+    } else if (server.child_type == CHILD_TYPE_AOF) {
+        backgroundRewriteDoneHandler(exitcode, bysignal);
+    } else if (server.child_type == CHILD_TYPE_MODULE) {
+        ModuleForkDoneHandler(exitcode, bysignal);
+    } else {
+        serverPanic("Unknown child type %d for child pid %lld",
+                    server.child_type, (long long)server.child_pid);
+    }
+    if (!bysignal && exitcode == 0) receiveChildInfo();
+    resetChildState();
+
+    /* Start any pending forks immediately. */
+    replicationStartPendingFork();
+#else
     int statloc = 0;
     pid_t pid;
 
@@ -2009,6 +2036,7 @@ void checkChildrenDone(void) {
         /* start any pending forks immediately. */
         replicationStartPendingFork();
     }
+#endif
 }
 
 /* Called from serverCron and loadingCron to update cached memory metrics. */
@@ -2152,7 +2180,7 @@ int serverCron(struct aeEventLoop *eventLoop, PORT_LONGLONG id, void *clientData
     if (!server.sentinel_mode) {
         run_with_period(5000) {
             serverLog(LL_DEBUG,
-                "%lu clients connected (%lu replicas), %zu bytes in use",
+                "%llu clients connected (%llu replicas), %zu bytes in use",
                 listLength(server.clients)-listLength(server.slaves),
                 listLength(server.slaves),
                 zmalloc_used_memory());
@@ -2381,7 +2409,12 @@ extern int ProcessingEventsWhileBlocked;
  * The most important is freeClientsInAsyncFreeQueue but we also
  * call some other low-risk functions. */
 void beforeSleep(struct aeEventLoop *eventLoop) {
+#ifdef _WIN32
+    extern void aofProcessDiffRewriteEvents(aeEventLoop *eventLoop);
+    aofProcessDiffRewriteEvents(eventLoop);
+#else
     UNUSED(eventLoop);
+#endif
 
     size_t zmalloc_used = zmalloc_used_memory();
     if (zmalloc_used > server.stat_peak_memory)
@@ -2648,7 +2681,7 @@ void createSharedObjects(void) {
 
     for (j = 0; j < OBJ_SHARED_INTEGERS; j++) {
         shared.integers[j] =
-            makeObjectShared(createObject(OBJ_STRING,(void*)(long)j));
+            makeObjectShared(createObject(OBJ_STRING,(void*)(intptr_t)j));
         shared.integers[j]->encoding = OBJ_ENCODING_INT;
     }
     for (j = 0; j < OBJ_SHARED_BULKHDR_LEN; j++) {
@@ -2684,7 +2717,7 @@ void initServerConfig(void) {
     server.timezone = getTimeZone(); /* Initialized by tzset(). */
     server.configfile = NULL;
     server.executable = NULL;
-    server.arch_bits = (sizeof(long) == 8) ? 64 : 32;
+    server.arch_bits = (sizeof(void*) == 8) ? 64 : 32;
     server.bindaddr_count = 0;
     server.unixsocketperm = CONFIG_DEFAULT_UNIX_SOCKET_PERM;
     server.ipfd.count = 0;
@@ -2863,14 +2896,23 @@ int restartServer(int flags, mstime_t delay) {
     for (j = 3; j < (int)server.maxclients + 1024; j++) {
         /* Test the descriptor validity before closing it, otherwise
          * Valgrind issues a warning on close(). */
+#ifdef _WIN32
+        if (fcntl(j,F_GETFL,0) != -1) close(j);
+#else
         if (fcntl(j,F_GETFD) != -1) close(j);
+#endif
     }
 
     /* Execute the server with the original command line. */
     if (delay) usleep(delay*1000);
     zfree(server.exec_argv[0]);
     server.exec_argv[0] = zstrdup(server.executable);
+#ifdef _WIN32
+    _execve(server.executable,(const char * const *)server.exec_argv,
+            (const char * const *)environ);
+#else
     execve(server.executable,server.exec_argv,environ);
+#endif
 
     /* If an error occurred here, there is nothing we can do, but exit. */
     _exit(1);
@@ -3177,8 +3219,10 @@ void resetServerStats(void) {
  * can work reliably (default cancelability type is PTHREAD_CANCEL_DEFERRED).
  * Needed for pthread_cancel used by the fast memory test used by the crash report. */
 void makeThreadKillable(void) {
+#ifndef _WIN32
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+#endif
 }
 
 void initServer(void) {
@@ -3198,6 +3242,10 @@ void initServer(void) {
 
     /* Set C locale, forcing strtod() to work with dots */
     setlocale(LC_ALL, "C");
+
+    /* The Windows logger is initialized before Redis parses its configuration. */
+    setLogVerbosityLevel(server.verbosity);
+    setLogFile(server.logfile);
 
     /* MingGW 32 lacks declaration of RtlGenRandom, MinGw64 don't */
     lib = LoadLibraryA("advapi32.dll");
@@ -4370,6 +4418,7 @@ void closeListeningSockets(int unlink_unix_socket) {
     if (server.sofd != -1) close(server.sofd);
     if (server.cluster_enabled)
         for (j = 0; j < server.cfd.count; j++) close(server.cfd.fd[j]);
+#ifndef _WIN32
     if (unlink_unix_socket && server.unixsocket) {
         serverLog(LL_NOTICE,"Removing the unix socket file.");
         unlink(server.unixsocket); /* don't care if this fails */
@@ -4834,7 +4883,7 @@ sds genRedisInfoString(const char *section) {
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
             "# Clients\r\n"
-            "connected_clients:%lu\r\n"
+            "connected_clients:%llu\r\n"
             "cluster_connections:%lu\r\n"
             "maxclients:%u\r\n"
             "client_recent_max_input_buffer:%zu\r\n"
@@ -4884,11 +4933,11 @@ sds genRedisInfoString(const char *section) {
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
             "# Memory\r\n"
-            "used_memory:%Iu\r\n"                                               WIN_PORT_FIX /* %zu -> %Iu */
+            "used_memory:%zu\r\n"
             "used_memory_human:%s\r\n"
-            "used_memory_rss:%Iu\r\n"                                           WIN_PORT_FIX /* %zu -> %Iu */
+            "used_memory_rss:%zu\r\n"
             "used_memory_rss_human:%s\r\n"
-            "used_memory_peak:%Iu\r\n"                                          WIN_PORT_FIX /* %zu -> %Iu */
+            "used_memory_peak:%zu\r\n"
             "used_memory_peak_human:%s\r\n"
             "used_memory_peak_perc:%.2f%%\r\n"
             "used_memory_overhead:%zu\r\n"
@@ -4898,14 +4947,14 @@ sds genRedisInfoString(const char *section) {
             "allocator_allocated:%zu\r\n"
             "allocator_active:%zu\r\n"
             "allocator_resident:%zu\r\n"
-            "total_system_memory:%lu\r\n"
+            "total_system_memory:%zu\r\n"
             "total_system_memory_human:%s\r\n"
             "used_memory_lua:%lld\r\n"
             "used_memory_lua_human:%s\r\n"
             "used_memory_scripts:%lld\r\n"
             "used_memory_scripts_human:%s\r\n"
-            "number_of_cached_scripts:%lu\r\n"
-            "maxmemory:%lld\r\n"
+            "number_of_cached_scripts:%llu\r\n"
+            "maxmemory:%llu\r\n"
             "maxmemory_human:%s\r\n"
             "maxmemory_policy:%s\r\n"
             "allocator_frag_ratio:%.2f\r\n"
@@ -4939,7 +4988,7 @@ sds genRedisInfoString(const char *section) {
             server.cron_malloc_stats.allocator_allocated,
             server.cron_malloc_stats.allocator_active,
             server.cron_malloc_stats.allocator_resident,
-            (unsigned long)total_system_mem,
+            total_system_mem,
             total_system_hmem,
             memory_lua,
             used_memory_lua_hmem,
@@ -4989,7 +5038,7 @@ sds genRedisInfoString(const char *section) {
             "# Persistence\r\n"
             "loading:%d\r\n"
             "current_cow_size:%zu\r\n"
-            "current_cow_size_age:%lu\r\n"
+            "current_cow_size_age:%llu\r\n"
             "current_fork_perc:%.2f\r\n"
             "current_save_keys_processed:%zu\r\n"
             "current_save_keys_total:%zu\r\n"
@@ -5012,7 +5061,7 @@ sds genRedisInfoString(const char *section) {
             "module_fork_last_cow_size:%zu\r\n",
             (int)server.loading,
             server.stat_current_cow_bytes,
-            server.stat_current_cow_updated ? (unsigned long) elapsedMs(server.stat_current_cow_updated) / 1000 : 0,
+            server.stat_current_cow_updated ? (unsigned long long)elapsedMs(server.stat_current_cow_updated) / 1000 : 0,
             fork_perc,
             server.stat_current_save_keys_processed,
             server.stat_current_save_keys_total,
@@ -5042,10 +5091,10 @@ sds genRedisInfoString(const char *section) {
                 "aof_current_size:%lld\r\n"
                 "aof_base_size:%lld\r\n"
                 "aof_pending_rewrite:%d\r\n"
-                "aof_buffer_length:%Iu\r\n"                                     WIN_PORT_FIX /* %zu -> %Iu */
-                "aof_rewrite_buffer_length:%Iu\r\n"                             WIN_PORT_FIX /* %lu -> %Iu */
+                "aof_buffer_length:%zu\r\n"
+                "aof_rewrite_buffer_length:%lu\r\n"
                 "aof_pending_bio_fsync:%llu\r\n"
-                "aof_delayed_fsync:%Iu\r\n", WIN_PORT_FIX /* %lu -> %Iu */
+                "aof_delayed_fsync:%lu\r\n",
                 (PORT_LONGLONG) server.aof_current_size,
                 (PORT_LONGLONG) server.aof_rewrite_base_size,
                 server.aof_rewrite_scheduled,
@@ -5126,11 +5175,11 @@ sds genRedisInfoString(const char *section) {
             "evicted_keys:%lld\r\n"
             "keyspace_hits:%lld\r\n"
             "keyspace_misses:%lld\r\n"
-            "pubsub_channels:%Id\r\n"                                           WIN_PORT_FIX /* %ld -> %Id */
-            "pubsub_patterns:%Iu\r\n"                                           WIN_PORT_FIX /* %lu -> %Iu */
+            "pubsub_channels:%llu\r\n"                                WIN_PORT_FIX /* PORT_ULONG */
+            "pubsub_patterns:%llu\r\n"                                WIN_PORT_FIX /* PORT_ULONG */
             "latest_fork_usec:%lld\r\n"
             "total_forks:%lld\r\n"
-            "migrate_cached_sockets:%ld\r\n"
+            "migrate_cached_sockets:%llu\r\n"
             "slave_expires_tracked_keys:%zu\r\n"
             "active_defrag_hits:%lld\r\n"
             "active_defrag_misses:%lld\r\n"
@@ -5259,7 +5308,7 @@ sds genRedisInfoString(const char *section) {
         }
 
         info = sdscatprintf(info,
-            "connected_slaves:%Iu\r\n", WIN_PORT_FIX /* %lu -> %Iu */
+            "connected_slaves:%llu\r\n", WIN_PORT_FIX /* PORT_ULONG */
             listLength(server.slaves));
 
         /* If min-slaves-to-write is active, write the number of slaves
@@ -5307,7 +5356,7 @@ sds genRedisInfoString(const char *section) {
 
                 info = sdscatprintf(info,
                     "slave%d:ip=%s,port=%d,state=%s,"
-                    "offset=%lld,lag=%ld\r\n",
+                    "offset=%lld,lag=%lld\r\n",
                     slaveid,slaveip,slave->slave_listening_port,state,
                     slave->repl_ack_off, lag);
                 slaveid++;
@@ -5754,9 +5803,9 @@ void redisAsciiArt(void) {
             REDIS_VERSION,
             redisGitSHA1(),
             strtol(redisGitDirty(),NULL,10) > 0,
-            (sizeof(long) == 8) ? "64" : "32",
+            (server.arch_bits == 64) ? "64" : "32",
             mode, server.port ? server.port : server.tls_port,
-            (long) getpid()
+            (long long)getpid()
         );
         serverLogRaw(LL_NOTICE|LL_RAW,buf);
     }
@@ -5904,6 +5953,7 @@ void setupSignalHandlers(void) {
     sigaction(SIGTERM, &act, NULL);
     sigaction(SIGINT, &act, NULL);
 
+#ifndef _WIN32
     sigemptyset(&act.sa_mask);
     act.sa_flags = SA_NODEFER | SA_RESETHAND | SA_SIGINFO;
     act.sa_sigaction = sigsegvHandler;
@@ -5914,6 +5964,7 @@ void setupSignalHandlers(void) {
         sigaction(SIGILL, &act, NULL);
         sigaction(SIGABRT, &act, NULL);
     }
+#endif
     return;
 }
 
@@ -5967,6 +6018,36 @@ void closeChildUnusedResourceAfterFork() {
     server.pidfile = NULL;
 }
 
+/* Complete the parent-side bookkeeping shared by fork() and QFork. */
+void redisForkChildStarted(pid_t childpid, int purpose, long long start) {
+    server.stat_total_forks++;
+    server.stat_fork_time = ustime()-start;
+    if (server.stat_fork_time <= 0)
+        server.stat_fork_time = IF_WIN32(100000,1);
+    server.stat_fork_rate = (double) zmalloc_used_memory() * 1000000 /
+                            server.stat_fork_time / (1024*1024*1024);
+    latencyAddSampleIfNeeded("fork",server.stat_fork_time/1000);
+
+    if (childpid == -1) return;
+
+    /* The child_pid and child_type are only for mutual exclusive children.
+     * Other child types keep their pid in dedicated state. */
+    if (isMutuallyExclusiveChildType(purpose)) {
+        server.child_pid = childpid;
+        server.child_type = purpose;
+        server.stat_current_cow_bytes = 0;
+        server.stat_current_cow_updated = 0;
+        server.stat_current_save_keys_processed = 0;
+        server.stat_module_progress = 0;
+        server.stat_current_save_keys_total = dbTotalServerKeyCount();
+    }
+
+    updateDictResizePolicy();
+    moduleFireServerEvent(REDISMODULE_EVENT_FORK_CHILD,
+                          REDISMODULE_SUBEVENT_FORK_CHILD_BORN,
+                          NULL);
+}
+
 /* purpose is one of CHILD_TYPE_ types */
 int redisFork(int purpose) {
     if (isMutuallyExclusiveChildType(purpose)) {
@@ -5976,6 +6057,13 @@ int redisFork(int purpose) {
         openChildInfoPipe();
     }
 
+#ifdef _WIN32
+    /* RDB and AOF use their QFork entry points directly. Windows has no
+     * general-purpose fork equivalent for module and debugger children. */
+    errno = ENOSYS;
+    if (isMutuallyExclusiveChildType(purpose)) closeChildInfoPipe();
+    return -1;
+#else
     int childpid;
     long long start = ustime();
     if ((childpid = fork()) == 0) {
@@ -5991,38 +6079,14 @@ int redisFork(int purpose) {
             close(server.child_info_pipe[0]);
     } else {
         /* Parent */
-        server.stat_total_forks++;
-        server.stat_fork_time = ustime()-start;
-        server.stat_fork_rate = (double) zmalloc_used_memory() * 1000000 / server.stat_fork_time / (1024*1024*1024); /* GB per second. */
-        latencyAddSampleIfNeeded("fork",server.stat_fork_time/1000);
+        redisForkChildStarted(childpid,purpose,start);
         if (childpid == -1) {
             if (isMutuallyExclusiveChildType(purpose)) closeChildInfoPipe();
             return -1;
         }
-
-        /* The child_pid and child_type are only for mutual exclusive children.
-         * other child types should handle and store their pid's in dedicated variables.
-         *
-         * Today, we allows CHILD_TYPE_LDB to run in parallel with the other fork types:
-         * - it isn't used for production, so it will not make the server be less efficient
-         * - used for debugging, and we don't want to block it from running while other
-         *   forks are running (like RDB and AOF) */
-        if (isMutuallyExclusiveChildType(purpose)) {
-            server.child_pid = childpid;
-            server.child_type = purpose;
-            server.stat_current_cow_bytes = 0;
-            server.stat_current_cow_updated = 0;
-            server.stat_current_save_keys_processed = 0;
-            server.stat_module_progress = 0;
-            server.stat_current_save_keys_total = dbTotalServerKeyCount();
-        }
-
-        updateDictResizePolicy();
-        moduleFireServerEvent(REDISMODULE_EVENT_FORK_CHILD,
-                              REDISMODULE_SUBEVENT_FORK_CHILD_BORN,
-                              NULL);
     }
     return childpid;
+#endif
 }
 
 void sendChildCowInfo(childInfoType info_type, char *pname) {
@@ -6087,7 +6151,7 @@ void loadDataFromDisk(void) {
 
 void redisOutOfMemoryHandler(size_t allocation_size) {
     WIN32_ONLY(bugReportStart();)
-    serverLog(LL_WARNING,"Out Of Memory allocating %Iu bytes!", WIN_PORT_FIX /* %zu -> %Iu */
+    serverLog(LL_WARNING,"Out Of Memory allocating %zu bytes!",
         allocation_size);
     serverPanic("Redis aborting for OUT OF MEMORY. Allocating %zu bytes!",
         allocation_size);
@@ -6184,6 +6248,7 @@ int redisCommunicateSystemd(const char *sd_notify_msg) {
 
 /* Attempt to set up upstart supervision. Returns 1 if successful. */
 static int redisSupervisedUpstart(void) {
+#ifndef _WIN32
     const char *upstart_job = getenv("UPSTART_JOB");
 
     if (!upstart_job) {
@@ -6445,7 +6510,7 @@ int main(int argc, char **argv) {
     serverLog(LL_WARNING,
         "Redis version=%s, bits=%d, commit=%s, modified=%d, pid=%d, just started",
             REDIS_VERSION,
-            (sizeof(long) == 8) ? 64 : 32,
+            (sizeof(void*) == 8) ? 64 : 32,
             redisGitSHA1(),
             strtol(redisGitDirty(),NULL,10) > 0,
             (int)getpid());

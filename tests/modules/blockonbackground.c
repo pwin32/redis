@@ -41,8 +41,8 @@ void HelloBlock_FreeStringData(RedisModuleCtx *ctx, void *privdata) {
 void *BlockDebug_ThreadMain(void *arg) {
     void **targ = arg;
     RedisModuleBlockedClient *bc = targ[0];
-    long long delay = (unsigned long)targ[1];
-    long long enable_time_track = (unsigned long)targ[2];
+    long long delay = (uintptr_t)targ[1];
+    long long enable_time_track = (uintptr_t)targ[2];
     if (enable_time_track)
         RedisModule_BlockedClientMeasureTimeStart(bc);
     RedisModule_Free(targ);
@@ -64,7 +64,7 @@ void *BlockDebug_ThreadMain(void *arg) {
 void *DoubleBlock_ThreadMain(void *arg) {
     void **targ = arg;
     RedisModuleBlockedClient *bc = targ[0];
-    long long delay = (unsigned long)targ[1];
+    long long delay = (uintptr_t)targ[1];
     RedisModule_BlockedClientMeasureTimeStart(bc);
     RedisModule_Free(targ);
     struct timespec ts;
@@ -119,9 +119,9 @@ int HelloBlock_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int a
      * the delay and a reference to the blocked client handle. */
     void **targ = RedisModule_Alloc(sizeof(void*)*3);
     targ[0] = bc;
-    targ[1] = (void*)(unsigned long) delay;
+    targ[1] = (void*)(uintptr_t)delay;
     // pass 1 as flag to enable time tracking
-    targ[2] = (void*)(unsigned long) 1;
+    targ[2] = (void*)(uintptr_t)1;
 
     if (pthread_create(&tid,NULL,BlockDebug_ThreadMain,targ) != 0) {
         RedisModule_AbortBlock(bc);
@@ -160,9 +160,9 @@ int HelloBlockNoTracking_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **a
      * the delay and a reference to the blocked client handle. */
     void **targ = RedisModule_Alloc(sizeof(void*)*3);
     targ[0] = bc;
-    targ[1] = (void*)(unsigned long) delay;
+    targ[1] = (void*)(uintptr_t)delay;
     // pass 0 as flag to enable time tracking
-    targ[2] = (void*)(unsigned long) 0;
+    targ[2] = (void*)(uintptr_t)0;
 
     if (pthread_create(&tid,NULL,BlockDebug_ThreadMain,targ) != 0) {
         RedisModule_AbortBlock(bc);
@@ -191,7 +191,7 @@ int HelloDoubleBlock_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv,
      * the delay and a reference to the blocked client handle. */
     void **targ = RedisModule_Alloc(sizeof(void*)*2);
     targ[0] = bc;
-    targ[1] = (void*)(unsigned long) delay;
+    targ[1] = (void*)(uintptr_t)delay;
 
     if (pthread_create(&tid,NULL,DoubleBlock_ThreadMain,targ) != 0) {
         RedisModule_AbortBlock(bc);

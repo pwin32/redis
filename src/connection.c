@@ -297,6 +297,17 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
     /* Fire the writable event. */
     if (call_write) {
         if (!callHandler(conn, conn->write_handler)) return;
+#ifdef _WIN32
+        /* IOCP writable notifications are one-shot; emulate level triggering. */
+        if (conn->write_handler) {
+            if (aeCreateFileEvent(server.el,conn->fd,AE_WRITABLE,
+                        conn->type->ae_handler,conn) == AE_ERR)
+            {
+                conn->last_errno = errno;
+                conn->state = CONN_STATE_ERROR;
+            }
+        }
+#endif
     }
     /* If we have to invert the call, fire the readable event now
      * after the writable one. */
@@ -347,7 +358,7 @@ static int connSocketGetType(connection *conn) {
 
 ConnectionType CT_Socket = {
     .ae_handler = connSocketEventHandler,
-    .close = connSocketClose,
+    .close_func = connSocketClose,
     .write = connSocketWrite,
     .read = connSocketRead,
     .accept = connSocketAccept,
@@ -430,4 +441,3 @@ const char *connGetInfo(connection *conn, char *buf, size_t buf_len) {
     snprintf(buf, buf_len-1, "fd=%i", conn == NULL ? -1 : conn->fd);
     return buf;
 }
-

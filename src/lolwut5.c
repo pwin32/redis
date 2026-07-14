@@ -138,9 +138,9 @@ static sds renderCanvas(lwCanvas *canvas) {
  * per column.
  */
 void lolwut5Command(client *c) {
-    long cols = 66;
-    long squares_per_row = 8;
-    long squares_per_col = 12;
+    PORT_LONG cols = 66;
+    PORT_LONG squares_per_row = 8;
+    PORT_LONG squares_per_col = 12;
 
     /* Parse the optional arguments if any. */
     if (c->argc > 1 &&

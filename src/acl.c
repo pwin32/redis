@@ -1133,10 +1133,10 @@ unsigned long ACLGetCommandID(const char *cmdname) {
     void *id = raxFind(commandId,(unsigned char*)lowername,sdslen(lowername));
     if (id != raxNotFound) {
         sdsfree(lowername);
-        return (unsigned long)id;
+        return (unsigned long)(uintptr_t)id;
     }
     raxInsert(commandId,(unsigned char*)lowername,strlen(lowername),
-              (void*)nextid,NULL);
+              (void*)(uintptr_t)nextid,NULL);
     sdsfree(lowername);
     unsigned long thisid = nextid;
     nextid++;
@@ -2114,7 +2114,7 @@ void aclCommand(client *c) {
     } else if (!strcasecmp(sub,"genpass") && (c->argc == 2 || c->argc == 3)) {
         #define GENPASS_MAX_BITS 4096
         char pass[GENPASS_MAX_BITS/8*2]; /* Hex representation. */
-        long bits = 256; /* By default generate 256 bits passwords. */
+        PORT_LONG bits = 256; /* By default generate 256 bits passwords. */
 
         if (c->argc == 3 && getLongFromObjectOrReply(c,c->argv[2],&bits,NULL)
             != C_OK) return;
@@ -2127,11 +2127,11 @@ void aclCommand(client *c) {
             return;
         }
 
-        long chars = (bits+3)/4; /* Round to number of characters to emit. */
+        PORT_LONG chars = (bits+3)/4; /* Round to number of characters to emit. */
         getRandomHexChars(pass,chars);
         addReplyBulkCBuffer(c,pass,chars);
     } else if (!strcasecmp(sub,"log") && (c->argc == 2 || c->argc ==3)) {
-        long count = 10; /* Number of entries to emit by default. */
+        PORT_LONG count = 10; /* Number of entries to emit by default. */
 
         /* Parse the only argument that LOG may have: it could be either
          * the number of entries the user wants to display, or alternatively

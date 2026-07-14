@@ -183,19 +183,13 @@ void serverLogRaw(int level, const char *msg) {
     }
 }
 
-/* Like serverLogRaw() but with printf-alike support. This is the function that
- * is used across the code. The raw version is only used in order to dump
- * the INFO output on crash. */
-void serverLog(int level, const char *fmt, ...) {
-    va_list ap;
+static void serverLogV(int level, const char *fmt, va_list ap) {
     char msg[LOG_MAX_LEN];
     int vlen;
 
     if ((level&0xff) < verbosity) return;
 
-    va_start(ap, fmt);
     vlen = vsnprintf(msg, sizeof(msg), fmt, ap);
-    va_end(ap);
 
     /* The MS CRT implementation of vsnprintf/snprintf returns -1 if the formatted output doesn't fit the buffer,
      * in addition to when an encoding error occurs. Proceeding with a zero-terminated ellipsis at the end of the
@@ -208,6 +202,24 @@ void serverLog(int level, const char *fmt, ...) {
     serverLogRaw(level,msg);
 }
 
+/* Keep the legacy Windows entry point for the interop layer. */
+void serverLog(int level, const char *fmt, ...) {
+    va_list ap;
+
+    va_start(ap, fmt);
+    serverLogV(level, fmt, ap);
+    va_end(ap);
+}
+
+/* Redis 6.2 core uses this entry point behind the serverLog macro. */
+void _serverLog(int level, const char *fmt, ...) {
+    va_list ap;
+
+    va_start(ap, fmt);
+    serverLogV(level, fmt, ap);
+    va_end(ap);
+}
+
 /* Log a fixed message without printf-alike capabilities, in a way that is
  * safe to call from a signal handler.
  *
@@ -216,7 +228,6 @@ void serverLog(int level, const char *fmt, ...) {
  * where we need printf-alike features are served by serverLog(). */
 void serverLogFromHandler(int level, const char *msg) {
 }
-
 
 
 

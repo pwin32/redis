@@ -161,10 +161,15 @@ public:
         // save [seconds] [changes]
         // or
         // save ""      -- turns off RDB persistence
+        if (argIndex >= argc) {
+            stringstream err;
+            err << "Not enough parameters available for " << argv[argStartIndex];
+            throw invalid_argument(err.str());
+        }
         if (strcmp(argv[argIndex], "\"\"") == 0 || strcmp(argv[argIndex], "''") == 0 || strcmp(argv[argIndex], "") == 0) {
             params.push_back(argv[argIndex]);
         }
-        else if (
+        else if (argIndex + 1 < argc &&
             isStringAnInt(argv[argIndex]) &&
             isStringAnInt(argv[argIndex + 1])) {
             params.push_back(argv[argIndex]);
@@ -181,7 +186,12 @@ public:
     virtual vector<string> Extract(vector<string> tokens, int startIndex = 0) {
         vector<string> params;
         unsigned int parameterIndex = 1 + startIndex;
-        if ((tokens.size() > parameterIndex) &&
+        if (tokens.size() == parameterIndex) {
+            /* Redis accepts a bare save directive in configuration files as
+             * the empty schedule, which disables automatic snapshots. */
+            params.push_back("");
+        }
+        else if ((tokens.size() > parameterIndex) &&
             (tokens.at(parameterIndex) == string("\"\"") ||
                 tokens.at(parameterIndex) == string("''"))) {
             params.push_back(tokens.at(parameterIndex));
@@ -608,20 +618,31 @@ void ParseConfFile(string confFile, string cwd, ArgumentMap& argMap) {
         vector<string> tokens = Tokenize(line);
         if (tokens.size() > 0) {
             string parameter = tokens.at(0);
+            transform(parameter.begin(), parameter.end(), parameter.begin(), ::tolower);
             if (parameter.at(0) == '#') {
                 continue;
             }
             else if (parameter.compare(cInclude) == 0) {
-                ParseConfFile(tokens.at(1), cwd, argMap);
+                if (tokens.size() > 1) {
+                    ParseConfFile(tokens.at(1), cwd, argMap);
+                }
             }
-            else if (g_redisArgMap.find(parameter) == g_redisArgMap.end()) {
-                stringstream err;
-                err << "unknown conf file parameter : " + parameter;
-                throw invalid_argument(err.str());
-            }
+            else {
+                auto extractor = g_redisArgMap.find(parameter);
+                if (extractor == g_redisArgMap.end()) {
+                    continue;
+                }
 
-            vector<string> params = g_redisArgMap[parameter]->Extract(tokens);
-            g_argMap[parameter].push_back(params);
+                try {
+                    vector<string> params = extractor->second->Extract(tokens);
+                    argMap[parameter].push_back(params);
+                }
+                catch (const invalid_argument &) {
+                    /* This pre-parser only discovers Windows service and QFork
+                     * metadata. Redis config.c performs authoritative syntax
+                     * and arity validation after startup initialization. */
+                }
+            }
         }
     }
 }
@@ -680,16 +701,20 @@ void ParseCommandLineArguments(int argc, char** argv) {
             }
             else {
                 // -- arguments processed before calling redis.c::main()
-                if (g_redisArgMap.find(argument) == g_redisArgMap.end()) {
-                    stringstream err;
-                    err << "unknown argument: " << argument;
-                    throw invalid_argument(err.str());
-                }
-
                 vector<string> params;
-                if (argument == cSentinel) {
+                auto extractor = g_redisArgMap.find(argument);
+                if (extractor == g_redisArgMap.end()) {
+                    /* Redis configuration options not needed by the Windows
+                     * bootstrap layer are forwarded to redis_main unchanged.
+                     * The documented syntax places the optional config file
+                     * before command-line configuration overrides. */
+                    while (n + 1 < argc && string(argv[n + 1]).substr(0, 2) != "--") {
+                        params.push_back(argv[++n]);
+                    }
+                }
+                else if (argument == cSentinel) {
                     try {
-                        vector<string> sentinelSubCommands = g_redisArgMap[argument]->Extract(n, argc, argv);
+                        vector<string> sentinelSubCommands = extractor->second->Extract(n, argc, argv);
                         for (auto p : sentinelSubCommands) {
                             params.push_back(p);
                         }
@@ -714,10 +739,12 @@ void ParseCommandLineArguments(int argc, char** argv) {
                     }
                 }
                 else {
-                    params = g_redisArgMap[argument]->Extract(n, argc, argv);
+                    params = extractor->second->Extract(n, argc, argv);
                 }
                 g_argMap[argument].push_back(params);
-                n += (int) params.size();
+                if (extractor != g_redisArgMap.end()) {
+                    n += (int) params.size();
+                }
             }
         }
         else if (string(argv[n]).substr(0, 1) == "-") {

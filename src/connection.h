@@ -58,7 +58,7 @@ typedef struct ConnectionType {
     int (*connect)(struct connection *conn, const char *addr, int port, const char *source_addr, ConnectionCallbackFunc connect_handler);
     int (*write)(struct connection *conn, const void *data, size_t data_len);
     int (*read)(struct connection *conn, void *buf, size_t buf_len);
-    void (*close)(struct connection *conn);
+    void (*close_func)(struct connection *conn);
     int (*accept)(struct connection *conn, ConnectionCallbackFunc accept_handler);
     int (*set_write_handler)(struct connection *conn, ConnectionCallbackFunc handler, int barrier);
     int (*set_read_handler)(struct connection *conn, ConnectionCallbackFunc handler);
@@ -176,7 +176,7 @@ static inline int connSetWriteHandlerWithBarrier(connection *conn, ConnectionCal
 }
 
 static inline void connClose(connection *conn) {
-    conn->type->close(conn);
+    conn->type->close_func(conn);
 }
 
 /* Returns the last error encountered by the connection, as a string.  If no error,

@@ -49,7 +49,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _WIN32
 #include <pthread.h>
+#else
+#include "Win32_Interop/Win32_PThread.h"
+#endif
 #include "config.h"
 
 #ifndef __ATOMIC_VAR_H
@@ -81,7 +85,67 @@
 #define ANNOTATE_HAPPENS_AFTER(v)  ((void) v)
 #endif
 
-#if !defined(__ATOMIC_VAR_FORCE_SYNC_MACROS) && defined(__STDC_VERSION__) && \
+#if defined(_MSC_VER)
+/* MSVC's C11 mode does not implement <stdatomic.h>, and it does not expose
+ * the GCC __atomic or __sync builtins. Interlocked operations provide the
+ * required atomicity with stronger ordering than Redis' relaxed operations. */
+#include <intrin.h>
+
+#define REDIS_ATOMIC_SIZE_CHECK(var) do { \
+    typedef char redis_atomic_size_must_be_4_or_8[ \
+        (sizeof(var) == sizeof(long) || sizeof(var) == sizeof(__int64)) ? 1 : -1]; \
+    (void)sizeof(redis_atomic_size_must_be_4_or_8); \
+} while(0)
+
+static __forceinline __int64 redisAtomicExchangeAdd(
+        volatile void *ptr, size_t size, __int64 value) {
+    if (size == sizeof(__int64))
+        return _InterlockedExchangeAdd64((volatile __int64 *)ptr, value);
+    return _InterlockedExchangeAdd((volatile long *)ptr, (long)value);
+}
+
+static __forceinline __int64 redisAtomicLoad(volatile void *ptr, size_t size) {
+    if (size == sizeof(__int64))
+        return _InterlockedCompareExchange64((volatile __int64 *)ptr, 0, 0);
+    return _InterlockedCompareExchange((volatile long *)ptr, 0, 0);
+}
+
+static __forceinline void redisAtomicStore(
+        volatile void *ptr, size_t size, __int64 value) {
+    if (size == sizeof(__int64))
+        _InterlockedExchange64((volatile __int64 *)ptr, value);
+    else
+        _InterlockedExchange((volatile long *)ptr, (long)value);
+}
+
+#define atomicIncr(var,count) do { \
+    REDIS_ATOMIC_SIZE_CHECK(var); \
+    (void)redisAtomicExchangeAdd(&(var),sizeof(var), \
+        (__int64)(unsigned __int64)(count)); \
+} while(0)
+#define atomicGetIncr(var,oldvalue_var,count) do { \
+    REDIS_ATOMIC_SIZE_CHECK(var); \
+    oldvalue_var = redisAtomicExchangeAdd(&(var),sizeof(var), \
+        (__int64)(unsigned __int64)(count)); \
+} while(0)
+#define atomicDecr(var,count) do { \
+    REDIS_ATOMIC_SIZE_CHECK(var); \
+    (void)redisAtomicExchangeAdd(&(var),sizeof(var), \
+        (__int64)(0ULL - (unsigned __int64)(count))); \
+} while(0)
+#define atomicGet(var,dstvar) do { \
+    REDIS_ATOMIC_SIZE_CHECK(var); \
+    dstvar = redisAtomicLoad(&(var),sizeof(var)); \
+} while(0)
+#define atomicSet(var,value) do { \
+    REDIS_ATOMIC_SIZE_CHECK(var); \
+    redisAtomicStore(&(var),sizeof(var),(__int64)(unsigned __int64)(value)); \
+} while(0)
+#define atomicGetWithSync(var,dstvar) atomicGet(var,dstvar)
+#define atomicSetWithSync(var,value) atomicSet(var,value)
+#define REDIS_ATOMIC_API "msvc-interlocked"
+
+#elif !defined(__ATOMIC_VAR_FORCE_SYNC_MACROS) && defined(__STDC_VERSION__) && \
     (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
 /* Use '_Atomic' keyword if the compiler supports. */
 #undef  redisAtomic

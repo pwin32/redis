@@ -721,7 +721,7 @@ void hincrbyCommand(client *c) {
 }
 
 void hincrbyfloatCommand(client *c) {
-    long double value, incr;
+    PORT_LONGDOUBLE value, incr;
     long long ll;
     robj *o;
     sds new;
@@ -741,7 +741,7 @@ void hincrbyfloatCommand(client *c) {
                 return;
             }
         } else {
-            value = (long double)ll;
+            value = (PORT_LONGDOUBLE)ll;
         }
     } else {
         value = 0;
@@ -990,8 +990,8 @@ static void harndfieldReplyWithZiplist(client *c, unsigned int count, ziplistEnt
  * the number of randoms per time. */
 #define HRANDFIELD_RANDOM_SAMPLE_LIMIT 1000
 
-void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
-    unsigned long count, size;
+void hrandfieldWithCountCommand(client *c, PORT_LONG l, int withvalues) {
+    PORT_ULONG count, size;
     int uniq = 1;
     robj *hash;
 
@@ -1000,7 +1000,7 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
     size = hashTypeLength(hash);
 
     if(l >= 0) {
-        count = (unsigned long) l;
+        count = (PORT_ULONG) l;
     } else {
         count = -l;
         uniq = 0;
@@ -1190,19 +1190,19 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
 
 /* HRANDFIELD key [<count> [WITHVALUES]] */
 void hrandfieldCommand(client *c) {
-    long l;
+    PORT_LONG l;
     int withvalues = 0;
     robj *hash;
     ziplistEntry ele;
 
     if (c->argc >= 3) {
-        if (getRangeLongFromObjectOrReply(c,c->argv[2],-LONG_MAX,LONG_MAX,&l,NULL) != C_OK) return;
+        if (getRangeLongFromObjectOrReply(c,c->argv[2],-PORT_LONG_MAX,PORT_LONG_MAX,&l,NULL) != C_OK) return;
         if (c->argc > 4 || (c->argc == 4 && strcasecmp(c->argv[3]->ptr,"withvalues"))) {
             addReplyErrorObject(c,shared.syntaxerr);
             return;
         } else if (c->argc == 4) {
             withvalues = 1;
-            if (l < -LONG_MAX/2 || l > LONG_MAX/2) {
+            if (l < -PORT_LONG_MAX/2 || l > PORT_LONG_MAX/2) {
                 addReplyError(c,"value is out of range");
                 return;
             }

@@ -30,7 +30,9 @@
 // API replacement for non-fd stdio functions
 #define fseeko      _fseeki64
 #define ftello      _ftelli64
+#ifndef __MINGW32__
 #define snprintf    _snprintf
+#endif
 #define strcasecmp  _stricmp
 #define strtoll     _strtoi64
 

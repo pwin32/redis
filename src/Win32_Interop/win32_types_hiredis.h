@@ -39,7 +39,7 @@
 
 typedef long long           PORT_LONGLONG;
 typedef unsigned long long  PORT_ULONGLONG;
-typedef double              PORT_LONGDOUBLE;
+typedef long double         PORT_LONGDOUBLE;
 
 typedef long long           PORT_LONG;
 typedef unsigned long long  PORT_ULONG;

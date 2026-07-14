@@ -78,10 +78,10 @@ auto f_WSACleanup = dllfunctor_stdcall<int>("ws2_32.dll", "WSACleanup");
 auto f_WSAFDIsSet = dllfunctor_stdcall<int, SOCKET, fd_set*>("ws2_32.dll", "__WSAFDIsSet");
 auto f_WSAGetLastError = dllfunctor_stdcall<int>("ws2_32.dll", "WSAGetLastError");
 auto f_WSAGetOverlappedResult = dllfunctor_stdcall<BOOL, SOCKET, LPWSAOVERLAPPED, LPDWORD, BOOL, LPDWORD>("ws2_32.dll", "WSAGetOverlappedResult");
-auto f_WSADuplicateSocket = dllfunctor_stdcall<int, SOCKET, DWORD, LPWSAPROTOCOL_INFO>("ws2_32.dll", "WSADuplicateSocketW");
+auto f_WSADuplicateSocket = dllfunctor_stdcall<int, SOCKET, DWORD, LPWSAPROTOCOL_INFOW>("ws2_32.dll", "WSADuplicateSocketW");
 auto f_WSAIoctl = dllfunctor_stdcall<int, SOCKET, DWORD, LPVOID, DWORD, LPVOID, DWORD, LPVOID, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE>("ws2_32.dll", "WSAIoctl");
 auto f_WSARecv = dllfunctor_stdcall<int, SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE>("ws2_32.dll", "WSARecv");
-auto f_WSASocket = dllfunctor_stdcall<SOCKET, int, int, int, LPWSAPROTOCOL_INFO, GROUP, DWORD>("ws2_32.dll", "WSASocketW");
+auto f_WSASocket = dllfunctor_stdcall<SOCKET, int, int, int, LPWSAPROTOCOL_INFOW, GROUP, DWORD>("ws2_32.dll", "WSASocketW");
 auto f_WSASend = dllfunctor_stdcall<int, SOCKET, LPWSABUF, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE>("ws2_32.dll", "WSASend");
 auto f_WSAStartup = dllfunctor_stdcall<int, WORD, LPWSADATA>("ws2_32.dll", "WSAStartup");
 auto f_ioctlsocket = dllfunctor_stdcall<int, SOCKET, long, u_long*>("ws2_32.dll", "ioctlsocket");
@@ -104,6 +104,7 @@ auto f_ntohl = dllfunctor_stdcall<u_long, u_long>("ws2_32.dll", "ntohl");
 auto f_recv = dllfunctor_stdcall<int, SOCKET, char*, int, int>("ws2_32.dll", "recv");
 auto f_select = dllfunctor_stdcall<int, int, fd_set*, fd_set*, fd_set*, const struct timeval*>("ws2_32.dll", "select");
 auto f_send = dllfunctor_stdcall<int, SOCKET, const char*, int, int>("ws2_32.dll", "send");
+auto f_shutdown = dllfunctor_stdcall<int, SOCKET, int>("ws2_32.dll", "shutdown");
 auto f_setsockopt = dllfunctor_stdcall<int, SOCKET, int, int, const char*, int>("ws2_32.dll", "setsockopt");
 auto f_socket = dllfunctor_stdcall<SOCKET, int, int, int>("ws2_32.dll", "socket");
 
@@ -161,7 +162,7 @@ BOOL FDAPI_CloseDuplicatedSocket(int rfd) {
     return FALSE;
 }
 
-int FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFO lpProtocolInfo) {
+int FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFOW lpProtocolInfo) {
     try {
         SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
         if (socket != INVALID_SOCKET) {
@@ -173,7 +174,7 @@ int FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFO lpPr
     return SOCKET_ERROR;
 }
 
-int FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFO lpProtocolInfo, GROUP g, DWORD dwFlags) {
+int FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFOW lpProtocolInfo, GROUP g, DWORD dwFlags) {
     try {
         SOCKET socket = f_WSASocket(af,
             type,
@@ -259,11 +260,13 @@ void FDAPI_SaveSocketAddrStorage(int rfd, SOCKADDR_STORAGE* socketAddrStorage) {
 }
 
 BOOL FDAPI_SocketAttachIOCP(int rfd, HANDLE iocph) {
-    SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
-    if (socket != INVALID_SOCKET) {
+    SocketInfo* socket_info = RFDMap::getInstance().lookupSocketInfo(rfd);
+    if (socket_info != NULL && socket_info->socket != INVALID_SOCKET) {
+        SOCKET socket = socket_info->socket;
         // Set the socket to nonblocking mode
         DWORD yes = 1;
         if (f_ioctlsocket(socket, FIONBIO, &yes) != SOCKET_ERROR) {
+            socket_info->flags |= O_NONBLOCK;
             // Make the socket non-inheritable
             if (SetHandleInformation((HANDLE) socket, HANDLE_FLAG_INHERIT, 0)) {
                 // Associate it with the I/O completion port.
@@ -483,21 +486,87 @@ int FDAPI_pipe(int *pfds) {
     return result;
 }
 
-int FDAPI_pipe_for_modules(int* pfds) {
+int FDAPI_pipe_for_eventloop(int *pfds) {
     int result = -1;
+    int read_rfd = INVALID_FD;
+    int write_rfd = INVALID_FD;
+    SOCKET listener = INVALID_SOCKET;
+    SOCKET read_socket = INVALID_SOCKET;
+    SOCKET write_socket = INVALID_SOCKET;
+
+    pfds[0] = pfds[1] = -1;
+    errno = 0;
     try {
-        // Not passing _O_NOINHERIT, the underlying handles are inheritable by default
-        result = crt_pipe(pfds, 8192, _O_BINARY);
-        if (result == 0) {
-            //[tporadowski] when pipe is created for communication with modules - pretend it is a socket to
-            //  get proper SocketInfo instance created and added in RFDMap; it is later needed
-            //  when creating AE events in server.c/initServer()
-            pfds[0] = RFDMap::getInstance().addSocket(pfds[0]);
-            pfds[1] = RFDMap::getInstance().addSocket(pfds[1]);
-        }
+        do {
+            struct sockaddr_in addr;
+            int addrlen = sizeof(addr);
+
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = f_htonl(INADDR_LOOPBACK);
+
+            listener = f_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (listener == INVALID_SOCKET) break;
+            if (f_bind(listener, (const struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) break;
+            if (f_getsockname(listener, (struct sockaddr *)&addr, &addrlen) == SOCKET_ERROR) break;
+            if (f_listen(listener, 1) == SOCKET_ERROR) break;
+
+            write_socket = f_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (write_socket == INVALID_SOCKET) break;
+            if (f_connect(write_socket, (const struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) break;
+
+            read_socket = f_accept(listener, NULL, NULL);
+            if (read_socket == INVALID_SOCKET) break;
+
+            /* QFork uses inheritable handles for its control channels. These
+             * event-loop sockets are passed explicitly when needed and must
+             * never be inherited accidentally by a child process. */
+            if (!SetHandleInformation((HANDLE)read_socket,
+                                      HANDLE_FLAG_INHERIT, 0) ||
+                !SetHandleInformation((HANDLE)write_socket,
+                                      HANDLE_FLAG_INHERIT, 0)) {
+                errno = GetLastError();
+                break;
+            }
+
+            read_rfd = RFDMap::getInstance().addSocket(read_socket);
+            if (read_rfd == INVALID_FD) {
+                errno = EMFILE;
+                break;
+            }
+            write_rfd = RFDMap::getInstance().addSocket(write_socket);
+            if (write_rfd == INVALID_FD) {
+                errno = EMFILE;
+                break;
+            }
+
+            pfds[0] = read_rfd;
+            pfds[1] = write_rfd;
+            result = 0;
+        } while (0);
+
+        if (result != 0 && errno == 0) errno = f_WSAGetLastError();
     } CATCH_AND_REPORT();
 
+    if (listener != INVALID_SOCKET) f_closesocket(listener);
+    if (result != 0) {
+        if (read_rfd != INVALID_FD) {
+            RFDMap::getInstance().removeRFDToSocketInfo(read_rfd);
+            RFDMap::getInstance().removeSocketToRFD(read_socket);
+        }
+        if (write_rfd != INVALID_FD) {
+            RFDMap::getInstance().removeRFDToSocketInfo(write_rfd);
+            RFDMap::getInstance().removeSocketToRFD(write_socket);
+        }
+        if (read_socket != INVALID_SOCKET) f_closesocket(read_socket);
+        if (write_socket != INVALID_SOCKET) f_closesocket(write_socket);
+    }
+
     return result;
+}
+
+int FDAPI_pipe_for_modules(int *pfds) {
+    return FDAPI_pipe_for_eventloop(pfds);
 }
 
 int FDAPI_socket(int af, int type, int protocol) {
@@ -552,6 +621,24 @@ int FDAPI_close(int rfd) {
     return -1;
 }
 
+int FDAPI_shutdown(int rfd, int how) {
+    try {
+        SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
+        if (socket != INVALID_SOCKET) {
+            int result = f_shutdown(socket, how);
+            if (result == SOCKET_ERROR) {
+                int wsa_error = f_WSAGetLastError();
+                int translated_error = translate_sys_error(wsa_error);
+                errno = translated_error == -9999 ? wsa_error : translated_error;
+            }
+            return result;
+        }
+    } CATCH_AND_REPORT();
+
+    errno = EBADF;
+    return SOCKET_ERROR;
+}
+
 int FDAPI_open(const char * _Filename, int _OpenFlag, int flags = 0) {
     try {
         int crt_fd = crt_open(_Filename, _OpenFlag, flags);
@@ -561,6 +648,20 @@ int FDAPI_open(const char * _Filename, int _OpenFlag, int flags = 0) {
     } CATCH_AND_REPORT();
 
     errno = GetLastError();
+    return -1;
+}
+
+int FDAPI_mkstemp(char *filename_template) {
+    try {
+        int crt_fd = crt_mkstemp(filename_template);
+        if (crt_fd != INVALID_FD) {
+            int rfd = RFDMap::getInstance().addCrtFD(crt_fd);
+            if (rfd != INVALID_FD) return rfd;
+            crt_close(crt_fd);
+            errno = EMFILE;
+        }
+    } CATCH_AND_REPORT();
+
     return -1;
 }
 
@@ -764,16 +865,20 @@ int FDAPI_connect(int rfd, const struct sockaddr *addr, size_t addrlen) {
     return -1;
 }
 
+static void set_errno_from_wsa_error(void) {
+    int wsa_error = f_WSAGetLastError();
+    int translated_error = translate_sys_error(wsa_error);
+
+    errno = translated_error == -9999 ? wsa_error : translated_error;
+}
+
 ssize_t FDAPI_read(int rfd, void *buf, size_t count) {
     try {
         SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
         if (socket != INVALID_SOCKET) {
             int retval = f_recv(socket, (char*) buf, (unsigned int) count, 0);
             if (retval == -1) {
-                errno = GetLastError();
-                if (errno == WSAEWOULDBLOCK) {
-                    errno = EAGAIN;
-                }
+                set_errno_from_wsa_error();
             }
             return retval;
         } else {
@@ -801,7 +906,7 @@ ssize_t FDAPI_write(int rfd, const void *buf, size_t count) {
         if (socket != INVALID_SOCKET) {
             int ret = f_send(socket, (char*) buf, (unsigned int) count, 0);
             if (ret == SOCKET_ERROR) {
-                set_errno_from_last_error();
+                set_errno_from_wsa_error();
             }
             return ret;
         } else {
@@ -1112,7 +1217,7 @@ const char* FDAPI_inet_ntop(int af, const void *src, char *dst, size_t size) {
         static auto f_inet_ntop = dllfunctor_stdcall<const char*, int, const void*, char*, size_t>("ws2_32.dll", "inet_ntop");
         return f_inet_ntop(af, src, dst, size);
     } else {
-        static auto f_WSAAddressToStringA = dllfunctor_stdcall<int, LPSOCKADDR, DWORD, LPWSAPROTOCOL_INFO, LPSTR, LPDWORD>("ws2_32.dll", "WSAAddressToStringA");
+        static auto f_WSAAddressToStringA = dllfunctor_stdcall<int, LPSOCKADDR, DWORD, LPWSAPROTOCOL_INFOA, LPSTR, LPDWORD>("ws2_32.dll", "WSAAddressToStringA");
         struct sockaddr_storage srcaddr;
         DWORD srcaddr_size;
         DWORD dst_size = size > (size_t)MAXDWORD ? MAXDWORD : (DWORD)size;
@@ -1150,7 +1255,7 @@ int FDAPI_inet_pton(int family, const char* src, void* dst) {
         static auto f_inet_pton = dllfunctor_stdcall<int, int, const char*, void*>("ws2_32.dll", "inet_pton");
         return f_inet_pton(family, src, dst);
     } else {
-        static auto f_WSAStringToAddressA = dllfunctor_stdcall<int, LPSTR, INT, LPWSAPROTOCOL_INFO, LPSOCKADDR, LPINT>("ws2_32.dll", "WSAStringToAddressA");
+        static auto f_WSAStringToAddressA = dllfunctor_stdcall<int, LPSTR, INT, LPWSAPROTOCOL_INFOA, LPSOCKADDR, LPINT>("ws2_32.dll", "WSAStringToAddressA");
         struct sockaddr_storage ss;
         int size = sizeof(ss);
         ZeroMemory(&ss, sizeof(ss));

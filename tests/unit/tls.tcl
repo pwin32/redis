@@ -144,7 +144,7 @@ start_server {tags {"tls"}} {
             # Create an encrypted version
             set keyfile [lindex [r config get tls-key-file] 1]
             set keyfile_encrypted "$keyfile.encrypted"
-            exec -ignorestderr openssl rsa -in $keyfile -out $keyfile_encrypted -aes256 -passout pass:1234 2>/dev/null
+            exec -ignorestderr openssl rsa -in $keyfile -out $keyfile_encrypted -aes256 -passout pass:1234 2> $::test_null_device
 
             # Using it without a password fails
             catch {r config set tls-key-file $keyfile_encrypted} e

@@ -7,6 +7,7 @@ BEGIN {
         jet_calloc \
         jet_dallocx \
         jet_free \
+        jet_get_defrag_hint \
         jet_mallctl \
         jet_mallctlbymib \
         jet_mallctlnametomib \

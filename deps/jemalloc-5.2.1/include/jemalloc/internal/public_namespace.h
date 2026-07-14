@@ -2,6 +2,7 @@
 #define je_calloc JEMALLOC_N(calloc)
 #define je_dallocx JEMALLOC_N(dallocx)
 #define je_free JEMALLOC_N(free)
+#define je_get_defrag_hint JEMALLOC_N(get_defrag_hint)
 #define je_mallctl JEMALLOC_N(mallctl)
 #define je_mallctlbymib JEMALLOC_N(mallctlbymib)
 #define je_mallctlnametomib JEMALLOC_N(mallctlnametomib)

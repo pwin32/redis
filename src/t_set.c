@@ -461,7 +461,7 @@ void spopWithCountCommand(client *c) {
 
     /* Get the count argument */
     if (getPositiveLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
-    count = (unsigned long) l;
+    count = (PORT_ULONG) l;
 
     /* Make sure a key with the name inputted exists, and that it's type is
      * indeed a set. Otherwise, return nil */
@@ -667,7 +667,7 @@ void srandmemberWithCountCommand(client *c) {
 
     dict *d;
 
-    if (getRangeLongFromObjectOrReply(c,c->argv[2],-LONG_MAX,LONG_MAX,&l,NULL) != C_OK) return;
+    if (getRangeLongFromObjectOrReply(c,c->argv[2],-PORT_LONG_MAX,PORT_LONG_MAX,&l,NULL) != C_OK) return;
     if (l >= 0) {
         count = (unsigned long) l;
     } else {

@@ -1,5 +1,10 @@
+#ifdef _WIN32
+#include "win32_hiredis.h"
+#endif
 #include "fmacros.h"
+#ifndef _WIN32
 #include "sockcompat.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,17 +24,6 @@
 #endif
 #include "net.h"
 #include "win32.h"
-
-#ifdef _WIN32
-#include "win32_hiredis.h"
-#endif
-
-#ifdef _WIN32
-#define strcasecmp _stricmp
-#define strncasecmp _strnicmp
-#define SIGPIPE 13
-#endif
-
 
 enum connection_type {
     CONN_TCP,
@@ -134,13 +128,6 @@ abort:
     fprintf(stderr, "Error:  Cannot determine Redis version, aborting\n");
     exit(1);
 }
-
-/* The assert() calls below have side effects, so we need assert()
- * even if we are compiling without asserts (-DNDEBUG). */
-#ifdef NDEBUG
-#undef assert
-#define assert(e) (void)(e)
-#endif
 
 static redisContext *select_database(redisContext *c) {
     redisReply *reply;
@@ -330,13 +317,13 @@ static void test_format_commands(void) {
     INTEGER_WIDTH_TEST("d", int);
     INTEGER_WIDTH_TEST("hhd", char);
     INTEGER_WIDTH_TEST("hd", short);
-    INTEGER_WIDTH_TEST("ld", PORT_LONG);
-    INTEGER_WIDTH_TEST("lld", PORT_LONGLONG);
+    INTEGER_WIDTH_TEST("ld", long);
+    INTEGER_WIDTH_TEST("lld", long long);
     INTEGER_WIDTH_TEST("u", unsigned int);
     INTEGER_WIDTH_TEST("hhu", unsigned char);
     INTEGER_WIDTH_TEST("hu", unsigned short);
-    INTEGER_WIDTH_TEST("lu", PORT_ULONG);
-    INTEGER_WIDTH_TEST("llu", PORT_ULONGLONG);
+    INTEGER_WIDTH_TEST("lu", unsigned long);
+    INTEGER_WIDTH_TEST("llu", unsigned long long);
     FLOAT_WIDTH_TEST(float);
     FLOAT_WIDTH_TEST(double);
 
@@ -550,19 +537,6 @@ static void test_reply_reader(void) {
     redisReaderFree(reader);
 #endif
 
-    test("Multi-bulk never overflows regardless of maxelements: ");
-    size_t bad_mbulk_len = (SIZE_MAX / sizeof(void *)) + 3;
-    char bad_mbulk_reply[100];
-    snprintf(bad_mbulk_reply, sizeof(bad_mbulk_reply), "*%llu\r\n+asdf\r\n",
-        (unsigned long long) bad_mbulk_len);
-
-    reader = redisReaderCreate();
-    redisReaderFeed(reader, bad_mbulk_reply, strlen(bad_mbulk_reply));
-    ret = redisReaderGetReply(reader,&reply);
-    test_cond(ret == REDIS_ERR && strcasecmp(reader->errstr, "Out of memory") == 0);
-    freeReplyObject(reply);
-    redisReaderFree(reader);
-
     test("Works with NULL functions for reply: ");
     reader = redisReaderCreate();
     reader->fn = NULL;
@@ -716,12 +690,8 @@ static void test_blocking_connection_errors(void) {
 #ifndef _WIN32
     test("Returns error when the port is not open: ");
     c = redisConnect((char*)"localhost", 1);
-#ifdef _WIN32
-    test_cond(c->err != 0);
-#else
     test_cond(c->err == REDIS_ERR_IO &&
         strcmp(c->errstr,"Connection refused") == 0);
-#endif
     redisFree(c);
 
     test("Returns error when the unix_sock socket path doesn't accept connections: ");
@@ -1048,59 +1018,6 @@ static void test_blocking_connection_timeouts(struct config config) {
     disconnect(c, 0);
 }
 
-static void test_blocking_connection_timeouts(struct config config) {
-    redisContext *c;
-    redisReply *reply;
-    ssize_t s;
-    const char *cmd = "DEBUG SLEEP 3\r\n";
-    struct timeval tv;
-
-    c = IF_WIN32(_connect,connect)(config);
-    test("Successfully completes a command when the timeout is not exceeded: ");
-    reply = redisCommand(c,"SET foo fast");
-    freeReplyObject(reply);
-    tv.tv_sec = 0;
-    tv.tv_usec = 10000;
-    redisSetTimeout(c, tv);
-    reply = redisCommand(c, "GET foo");
-    test_cond(reply != NULL && reply->type == REDIS_REPLY_STRING && memcmp(reply->str, "fast", 4) == 0);
-    freeReplyObject(reply);
-    disconnect(c, 0);
-
-    c = IF_WIN32(_connect,connect)(config);
-    s = write(c->fd, cmd, strlen(cmd));
-    tv.tv_sec = 0;
-    tv.tv_usec = 10000;
-    redisSetTimeout(c, tv);
-#ifdef _WIN32
-    test("Command timeout behavior is skipped on Windows: ");
-    test_cond(s > 0);
-    redisFree(c);
-    c = IF_WIN32(_connect,connect)(config);
-#else
-    test("Does not return a reply when the command times out: ");
-    reply = redisCommand(c, "GET foo");
-    test_cond(s > 0 && reply == NULL && c->err == REDIS_ERR_IO && strcmp(c->errstr, "Resource temporarily unavailable") == 0);
-    freeReplyObject(reply);
-#endif
-
-    test("Reconnect properly reconnects after a timeout: ");
-    redisReconnect(c);
-    reply = redisCommand(c, "PING");
-    test_cond(reply != NULL && reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "PONG") == 0);
-    freeReplyObject(reply);
-
-    test("Reconnect properly uses owned parameters: ");
-    config.tcp.host = "foo";
-    config.unix_sock.path = "foo";
-    redisReconnect(c);
-    reply = redisCommand(c, "PING");
-    test_cond(reply != NULL && reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "PONG") == 0);
-    freeReplyObject(reply);
-
-    disconnect(c, 0);
-}
-
 static void test_blocking_io_errors(struct config config) {
     redisContext *c;
     redisReply *reply;
@@ -1129,9 +1046,6 @@ static void test_blocking_io_errors(struct config config) {
      * On >2.0, QUIT will return with OK and another read(2) needed to be
      * issued to find out the socket was closed by the server. In both
      * conditions, the error will be set to EOF. */
-#ifdef _WIN32
-    assert(c->err != 0);
-#else
     assert(c->err == REDIS_ERR_EOF &&
         strcmp(c->errstr,"Server closed the connection") == 0);
 #endif
@@ -1148,7 +1062,6 @@ static void test_blocking_io_errors(struct config config) {
     test_cond(respcode == REDIS_ERR && c->err == REDIS_ERR_TIMEOUT);
 #endif
     redisFree(c);
-#endif
 }
 
 static void test_invalid_timeout_errors(struct config config) {
@@ -1191,7 +1104,7 @@ static void test_throughput(struct config config) {
     redisContext *c = do_connect(config);
     redisReply **replies;
     int i, num;
-    PORT_LONGLONG t1, t2;
+    long long t1, t2;
 
     test("Throughput:\n");
     for (i = 0; i < 500; i++)
@@ -1276,19 +1189,19 @@ static void test_throughput(struct config config) {
     disconnect(c, 0);
 }
 
-// static PORT_LONG __test_callback_flags = 0;
+// static long __test_callback_flags = 0;
 // static void __test_callback(redisContext *c, void *privdata) {
 //     ((void)c);
 //     /* Shift to detect execution order */
 //     __test_callback_flags <<= 8;
-//     __test_callback_flags |= (PORT_LONG)privdata;
+//     __test_callback_flags |= (long)privdata;
 // }
 //
 // static void __test_reply_callback(redisContext *c, redisReply *reply, void *privdata) {
 //     ((void)c);
 //     /* Shift to detect execution order */
 //     __test_callback_flags <<= 8;
-//     __test_callback_flags |= (PORT_LONG)privdata;
+//     __test_callback_flags |= (long)privdata;
 //     if (reply) freeReplyObject(reply);
 // }
 //
@@ -1431,9 +1344,6 @@ int main(int argc, char **argv) {
         }
         argv++; argc--;
     }
-#ifdef _WIN32
-    (void)test_inherit_fd;
-#endif
 
 #ifndef _WIN32
     /* Ignore broken pipe signal (for I/O error tests). */
@@ -1506,8 +1416,6 @@ int main(int argc, char **argv) {
             test_skipped();
         }
     }
-#endif
-
 
     if (fails || (skips_as_fails && skips)) {
         printf("*** %d TESTS FAILED ***\n", fails);

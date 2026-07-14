@@ -33,7 +33,6 @@
 #endif
 
 #include "server.h"
-#ifndef _WIN32          // This should not be here in the first place since it's not used by the posix code either
 #include "hiredis.h"
 #ifdef USE_OPENSSL
 #include "openssl/ssl.h"
@@ -505,16 +504,6 @@ dictType renamedCommandsDictType = {
     NULL                       /* allow to expand */
 };
 
-/* Instance renamed commands table. */
-dictType renamedCommandsDictType = {
-    dictSdsCaseHash,           /* hash function */
-    NULL,                      /* key dup */
-    NULL,                      /* val dup */
-    dictSdsKeyCaseCompare,     /* key compare */
-    dictSdsDestructor,         /* key destructor */
-    dictSdsDestructor          /* val destructor */
-};
-
 /* =========================== Initialization =============================== */
 
 void sentinelCommand(client *c);
@@ -980,7 +969,7 @@ void sentinelRunPendingScripts(void) {
             CloseHandle(pi.hThread);
 
             sentinel.running_scripts++;
-            sentinelEvent(LL_DEBUG, "+script-child", NULL, "%Id", 
+            sentinelEvent(LL_DEBUG, "+script-child", NULL, "%lld",
                           (PORT_LONG) sj->pid);
         } else {
             sentinelEvent(LL_WARNING, "-script-error", NULL,
@@ -1049,7 +1038,7 @@ void sentinelCollectTerminatedScripts(void) {
 
         if(WaitForSingleObject(sj->hScriptProcess,0) == WAIT_OBJECT_0) {
             GetExitCodeProcess(sj->hScriptProcess,&exitCode);
-            sentinelEvent(LL_DEBUG, "-script-child", NULL, "%Id %d %d",      WIN_PORT_FIX /* %ld -> %Id*/
+            sentinelEvent(LL_DEBUG, "-script-child", NULL, "%lld %d %d", WIN_PORT_FIX /* PORT_LONG */
                 (PORT_LONG) sj->pid, exitCode, 0);
 
             /* at this point the process ID may be recycled by Windows */
@@ -1136,7 +1125,7 @@ void sentinelKillTimedoutScripts(void) {
         if (sj->flags & SENTINEL_SCRIPT_RUNNING &&
             (now - sj->start_time) > SENTINEL_SCRIPT_MAX_RUNTIME)
         {
-            sentinelEvent(LL_WARNING,"-script-timeout",NULL,"%s %Id",        WIN_PORT_FIX /* %ld -> %Id*/
+            sentinelEvent(LL_WARNING,"-script-timeout",NULL,"%s %lld", WIN_PORT_FIX /* PORT_LONG */
                 sj->argv[0], (PORT_LONG)sj->pid);
 #ifdef _WIN32
             TerminateProcess(sj->hScriptProcess,1);
@@ -1909,21 +1898,6 @@ void sentinelPropagateDownAfterPeriod(sentinelRedisInstance *master) {
  * case we check the ri->renamed_command table (or if the instance is a slave,
  * we check the one of the master), and map the command that we should send
  * to the set of renamed commands. However, if the command was not renamed,
- * we just return "command" itself. */
-char *sentinelInstanceMapCommand(sentinelRedisInstance *ri, char *command) {
-    sds sc = sdsnew(command);
-    if (ri->master) ri = ri->master;
-    char *retval = dictFetchValue(ri->renamed_commands, sc);
-    sdsfree(sc);
-    return retval ? retval : command;
-}
-
-/* This function is used in order to send commands to Redis instances: the
- * commands we send from Sentinel may be renamed, a common case is a master
- * with CONFIG and SLAVEOF commands renamed for security concerns. In that
- * case we check the ri->renamed_command table (or if the instance is a slave,
- * we check the one of the master), and map the command that we should send
- * to the set of renamed commads. However, if the command was not renamed,
  * we just return "command" itself. */
 char *sentinelInstanceMapCommand(sentinelRedisInstance *ri, char *command) {
     sds sc = sdsnew(command);
@@ -4149,15 +4123,15 @@ void sentinelInfoCommand(client *c) {
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
             "# Sentinel\r\n"
-            "sentinel_masters:%Iu\r\n"                                          WIN_PORT_FIX /* %lu -> %Iu */
+            "sentinel_masters:%llu\r\n"
             "sentinel_tilt:%d\r\n"
             "sentinel_running_scripts:%d\r\n"
-            "sentinel_scripts_queue_length:%Id\r\n"                             WIN_PORT_FIX /* %ld -> %Id */
-            "sentinel_simulate_failure_flags:%Iu\r\n",                          WIN_PORT_FIX /* %lu -> %Iu */
-            dictSize(sentinel.masters),
+            "sentinel_scripts_queue_length:%llu\r\n"
+            "sentinel_simulate_failure_flags:%lu\r\n",
+            (unsigned long long)dictSize(sentinel.masters),
             sentinel.tilt,
             sentinel.running_scripts,
-            listLength(sentinel.scripts_queue),
+            (unsigned long long)listLength(sentinel.scripts_queue),
             sentinel.simfailure_flags);
 
         di = dictGetIterator(sentinel.masters);
@@ -4169,7 +4143,7 @@ void sentinelInfoCommand(client *c) {
             else if (ri->flags & SRI_S_DOWN) status = "sdown";
             info = sdscatprintf(info,
                 "master%d:name=%s,status=%s,address=%s:%d,"
-                "slaves=%Iu,sentinels=%Iu\r\n",                                 WIN_PORT_FIX /* %lu -> %Iu */
+                "slaves=%llu,sentinels=%llu\r\n",                    WIN_PORT_FIX /* PORT_ULONG */
                 master_id++, ri->name, status,
                 announceSentinelAddr(ri->addr), ri->addr->port,
                 dictSize(ri->slaves),

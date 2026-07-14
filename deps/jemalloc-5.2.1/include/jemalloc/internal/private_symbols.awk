@@ -7,6 +7,7 @@ BEGIN {
         je_calloc \
         je_dallocx \
         je_free \
+        je_get_defrag_hint \
         je_mallctl \
         je_mallctlbymib \
         je_mallctlnametomib \

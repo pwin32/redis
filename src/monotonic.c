@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Time.h"
+#endif
 
 #undef NDEBUG
 #include <assert.h>
@@ -130,6 +133,21 @@ static void monotonicInit_aarch64() {
 #endif
 
 
+#ifdef _WIN32
+static monotime getMonotonicUs_win32() {
+    return GetHighResRelativeTime(1000000.0);
+}
+
+static void monotonicInit_win32() {
+    InitTimeFunctions();
+    snprintf(monotonic_info_string, sizeof(monotonic_info_string),
+            "Windows QPC");
+    getMonotonicUs = getMonotonicUs_win32;
+}
+#endif
+
+
+#ifndef _WIN32
 static monotime getMonotonicUs_posix() {
     /* clock_gettime() is specified in POSIX.1b (1993).  Even so, some systems
      * did not support this until much later.  CLOCK_MONOTONIC is technically
@@ -152,6 +170,7 @@ static void monotonicInit_posix() {
             "POSIX clock_gettime");
     getMonotonicUs = getMonotonicUs_posix;
 }
+#endif
 
 
 
@@ -164,7 +183,11 @@ const char * monotonicInit() {
     if (getMonotonicUs == NULL) monotonicInit_aarch64();
     #endif
 
+    #ifdef _WIN32
+    if (getMonotonicUs == NULL) monotonicInit_win32();
+    #else
     if (getMonotonicUs == NULL) monotonicInit_posix();
+    #endif
 
     return monotonic_info_string;
 }
@@ -174,7 +197,9 @@ const char *monotonicInfoString() {
 }
 
 monotonic_clock_type monotonicGetType() {
+#ifndef _WIN32
     if (getMonotonicUs == getMonotonicUs_posix)
         return MONOTONIC_CLOCK_POSIX;
+#endif
     return MONOTONIC_CLOCK_HW;
 }

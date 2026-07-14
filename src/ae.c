@@ -30,7 +30,15 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef __MINGW32__
+/* monotonic.h includes unistd.h. Keep its CRT prototype distinct from the
+ * FDAPI replacement variable declared later by the IOCP backend. */
+#define ftruncate redis_mingw_system_ftruncate
+#endif
 #include "ae.h"
+#ifdef __MINGW32__
+#undef ftruncate
+#endif
 #include "anet.h"
 
 #include <stdio.h>
@@ -54,6 +62,7 @@
  * The following should be ordered by performances, descending. */
 #ifdef _WIN32
 #include "ae_wsiocp.c"
+#include "Win32_Interop/Win32_Service.h"
 #else
 #ifdef HAVE_EVPORT
 #include "ae_evport.c"
@@ -215,7 +224,7 @@ long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
         aeTimeProc *proc, void *clientData,
         aeEventFinalizerProc *finalizerProc)
 {
-    PORT_LONGLONG id = eventLoop->timeEventNextId++;
+    long long id = eventLoop->timeEventNextId++;
     aeTimeEvent *te;
 
     te = zmalloc(sizeof(*te));
@@ -234,7 +243,7 @@ long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
     return id;
 }
 
-int aeDeleteTimeEvent(aeEventLoop *eventLoop, PORT_LONGLONG id)
+int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id)
 {
     aeTimeEvent *te = eventLoop->timeEventHead;
     while(te) {
@@ -348,7 +357,6 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
  * if flags has AE_FILE_EVENTS set, file events are processed.
  * if flags has AE_TIME_EVENTS set, time events are processed.
  * if flags has AE_DONT_WAIT set the function returns ASAP until all
- * if flags has AE_CALL_AFTER_SLEEP set, the aftersleep callback is called.
  * the events that's possible to process without to wait are processed.
  * if flags has AE_CALL_AFTER_SLEEP set, the aftersleep callback is called.
  * if flags has AE_CALL_BEFORE_SLEEP set, the beforesleep callback is called.
@@ -476,7 +484,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 
 /* Wait for milliseconds until the given file descriptor becomes
  * writable/readable/exception */
-int aeWait(int fd, int mask, PORT_LONGLONG milliseconds) {
+int aeWait(int fd, int mask, long long milliseconds) {
     struct pollfd pfd;
     int retmask = 0, retval;
 
@@ -485,7 +493,12 @@ int aeWait(int fd, int mask, PORT_LONGLONG milliseconds) {
     if (mask & AE_READABLE) pfd.events |= POLLIN;
     if (mask & AE_WRITABLE) pfd.events |= POLLOUT;
 
-    if ((retval = poll(&pfd, 1, (int) milliseconds))== 1) {   WIN_PORT_FIX /* cast (int) */
+#ifdef _WIN32
+    retval = poll(&pfd, 1, (int)milliseconds);
+#else
+    retval = poll(&pfd, 1, milliseconds);
+#endif
+    if (retval == 1) {
         if (pfd.revents & POLLIN) retmask |= AE_READABLE;
         if (pfd.revents & POLLOUT) retmask |= AE_WRITABLE;
         if (pfd.revents & POLLERR) retmask |= AE_WRITABLE;

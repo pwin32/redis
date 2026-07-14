@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/propagate.so]
+set testmodule [redis_test_module propagate]
 
 tags "modules" {
     test {Modules can propagate in async and threaded contexts} {

@@ -178,6 +178,23 @@ start_server {tags {"aofrw"} overrides {aof-use-rdb-preamble no}} {
         }
     }
 
+    foreach {encoding max_entries} {ziplist 128 skiplist 0} {
+        test "AOF rewrite preserves infinite zset scores with $encoding encoding" {
+            r flushall
+            r config set zset-max-ziplist-entries $max_entries
+            r zadd key -inf neg 1 finite +inf pos
+            assert_equal $encoding [r object encoding key]
+            set expected {neg -inf finite 1 pos inf}
+            assert_equal $expected [r zrange key 0 -1 withscores]
+
+            r bgrewriteaof
+            waitForBgrewriteaof r
+            r debug loadaof
+            assert_equal $expected [r zrange key 0 -1 withscores]
+        }
+    }
+    r config set zset-max-ziplist-entries 128
+
     test {BGREWRITEAOF is delayed if BGSAVE is in progress} {
         r multi
         r bgsave

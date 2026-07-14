@@ -13,6 +13,7 @@
 #  define calloc jet_calloc
 #  define dallocx jet_dallocx
 #  define free jet_free
+#  define get_defrag_hint jet_get_defrag_hint
 #  define mallctl jet_mallctl
 #  define mallctlbymib jet_mallctlbymib
 #  define mallctlnametomib jet_mallctlnametomib
@@ -44,6 +45,7 @@
 #  undef jet_calloc
 #  undef jet_dallocx
 #  undef jet_free
+#  undef jet_get_defrag_hint
 #  undef jet_mallctl
 #  undef jet_mallctlbymib
 #  undef jet_mallctlnametomib

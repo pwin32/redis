@@ -163,7 +163,7 @@ void handleBlockedClientsTimeout(void) {
  * is zero. */
 int getTimeoutFromObjectOrReply(client *c, robj *object, mstime_t *timeout, int unit) {
     long long tval;
-    long double ftval;
+    PORT_LONGDOUBLE ftval;
 
     if (unit == UNIT_SECONDS) {
         if (getLongDoubleFromObjectOrReply(c,object,&ftval,

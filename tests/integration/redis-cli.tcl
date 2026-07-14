@@ -32,8 +32,16 @@ start_server {tags {"cli"}} {
     }
 
     proc write_cli {fd buf} {
+        if {$::tcl_platform(platform) eq "windows"} {
+            # MinGW Tcl does not flush writes reliably to a native child while
+            # the duplex pipe channel is nonblocking.
+            fconfigure $fd -blocking true
+        }
         puts $fd $buf
         flush $fd
+        if {$::tcl_platform(platform) eq "windows"} {
+            fconfigure $fd -blocking false
+        }
     }
 
     # Helpers to run tests in interactive mode
@@ -348,6 +356,7 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
     test "Piping raw protocol" {
         set cmds [tmpfile "cli_cmds"]
         set cmds_fd [open $cmds "w"]
+        fconfigure $cmds_fd -translation binary
 
         puts $cmds_fd [formatCommand select 9]
         puts $cmds_fd [formatCommand del test-counter]
@@ -362,9 +371,16 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
         }
         close $cmds_fd
 
-        set cli_fd [open_cli "--pipe" $cmds]
-        fconfigure $cli_fd -blocking true
-        set output [read_cli $cli_fd]
+        if {$::tcl_platform(platform) eq "windows"} {
+            # MinGW Tcl can keep a redirected pipeline channel open after the
+            # native child exits, so capture this one-shot command atomically.
+            set output [exec {*}[rediscli [srv host] [srv port] --pipe] \
+                < $cmds 2>@1]
+        } else {
+            set cli_fd [open_cli "--pipe" $cmds]
+            fconfigure $cli_fd -blocking true
+            set output [read_cli $cli_fd]
+        }
 
         assert_equal {1000} [r get test-counter]
         assert_match {*All data transferred*errors: 0*replies: 2102*} $output

@@ -13,6 +13,7 @@
 #  define calloc je_calloc
 #  define dallocx je_dallocx
 #  define free je_free
+#  define get_defrag_hint je_get_defrag_hint
 #  define mallctl je_mallctl
 #  define mallctlbymib je_mallctlbymib
 #  define mallctlnametomib je_mallctlnametomib
@@ -44,6 +45,7 @@
 #  undef je_calloc
 #  undef je_dallocx
 #  undef je_free
+#  undef je_get_defrag_hint
 #  undef je_mallctl
 #  undef je_mallctlbymib
 #  undef je_mallctlnametomib

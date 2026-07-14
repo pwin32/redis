@@ -55,9 +55,9 @@ proc exec_instance {type dirname cfgfile} {
 
     set errfile [file join $dirname err.txt]
     if {$::valgrind} {
-        set pid [exec valgrind --track-origins=yes --suppressions=../../../src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full ../../../src/${prgname} $cfgfile 2>> $errfile &]
+        set pid [exec valgrind --track-origins=yes --suppressions=../../../src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full $prg {*}$args 2>> $errfile &]
     } else {
-        set pid [exec ../../../src/${prgname} $cfgfile 2>> $errfile &]
+        set pid [exec $prg {*}$args 2>> $errfile &]
     }
     return $pid
 }
@@ -186,7 +186,9 @@ proc log_crashes {} {
 }
 
 proc is_alive pid {
-    if {[catch {exec ps -p $pid} err]} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        return [process_is_alive $pid]
+    } elseif {[catch {exec ps -p $pid} err]} {
         return 0
     } else {
         return 1
@@ -194,9 +196,13 @@ proc is_alive pid {
 }
 
 proc stop_instance pid {
-    catch {exec kill $pid}
-    # Node might have been stopped in the test
-    catch {exec kill -SIGCONT $pid}
+    if {$::tcl_platform(platform) eq "windows"} {
+        kill_proc2 $pid
+    } else {
+        catch {exec kill $pid}
+        # Node might have been stopped in the test.
+        catch {exec kill -SIGCONT $pid}
+    }
     if {$::valgrind} {
         set max_wait 60000
     } else {
@@ -207,7 +213,11 @@ proc stop_instance pid {
 
         if {$wait >= $max_wait} {
             puts "Forcing process $pid to exit..."
-            catch {exec kill -KILL $pid}
+            if {$::tcl_platform(platform) eq "windows"} {
+                kill_proc2 $pid
+            } else {
+                catch {exec kill -KILL $pid}
+            }
         } elseif {$wait % 1000 == 0} {
             puts "Waiting for process $pid to exit..."
         }

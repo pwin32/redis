@@ -126,7 +126,9 @@ start_server {tags {"string"}} {
     test "GETEX PXAT option" {
         r del foo
         r set foo bar
-        r getex foo pxat [expr [clock milliseconds] + 10000]
+        set now [r time]
+        set deadline [expr {[lindex $now 0] * 1000 + [lindex $now 1] / 1000 + 10000}]
+        r getex foo pxat $deadline
         assert_range [r pttl foo] 5000 10000
     }
 
@@ -541,7 +543,9 @@ if {[string match {*jemalloc*} [s mem_allocator]]} {
 
     test "Extended SET PXAT option" {
         r del foo
-        r set foo bar pxat [expr [clock milliseconds] + 10000]
+        set now [r time]
+        set deadline [expr {[lindex $now 0] * 1000 + [lindex $now 1] / 1000 + 10000}]
+        r set foo bar pxat $deadline
         assert_range [r ttl foo] 5 10
     }
     test {Extended SET using multiple options at once} {

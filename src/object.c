@@ -649,8 +649,8 @@ int getDoubleFromObjectOrReply(client *c, robj *o, double *target, const char *m
     return C_OK;
 }
 
-int getLongDoubleFromObject(robj *o, long double *target) {
-    long double value;
+int getLongDoubleFromObject(robj *o, PORT_LONGDOUBLE *target) {
+    PORT_LONGDOUBLE value;
 
     if (o == NULL) {
         value = 0;
@@ -732,29 +732,30 @@ int getLongFromObjectOrReply(client *c, robj *o, PORT_LONG *target, const char *
     return C_OK;
 }
 
-int getRangeLongFromObjectOrReply(client *c, robj *o, long min, long max, long *target, const char *msg) {
+int getRangeLongFromObjectOrReply(client *c, robj *o, PORT_LONG min, PORT_LONG max, PORT_LONG *target, const char *msg) {
     if (getLongFromObjectOrReply(c, o, target, msg) != C_OK) return C_ERR;
     if (*target < min || *target > max) {
         if (msg != NULL) {
             addReplyError(c,(char*)msg);
         } else {
-            addReplyErrorFormat(c,"value is out of range, value must between %ld and %ld", min, max);
+            addReplyErrorFormat(c,"value is out of range, value must between %lld and %lld",
+                                (long long)min, (long long)max);
         }
         return C_ERR;
     }
     return C_OK;
 }
 
-int getPositiveLongFromObjectOrReply(client *c, robj *o, long *target, const char *msg) {
+int getPositiveLongFromObjectOrReply(client *c, robj *o, PORT_LONG *target, const char *msg) {
     if (msg) {
-        return getRangeLongFromObjectOrReply(c, o, 0, LONG_MAX, target, msg);
+        return getRangeLongFromObjectOrReply(c, o, 0, PORT_LONG_MAX, target, msg);
     } else {
-        return getRangeLongFromObjectOrReply(c, o, 0, LONG_MAX, target, "value is out of range, must be positive");
+        return getRangeLongFromObjectOrReply(c, o, 0, PORT_LONG_MAX, target, "value is out of range, must be positive");
     }
 }
 
 int getIntFromObjectOrReply(client *c, robj *o, int *target, const char *msg) {
-    long value;
+    PORT_LONG value;
 
     if (getRangeLongFromObjectOrReply(c, o, INT_MIN, INT_MAX, &value, msg) != C_OK)
         return C_ERR;
@@ -1391,7 +1392,8 @@ NULL
 
         for (size_t j = 0; j < mh->num_dbs; j++) {
             char dbname[32];
-            snprintf(dbname,sizeof(dbname),"db.%zd",mh->db[j].dbid);
+            snprintf(dbname,sizeof(dbname),"db.%llu",
+                     (unsigned long long)mh->db[j].dbid);
             addReplyBulkCString(c,dbname);
             addReplyMapLen(c,2);
 

@@ -804,7 +804,7 @@ start_server {
 
         # 4) Kill RDB child process to restart rehashing.
         set pid1 [get_child_pid 0]
-        catch {exec kill -9 $pid1}
+        kill_proc2 $pid1
         waitForBgsave r
 
         # 5) Let the set hash to start rehashing
@@ -823,7 +823,7 @@ start_server {
         }
 
         set pid1 [get_child_pid 0]
-        catch {exec kill -9 $pid1}
+        kill_proc2 $pid1
         waitForBgsave r
 
         r config set save $origin_save

@@ -448,7 +448,7 @@ uint64_t MurmurHash64A (const void * key, size_t len, unsigned int seed) {
 /* Given a string element to add to the HyperLogLog, returns the length
  * of the pattern 000..1 of the element hash. As a side effect 'regp' is
  * set to the register index this element hashes to. */
-int hllPatLen(unsigned char *ele, size_t elesize, PORT_LONG *regp) {
+int hllPatLen(unsigned char *ele, size_t elesize, long *regp) {
     uint64_t hash, bit, index;
     int count;
 
@@ -1629,4 +1629,3 @@ arityerr:
     addReplyErrorFormat(c,
         "Wrong number of arguments for the '%s' subcommand",cmd);
 }
-

@@ -280,13 +280,13 @@ sds createLatencyReport(void) {
         analyzeLatencyForEvent(event,&ls);
 
         report = sdscatprintf(report,
-            "%d. %s: %d latency spikes (average %Iums, mean deviation %Iums, period %.2f sec). Worst all time event %Iums.",            WIN_PORT_FIX /* %lu -> %Iu */
+            "%d. %s: %d latency spikes (average %ums, mean deviation %ums, period %.2f sec). Worst all time event %ums.",
             eventnum, event,
             ls.samples,
-            (PORT_ULONG) ls.avg,
-            (PORT_ULONG) ls.mad,
+            ls.avg,
+            ls.mad,
             (double) ls.period/ls.samples,
-            (PORT_ULONG) ts->max);
+            ts->max);
 
         /* Fork */
         if (!strcasecmp(event,"fork")) {
@@ -565,8 +565,8 @@ sds latencyCommandGenSparkeline(char *event, struct latencyTimeSeries *ts) {
     }
 
     graph = sdscatprintf(graph,
-        "%s - high %Iu ms, low %Iu ms (all time high %Iu ms)\n", event,         WIN_PORT_FIX /* %ld -> %Id, %lu -> %Iu */
-        (PORT_ULONG) max, (PORT_ULONG) min, (PORT_ULONG) ts->max);
+        "%s - high %u ms, low %u ms (all time high %u ms)\n", event,
+        max, min, ts->max);
     for (j = 0; j < LATENCY_GRAPH_COLS; j++)
         graph = sdscatlen(graph,"-",1);
     graph = sdscatlen(graph,"\n",1);
@@ -665,4 +665,3 @@ nodataerr:
     addReplyErrorFormat(c,
         "No samples available for event '%s'", (char*) c->argv[2]->ptr);
 }
-

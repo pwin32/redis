@@ -814,10 +814,10 @@ void scanCallback(void *privdata, const dictEntry *de) {
 int parseScanCursorOrReply(client *c, robj *o, PORT_ULONG *cursor) {
     char *eptr;
 
-    /* Use strtoul() because we need an *unsigned* long, so
+    /* Use strtoull() because we need an unsigned 64-bit value, so
      * getLongLongFromObject() does not cover the whole cursor space. */
     errno = 0;
-    *cursor = strtoul(o->ptr, &eptr, 10);
+    *cursor = strtoull(o->ptr, &eptr, 10);
     if (isspace(((char*)o->ptr)[0]) || eptr[0] != '\0' || errno == ERANGE)
     {
         addReplyError(c, "invalid cursor");
@@ -1910,115 +1910,6 @@ int xreadGetKeys(struct redisCommand *cmd, robj **argv, int argc, getKeysResult 
     for (i = streams_pos+1; i < argc-num; i++) keys[i-streams_pos-1] = i;
     result->numkeys = num;
     return num;
-}
-
-int *migrateGetKeys(struct redisCommand *cmd, robj **argv, int argc, int *numkeys) {
-    int i, num, first, *keys;
-    UNUSED(cmd);
-
-    /* Assume the obvious form. */
-    first = 3;
-    num = 1;
-
-    /* But check for the extended one with the KEYS option. */
-    if (argc > 6) {
-        for (i = 6; i < argc; i++) {
-            if (!strcasecmp(argv[i]->ptr,"keys") &&
-                sdslen(argv[3]->ptr) == 0)
-            {
-                first = i+1;
-                num = argc-first;
-                break;
-            }
-        }
-    }
-
-    keys = zmalloc(sizeof(int)*num);
-    for (i = 0; i < num; i++) keys[i] = first+i;
-    *numkeys = num;
-    return keys;
-}
-
-/* Helper function to extract keys from following commands:
- * GEORADIUS key x y radius unit [WITHDIST] [WITHHASH] [WITHCOORD] [ASC|DESC]
- *                             [COUNT count] [STORE key] [STOREDIST key]
- * GEORADIUSBYMEMBER key member radius unit ... options ... */
-int *georadiusGetKeys(struct redisCommand *cmd, robj **argv, int argc, int *numkeys) {
-    int i, num, *keys;
-    UNUSED(cmd);
-
-    /* Check for the presence of the stored key in the command */
-    int stored_key = -1;
-    for (i = 5; i < argc; i++) {
-        char *arg = argv[i]->ptr;
-        /* For the case when user specifies both "store" and "storedist" options, the
-         * second key specified would override the first key. This behavior is kept
-         * the same as in georadiusCommand method.
-         */
-        if ((!strcasecmp(arg, "store") || !strcasecmp(arg, "storedist")) && ((i+1) < argc)) {
-            stored_key = i+1;
-            i++;
-        }
-    }
-    num = 1 + (stored_key == -1 ? 0 : 1);
-
-    /* Keys in the command come from two places:
-     * argv[1] = key,
-     * argv[5...n] = stored key if present
-     */
-    keys = zmalloc(sizeof(int) * num);
-
-    /* Add all key positions to keys[] */
-    keys[0] = 1;
-    if(num > 1) {
-         keys[1] = stored_key;
-    }
-    *numkeys = num;
-    return keys;
-}
-
-/* XREAD [BLOCK <milliseconds>] [COUNT <count>] [GROUP <groupname> <ttl>]
- *       STREAMS key_1 key_2 ... key_N ID_1 ID_2 ... ID_N */
-int *xreadGetKeys(struct redisCommand *cmd, robj **argv, int argc, int *numkeys) {
-    int i, num = 0, *keys;
-    UNUSED(cmd);
-
-    /* We need to parse the options of the command in order to seek the first
-     * "STREAMS" string which is actually the option. This is needed because
-     * "STREAMS" could also be the name of the consumer group and even the
-     * name of the stream key. */
-    int streams_pos = -1;
-    for (i = 1; i < argc; i++) {
-        char *arg = argv[i]->ptr;
-        if (!strcasecmp(arg, "block")) {
-            i++; /* Skip option argument. */
-        } else if (!strcasecmp(arg, "count")) {
-            i++; /* Skip option argument. */
-        } else if (!strcasecmp(arg, "group")) {
-            i += 2; /* Skip option argument. */
-        } else if (!strcasecmp(arg, "noack")) {
-            /* Nothing to do. */
-        } else if (!strcasecmp(arg, "streams")) {
-            streams_pos = i;
-            break;
-        } else {
-            break; /* Syntax error. */
-        }
-    }
-    if (streams_pos != -1) num = argc - streams_pos - 1;
-
-    /* Syntax error. */
-    if (streams_pos == -1 || num == 0 || num % 2 != 0) {
-        *numkeys = 0;
-        return NULL;
-    }
-    num /= 2; /* We have half the keys as there are arguments because
-                 there are also the IDs, one per key. */
-
-    keys = zmalloc(sizeof(int) * num);
-    for (i = streams_pos+1; i < argc-num; i++) keys[i-streams_pos-1] = i;
-    *numkeys = num;
-    return keys;
 }
 
 /* Slot to Key API. This is used by Redis Cluster in order to obtain in

@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/hash.so]
+set testmodule [redis_test_module hash]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

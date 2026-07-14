@@ -116,6 +116,10 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
         errno = WSAEINVAL;
         return -1;
     }
+    if ((sockstate->masks & SOCKET_ATTACHED) == 0 &&
+        WSIOCP_SocketAttach(fd, sockstate) != 0) {
+        return -1;
+    }
 
     if (mask & AE_READABLE) {
         sockstate->masks |= AE_READABLE;
@@ -125,7 +129,7 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
             } else {
                 if ((sockstate->masks & READ_QUEUED) == 0) {
                     // Queue up a 0 byte read
-                    WSIOCP_QueueNextRead(fd);
+                    if (WSIOCP_QueueNextRead(fd) != 0) return -1;
                 }
             }
         }

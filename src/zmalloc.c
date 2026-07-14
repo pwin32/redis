@@ -39,7 +39,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <assert.h>
 
 /* This function provide us access to the original libc free(). This is useful
@@ -94,8 +96,14 @@ POSIX_ONLY(#include <pthread.h>)
 
 static redisAtomic size_t used_memory = 0;
 
+#ifdef _WIN32
+void zmalloc_set_used_memory(size_t memory) {
+    atomicSet(used_memory,memory);
+}
+#endif
+
 static void zmalloc_default_oom(size_t size) {
-    fprintf(stderr, "zmalloc: Out of memory trying to allocate %Iu bytes\n",    WIN_PORT_FIX /* %zu -> %Iu */
+    fprintf(stderr, "zmalloc: Out of memory trying to allocate %zu bytes\n",
         size);
     fflush(stderr);
     abort();
@@ -525,16 +533,6 @@ int jemalloc_purge() {
     return -1;
 }
 #else
-int zmalloc_get_allocator_info(size_t *allocated,
-                               size_t *active,
-                               size_t *resident) {
-    *allocated = *resident = *active = 0;
-    return 1;
-}
-#endif
-
-#else
-
 int zmalloc_get_allocator_info(size_t *allocated,
                                size_t *active,
                                size_t *resident) {

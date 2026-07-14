@@ -167,6 +167,7 @@ start_server {tags {"repl"}} {
         test {BLPOP followed by role change, issue #2473} {
             set rd [redis_deferring_client]
             $rd blpop foo 0 ; # Block while B is a master
+            wait_for_blocked_client
 
             # Turn B into master of A
             $A slaveof no one
@@ -182,7 +183,7 @@ start_server {tags {"repl"}} {
             # If the client is still attached to the instance, we'll get
             # a desync between the two instances.
             $A rpush foo a b c
-            after 100
+            wait_for_ofs_sync $B $A
 
             wait_for_condition 50 100 {
                 [$A debug digest] eq [$B debug digest] &&
@@ -191,6 +192,8 @@ start_server {tags {"repl"}} {
             } else {
                 fail "Master and replica have different digest: [$A debug digest] VS [$B debug digest]"
             }
+            assert_error {UNBLOCKED*} {$rd read}
+            $rd close
         }
     }
 }
@@ -645,17 +648,17 @@ start_server {tags {"repl"}} {
                     # disconnect replicas depending on the current test
                     set loglines [count_log_lines -2]
                     if {$all_drop == "all" || $all_drop == "fast"} {
-                        exec kill [srv 0 pid]
+                        kill_proc2 [srv 0 pid]
                         set replicas_alive [lreplace $replicas_alive 1 1]
                     }
                     if {$all_drop == "all" || $all_drop == "slow"} {
-                        exec kill [srv -1 pid]
+                        kill_proc2 [srv -1 pid]
                         set replicas_alive [lreplace $replicas_alive 0 0]
                     }
                     if {$all_drop == "timeout"} {
                         $master config set repl-timeout 2
                         # we want the slow replica to hang on a key for very long so it'll reach repl-timeout
-                        exec kill -SIGSTOP [srv -1 pid]
+                        pause_process [srv -1 pid]
                         after 2000
                     }
 
@@ -682,7 +685,7 @@ start_server {tags {"repl"}} {
                         # master disconnected the slow replica, remove from array
                         set replicas_alive [lreplace $replicas_alive 0 0]
                         # release it
-                        exec kill -SIGCONT [srv -1 pid]
+                        resume_process [srv -1 pid]
                     }
 
                     # make sure we don't have a busy loop going thought epoll_wait
@@ -767,7 +770,7 @@ test "diskless replication child being killed is collected" {
 
             # simulate the OOM killer or anyone else kills the child
             set fork_child_pid [get_child_pid -1]
-            exec kill -9 $fork_child_pid
+            kill_proc2 $fork_child_pid
 
             # wait for the parent to notice the child have exited
             wait_for_condition 50 100 {
@@ -805,7 +808,7 @@ foreach mdl {yes no} {
                 set fork_child_pid [get_child_pid -1]
 
                 # simulate the OOM killer or anyone else kills the parent
-                exec kill -9 $master_pid
+                kill_proc2 $master_pid
 
                 # wait for the child to notice the parent died have exited
                 wait_for_condition 500 10 {
@@ -844,7 +847,7 @@ test "diskless replication read pipe cleanup" {
             # wait for the replicas to start reading the rdb
             wait_for_log_messages 0 {"*Loading DB in memory*"} $loglines 800 10
 
-            set loglines [count_log_lines 0]
+            set loglines [count_log_lines -1]
             # send FLUSHALL so the RDB child will be killed
             $master flushall
 

@@ -28,23 +28,48 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32_types.h"
+#include "Win32_Interop/Win32_Time.h"
+#include "Win32_Interop/win32fixes.h"
+#include "Win32_Interop/Win32_PThread.h"
+#include "Win32_Interop/Win32_Error.h"
+#endif
+
 #include "fmacros.h"
 #include "version.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <signal.h>
 #include <unistd.h>
+#endif
 #include <time.h>
 #include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/time.h>
+#endif
 #include <assert.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+
+#ifdef _WIN32
+#ifndef STDIN_FILENO
+#define STDIN_FILENO (_fileno(stdin))
+#endif
+#include "Win32_Interop/Win32_Signal_Process.h"
+#include "Win32_Interop/Win32_ANSI.h"
+#include <windows.h>
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+#define strtoull _strtoui64
+#endif
 
 #include <hiredis.h>
 #ifdef USE_OPENSSL
@@ -1795,6 +1820,9 @@ static int parseOptions(int argc, char **argv) {
         } else if (!strcmp(argv[i],"-v") || !strcmp(argv[i], "--version")) {
             sds version = cliVersion();
             printf("redis-cli %s\n", version);
+#ifdef _WIN32
+            fflush(stdout);
+#endif
             sdsfree(version);
             exit(0);
         } else if (!strcmp(argv[i],"-3")) {
@@ -7225,8 +7253,12 @@ static void getRDB(clusterManagerNode *node) {
     /* Write to file. */
     if (write_to_stdout) {
         fd = STDOUT_FILENO;
+#ifdef _WIN32
+        setmode(fd, _O_BINARY);
+#endif
     } else {
-        fd = open(filename, O_CREAT|O_WRONLY, 0644);
+        fd = open(filename,
+            O_CREAT|O_WRONLY|O_TRUNC WIN32_ONLY(|_O_BINARY), 0644);
         if (fd == -1) {
             fprintf(stderr, "Error opening '%s': %s\n", filename,
                 strerror(errno));
@@ -7300,6 +7332,10 @@ static void pipeMode(void) {
     int done = 0;
     char magic[20]; /* Special reply we recognize. */
     time_t last_read_time = time(NULL);
+
+#ifdef _WIN32
+    setmode(STDIN_FILENO, _O_BINARY);
+#endif
 
     srand(time(NULL));
 

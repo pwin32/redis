@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/zset.so]
+set testmodule [redis_test_module zset]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

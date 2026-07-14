@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/blockonkeys.so]
+set testmodule [redis_test_module blockonkeys]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

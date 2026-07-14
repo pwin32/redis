@@ -347,7 +347,7 @@ uint32_t sdigits10(int64_t v) {
  *
  * Modified in order to handle signed integers since the original code was
  * designed for unsigned integers. */
-int ll2string(char *dst, size_t dstlen, long long svalue) {
+int ll2string(char *dst, size_t dstlen, PORT_LONGLONG svalue) {
     static const char digits[201] =
         "0001020304050607080910111213141516171819"
         "2021222324252627282930313233343536373839"
@@ -413,7 +413,7 @@ int ll2string(char *dst, size_t dstlen, long long svalue) {
  * Because of its strictness, it is safe to use this function to check if
  * you can convert a string into a long long, and obtain back the string
  * from the number without any loss in the string representation. */
-int string2ll(const char *s, size_t slen, long long *value) {
+int string2ll(const char *s, size_t slen, PORT_LONGLONG *value) {
     const char *p = s;
     size_t plen = 0;
     int negative = 0;
@@ -527,35 +527,6 @@ int string2ld(const char *s, size_t slen, PORT_LONGDOUBLE *dp) {
     PORT_LONGDOUBLE value;
     char *eptr;
 
-    if (slen >= sizeof(buf)) return 0;
-    memcpy(buf,s,slen);
-    buf[slen] = '\0';
-
-    errno = 0;
-    value = strtold(buf, &eptr);
-    if (isspace(buf[0]) || eptr[0] != '\0' ||
-        (errno == ERANGE &&
-            (value == HUGE_VAL || value == -HUGE_VAL || value == 0)) ||
-        errno == EINVAL ||
-        isnan(value))
-        return 0;
-
-    if (dp) *dp = value;
-    return 1;
-}
-
-/* Convert a string into a double. Returns 1 if the string could be parsed
- * into a (non-overflowing) double, 0 otherwise. The value will be set to
- * the parsed value when appropriate.
- *
- * Note that this function demands that the string strictly represents
- * a double: no spaces or other characters before or after the string
- * representing the number are accepted. */
-int string2ld(const char *s, size_t slen, long double *dp) {
-    char buf[MAX_LONG_DOUBLE_CHARS];
-    long double value;
-    char *eptr;
-
     if (slen == 0 || slen >= sizeof(buf)) return 0;
     memcpy(buf,s,slen);
     buf[slen] = '\0';
@@ -646,7 +617,7 @@ int d2string(char *buf, size_t len, double value) {
  *
  * The function returns the length of the string or zero if there was not
  * enough buffer room to store it. */
-int ld2string(char *buf, size_t len, long double value, ld2string_mode mode) {
+int ld2string(char *buf, size_t len, PORT_LONGDOUBLE value, ld2string_mode mode) {
     size_t l = 0;
 
     if (isinf(value)) {
@@ -663,11 +634,19 @@ int ld2string(char *buf, size_t len, long double value, ld2string_mode mode) {
     } else {
         switch (mode) {
         case LD_STR_AUTO:
+#ifdef __MINGW32__
             l = snprintf(buf,len,"%.17Lg",value);
+#else
+            l = snprintf(buf,len,"%.17g",(double)value);
+#endif
             if (l+1 > len) return 0; /* No room. */
             break;
         case LD_STR_HEX:
+#ifdef __MINGW32__
             l = snprintf(buf,len,"%La",value);
+#else
+            l = snprintf(buf,len,"%a",(double)value);
+#endif
             if (l+1 > len) return 0; /* No room. */
             break;
         case LD_STR_HUMAN:
@@ -676,7 +655,11 @@ int ld2string(char *buf, size_t len, long double value, ld2string_mode mode) {
              * way that is "non surprising" for the user (that is, most small
              * decimal numbers will be represented in a way that when converted
              * back into a string are exactly the same as what the user typed.) */
+#ifdef __MINGW32__
             l = snprintf(buf,len,"%.17Lf",value);
+#else
+            l = snprintf(buf,len,"%.17f",(double)value);
+#endif
             if (l+1 > len) return 0; /* No room. */
             /* Now remove trailing zeroes after the '.' */
             if (strchr(buf,'.') != NULL) {
@@ -723,7 +706,7 @@ void getRandomBytes(unsigned char *p, size_t len) {
                 struct timeval tv;
                 gettimeofday(&tv,NULL);
                 pid_t pid = getpid();
-                seed[j] = tv.tv_sec ^ tv.tv_usec ^ pid ^ (long)fp;
+                seed[j] = tv.tv_sec ^ tv.tv_usec ^ pid ^ (uintptr_t)fp;
             }
         } else {
             seed_initialized = 1;
@@ -853,24 +836,6 @@ sds getAbsolutePath(char *filename) {
     return abspath;
 }
 #endif
-/*
- * Gets the proper timezone in a more portable fashion
- * i.e timezone variables are linux specific.
- */
-
-PORT_ULONG getTimeZone(void) {
-#ifdef __linux__
-    return timezone;
-#else
-    struct timeval tv;
-    struct timezone tz;
-
-    gettimeofday(&tv, &tz);
-
-    return tz.tz_minuteswest * 60UL;
-#endif
-}
-
 /*
  * Gets the proper timezone in a more portable fashion
  * i.e timezone variables are linux specific.

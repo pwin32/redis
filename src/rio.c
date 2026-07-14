@@ -450,6 +450,6 @@ size_t rioWriteBulkDouble(rio *r, double d) {
     char dbuf[128];
     unsigned int dlen;
 
-    dlen = snprintf(dbuf,sizeof(dbuf),"%.17g",d);
+    dlen = d2string(dbuf,sizeof(dbuf),d);
     return rioWriteBulkString(r,dbuf,dlen);
 }

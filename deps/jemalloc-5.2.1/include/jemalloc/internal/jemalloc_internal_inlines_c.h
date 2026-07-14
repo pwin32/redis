@@ -220,7 +220,7 @@ ixalloc(tsdn_t *tsdn, void *ptr, size_t oldsize, size_t size, size_t extra,
 }
 
 JEMALLOC_ALWAYS_INLINE int
-iget_defrag_hint(tsdn_t *tsdn, void* ptr, int *bin_util, int *run_util) {
+iget_defrag_hint(tsdn_t *tsdn, void* ptr) {
 	int defrag = 0;
 	rtree_ctx_t rtree_ctx_fallback;
 	rtree_ctx_t *rtree_ctx = tsdn_rtree_ctx(tsdn, &rtree_ctx_fallback);
@@ -232,15 +232,38 @@ iget_defrag_hint(tsdn_t *tsdn, void* ptr, int *bin_util, int *run_util) {
 		extent_t *slab = iealloc(tsdn, ptr);
 		arena_t *arena = extent_arena_get(slab);
 		szind_t binind = extent_szind_get(slab);
-		bin_t *bin = arena->bins[binind].bin_shards;
+		unsigned binshard = extent_binshard_get(slab);
+		bin_t *bin = &arena->bins[binind].bin_shards[binshard];
 		malloc_mutex_lock(tsdn, &bin->lock);
-		/* don't bother moving allocations from the slab currently used for new allocations */
+		/* Don't bother moving allocations from the slab currently used for new allocations */
 		if (slab != bin->slabcur) {
-			const bin_info_t *bin_info = &bin_infos[binind];
-			size_t availregs = bin_info->nregs * bin->stats.curslabs;
-			*bin_util = ((long long)bin->stats.curregs<<16) / availregs;
-			*run_util = ((long long)(bin_info->nregs - extent_nfree_get(slab))<<16) / bin_info->nregs;
-			defrag = 1;
+			int free_in_slab = extent_nfree_get(slab);
+			if (free_in_slab) {
+				const bin_info_t *bin_info = &bin_infos[binind];
+				/* Find number of non-full slabs and the number of regs in them. */
+				size_t curslabs = 0;
+				size_t curregs = 0;
+				/* Run on all bin shards (usually just one). */
+				for (uint32_t i = 0; i < bin_info->n_shards; i++) {
+					bin_t *bb = &arena->bins[binind].bin_shards[i];
+					curslabs += bb->stats.nonfull_slabs;
+					/* Deduct full slabs; they are not candidates. */
+					size_t full_slabs = bb->stats.curslabs -
+					    bb->stats.nonfull_slabs;
+					curregs += bb->stats.curregs -
+					    full_slabs * bin_info->nregs;
+					if (bb->slabcur) {
+						/* slabcur is not a candidate to move from. */
+						curregs -= bin_info->nregs -
+						    extent_nfree_get(bb->slabcur);
+						curslabs--;
+					}
+				}
+				/* Prefer slabs below the non-full average. The extra
+				 * 12.5% avoids stagnation at equal utilization. */
+				defrag = (bin_info->nregs - free_in_slab) * curslabs <=
+				    curregs + curregs / 8;
+			}
 		}
 		malloc_mutex_unlock(tsdn, &bin->lock);
 	}

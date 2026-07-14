@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/keyspace_events.so]
+set testmodule [redis_test_module keyspace_events]
 
 tags "modules" {
     start_server [list overrides [list loadmodule "$testmodule"]] {

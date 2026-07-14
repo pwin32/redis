@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/testrdb.so]
+set testmodule [redis_test_module testrdb]
 
 tags "modules" {
     test {modules are able to persist types} {

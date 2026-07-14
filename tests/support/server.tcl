@@ -96,9 +96,11 @@ proc kill_server config {
 
     # kill server and wait for the process to be totally exited
     send_data_packet $::test_server_fd server-killing $pid
-    catch {exec kill $pid}
+    kill_proc $config
     # Node might have been stopped in the test
-    catch {exec kill -SIGCONT $pid}
+    if {$::tcl_platform(platform) != "windows"} {
+        catch {exec kill -SIGCONT $pid}
+    }
     if {$::valgrind} {
         set max_wait 60000
     } else {
@@ -109,7 +111,7 @@ proc kill_server config {
 
         if {$wait >= $max_wait} {
             puts "Forcing process $pid to exit..."
-            catch {exec kill -KILL $pid}
+            kill_proc2 $pid
         } elseif {$wait % 1000 == 0} {
             puts "Waiting for process $pid to exit..."
         }
@@ -123,7 +125,6 @@ proc kill_server config {
 
     # Remove this pid from the set of active pids in the test server.
     send_data_packet $::test_server_fd server-killed $pid
-  }
 }
 
 proc windows_is_alive config {
@@ -314,11 +315,11 @@ proc create_server_config_file {filename config} {
 
 proc spawn_server {config_file stdout stderr} {
     if {$::valgrind} {
-        set pid [exec valgrind --track-origins=yes --trace-children=yes --suppressions=[pwd]/src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full src/redis-server $config_file >> $stdout 2>> $stderr &]
+        set pid [exec valgrind --track-origins=yes --trace-children=yes --suppressions=[pwd]/src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full $::redis_server_path $config_file >> $stdout 2>> $stderr &]
     } elseif ($::stack_logging) {
-        set pid [exec /usr/bin/env MallocStackLogging=1 MallocLogFile=/tmp/malloc_log.txt src/redis-server $config_file >> $stdout 2>> $stderr &]
+        set pid [exec /usr/bin/env MallocStackLogging=1 MallocLogFile=/tmp/malloc_log.txt $::redis_server_path $config_file >> $stdout 2>> $stderr &]
     } else {
-        set pid [exec src/redis-server $config_file >> $stdout 2>> $stderr &]
+        set pid [exec $::redis_server_path $config_file >> $stdout 2>> $stderr &]
     }
 
     if {$::wait_server} {
@@ -338,7 +339,7 @@ proc wait_server_started {config_file stdout pid} {
     set maxiter [expr {120*1000/$checkperiod}] ; # Wait up to 2 minutes.
     set port_busy 0
     while 1 {
-        if {[regexp -- " PID: $pid" [exec cat $stdout]]} {
+        if {[regexp -- " PID: $pid|pid=$pid," [exec cat $stdout]]} {
             break
         }
         after $checkperiod
@@ -484,8 +485,11 @@ proc start_server {options {code undefined}} {
         dict set config port $port
     }
 
-    set unixsocket [file normalize [format "%s/%s" [dict get $config "dir"] "socket"]]
-    dict set config "unixsocket" $unixsocket
+    set unixsocket ""
+    if {$::tcl_platform(platform) != "windows"} {
+        set unixsocket [file normalize [format "%s/%s" [dict get $config "dir"] "socket"]]
+        dict set config "unixsocket" $unixsocket
+    }
 
     # apply overrides from global space and arguments
     foreach {directive arguments} [concat $::global_overrides $overrides] {

@@ -69,7 +69,7 @@ int readBytes(FILE *fp, char *target, PORT_LONG length) {
     epos = ftello(fp);
     real = (PORT_LONG)fread(target,1,length,fp);
     if (real != length) {
-        ERROR("Expected to read %Id bytes, got %Id bytes",length,real);                        WIN_PORT_FIX /* %ld -> %Id */
+        ERROR("Expected to read %lld bytes, got %lld bytes",length,real); WIN_PORT_FIX /* PORT_LONG */
         return 0;
     }
     return 1;

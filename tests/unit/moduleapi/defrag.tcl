@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/defragtest.so]
+set testmodule [redis_test_module defragtest]
 
 start_server {tags {"modules"} overrides {{save ""}}} {
     r module load $testmodule 10000

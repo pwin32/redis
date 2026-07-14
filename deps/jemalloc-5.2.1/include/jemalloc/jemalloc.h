@@ -63,6 +63,7 @@ extern "C" {
 #  define je_calloc je_calloc
 #  define je_dallocx je_dallocx
 #  define je_free je_free
+#  define je_get_defrag_hint je_get_defrag_hint
 #  define je_mallctl je_mallctl
 #  define je_mallctlbymib je_mallctlbymib
 #  define je_mallctlnametomib je_mallctlnametomib
@@ -214,8 +215,7 @@ extern "C" {
 
 /* This version of Jemalloc, modified for Redis, has the je_get_defrag_hint()
  * function. */
-//[tporadowski] turned off as it no longer works properly and needs further investigation
-//#define JEMALLOC_FRAG_HINT
+#define JEMALLOC_FRAG_HINT
 
 /*
  * The je_ prefix on the following public symbol declarations is an artifact
@@ -377,6 +377,7 @@ struct extent_hooks_s {
 #  define calloc je_calloc
 #  define dallocx je_dallocx
 #  define free je_free
+#  define get_defrag_hint je_get_defrag_hint
 #  define mallctl je_mallctl
 #  define mallctlbymib je_mallctlbymib
 #  define mallctlnametomib je_mallctlnametomib
@@ -408,6 +409,7 @@ struct extent_hooks_s {
 #  undef je_calloc
 #  undef je_dallocx
 #  undef je_free
+#  undef je_get_defrag_hint
 #  undef je_mallctl
 #  undef je_mallctlbymib
 #  undef je_mallctlnametomib

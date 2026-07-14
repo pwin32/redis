@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/timer.so]
+set testmodule [redis_test_module timer]
 
 start_server {tags {"modules"}} {
     r module load $testmodule
@@ -54,4 +54,3 @@ start_server {tags {"modules"}} {
         assert_equal {} [r test.gettimer $id]
     }
 }
-

@@ -23,25 +23,44 @@
 #include "..\server.h"
 #include "Win32_Portability.h"
 
-void SetupRedisGlobals(LPVOID redisData, size_t redisDataSize, uint8_t *dictHashSeed, LPVOID redisModules)
+void moduleSetForkData(void *data);
+int rdbSaveRioWithEOFMark(rio *rdb, int *error, rdbSaveInfo *rsi);
+
+void SetupRedisGlobals(LPVOID redisData, size_t redisDataSize, uint8_t *dictHashSeed,
+    LPVOID redisModules, size_t usedMemory)
 {
 #ifndef NO_QFORKIMPL
     memcpy(&server, redisData, redisDataSize);
     dictSetHashFunctionSeed(dictHashSeed);
-    modules = (dict*) redisModules;
+    moduleSetForkData(redisModules);
+    zmalloc_set_used_memory(usedMemory);
+    crc64_init();
+    /* Parent FDAPI descriptor numbers are process-local. Until child-info
+     * pipe handles are passed explicitly, disable this optional metrics path
+     * so it cannot collide with the AOF descriptors opened in the child. */
+    server.child_info_pipe[0] = -1;
+    server.child_info_pipe[1] = -1;
 #endif
 }
 
 int do_rdbSave(char* filename)
 {
 #ifndef NO_QFORKIMPL
-    server.rdb_child_pid = GetCurrentProcessId();
+    server.in_fork_child = CHILD_TYPE_RDB;
+    server.child_pid = GetCurrentProcessId();
+    server.child_type = CHILD_TYPE_RDB;
+    server.rdb_child_type = RDB_CHILD_TYPE_DISK;
+    updateDictResizePolicy();
+    redisSetProcTitle("redis-rdb-bgsave");
+    redisSetCpuAffinity(server.bgsave_cpulist);
+
     rdbSaveInfo rsi, *rsiptr;
     rsiptr = rdbPopulateSaveInfo(&rsi);
     if( rdbSave(filename, rsiptr) != C_OK ) {
         serverLog(LL_WARNING,"rdbSave failed in qfork: %s", strerror(errno));
         return C_ERR;
     }
+    sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
 #endif
     return C_OK;
 }
@@ -51,7 +70,13 @@ int do_aofSave(char* filename, int aof_pipe_read_ack, int aof_pipe_read_data, in
 #ifndef NO_QFORKIMPL
     int rewriteAppendOnlyFile(char *filename);
 
-    server.aof_child_pid = GetCurrentProcessId();
+    server.in_fork_child = CHILD_TYPE_AOF;
+    server.child_pid = GetCurrentProcessId();
+    server.child_type = CHILD_TYPE_AOF;
+    updateDictResizePolicy();
+    redisSetProcTitle("redis-aof-rewrite");
+    redisSetCpuAffinity(server.aof_rewrite_cpulist);
+
     server.aof_pipe_write_ack_to_parent = aof_pipe_write_ack;
     server.aof_pipe_read_ack_from_parent = aof_pipe_read_ack;
     server.aof_pipe_read_data_from_parent = aof_pipe_read_data;
@@ -62,90 +87,55 @@ int do_aofSave(char* filename, int aof_pipe_read_ack, int aof_pipe_read_data, in
         serverLog(LL_WARNING, "rewriteAppendOnlyFile failed in qfork: %s", strerror(errno));
         return C_ERR;
     }
+    sendChildCowInfo(CHILD_INFO_TYPE_AOF_COW_SIZE, "AOF rewrite");
 #endif
     return C_OK;
 }
 
-int rdbSaveRioWithEOFMark(rio *rdb, int *error);
-
-// This function is meant to be an exact replica of the fork() child path in rdbSaveToSlavesSockets
-int do_rdbSaveToSlavesSockets(int *fds, int numfds, uint64_t *clientids)
+int do_socketSave(int rdb_pipe_write_fd, int safe_to_exit_pipe_fd)
 {
 #ifndef NO_QFORKIMPL
     int retval;
-    rio slave_sockets;
+    char dummy;
+    ssize_t nread;
+    rio rdb;
+    rdbSaveInfo rsi, *rsiptr;
 
-    server.rdb_child_pid = GetCurrentProcessId();
-
-    rioInitWithFdset(&slave_sockets,fds,numfds);
-    // On Windows we need to use the fds after do_socketSave2 has finished
-    // so we don't free them here, moreover since we allocate the fds in
-    // QFork.cpp it's better to use malloc instead of zmalloc.
-    POSIX_ONLY(zfree(fds););
-
-    // On Windows we haven't duplicated the listening sockets so we shouldn't close them
-    POSIX_ONLY(closeListeningSockets(0);)
-
+    server.in_fork_child = CHILD_TYPE_RDB;
+    server.child_pid = GetCurrentProcessId();
+    server.child_type = CHILD_TYPE_RDB;
+    server.rdb_child_type = RDB_CHILD_TYPE_SOCKET;
+    server.rdb_pipe_read = -1;
+    server.rdb_child_exit_pipe = -1;
+    updateDictResizePolicy();
     redisSetProcTitle("redis-rdb-to-slaves");
-    
-    retval = rdbSaveRioWithEOFMark(&slave_sockets,NULL);
-    if (retval == C_OK && rioFlush(&slave_sockets) == 0)
-        retval = C_ERR;
-    
-    if (retval == C_OK) {
-        size_t private_dirty = zmalloc_get_private_dirty(-1);
-    
-        if (private_dirty) {
-            serverLog(LL_NOTICE,
-                "RDB: %Iu MB of memory used by copy-on-write",                  WIN_PORT_FIX /* %zu -> %Iu */
-                private_dirty/(1024*1024));
-        }
-    
-        /* If we are returning OK, at least one slave was served
-         * with the RDB file as expected, so we need to send a report
-         * to the parent via the pipe. The format of the message is:
-         *
-         * <len> <slave[0].id> <slave[0].error> ...
-         *
-         * len, slave IDs, and slave errors, are all uint64_t integers,
-         * so basically the reply is composed of 64 bits for the len field
-         * plus 2 additional 64 bit integers for each entry, for a total
-         * of 'len' entries.
-         *
-         * The 'id' represents the slave's client ID, so that the master
-         * can match the report with a specific slave, and 'error' is
-         * set to 0 if the replication process terminated with a success
-         * or the error code if an error occurred. */
-        void *msg = zmalloc(sizeof(uint64_t)*(1+2*numfds));
-        uint64_t *len = msg;
-        uint64_t *ids = len+1;
-        int j, msglen;
-    
-        *len = numfds;
-        for (j = 0; j < numfds; j++) {
-            *ids++ = clientids[j];
-            *ids++ = slave_sockets.io.fdset.state[j];
-        }
-    
-        /* Write the message to the parent. If we have no good slaves or
-         * we are unable to transfer the message to the parent, we exit
-         * with an error so that the parent will abort the replication
-         * process with all the childre that were waiting. */
-        msglen = sizeof(uint64_t)*(1+2*numfds);
-        if (*len == 0 ||
-            write(server.rdb_pipe_write_result_to_parent,msg,msglen)
-            != msglen)
-        {
-            retval = C_ERR;
-        }
-    }
-    return retval;
-#endif
-    return C_OK;
-}
+    redisSetCpuAffinity(server.bgsave_cpulist);
 
-int do_socketSave(int *fds, int numfds, uint64_t *clientids, int pipe_write_fd)
-{
-    server.rdb_pipe_write_result_to_parent = pipe_write_fd;
-    return do_rdbSaveToSlavesSockets(fds, numfds, clientids);
+    rsiptr = rdbPopulateSaveInfo(&rsi);
+    rioInitWithFd(&rdb, rdb_pipe_write_fd);
+    retval = rdbSaveRioWithEOFMark(&rdb, NULL, rsiptr);
+    if (retval == C_OK && rioFlush(&rdb) == 0)
+        retval = C_ERR;
+    if (retval == C_OK)
+        sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
+    else
+        serverLog(LL_WARNING, "Diskless RDB save failed in qfork: %s",
+                  strerror(errno));
+
+    rioFreeFd(&rdb);
+    close(rdb_pipe_write_fd);
+
+    /* Keep the QFork snapshot alive until the parent drains the RDB stream.
+     * The read returns EOF when the parent closes its exit-gate writer. */
+    do {
+        nread = read(safe_to_exit_pipe_fd, &dummy, 1);
+    } while (nread == -1 && errno == EINTR);
+    UNUSED(nread);
+    close(safe_to_exit_pipe_fd);
+    return retval;
+#else
+    UNUSED(rdb_pipe_write_fd);
+    UNUSED(safe_to_exit_pipe_fd);
+    return C_ERR;
+#endif
 }

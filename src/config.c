@@ -359,7 +359,7 @@ static int updateOOMScoreAdjValues(sds *args, const char **err, int apply) {
 
     if (values[CONFIG_OOM_REPLICA] < values[CONFIG_OOM_MASTER] ||
         values[CONFIG_OOM_BGCHILD] < values[CONFIG_OOM_REPLICA]) {
-            serverLog(LOG_WARNING,
+            serverLog(IF_WIN32(LL_WARNING,LOG_WARNING),
                     "The oom-score-adj-values configuration may not work for non-privileged processes! "
                     "Please consult the documentation.");
     }
@@ -697,6 +697,13 @@ void loadServerConfigFromString(char *config) {
     return;
 
 loaderr:
+#ifdef _WIN32
+    serverLog(LL_WARNING, "\n*** FATAL CONFIG FILE ERROR (Redis %s) ***\n",
+        REDIS_VERSION);
+    serverLog(LL_WARNING, "Reading the configuration file, at line %d\n", linenum);
+    serverLog(LL_WARNING, ">>> '%s'\n", lines[i]);
+    serverLog(LL_WARNING, "%s\n", err);
+#else
     fprintf(stderr, "\n*** FATAL CONFIG FILE ERROR (Redis %s) ***\n",
         REDIS_VERSION);
     fprintf(stderr, "Reading the configuration file, at line %d\n", linenum);
@@ -1047,7 +1054,7 @@ void configGetCommand(client *c) {
         int j;
 
         for (j = 0; j < CLIENT_TYPE_OBUF_COUNT; j++) {
-            buf = sdscatprintf(buf,"%s %llu %llu %Id",                                WIN_PORT_FIX /* %ld -> %Id */
+            buf = sdscatprintf(buf,"%s %llu %llu %lld",                     WIN_PORT_FIX /* PORT_LONG */
                     getClientTypeName(j),
                     server.client_obuf_limits[j].hard_limit_bytes,
                     server.client_obuf_limits[j].soft_limit_bytes,
@@ -1694,7 +1701,9 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
         return retval;
     }
 
-#ifdef _GNU_SOURCE
+#ifdef _WIN32
+    fd = FDAPI_mkstemp(tmp_conffile);
+#elif defined(_GNU_SOURCE)
     fd = mkostemp(tmp_conffile, O_CLOEXEC);
 #else
     /* There's a theoretical chance here to leak the FD if a module thread forks & execv in the middle */
@@ -1718,6 +1727,7 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
 
     if (fsync(fd))
         serverLog(LL_WARNING, "Could not sync tmp config file to disk (%s)", strerror(errno));
+#ifndef _WIN32
     else if (fchmod(fd, 0644 & ~server.umask) == -1)
         serverLog(LL_WARNING, "Could not chmod config file (%s)", strerror(errno));
     else if (rename(tmp_conffile, configfile) == -1)
@@ -1726,9 +1736,23 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
         retval = 0;
         serverLog(LL_DEBUG, "Rewritten config file (%s) successfully", configfile);
     }
+#else
+    else {
+        int close_ret = close(fd);
+        fd = -1;
+        if (close_ret == -1)
+            serverLog(LL_WARNING, "Could not close tmp config file (%s)", strerror(errno));
+        else if (rename(tmp_conffile, configfile) == -1)
+            serverLog(LL_WARNING, "Could not rename tmp config file (%s)", strerror(errno));
+        else {
+            retval = 0;
+            serverLog(LL_DEBUG, "Rewritten config file (%s) successfully", configfile);
+        }
+    }
+#endif
 
 cleanup:
-    close(fd);
+    if (fd != -1) close(fd);
     if (retval) unlink(tmp_conffile);
     return retval;
 }
@@ -2289,6 +2313,15 @@ static int updateHZ(long long val, long long prev, const char **err) {
     return 1;
 }
 
+#ifdef _WIN32
+static int updateLogLevel(int val, int prev, const char **err) {
+    UNUSED(prev);
+    UNUSED(err);
+    setLogVerbosityLevel(val);
+    return 1;
+}
+#endif
+
 static int updatePort(long long val, long long prev, const char **err) {
     /* Do nothing if port is unchanged */
     if (val == prev) {
@@ -2534,9 +2567,11 @@ standardConfig configs[] = {
 
     /* Enum Configs */
     createEnumConfig("supervised", NULL, IMMUTABLE_CONFIG, supervised_mode_enum, server.supervised_mode, SUPERVISED_NONE, NULL, NULL),
+#ifndef _WIN32
     createEnumConfig("syslog-facility", NULL, IMMUTABLE_CONFIG, syslog_facility_enum, server.syslog_facility, LOG_LOCAL0, NULL, NULL),
+#endif
     createEnumConfig("repl-diskless-load", NULL, MODIFIABLE_CONFIG, repl_diskless_load_enum, server.repl_diskless_load, REPL_DISKLESS_LOAD_DISABLED, NULL, NULL),
-    createEnumConfig("loglevel", NULL, MODIFIABLE_CONFIG, loglevel_enum, server.verbosity, LL_NOTICE, NULL, NULL),
+    createEnumConfig("loglevel", NULL, MODIFIABLE_CONFIG, loglevel_enum, server.verbosity, LL_NOTICE, NULL, IF_WIN32(updateLogLevel, NULL)),
     createEnumConfig("maxmemory-policy", NULL, MODIFIABLE_CONFIG, maxmemory_policy_enum, server.maxmemory_policy, MAXMEMORY_NO_EVICTION, NULL, NULL),
     createEnumConfig("appendfsync", NULL, MODIFIABLE_CONFIG, aof_fsync_enum, server.aof_fsync, AOF_FSYNC_EVERYSEC, NULL, NULL),
     createEnumConfig("oom-score-adj", NULL, MODIFIABLE_CONFIG, oom_score_adj_enum, server.oom_score_adj, OOM_SCORE_ADJ_NO, NULL, updateOOMScoreAdj),

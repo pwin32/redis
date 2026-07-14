@@ -2,6 +2,7 @@ aligned_alloc:je_aligned_alloc
 calloc:je_calloc
 dallocx:je_dallocx
 free:je_free
+get_defrag_hint:je_get_defrag_hint
 mallctl:je_mallctl
 mallctlbymib:je_mallctlbymib
 mallctlnametomib:je_mallctlnametomib

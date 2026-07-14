@@ -8,6 +8,7 @@
 #  define je_calloc je_calloc
 #  define je_dallocx je_dallocx
 #  define je_free je_free
+#  define je_get_defrag_hint je_get_defrag_hint
 #  define je_mallctl je_mallctl
 #  define je_mallctlbymib je_mallctlbymib
 #  define je_mallctlnametomib je_mallctlnametomib

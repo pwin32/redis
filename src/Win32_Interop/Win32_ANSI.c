@@ -736,7 +736,7 @@ BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytes
     return (i == 0);
 }
 
-void ANSI_printf(char *format, ...) {
+void ANSI_printf(const char *format, ...) {
     va_list args;
     int retVal;
 #define cBufLen 2000
@@ -744,12 +744,20 @@ void ANSI_printf(char *format, ...) {
     memset(buffer, 0, cBufLen);
 
     va_start(args, format);
+    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode;
+    if (output == INVALID_HANDLE_VALUE || output == NULL ||
+        !GetConsoleMode(output, &mode)) {
+        vfprintf(stdout, format, args);
+        va_end(args);
+        return;
+    }
+
     retVal = vsprintf_s(buffer, cBufLen, format, args);
     va_end(args);
 
     if (retVal > 0) {
         DWORD bytesWritten = 0;
-        ParseAndPrintANSIString(GetStdHandle(STD_OUTPUT_HANDLE), buffer, (DWORD)strlen(buffer), &bytesWritten);
+        ParseAndPrintANSIString(output, buffer, (DWORD)strlen(buffer), &bytesWritten);
     }
 }
-

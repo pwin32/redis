@@ -28,9 +28,9 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
+
 #ifdef _WIN32
 #include "win32_hiredis.h"
-#include "../../src/Win32_Interop/win32_wsiocp2.h"
 #endif
 #include "fmacros.h"
 #include "alloc.h"
@@ -73,8 +73,8 @@ static void *callbackValDup(void *privdata, const void *src) {
 }
 
 static int callbackKeyCompare(void *privdata, const void *key1, const void *key2) {
-	size_t l1, l2;
-	((void)privdata);
+    int l1, l2;
+    ((void) privdata);
 
     l1 = hi_sdslen((const hisds)key1);
     l2 = hi_sdslen((const hisds)key2);
@@ -93,12 +93,12 @@ static void callbackValDestructor(void *privdata, void *val) {
 }
 
 static dictType callbackDict = {
-	callbackHash,
-	NULL,
-	callbackValDup,
-	callbackKeyCompare,
-	callbackKeyDestructor,
-	callbackValDestructor
+    callbackHash,
+    NULL,
+    callbackValDup,
+    callbackKeyCompare,
+    callbackKeyDestructor,
+    callbackValDestructor
 };
 
 static redisAsyncContext *redisAsyncInitialize(redisContext *c) {
@@ -181,11 +181,11 @@ redisAsyncContext *redisAsyncConnectWithOptions(const redisOptions *options) {
         return NULL;
     }
 
-	ac = redisAsyncInitialize(c);
-	if (ac == NULL) {
-		redisFree(c);
-		return NULL;
-	}
+    ac = redisAsyncInitialize(c);
+    if (ac == NULL) {
+        redisFree(c);
+        return NULL;
+    }
 
     /* Set any configured async push handler */
     redisAsyncSetPushCallback(ac, myOptions.async_push_cb);
@@ -224,24 +224,24 @@ redisAsyncContext *redisAsyncConnectUnix(const char *path) {
 }
 
 int redisAsyncSetConnectCallback(redisAsyncContext *ac, redisConnectCallback *fn) {
-	if (ac->onConnect == NULL) {
-		ac->onConnect = fn;
+    if (ac->onConnect == NULL) {
+        ac->onConnect = fn;
 
-		/* The common way to detect an established connection is to wait for
-		 * the first write event to be fired. This assumes the related event
-		 * library functions are already set. */
-		_EL_ADD_WRITE(ac);
-		return REDIS_OK;
-	}
-	return REDIS_ERR;
+        /* The common way to detect an established connection is to wait for
+         * the first write event to be fired. This assumes the related event
+         * library functions are already set. */
+        _EL_ADD_WRITE(ac);
+        return REDIS_OK;
+    }
+    return REDIS_ERR;
 }
 
 int redisAsyncSetDisconnectCallback(redisAsyncContext *ac, redisDisconnectCallback *fn) {
-	if (ac->onDisconnect == NULL) {
-		ac->onDisconnect = fn;
-		return REDIS_OK;
-	}
-	return REDIS_ERR;
+    if (ac->onDisconnect == NULL) {
+        ac->onDisconnect = fn;
+        return REDIS_OK;
+    }
+    return REDIS_ERR;
 }
 
 /* Helper functions to push/shift callbacks */
@@ -284,12 +284,12 @@ static int __redisShiftCallback(redisCallbackList *list, redisCallback *target) 
 }
 
 static void __redisRunCallback(redisAsyncContext *ac, redisCallback *cb, redisReply *reply) {
-	redisContext *c = &(ac->c);
-	if (cb->fn != NULL) {
-		c->flags |= REDIS_IN_CALLBACK;
-		cb->fn(ac, reply, cb->privdata);
-		c->flags &= ~REDIS_IN_CALLBACK;
-	}
+    redisContext *c = &(ac->c);
+    if (cb->fn != NULL) {
+        c->flags |= REDIS_IN_CALLBACK;
+        cb->fn(ac,reply,cb->privdata);
+        c->flags &= ~REDIS_IN_CALLBACK;
+    }
 }
 
 static void __redisRunPushCallback(redisAsyncContext *ac, redisReply *reply) {
@@ -364,10 +364,10 @@ static void __redisAsyncFree(redisAsyncContext *ac) {
  * free'ing. To do so, a flag is set on the context which is picked up by
  * redisProcessCallbacks(). Otherwise, the context is immediately free'd. */
 void redisAsyncFree(redisAsyncContext *ac) {
-	redisContext *c = &(ac->c);
-	c->flags |= REDIS_FREEING;
-	if (!(c->flags & REDIS_IN_CALLBACK))
-		__redisAsyncFree(ac);
+    redisContext *c = &(ac->c);
+    c->flags |= REDIS_FREEING;
+    if (!(c->flags & REDIS_IN_CALLBACK))
+        __redisAsyncFree(ac);
 }
 
 /* Helper function to make the disconnect happen and clean up. */
@@ -718,26 +718,35 @@ void redisAsyncHandleTimeout(redisAsyncContext *ac) {
     __redisAsyncDisconnect(ac);
 }
 
-int redisAsyncHandleWriteComplete(redisAsyncContext *ac, int written) {
-	redisContext *c = &(ac->c);
-	int done = 0;
-	int rc;
+#ifdef _WIN32
+/* Split the write handling around the Windows IOCP completion callback. */
+int redisAsyncHandleWritePrep(redisAsyncContext *ac) {
+    redisContext *c = &ac->c;
 
-	rc = redisBufferWriteDone(c, written, &done);
-	if (rc == REDIS_ERR) {
-		__redisAsyncDisconnect(ac);
-	}
-	else {
-		/* Continue writing when not done, stop writing otherwise */
-		if (!done)
-			_EL_ADD_WRITE(ac);
-		else
-			_EL_DEL_WRITE(ac);
+    if (!(c->flags & REDIS_CONNECTED)) {
+        if (__redisAsyncHandleConnect(ac) != REDIS_OK)
+            return REDIS_ERR;
+        if (!(c->flags & REDIS_CONNECTED))
+            return REDIS_ERR;
+    }
+    return REDIS_OK;
+}
 
-		/* Always schedule reads after writes */
-		_EL_ADD_READ(ac);
-	}
-	return REDIS_OK;
+int redisAsyncHandleWriteComplete(redisAsyncContext *ac, ssize_t written) {
+    int done = 0;
+
+    if (redisBufferWriteDone(&ac->c, written, &done) == REDIS_ERR) {
+        __redisAsyncDisconnect(ac);
+        return REDIS_ERR;
+    }
+
+    if (done)
+        _EL_DEL_WRITE(ac);
+    else
+        _EL_ADD_WRITE(ac);
+
+    _EL_ADD_READ(ac);
+    return REDIS_OK;
 }
 #endif
 
@@ -862,12 +871,12 @@ int redisvAsyncCommand(redisAsyncContext *ac, redisCallbackFn *fn, void *privdat
 }
 
 int redisAsyncCommand(redisAsyncContext *ac, redisCallbackFn *fn, void *privdata, const char *format, ...) {
-	va_list ap;
-	int status;
-	va_start(ap, format);
-	status = redisvAsyncCommand(ac, fn, privdata, format, ap);
-	va_end(ap);
-	return status;
+    va_list ap;
+    int status;
+    va_start(ap,format);
+    status = redisvAsyncCommand(ac,fn,privdata,format,ap);
+    va_end(ap);
+    return status;
 }
 
 int redisAsyncCommandArgv(redisAsyncContext *ac, redisCallbackFn *fn, void *privdata, int argc, const char **argv, const size_t *argvlen) {

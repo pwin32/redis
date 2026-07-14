@@ -1924,11 +1924,11 @@ void raxDebugShowNode(const char *msg, raxNode *n) {
  * 4. At this point a good idea is to enable Rax debugging messages immediately
  *    before the moment the tree is corrupted, to see what happens.
  */
-unsigned long raxTouch(raxNode *n) {
+uintptr_t raxTouch(raxNode *n) {
     debugf("Touching %p\n", (void*)n);
-    unsigned long sum = 0;
+    uintptr_t sum = 0;
     if (n->iskey) {
-        sum += (unsigned long)raxGetData(n);
+        sum += (uintptr_t)raxGetData(n);
     }
 
     int numchildren = n->iscompr ? 1 : n->size;

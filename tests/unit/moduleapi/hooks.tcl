@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/hooks.so]
+set testmodule [redis_test_module hooks]
 
 tags "modules" {
     start_server [list overrides [list loadmodule "$testmodule" appendonly yes]] {
@@ -33,7 +33,7 @@ tags "modules" {
         }
 
         test {Test module loaded / unloaded hooks} {
-            set othermodule [file normalize tests/modules/infotest.so]
+            set othermodule [redis_test_module infotest]
             r module load $othermodule
             r module unload infotest
             assert_equal [r hooks.event_last module-loaded] "infotest"

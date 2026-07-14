@@ -36,13 +36,12 @@
 POSIX_ONLY(#include <sys/socket.h>)
 POSIX_ONLY(#include <arpa/inet.h>)
 #include <fcntl.h>
-#include <unistd.h>
+POSIX_ONLY(#include <unistd.h>)
 #include <sys/stat.h>
 POSIX_ONLY(#include <sys/file.h>)
 #include <math.h>
 
 #ifdef _WIN32
-extern int WSIOCP_QueueAccept(int listenfd);
 #include "Win32_Interop/Win32_Error.h"
 #endif
 
@@ -406,7 +405,11 @@ int clusterLockConfig(char *filename) {
     /* To lock it, we need to open the file in a way it is created if
      * it does not exist, otherwise there is a race condition with other
      * processes. */
-    int fd = open(filename,O_WRONLY|O_CREAT|O_CLOEXEC,0644);
+    int open_flags = O_WRONLY|O_CREAT;
+#ifndef _WIN32
+    open_flags |= O_CLOEXEC;
+#endif
+    int fd = open(filename,open_flags,0644);
     if (fd == -1) {
         serverLog(LL_WARNING,
             "Can't open %s in order to acquire a lock: %s",
@@ -2288,42 +2291,6 @@ void handleLinkIOError(clusterLink *link) {
     freeClusterLink(link);
 }
 
-#ifdef _WIN32
-void clusterWriteDone(aeEventLoop *el, int fd, void *privdata, int written) {
-    WSIOCP_Request *req = (WSIOCP_Request *) privdata;
-    clusterLink *link = (clusterLink *) req->client;
-    UNUSED(el);
-    UNUSED(fd);
-
-    if (sdslen(link->sndbuf) == written) {
-        sdsrange(link->sndbuf, written, -1);
-        aeDeleteFileEvent(server.el, link->fd, AE_WRITABLE);
-        serverLog(LL_DEBUG, "clusterWriteDone written %d fd %d", written, link->fd);
-    }
-}
-
-void clusterWriteHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
-    clusterLink *link = (clusterLink*) privdata;
-    UNUSED(el);
-    UNUSED(mask);
-
-    int result = WSIOCP_SocketSend(fd,
-        (char*) link->sndbuf,
-        (int) (sdslen(link->sndbuf)),
-        el,
-        link,
-        NULL,
-        clusterWriteDone);
-    if (errno == WSA_IO_PENDING)
-        serverLog(LL_DEBUG, "WSA_IO_PENDING writing to socket fd %d", link->fd);
-
-    if (result == SOCKET_ERROR && errno != WSA_IO_PENDING) {
-        serverLog(LL_WARNING, "Error writing to socket fd %d", link->fd);
-        handleLinkIOError(link);
-        return;
-    }
-}
-#else
 /* Send data. This is handled using a trivial send buffer that gets
  * consumed by write(). We don't try to optimize this for speed too much
  * as this is a very low traffic channel. */
@@ -2387,7 +2354,6 @@ void clusterLinkConnectHandler(connection *conn) {
     serverLog(LL_DEBUG,"Connecting with Node %.40s at %s:%d",
             node->name, node->ip, node->cport);
 }
-#endif
 
 /* Read data. Try to read the first field of the header first to check the
  * full length of the packet. When a whole packet is in memory this function
@@ -2426,7 +2392,10 @@ void clusterReadHandler(connection *conn) {
         }
 
         nread = connRead(conn,buf,readlen);
-        if (nread == -1 && (connGetState(conn) == CONN_STATE_CONNECTED)) return; /* No more data ready. */
+        if (nread == -1 && (connGetState(conn) == CONN_STATE_CONNECTED)) {
+            WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
+            return; /* No more data ready. */
+        }
 
         if (nread <= 0) {
             /* I/O error... */
@@ -2462,7 +2431,6 @@ void clusterReadHandler(connection *conn) {
             }
         }
     }
-    WIN32_ONLY(WSIOCP_QueueNextRead(fd);)
 }
 
 /* Put stuff into the send buffer.
@@ -2883,61 +2851,6 @@ void clusterSendModule(clusterLink *link, uint64_t module_id, uint8_t type,
         clusterBroadcastMessage(heapbuf,totlen);
 
     if (heapbuf != (unsigned char*)buf) zfree(heapbuf);
-}
-
-/* This function gets a cluster node ID string as target, the same way the nodes
- * addresses are represented in the modules side, resolves the node, and sends
- * the message. If the target is NULL the message is broadcasted.
- *
- * The function returns C_OK if the target is valid, otherwise C_ERR is
- * returned. */
-int clusterSendModuleMessageToTarget(const char *target, uint64_t module_id, uint8_t type, unsigned char *payload, uint32_t len) {
-    clusterNode *node = NULL;
-
-    if (target != NULL) {
-        node = clusterLookupNode(target);
-        if (node == NULL || node->link == NULL) return C_ERR;
-    }
-
-    clusterSendModule(target ? node->link : NULL,
-                      module_id, type, payload, len);
-    return C_OK;
-}
-
-/* Send a MODULE message.
- *
- * If link is NULL, then the message is broadcasted to the whole cluster. */
-void clusterSendModule(clusterLink *link, uint64_t module_id, uint8_t type,
-                       unsigned char *payload, uint32_t len) {
-    unsigned char buf[sizeof(clusterMsg)], *heapbuf;
-    clusterMsg *hdr = (clusterMsg*) buf;
-    uint32_t totlen;
-
-    clusterBuildMessageHdr(hdr,CLUSTERMSG_TYPE_MODULE);
-    totlen = sizeof(clusterMsg)-sizeof(union clusterMsgData);
-    totlen += sizeof(clusterMsgModule) - 3 + len;
-
-    hdr->data.module.msg.module_id = module_id; /* Already endian adjusted. */
-    hdr->data.module.msg.type = type;
-    hdr->data.module.msg.len = htonl(len);
-    hdr->totlen = htonl(totlen);
-
-    /* Try to use the local buffer if possible */
-    if (totlen < sizeof(buf)) {
-        heapbuf = buf;
-    } else {
-        heapbuf = zmalloc(totlen);
-        memcpy(heapbuf,hdr,sizeof(*hdr));
-        hdr = (clusterMsg*) heapbuf;
-    }
-    memcpy(hdr->data.module.msg.bulk_data,payload,len);
-
-    if (link)
-        clusterSendMessage(link,heapbuf,totlen);
-    else
-        clusterBroadcastMessage(heapbuf,totlen);
-
-    if (heapbuf != buf) zfree(heapbuf);
 }
 
 /* This function gets a cluster node ID string as target, the same way the nodes
@@ -4848,7 +4761,7 @@ NULL
             "cluster_slots_ok:%d\r\n"
             "cluster_slots_pfail:%d\r\n"
             "cluster_slots_fail:%d\r\n"
-            "cluster_known_nodes:%Iu\r\n"                                       WIN_PORT_FIX /* %lu -> %Iu */
+            "cluster_known_nodes:%llu\r\n"                             WIN_PORT_FIX /* PORT_ULONG */
             "cluster_size:%d\r\n"
             "cluster_current_epoch:%llu\r\n"
             "cluster_my_epoch:%llu\r\n"
@@ -5357,7 +5270,7 @@ void restoreCommand(client *c) {
 
 typedef struct migrateCachedSocket {
     connection *conn;
-    long last_dbid;
+    PORT_LONG last_dbid;
     time_t last_use_time;
 } migrateCachedSocket;
 
@@ -5372,7 +5285,7 @@ typedef struct migrateCachedSocket {
  * If the caller detects an error while using the socket, migrateCloseSocket()
  * should be called so that the connection will be created from scratch
  * the next time. */
-migrateCachedSocket* migrateGetSocket(client *c, robj *host, robj *port, long timeout) {
+migrateCachedSocket* migrateGetSocket(client *c, robj *host, robj *port, PORT_LONG timeout) {
     connection *conn;
     sds name = sdsempty();
     migrateCachedSocket *cs;
@@ -5467,8 +5380,8 @@ void migrateCommand(client *c) {
     int copy = 0, replace = 0, j;
     char *username = NULL;
     char *password = NULL;
-    long timeout;
-    long dbid;
+    PORT_LONG timeout;
+    PORT_LONG dbid;
     robj **ov = NULL; /* Objects to migrate. */
     robj **kv = NULL; /* Key names. */
     robj **newargv = NULL; /* Used to rewrite the command as DEL ... keys ... */
@@ -5645,28 +5558,6 @@ try_again:
         size_t pos = 0, towrite;
         int nwritten = 0;
 
-#ifdef _WIN32
-        while ((towrite = sdslen(buf) - pos) > 0) {
-            towrite = (towrite > (64 * 1024) ? (64 * 1024) : towrite);
-            while (nwritten != (signed) towrite) {
-                nwritten = (int) syncWrite(cs->fd, buf + pos, (ssize_t) towrite, timeout);
-                if (nwritten != (signed) towrite) {
-                    DWORD err = GetLastError();
-                    if (err == WSAEWOULDBLOCK) {
-                        // Likely send buffer is full. A short delay or two is sufficient to allow this to work.
-                        serverLog(LL_VERBOSE, "In migrate. WSAEWOULDBLOCK with synchronous socket: sleeping for 0.1s");
-                        Sleep(100);
-                    }
-                    else {
-                        serverLog(LL_WARNING, "SyncWrite failure toWrite=%d  written=%d err=%d timeout=%d ", towrite, nwritten, GetLastError(), timeout);
-                        goto socket_err;
-                    }
-                }
-            }
-            pos += nwritten;
-            nwritten = 0;
-        }
-#else
         while ((towrite = sdslen(buf)-pos) > 0) {
             towrite = (towrite > (64*1024) ? (64*1024) : towrite);
             nwritten = connSyncWrite(cs->conn,buf+pos,towrite,timeout);
@@ -5676,7 +5567,6 @@ try_again:
             }
             pos += nwritten;
         }
-#endif
     }
 
     char buf0[1024]; /* Auth reply. */

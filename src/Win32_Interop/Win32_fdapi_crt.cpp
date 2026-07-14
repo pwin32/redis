@@ -45,6 +45,10 @@ int crt_open(const char *filename, int oflag, int pmode) {
     return _open(filename, oflag, pmode);
 }
 
+int crt_mkstemp(char *filename_template) {
+    return ::mkstemp(filename_template);
+}
+
 int crt_open_osfhandle(intptr_t osfhandle, int flags) {
     return _open_osfhandle(osfhandle, flags);
 }

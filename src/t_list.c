@@ -45,7 +45,7 @@ void listTypePush(robj *subject, robj *value, int where) {
         int pos = (where == LIST_HEAD) ? QUICKLIST_HEAD : QUICKLIST_TAIL;
         if (value->encoding == OBJ_ENCODING_INT) {
             char buf[32];
-            ll2string(buf, 32, (long)value->ptr);
+            ll2string(buf, 32, (PORT_LONGLONG)(intptr_t)value->ptr);
             quicklistPush(subject->ptr, buf, strlen(buf), pos);
         } else {
             quicklistPush(subject->ptr, value->ptr, sdslen(value->ptr), pos);
@@ -76,7 +76,7 @@ robj *listTypePop(robj *subject, int where) {
     return value;
 }
 
-unsigned long listTypeLength(const robj *subject) {
+PORT_ULONG listTypeLength(const robj *subject) {
     if (subject->encoding == OBJ_ENCODING_QUICKLIST) {
         return quicklistCount(subject->ptr);
     } else {
@@ -283,6 +283,9 @@ void rpushxCommand(client *c) {
 void linsertCommand(client *c) {
     int where;
     robj *subject;
+    listTypeIterator *iter;
+    listTypeEntry entry;
+    int inserted = 0;
 
     if (strcasecmp(c->argv[2]->ptr,"after") == 0) {
         where = LIST_TAIL;
@@ -322,7 +325,7 @@ void linsertCommand(client *c) {
         addReplyLongLong(c,-1);
         return;
     }
-    server.dirty += pushed;
+    addReplyLongLong(c,listTypeLength(subject));
 }
 
 /* LLEN <key> */
@@ -336,7 +339,7 @@ void llenCommand(client *c) {
 void lindexCommand(client *c) {
     robj *o = lookupKeyReadOrReply(c,c->argv[1],shared.null[c->resp]);
     if (o == NULL || checkType(c,o,OBJ_LIST)) return;
-    long index;
+    PORT_LONG index;
 
     if ((getLongFromObjectOrReply(c, c->argv[2], &index, NULL) != C_OK))
         return;
@@ -394,8 +397,8 @@ void lsetCommand(client *c) {
  * must be less than end or an empty array is returned. When the reverse
  * argument is set to a non-zero value, the reply is reversed so that elements
  * are returned from end to start. */
-void addListRangeReply(client *c, robj *o, long start, long end, int reverse) {
-    long rangelen, llen = listTypeLength(o);
+void addListRangeReply(client *c, robj *o, PORT_LONG start, PORT_LONG end, int reverse) {
+    PORT_LONG rangelen, llen = listTypeLength(o);
 
     /* Convert negative indexes. */
     if (start < 0) start = llen+start;
@@ -414,7 +417,7 @@ void addListRangeReply(client *c, robj *o, long start, long end, int reverse) {
     /* Return the result in form of a multi-bulk reply */
     addReplyArrayLen(c,rangelen);
     if (o->encoding == OBJ_ENCODING_QUICKLIST) {
-        int from = reverse ? end : start;
+        PORT_LONG from = reverse ? end : start;
         int direction = reverse ? LIST_HEAD : LIST_TAIL;
         listTypeIterator *iter = listTypeInitIterator(o,from,direction);
 
@@ -435,7 +438,7 @@ void addListRangeReply(client *c, robj *o, long start, long end, int reverse) {
 }
 
 /* A housekeeping helper for list elements popping tasks. */
-void listElementsRemoved(client *c, robj *key, int where, robj *o, long count) {
+void listElementsRemoved(client *c, robj *key, int where, robj *o, PORT_LONG count) {
     char *event = (where == LIST_HEAD) ? "lpop" : "rpop";
 
     notifyKeyspaceEvent(NOTIFY_LIST, event, key, c->db->id);
@@ -453,7 +456,7 @@ void listElementsRemoved(client *c, robj *key, int where, robj *o, long count) {
  * command. */
 void popGenericCommand(client *c, int where) {
     int hascount = (c->argc == 3);
-    long count = 0;
+    PORT_LONG count = 0;
     robj *value;
 
     if (c->argc > 3) {
@@ -487,10 +490,10 @@ void popGenericCommand(client *c, int where) {
     } else {
         /* Pop a range of elements. An addition to the original POP command,
          *  which replies with a multi-bulk. */
-        long llen = listTypeLength(o);
-        long rangelen = (count > llen) ? llen : count;
-        long rangestart = (where == LIST_HEAD) ? 0 : -rangelen;
-        long rangeend = (where == LIST_HEAD) ? rangelen - 1 : -1;
+        PORT_LONG llen = listTypeLength(o);
+        PORT_LONG rangelen = (count > llen) ? llen : count;
+        PORT_LONG rangestart = (where == LIST_HEAD) ? 0 : -rangelen;
+        PORT_LONG rangeend = (where == LIST_HEAD) ? rangelen - 1 : -1;
         int reverse = (where == LIST_HEAD) ? 0 : 1;
 
         addListRangeReply(c,o,rangestart,rangeend,reverse);
@@ -512,7 +515,7 @@ void rpopCommand(client *c) {
 /* LRANGE <key> <start> <stop> */
 void lrangeCommand(client *c) {
     robj *o;
-    long start, end;
+    PORT_LONG start, end;
 
     if ((getLongFromObjectOrReply(c, c->argv[2], &start, NULL) != C_OK) ||
         (getLongFromObjectOrReply(c, c->argv[3], &end, NULL) != C_OK)) return;
@@ -591,7 +594,7 @@ void lposCommand(client *c) {
     robj *o, *ele;
     ele = c->argv[2];
     int direction = LIST_TAIL;
-    long rank = 1, count = -1, maxlen = 0; /* Count -1: option not given. */
+    PORT_LONG rank = 1, count = -1, maxlen = 0; /* Count -1: option not given. */
 
     if (sdslen(ele->ptr) > LIST_MAX_ITEM_SIZE) {
         addReplyError(c, "Element too large");
@@ -653,8 +656,8 @@ void lposCommand(client *c) {
     listTypeIterator *li;
     li = listTypeInitIterator(o,direction == LIST_HEAD ? -1 : 0,direction);
     listTypeEntry entry;
-    long llen = listTypeLength(o);
-    long index = 0, matches = 0, matchindex = -1, arraylen = 0;
+    PORT_LONG llen = listTypeLength(o);
+    PORT_LONG index = 0, matches = 0, matchindex = -1, arraylen = 0;
     while (listTypeNext(li,&entry) && (maxlen == 0 || index < maxlen)) {
         if (listTypeEqual(&entry,ele)) {
             matches++;

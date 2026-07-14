@@ -452,17 +452,6 @@ int zipStorePrevEntryLengthLarge(unsigned char *p, unsigned int len) {
     return 1 + sizeof(uint32_t);
 }
 
-/* Encode the length of the previous entry and write it to "p". This only
- * uses the larger encoding (required in __ziplistCascadeUpdate). */
-int zipStorePrevEntryLengthLarge(unsigned char *p, unsigned int len) {
-    if (p != NULL) {
-        p[0] = ZIP_BIG_PREVLEN;
-        memcpy(p+1,&len,sizeof(len));
-        memrev32ifbe(p+1);
-    }
-    return 1+sizeof(len);
-}
-
 /* Encode the length of the previous entry and write it to "p". Return the
  * number of bytes needed to encode this length if "p" is NULL. */
 unsigned int zipStorePrevEntryLength(unsigned char *p, unsigned int len) {
@@ -1459,17 +1448,17 @@ void ziplistRepr(unsigned char *zl) {
         assert(zipEntrySafe(zl, zlbytes, p, &entry, 1));
         printf(
             "{\n"
-                "\taddr 0x%08lx,\n"
+                "\taddr %p,\n"
                 "\tindex %2d,\n"
-                "\toffset %5lu,\n"
+                "\toffset %5llu,\n"
                 "\thdr+entry len: %5u,\n"
                 "\thdr len%2u,\n"
                 "\tprevrawlen: %5u,\n"
                 "\tprevrawlensize: %2u,\n"
                 "\tpayload %5u\n",
-            (long unsigned)p,
+            (void *)p,
             index,
-            (PORT_ULONG) (p-zl),
+            (unsigned long long)(p-zl),
             entry.headersize+entry.len,
             entry.headersize,
             entry.prevrawlen,

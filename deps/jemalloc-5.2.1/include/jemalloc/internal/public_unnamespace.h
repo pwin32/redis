@@ -2,6 +2,7 @@
 #undef je_calloc
 #undef je_dallocx
 #undef je_free
+#undef je_get_defrag_hint
 #undef je_mallctl
 #undef je_mallctlbymib
 #undef je_mallctlnametomib

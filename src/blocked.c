@@ -143,7 +143,7 @@ void processUnblockedClients(void) {
             }
             /* Then process client if it has more data in it's buffer. */
             if (c->querybuf && sdslen(c->querybuf) > 0) {
-                processInputBufferAndReplicate(c);
+                processInputBuffer(c);
             }
         }
     }
@@ -781,4 +781,3 @@ void signalKeyAsReady(redisDb *db, robj *key, int type) {
     incrRefCount(key);
     serverAssert(dictAdd(db->ready_keys,key,NULL) == DICT_OK);
 }
-

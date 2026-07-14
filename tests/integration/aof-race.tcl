@@ -14,7 +14,8 @@ tags {"aof"} {
     # was subsequently appended to the new AOF, resulting in duplicate commands.
     start_server_aof [list dir $server_path] {
         set client [redis [srv host] [srv port] 0 $::tls]
-        set bench [open "|src/redis-benchmark -q -s [srv unixsocket] -c 20 -n 20000 incr foo" "r+"]
+        set bench_cmd [list | $::redis_benchmark_path -q -s [srv unixsocket] -c 20 -n 20000 incr foo]
+        set bench [open $bench_cmd "r+"]
 
         after 100
 

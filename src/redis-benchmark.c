@@ -34,7 +34,6 @@
 #include "Win32_Interop/Win32_Signal_Process.h"
 #include "Win32_Interop/Win32_Time.h"
 #include "Win32_Interop/Win32_Error.h"
-#include "Win32_Interop/win32fixes.h"
 #include "Win32_Interop/Win32_PThread.h"
 #endif
 
@@ -51,7 +50,7 @@ POSIX_ONLY(#include <sys/time.h>)
 #include <signal.h>
 #include <assert.h>
 #include <math.h>
-#include <pthread.h>
+POSIX_ONLY(#include <pthread.h>)
 
 #include <sdscompat.h> /* Use hiredis' sds compat header that maps sds calls to their hi_ variants */
 #include <sds.h> /* Use hiredis sds. */
@@ -109,6 +108,7 @@ static struct config {
     int randomkeys_keyspacelen;
     int keepalive;
     int pipeline;
+    int showerrors;
     long long start;
     long long totlatency;
     const char *title;
@@ -693,6 +693,21 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     const ssize_t writeLen = buflen-c->written;
     if (writeLen > 0) {
         void *ptr = c->obuf+c->written;
+#ifdef _WIN32
+        int result = WSIOCP_SocketSend(c->context->fd,
+                                       (char*)ptr,
+                                       (int)writeLen,
+                                       el,
+                                       c,
+                                       NULL,
+                                       writeHandlerDone);
+        if (result == SOCKET_ERROR && errno != WSA_IO_PENDING) {
+            if (errno != EPIPE)
+                fprintf(stderr, "Writing to socket: %s\n", wsa_strerror(errno));
+            freeClient(c);
+            return;
+        }
+#else
         while(1) {
             /* Optimistically try to write before checking if the file descriptor
              * is actually writable. At worst we get EAGAIN. */

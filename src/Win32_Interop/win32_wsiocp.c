@@ -258,7 +258,10 @@ int WSIOCP_QueueNextRead(int fd) {
         errno = WSAEINVAL;
         return -1;
     }
-    if ((sockstate->masks & SOCKET_ATTACHED) == 0) {
+    /* ConnectEx and read readiness share ov_read. Never reuse it while an
+     * overlapped operation is still pending. */
+    if ((sockstate->masks & SOCKET_ATTACHED) == 0 ||
+        (sockstate->masks & (READ_QUEUED | CONNECT_PENDING)) != 0) {
         return 0;
     }
 
@@ -358,6 +361,8 @@ int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
         return SOCKET_ERROR;
     }
 
+    /* ConnectEx posts an IOCP completion even when it succeeds immediately. */
+    sockstate->masks |= CONNECT_PENDING;
     memset(&sockstate->ov_read, 0, sizeof(sockstate->ov_read));
     
     // Need to bind sock before connectex
@@ -401,6 +406,7 @@ int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
         default:
         {
             ASSERT(socketAddrStorage->ss_family == AF_INET || socketAddrStorage->ss_family == AF_INET6);
+            sockstate->masks &= ~CONNECT_PENDING;
             errno = WSAEINVAL;
             return SOCKET_ERROR;
         }
@@ -410,8 +416,8 @@ int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
         result = FDAPI_WSAGetLastError();
         if (result == ERROR_IO_PENDING) {
             errno = WSA_IO_PENDING;
-            sockstate->masks |= CONNECT_PENDING;
         } else {
+            sockstate->masks &= ~CONNECT_PENDING;
             errno = result;
             return SOCKET_ERROR;
         }
@@ -433,6 +439,8 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
         return SOCKET_ERROR;
     }
 
+    /* ConnectEx posts an IOCP completion even when it succeeds immediately. */
+    sockstate->masks |= CONNECT_PENDING;
     memset(&sockstate->ov_read, 0, sizeof(sockstate->ov_read));
 
     // Need to bind sock before connectex
@@ -463,6 +471,7 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
         default:
         {
             ASSERT(socketAddrStorage->ss_family == AF_INET || socketAddrStorage->ss_family == AF_INET6);
+            sockstate->masks &= ~CONNECT_PENDING;
             errno = WSAEINVAL;
             return SOCKET_ERROR;
         }
@@ -474,8 +483,8 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
         result = FDAPI_WSAGetLastError();
         if (result == ERROR_IO_PENDING) {
             errno = WSA_IO_PENDING;
-            sockstate->masks |= CONNECT_PENDING;
         } else {
+            sockstate->masks &= ~CONNECT_PENDING;
             errno = result;
             return SOCKET_ERROR;
         }

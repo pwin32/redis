@@ -877,7 +877,7 @@ REDIS_STATIC void _quicklistInsert(quicklist *quicklist, quicklistEntry *entry,
 
     /* Populate accounting flags for easier boolean checks later */
     if (!_quicklistNodeAllowInsert(node, fill, sz)) {
-        D("Current node is full with count %d with requested fill %Iu",                    WIN_PORT_FIX /* %lu -> %Iu */
+        D("Current node is full with count %d with requested fill %d",
           node->count, fill);
         full = 1;
     }
@@ -1002,7 +1002,7 @@ int quicklistDelRange(quicklist *quicklist, const PORT_LONG start,
     if (!quicklistIndex(quicklist, start, &entry))
         return 0;
 
-    D("Quicklist delete request for start %Id, count %Id, extent: %Id", start,                 WIN_PORT_FIX /* %ld -> %Id */
+    D("Quicklist delete request for start %lld, count %lld, extent: %lld", start, WIN_PORT_FIX /* PORT_LONG */
       count, extent);
     quicklistNode *node = entry.node;
 
@@ -1040,7 +1040,7 @@ int quicklistDelRange(quicklist *quicklist, const PORT_LONG start,
             del = extent;
         }
 
-        D("[%Id]: asking to del: %Id because offset: %d; (ENTIRE NODE: %d), "                             WIN_PORT_FIX /* %ld -> %Id */
+        D("[%lld]: asking to del: %lld because offset: %d; (ENTIRE NODE: %d), " WIN_PORT_FIX /* PORT_LONG */
           "node count: %u",
           extent, del, entry.offset, delete_entire_node, node->count);
 

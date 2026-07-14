@@ -493,4 +493,69 @@ start_server {tags {"defrag"} overrides {appendonly yes auto-aof-rewrite-percent
         }
     }
 }
+
+start_server {tags {"defrag"} overrides {appendonly no save ""}} {
+    if {$::tcl_platform(platform) eq "windows" &&
+        [string match {*jemalloc*} [s mem_allocator]] &&
+        [r debug mallctl arenas.page] == 4194304} {
+        test "Active defrag with 4 MiB allocator pages on Windows" {
+            r flushdb
+            r config resetstat
+            r config set hz 100
+            r config set activedefrag no
+            r config set active-defrag-threshold-lower 0
+            r config set active-defrag-cycle-min 99
+            r config set active-defrag-cycle-max 99
+            r config set active-defrag-ignore-bytes 1
+            r config set maxmemory 0
+
+            # A 4 KiB value bin needs enough allocations to span multiple
+            # 4 MiB slabs. Deleting alternating values leaves each slab
+            # partially occupied and gives active defrag useful work.
+            set rd [redis_deferring_client]
+            set keys 16384
+            for {set j 0} {$j < $keys} {incr j} {
+                $rd setrange "win-defrag:$j" 4096 x
+            }
+            for {set j 0} {$j < $keys} {incr j} {
+                $rd read
+            }
+
+            set deleted 0
+            for {set j 0} {$j < $keys} {incr j 2} {
+                $rd del "win-defrag:$j"
+                incr deleted
+            }
+            for {set j 0} {$j < $deleted} {incr j} {
+                $rd read
+            }
+            r debug mallctl-str thread.tcache.flush VOID
+
+            set digest [r debug digest]
+            set hits [s active_defrag_hits]
+            assert_equal OK [r config set activedefrag yes]
+            wait_for_condition 200 100 {
+                [s active_defrag_hits] > $hits
+            } else {
+                puts [r info memory]
+                puts [r info stats]
+                fail "active defrag did not move allocations with 4 MiB pages"
+            }
+
+            r config set activedefrag no
+            wait_for_condition 50 100 {
+                [s active_defrag_running] eq 0
+            } else {
+                fail "active defrag did not stop"
+            }
+            assert_equal $digest [r debug digest]
+
+            r bgsave
+            waitForBgsave r
+            assert_equal ok [s rdb_last_bgsave_status]
+            assert_equal OK [r debug reload nosave]
+            assert_equal $digest [r debug digest]
+        }
+    }
+}
 } ;# run_solo

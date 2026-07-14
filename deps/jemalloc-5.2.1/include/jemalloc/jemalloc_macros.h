@@ -130,5 +130,4 @@
 
 /* This version of Jemalloc, modified for Redis, has the je_get_defrag_hint()
  * function. */
-//[tporadowski] turned off as it no longer works properly and needs further investigation
-//#define JEMALLOC_FRAG_HINT
+#define JEMALLOC_FRAG_HINT

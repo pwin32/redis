@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/scan.so]
+set testmodule [redis_test_module scan]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

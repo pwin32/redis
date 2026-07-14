@@ -3059,7 +3059,7 @@ void xautoclaimCommand(client *c) {
     streamCG *group = NULL;
     robj *o = lookupKeyRead(c->db,c->argv[1]);
     long long minidle; /* Minimum idle time argument, in milliseconds. */
-    long count = 100; /* Maximum entries to claim. */
+    PORT_LONG count = 100; /* Maximum entries to claim. */
     streamID startid;
     int startex;
     int justid = 0;
@@ -3082,7 +3082,7 @@ void xautoclaimCommand(client *c) {
         int moreargs = (c->argc-1) - j; /* Number of additional arguments. */
         char *opt = c->argv[j]->ptr;
         if (!strcasecmp(opt,"COUNT") && moreargs) {
-            if (getRangeLongFromObjectOrReply(c,c->argv[j+1],1,LONG_MAX,&count,"COUNT must be > 0") != C_OK)
+            if (getRangeLongFromObjectOrReply(c,c->argv[j+1],1,PORT_LONG_MAX,&count,"COUNT must be > 0") != C_OK)
                 return;
             j++;
         } else if (!strcasecmp(opt,"JUSTID")) {

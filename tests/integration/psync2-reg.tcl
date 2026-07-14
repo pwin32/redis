@@ -18,7 +18,6 @@ start_server {} {
         set R($j) [srv [expr 0-$j] client]
         set R_host($j) [srv [expr 0-$j] host]
         set R_port($j) [srv [expr 0-$j] port]
-        set R_unixsocket($j) [srv [expr 0-$j] unixsocket]
         if {$debug_msg} {puts "Log file: [srv [expr 0-$j] stdout]"}
     }
 
@@ -40,7 +39,7 @@ start_server {} {
     }
 
     set cycle_start_time [clock milliseconds]
-    set bench_pid [exec src/redis-benchmark -s $R_unixsocket(0) -n 10000000 -r 1000 incr __rand_int__ > /dev/null &]
+    set bench_pid [exec $::redis_benchmark_path -h $R_host(0) -p $R_port(0) -n 10000000 -r 1000 incr __rand_int__ > $::test_null_device &]
     while 1 {
         set elapsed [expr {[clock milliseconds]-$cycle_start_time}]
         if {$elapsed > $duration*1000} break
@@ -56,7 +55,7 @@ start_server {} {
         }
         after 100
     }
-    exec kill -9 $bench_pid
+    kill_proc2 $bench_pid
 
     if {$debug_msg} {
         for {set j 0} {$j < 100} {incr j} {

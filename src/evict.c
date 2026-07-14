@@ -180,7 +180,7 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
             idle = 255-LFUDecrAndReturn(o);
         } else if (server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL) {
             /* In this case the sooner the expire the better. */
-            idle = ULLONG_MAX - (long)dictGetVal(de);
+            idle = ULLONG_MAX - dictGetSignedIntegerVal(de);
         } else {
             serverPanic("Unknown eviction policy in evictionPoolPopulate()");
         }
@@ -713,4 +713,3 @@ cant_free:
     latencyAddSampleIfNeeded("eviction-cycle",latency);
     return result;
 }
-

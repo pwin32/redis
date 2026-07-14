@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/blockonbackground.so]
+set testmodule [redis_test_module blockonbackground]
 
 source tests/support/util.tcl
 

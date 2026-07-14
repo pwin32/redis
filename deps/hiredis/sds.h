@@ -40,91 +40,53 @@ typedef long long ssize_t;
 #define SSIZE_MAX (LLONG_MAX >> 1)
 #endif
 
-#ifdef _WIN32
-#include "../../src/Win32_Interop/Win32_Portability.h"
-#include "../../src/Win32_Interop/win32_types_hiredis.h"
-#endif
 #include <sys/types.h>
 #include <stdarg.h>
 #include <stdint.h>
 
 typedef char *hisds;
 
-#ifdef _WIN32
 #ifdef _MSC_VER
-#define PACK( __Declaration__ ) __pragma( pack(push, 1) ) __Declaration__ __pragma( pack(pop) )
-#elif defined(__GNUC__)
-#define PACK( __Declaration__ ) _Pragma("pack(push, 1)") __Declaration__ _Pragma("pack(pop)")
+#pragma pack(push, 1)
+#define HI_SDS_PACKED
 #else
-#define PACK( __Declaration__ ) __Declaration__
+#define HI_SDS_PACKED __attribute__ ((__packed__))
 #endif
 
 /* Note: sdshdr5 is never used, we just access the flags byte directly.
-* However is here to document the layout of type 5 SDS strings. */
-PACK(
-	struct sdshdr5 {
-	unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
-	char buf[];
-};)
-PACK(
-	struct sdshdr8 {
-	uint8_t len; /* used */
-	uint8_t alloc; /* excluding the header and null terminator */
-	unsigned char flags; /* 3 lsb of type, 5 unused bits */
-	char buf[];
-};)
-PACK(
-	struct sdshdr16 {
-	uint16_t len; /* used */
-	uint16_t alloc; /* excluding the header and null terminator */
-	unsigned char flags; /* 3 lsb of type, 5 unused bits */
-	char buf[];
-};)
-PACK(
-	struct sdshdr32 {
-	uint32_t len; /* used */
-	uint32_t alloc; /* excluding the header and null terminator */
-	unsigned char flags; /* 3 lsb of type, 5 unused bits */
-	char buf[];
-};)
-PACK(
-	struct sdshdr64 {
-	uint64_t len; /* used */
-	uint64_t alloc; /* excluding the header and null terminator */
-	unsigned char flags; /* 3 lsb of type, 5 unused bits */
-	char buf[];
-};)
-#else
-/* Note: sdshdr5 is never used, we just access the flags byte directly.
  * However is here to document the layout of type 5 SDS strings. */
-struct __attribute__ ((__packed__)) hisdshdr5 {
+struct HI_SDS_PACKED hisdshdr5 {
     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
     char buf[];
 };
-struct __attribute__ ((__packed__)) hisdshdr8 {
+struct HI_SDS_PACKED hisdshdr8 {
     uint8_t len; /* used */
     uint8_t alloc; /* excluding the header and null terminator */
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
-struct __attribute__ ((__packed__)) hisdshdr16 {
+struct HI_SDS_PACKED hisdshdr16 {
     uint16_t len; /* used */
     uint16_t alloc; /* excluding the header and null terminator */
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
-struct __attribute__ ((__packed__)) hisdshdr32 {
+struct HI_SDS_PACKED hisdshdr32 {
     uint32_t len; /* used */
     uint32_t alloc; /* excluding the header and null terminator */
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
-struct __attribute__ ((__packed__)) hisdshdr64 {
+struct HI_SDS_PACKED hisdshdr64 {
     uint64_t len; /* used */
     uint64_t alloc; /* excluding the header and null terminator */
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
+
+#undef HI_SDS_PACKED
+#ifdef _MSC_VER
+#pragma pack(pop)
 #endif
 
 #define HI_SDS_TYPE_5  0
@@ -282,7 +244,10 @@ hisds hi_sdscpylen(hisds s, const char *t, size_t len);
 hisds hi_sdscpy(hisds s, const char *t);
 
 hisds hi_sdscatvprintf(hisds s, const char *fmt, va_list ap);
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+hisds hi_sdscatprintf(hisds s, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
+#elif defined(__GNUC__)
 hisds hi_sdscatprintf(hisds s, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 #else
@@ -320,14 +285,6 @@ void *hi_sdsAllocPtr(hisds s);
 void *hi_sds_malloc(size_t size);
 void *hi_sds_realloc(void *ptr, size_t size);
 void hi_sds_free(void *ptr);
-
-/* Export the allocator used by SDS to the program using SDS.
- * Sometimes the program SDS is linked to, may use a different set of
- * allocators, but may want to allocate or free things that SDS will
- * respectively free or allocate. */
-void *sds_malloc(size_t size);
-void *sds_realloc(void *ptr, size_t size);
-void sds_free(void *ptr);
 
 #ifdef REDIS_TEST
 int hi_sdsTest(int argc, char *argv[]);

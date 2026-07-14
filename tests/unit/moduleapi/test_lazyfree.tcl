@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/test_lazyfree.so]
+set testmodule [redis_test_module test_lazyfree]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

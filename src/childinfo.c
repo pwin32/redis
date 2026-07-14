@@ -28,7 +28,7 @@
  */
 
 #include "server.h"
-#include <unistd.h>
+POSIX_ONLY(#include <unistd.h>)
 
 typedef struct {
     size_t keys;
@@ -92,8 +92,8 @@ void sendChildInfoGeneric(childInfoType info_type, size_t keys, double progress,
 
         if (cow) {
             serverLog((info_type == CHILD_INFO_TYPE_CURRENT_INFO) ? LL_VERBOSE : LL_NOTICE,
-                      "%s: %zu MB of memory used by copy-on-write",
-                      pname, cow / (1024 * 1024));
+                      "%s: %llu MB of memory used by copy-on-write",
+                      pname, (unsigned long long)(cow / (1024 * 1024)));
         }
     }
 

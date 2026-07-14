@@ -315,7 +315,7 @@ start_server {tags {"other"}} {
         r mset k1 v1 k2 v2
         # Hash table should not rehash
         assert_no_match "*table size: 8192*" [r debug HTSTATS 9]
-        exec kill -9 [get_child_pid 0]
+        kill_proc2 [get_child_pid 0]
         after 200
 
         # Hash table should rehash since there is no child process,
@@ -367,4 +367,3 @@ start_server {tags {"other"}} {
         }
     }
 }
-

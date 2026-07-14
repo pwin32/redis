@@ -30,6 +30,7 @@
 #ifdef _WIN32
 #include "Win32_Interop/win32_types.h"
 #include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/Win32_QFork.h"
 #endif
 
 #include "server.h"
@@ -45,6 +46,14 @@
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <sys/param.h>
+#endif
+
+#ifdef _WIN32
+extern void redisForkChildStarted(pid_t childpid, int purpose, long long start);
+extern void *moduleGetForkData(void);
+#include <direct.h>
+#define MAXPATHLEN 1024
+#endif
 
 void aofUpdateCurrentSize(void);
 void aofClosePipes(void);
@@ -82,10 +91,10 @@ void aofRewriteBufferReset(void) {
 }
 
 /* Return the current size of the AOF rewrite buffer. */
-PORT_ULONG aofRewriteBufferSize(void) {
+unsigned long aofRewriteBufferSize(void) {
     listNode *ln;
     listIter li;
-    PORT_ULONG size = 0;
+    unsigned long size = 0;
 
     listRewind(server.aof_rewrite_buf_blocks,&li);
     while((ln = listNext(&li))) {
@@ -168,7 +177,7 @@ void aofRewriteBufferAppend(unsigned char *s, PORT_ULONG len) {
             if (((numblocks+1) % 10) == 0) {
                 int level = ((numblocks+1) % 100) == 0 ? LL_WARNING :
                                                          LL_NOTICE;
-                serverLog(level,"Background AOF buffer size: %Iu MB", WIN_PORT_FIX /* %lu -> %Iu */
+                serverLog(level,"Background AOF buffer size: %lu MB",
                     aofRewriteBufferSize()/(1024*1024));
             }
         }
@@ -228,15 +237,21 @@ void aof_background_fsync(int fd) {
 
 /* Kills an AOFRW child process if exists */
 void killAppendOnlyChild(void) {
+#ifndef _WIN32
     int statloc;
+#endif
     /* No AOFRW child? return. */
     if (server.child_type != CHILD_TYPE_AOF) return;
     /* Kill AOFRW child, wait for child exit. */
     serverLog(LL_NOTICE,"Killing running AOF rewrite child: %ld",
         (long) server.child_pid);
+#ifdef _WIN32
+    AbortForkOperation();
+#else
     if (kill(server.child_pid,SIGUSR1) != -1) {
         while(waitpid(-1, &statloc, 0) != server.child_pid);
     }
+#endif
     /* Reset the buffer accumulating changes while the child saves. */
     aofRewriteBufferReset();
     aofRemoveTempFile(server.child_pid);
@@ -274,17 +289,19 @@ int startAppendOnly(void) {
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
     int newfd;
 
-    newfd = open(server.aof_filename,O_WRONLY|O_APPEND|O_CREAT,0644);
+    newfd = open(server.aof_filename,
+        O_WRONLY|O_APPEND|O_CREAT WIN32_ONLY(|_O_BINARY),
+        IF_WIN32(_S_IREAD|_S_IWRITE,0644));
     serverAssert(server.aof_state == AOF_OFF);
     if (newfd == -1) {
-        char *cwdp = getcwd(cwd,MAXPATHLEN);
+        char *cwdp = IF_WIN32(_getcwd,getcwd)(cwd,MAXPATHLEN);
 
         serverLog(LL_WARNING,
             "Redis needs to enable the AOF but can't open the "
             "append only file %s (in server root dir %s): %s",
             server.aof_filename,
             cwdp ? cwdp : "unknown",
-            strerror(errno));
+            IF_WIN32(wsa_strerror(errno),strerror(errno)));
         return C_ERR;
     }
     if (hasActiveChildProcess() && server.child_type != CHILD_TYPE_AOF) {
@@ -634,8 +651,8 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
 
         snprintf(seldb,sizeof(seldb),"%d",dictid);
         WIN32_ONLY(seldb[sizeof(seldb)-1] = 0;) /*get rid of C6053 warning*/
-        buf = sdscatprintf(buf,"*2\r\n$6\r\nSELECT\r\n$%Iu\r\n%s\r\n", WIN_PORT_FIX /* %lu -> %Iu */
-            (PORT_ULONG)strlen(seldb),seldb);
+        buf = sdscatprintf(buf,"*2\r\n$6\r\nSELECT\r\n$%zu\r\n%s\r\n",
+            strlen(seldb),seldb);
         server.aof_selected_db = dictid;
     }
 
@@ -1575,7 +1592,7 @@ int rewriteAppendOnlyFile(char *filename) {
     /* Note that we have to use a different temp name here compared to the
      * one used by rewriteAppendOnlyFileBackground() function. */
     snprintf(tmpfile,256,"temp-rewriteaof-%d.aof", (int) getpid());
-    fp = fopen(tmpfile,"w");
+    fp = fopen(tmpfile,IF_WIN32("wb","w"));
     if (!fp) {
         serverLog(LL_WARNING, "Opening the temp file for AOF rewrite in rewriteAppendOnlyFile(): %s", strerror(errno));
         return C_ERR;
@@ -1628,6 +1645,7 @@ int rewriteAppendOnlyFile(char *filename) {
 #ifndef _WIN32
     if (anetNonBlock(NULL,server.aof_pipe_read_ack_from_parent) != ANET_OK)
         goto werr;
+#endif
     /* We read the ACK from the server using a 5 seconds timeout. Normally
      * it should reply ASAP, but just in case we lose its reply, we are sure
      * the child will eventually get terminated. */
@@ -1739,7 +1757,7 @@ int aofCreatePipes(void) {
     if (pipe(fds+2) == -1) goto error; /* children -> parent ack. */
     if (pipe(fds+4) == -1) goto error; /* parent -> children ack. */
     /* Parent -> children data is non blocking. */
-#ifndef WIN32
+#ifndef _WIN32
     if (anetNonBlock(NULL,fds[0]) != ANET_OK) goto error;
     if (anetNonBlock(NULL,fds[1]) != ANET_OK) goto error;
     if (aeCreateFileEvent(server.el, fds[2], AE_READABLE, aofChildPipeReadable, NULL) == AE_ERR) goto error;
@@ -1797,57 +1815,58 @@ int rewriteAppendOnlyFileBackground(void) {
 
     if (hasActiveChildProcess()) return C_ERR;
     if (aofCreatePipes() != C_OK) return C_ERR;
+
+#ifdef _WIN32
+    char tmpfile[256];
+    snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) getpid());
+    openChildInfoPipe();
+    long long start = ustime();
+    childpid = BeginForkOperation_Aof(server.aof_pipe_write_ack_to_parent,
+        server.aof_pipe_read_ack_from_parent,
+        server.aof_pipe_read_data_from_parent,
+        tmpfile, &server, sizeof(server), dictGetHashFunctionSeed(),
+        moduleGetForkData());
+    redisForkChildStarted(childpid,CHILD_TYPE_AOF,start);
+#else
     if ((childpid = redisFork(CHILD_TYPE_AOF)) == 0) {
         char tmpfile[256];
 
-#ifndef _WIN32
         /* Child */
         redisSetProcTitle("redis-aof-rewrite");
         redisSetCpuAffinity(server.aof_rewrite_cpulist);
         snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) getpid());
-#ifdef _WIN32
-        childpid = BeginForkOperation_Aof(server.aof_pipe_write_ack_to_parent,
-            server.aof_pipe_read_ack_from_parent,
-            server.aof_pipe_read_data_from_parent,
-            tmpfile,
-            &server,
-            sizeof(server),
-            dictGetHashFunctionSeed(),
-            modules);
-#else
         if (rewriteAppendOnlyFile(tmpfile) == C_OK) {
             sendChildCowInfo(CHILD_INFO_TYPE_AOF_COW_SIZE, "AOF rewrite");
             exitFromChild(0);
         } else {
             exitFromChild(1);
         }
-    } else {
-#endif
-        /* Parent */
-        if (childpid == -1) {
-            closeChildInfoPipe();
-            serverLog(LL_WARNING,
-                "Can't rewrite append only file in background: fork: %s",
-                strerror(errno));
-            aofClosePipes();
-            return C_ERR;
-        }
-        serverLog(LL_NOTICE,
-            "Background append only file rewriting started by pid %ld",(long) childpid);
-        server.aof_rewrite_scheduled = 0;
-        server.aof_rewrite_time_start = time(NULL);
-
-        /* We set appendseldb to -1 in order to force the next call to the
-         * feedAppendOnlyFile() to issue a SELECT command, so the differences
-         * accumulated by the parent into server.aof_rewrite_buf will start
-         * with a SELECT statement and it will be safe to merge. */
-        server.aof_selected_db = -1;
-        replicationScriptCacheFlush();
-        return C_OK;
-#ifndef _WIN32
     }
 #endif
-    return C_OK; /* unreached */
+
+    /* Parent */
+    if (childpid == -1) {
+#ifdef _WIN32
+        closeChildInfoPipe();
+#endif
+        serverLog(LL_WARNING,
+            "Can't rewrite append only file in background: fork: %s",
+            IF_WIN32(wsa_strerror(errno),strerror(errno)));
+        aofClosePipes();
+        return C_ERR;
+    }
+    serverLog(LL_NOTICE,
+        "Background append only file rewriting started by pid %ld",(long) childpid);
+    server.aof_rewrite_scheduled = 0;
+    server.aof_rewrite_time_start = time(NULL);
+
+    /* We set appendseldb to -1 in order to force the next call to the
+     * feedAppendOnlyFile() to issue a SELECT command, so the differences
+     * accumulated by the parent into server.aof_rewrite_buf will start
+     * with a SELECT statement and it will be safe to merge. */
+    server.aof_selected_db = -1;
+    replicationScriptCacheFlush();
+    return C_OK;
 }
 
 void bgrewriteaofCommand(client *c) {
@@ -1869,6 +1888,15 @@ void aofRemoveTempFile(pid_t childpid) {
 
     snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) childpid);
     bg_unlink(tmpfile);
+
+#ifdef _WIN32
+    /* QFork passes a parent-PID handoff name to the child so the parent can
+     * locate the completed rewrite after the separate process exits. */
+    if (childpid != getpid()) {
+        snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) getpid());
+        bg_unlink(tmpfile);
+    }
+#endif
 
     snprintf(tmpfile,256,"temp-rewriteaof-%d.aof", (int) childpid);
     bg_unlink(tmpfile);
@@ -1991,7 +2019,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
 
         char tmpfile_win_old[256];
         snprintf(tmpfile_win_old, 256, "temp-rewriteaof-old-%d.aof",
-            (int) server.aof_child_pid);
+            (int) server.child_pid);
 
         if (server.aof_fd != -1) {
             // AOF enabled, close the existing AOF file
@@ -2136,7 +2164,9 @@ cleanup:
 void aofProcessDiffRewriteEvents(aeEventLoop* eventLoop)
 {
     // only do these checks in the parent process and if an aof rewrite is in progress
-    if (server.aof_child_pid != -1 && server.aof_pipe_read_ack_from_child != -1) {
+    if (server.child_type == CHILD_TYPE_AOF &&
+        server.aof_pipe_read_ack_from_child != -1)
+    {
         //1) check if more data can be written to the child and write it.
         // in which case we dont need to send any more diffs to the parent
         if (server.aof_stop_sending_diff == 0) {

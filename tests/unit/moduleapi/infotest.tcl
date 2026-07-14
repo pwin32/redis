@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/infotest.so]
+set testmodule [redis_test_module infotest]
 
 # Return value for INFO property
 proc field {info property} {

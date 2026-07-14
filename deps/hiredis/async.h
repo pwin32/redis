@@ -79,9 +79,6 @@ typedef struct redisAsyncContext {
         /* Hooks that are called when the library expects to start
          * reading/writing. These functions should be idempotent. */
         void (*addRead)(void *privdata);
-#ifdef _WIN32
-        void (*forceAddRead)(void *privdata);
-#endif
         void (*delRead)(void *privdata);
         void (*addWrite)(void *privdata);
         void (*delWrite)(void *privdata);
@@ -135,6 +132,10 @@ void redisAsyncHandleWrite(redisAsyncContext *ac);
 void redisAsyncHandleTimeout(redisAsyncContext *ac);
 void redisAsyncRead(redisAsyncContext *ac);
 void redisAsyncWrite(redisAsyncContext *ac);
+#ifdef _WIN32
+int redisAsyncHandleWritePrep(redisAsyncContext *ac);
+int redisAsyncHandleWriteComplete(redisAsyncContext *ac, ssize_t written);
+#endif
 
 /* Command functions for an async context. Write the command to the
  * output buffer and register the provided callback. */

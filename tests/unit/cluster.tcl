@@ -36,7 +36,7 @@ start_server [list overrides $base_conf] {
     set node3_pid [srv -2 pid]
 
     test {Create 3 node cluster} {
-        exec src/redis-cli --cluster-yes --cluster create \
+        exec $::redis_cli_path --cluster-yes --cluster create \
                            127.0.0.1:[srv 0 port] \
                            127.0.0.1:[srv -1 port] \
                            127.0.0.1:[srv -2 port]
@@ -64,7 +64,7 @@ start_server [list overrides $base_conf] {
     }
 
     test "Perform a Resharding" {
-        exec src/redis-cli --cluster-yes --cluster reshard 127.0.0.1:[srv -2 port] \
+        exec $::redis_cli_path --cluster-yes --cluster reshard 127.0.0.1:[srv -2 port] \
                            --cluster-to [$node1 cluster myid] \
                            --cluster-from [$node3 cluster myid] \
                            --cluster-slots 1
@@ -82,7 +82,7 @@ start_server [list overrides $base_conf] {
 
     test "Wait for cluster to be stable" {
        wait_for_condition 1000 50 {
-            [catch {exec src/redis-cli --cluster \
+            [catch {exec $::redis_cli_path --cluster \
             check 127.0.0.1:[srv 0 port] \
             }] == 0
         } else {
@@ -128,7 +128,7 @@ start_server [list overrides $base_conf] {
     
      test "Kill a cluster node and wait for fail state" {
         # kill node3 in cluster 
-        exec kill -SIGSTOP $node3_pid
+        pause_process $node3_pid
 
         wait_for_condition 1000 50 {
             [csi 0 cluster_state] eq {fail} &&
@@ -146,7 +146,7 @@ start_server [list overrides $base_conf] {
         assert_equal [s -1 blocked_clients]  {0}
     }
 
-    exec kill -SIGCONT $node3_pid
+    resume_process $node3_pid
     $node1_rd close
 
 # stop three servers

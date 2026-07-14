@@ -34,6 +34,7 @@
 #include "server.h"
 #include "atomicvar.h"
 #include "cluster.h"
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/uio.h>
 #endif
@@ -161,6 +162,9 @@ client *createClient(connection *conn) {
     c->sentlen = 0;
     c->flags = 0;
     c->ctime = c->lastinteraction = server.unixtime;
+#ifdef _WIN32
+    c->close_after_reply_time = 0;
+#endif
     clientSetDefaultAuth(c);
     c->replstate = REPL_STATE_NONE;
     c->repl_put_online_on_ack = 0;
@@ -371,7 +375,7 @@ void addReply(client *c, robj *obj) {
          * using our optimized function, and attach the resulting string
          * to the output buffer. */
         char buf[32];
-        size_t len = ll2string(buf,sizeof(buf),(long)obj->ptr);
+        size_t len = ll2string(buf,sizeof(buf),(PORT_LONGLONG)(intptr_t)obj->ptr);
         if (_addReplyToBuffer(c,buf,len) != C_OK)
             _addReplyProtoToList(c,buf,len);
     } else {
@@ -650,7 +654,7 @@ void setDeferredReply(client *c, void *node, const char *s, size_t length) {
 }
 
 /* Populate the length object and try gluing it to the next chunk. */
-void setDeferredAggregateLen(client *c, void *node, long length, char prefix) {
+void setDeferredAggregateLen(client *c, void *node, PORT_LONG length, char prefix) {
     serverAssert(length >= 0);
 
     /* Abort when *node is NULL: when the client should not accept writes
@@ -676,31 +680,31 @@ void setDeferredAggregateLen(client *c, void *node, long length, char prefix) {
     }
 
     char lenstr[128];
-    size_t lenstr_len = sprintf(lenstr, "%c%ld\r\n", prefix, length);
+    size_t lenstr_len = sprintf(lenstr, "%c%lld\r\n", prefix, (long long)length);
     setDeferredReply(c, node, lenstr, lenstr_len);
 }
 
-void setDeferredArrayLen(client *c, void *node, long length) {
+void setDeferredArrayLen(client *c, void *node, PORT_LONG length) {
     setDeferredAggregateLen(c,node,length,'*');
 }
 
-void setDeferredMapLen(client *c, void *node, long length) {
+void setDeferredMapLen(client *c, void *node, PORT_LONG length) {
     int prefix = c->resp == 2 ? '*' : '%';
     if (c->resp == 2) length *= 2;
     setDeferredAggregateLen(c,node,length,prefix);
 }
 
-void setDeferredSetLen(client *c, void *node, long length) {
+void setDeferredSetLen(client *c, void *node, PORT_LONG length) {
     int prefix = c->resp == 2 ? '*' : '~';
     setDeferredAggregateLen(c,node,length,prefix);
 }
 
-void setDeferredAttributeLen(client *c, void *node, long length) {
+void setDeferredAttributeLen(client *c, void *node, PORT_LONG length) {
     serverAssert(c->resp >= 3);
     setDeferredAggregateLen(c,node,length,'|');
 }
 
-void setDeferredPushLen(client *c, void *node, long length) {
+void setDeferredPushLen(client *c, void *node, PORT_LONG length) {
     serverAssert(c->resp >= 3);
     setDeferredAggregateLen(c,node,length,'>');
 }
@@ -758,15 +762,6 @@ void addReplyHumanLongDouble(client *c, long double d) {
     }
 }
 
-/* Add a long double as a bulk reply, but uses a human readable formatting
- * of the double instead of exposing the crude behavior of doubles to the
- * dear user. */
-void addReplyHumanLongDouble(client *c, PORT_LONGDOUBLE d) {
-    robj *o = createStringObjectFromLongDouble(d,1);
-    addReplyBulk(c,o);
-    decrRefCount(o);
-}
-
 /* Add a long long as integer reply or bulk len / multi bulk count.
  * Basically this is used to output <prefix><long long><crlf>. */
 void addReplyLongLongWithPrefix(client *c, PORT_LONGLONG ll, char prefix) {
@@ -808,32 +803,32 @@ void addReplyLongLong(client *c, PORT_LONGLONG ll) {
         addReplyLongLongWithPrefix(c,ll,':');
 }
 
-void addReplyAggregateLen(client *c, long length, int prefix) {
+void addReplyAggregateLen(client *c, PORT_LONG length, int prefix) {
     serverAssert(length >= 0);
     addReplyLongLongWithPrefix(c,length,prefix);
 }
 
-void addReplyArrayLen(client *c, long length) {
+void addReplyArrayLen(client *c, PORT_LONG length) {
     addReplyAggregateLen(c,length,'*');
 }
 
-void addReplyMapLen(client *c, long length) {
+void addReplyMapLen(client *c, PORT_LONG length) {
     int prefix = c->resp == 2 ? '*' : '%';
     if (c->resp == 2) length *= 2;
     addReplyAggregateLen(c,length,prefix);
 }
 
-void addReplySetLen(client *c, long length) {
+void addReplySetLen(client *c, PORT_LONG length) {
     int prefix = c->resp == 2 ? '*' : '~';
     addReplyAggregateLen(c,length,prefix);
 }
 
-void addReplyAttributeLen(client *c, long length) {
+void addReplyAttributeLen(client *c, PORT_LONG length) {
     serverAssert(c->resp >= 3);
     addReplyAggregateLen(c,length,'|');
 }
 
-void addReplyPushLen(client *c, long length) {
+void addReplyPushLen(client *c, PORT_LONG length) {
     serverAssert(c->resp >= 3);
     serverAssertWithInfo(c, NULL, c->flags & CLIENT_PUSHING);
     addReplyAggregateLen(c,length,'>');
@@ -935,7 +930,8 @@ void addReplyVerbatim(client *c, const char *s, size_t len, const char *ext) {
         addReplyBulkCBuffer(c,s,len);
     } else {
         char buf[32];
-        size_t preflen = snprintf(buf,sizeof(buf),"=%zu\r\nxxx:",len+4);
+        size_t preflen = snprintf(buf,sizeof(buf),"=%llu\r\nxxx:",
+                                  (unsigned long long)len+4);
         char *p = buf+preflen-4;
         for (int i = 0; i < 3; i++) {
             if (*ext == '\0') {
@@ -1206,7 +1202,7 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         if (cfd == ANET_ERR) {
             if (anetAcceptFailureNeedsRetry(errno))
                 continue;
-            if (errno != EWOULDBLOCK)
+            if (errno != EWOULDBLOCK) {
                 serverLog(LL_WARNING,
                     "Accepting client connection: %s", server.neterr);
 #ifdef _WIN32
@@ -1236,9 +1232,16 @@ void acceptTLSHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         if (cfd == ANET_ERR) {
             if (anetAcceptFailureNeedsRetry(errno))
                 continue;
-            if (errno != EWOULDBLOCK)
+            if (errno != EWOULDBLOCK) {
                 serverLog(LL_WARNING,
                     "Accepting client connection: %s", server.neterr);
+#ifdef _WIN32
+                if (WSIOCP_QueueAccept(fd) == -1) {
+                    serverLog(LL_WARNING,
+                        "acceptTLSHandler: failed to queue another accept.");
+                }
+#endif
+            }
             return;
         }
         anetCloexec(cfd);
@@ -1473,6 +1476,8 @@ void freeClient(client *c) {
     /* Master/slave cleanup Case 1:
      * we lost the connection with a slave. */
     if (c->flags & CLIENT_SLAVE) {
+        int kill_rdb_child = 0;
+
         /* If there is no any other slave waiting dumping RDB finished, the
          * current child process need not continue to dump RDB, then we kill it.
          * So child process won't use more memory, and we also can fork a new
@@ -1486,15 +1491,9 @@ void freeClient(client *c) {
             server.rdb_child_type == RDB_CHILD_TYPE_DISK &&
             anyOtherSlaveWaitRdb(c) == 0)
         {
-            killRDBChild();
+            kill_rdb_child = 1;
         }
         if (c->replstate == SLAVE_STATE_SEND_BULK) {
-#ifdef _WIN32
-            if (c->repldbfd != -1) {
-                DeleteFileA(c->replFileCopy);
-                memset(c->replFileCopy, 0, MAX_PATH);
-            }
-#endif
             if (c->repldbfd != -1) close(c->repldbfd);
             if (c->replpreamble) sdsfree(c->replpreamble);
         }
@@ -1513,6 +1512,11 @@ void freeClient(client *c) {
             moduleFireServerEvent(REDISMODULE_EVENT_REPLICA_CHANGE,
                                   REDISMODULE_SUBEVENT_REPLICA_CHANGE_OFFLINE,
                                   NULL);
+
+        /* On Windows killRDBChild() runs the completion handler synchronously.
+         * Remove this replica from all global state first so that handler can't
+         * queue the client for a second free. */
+        if (kill_rdb_child) killRDBChild();
     }
 
     /* Master/slave cleanup Case 2:
@@ -1536,6 +1540,12 @@ void freeClient(client *c) {
     zfree(c);
 }
 
+#ifndef _WIN32
+static pthread_mutex_t async_free_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+#else
+static pthread_mutex_t async_free_queue_mutex;
+#endif
+
 /* Schedule a client to free it at a safe time in the serverCron() function.
  * This function is useful when we need to terminate a client but we are in
  * a context where calling freeClient() is not possible, because the client
@@ -1547,13 +1557,16 @@ void freeClientAsync(client *c) {
      * are in the context of the main thread while the other threads are
      * idle. */
     if (c->flags & CLIENT_CLOSE_ASAP || c->flags & CLIENT_LUA) return;
+#ifdef _WIN32
+    if (c->flags & CLIENT_CLOSE_AFTER_REPLY)
+        c->close_after_reply_time = mstime() + 100;
+#endif
     c->flags |= CLIENT_CLOSE_ASAP;
     if (server.io_threads_num == 1) {
         /* no need to bother with locking if there's just one thread (the main thread) */
         listAddNodeTail(server.clients_to_close,c);
         return;
     }
-    static pthread_mutex_t async_free_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&async_free_queue_mutex);
     listAddNodeTail(server.clients_to_close,c);
     pthread_mutex_unlock(&async_free_queue_mutex);
@@ -1571,6 +1584,21 @@ int freeClientsInAsyncFreeQueue(void) {
         client *c = listNodeValue(ln);
 
         if (c->flags & CLIENT_PROTECTED) continue;
+
+#ifdef _WIN32
+        /* Let Winsock deliver the final buffered reply before closing. */
+        if (c->close_after_reply_time &&
+            mstime() < c->close_after_reply_time)
+        {
+            continue;
+        }
+
+        /* Unread request bytes make closes abortive and discard the reply. */
+        if ((c->flags & CLIENT_PROTOCOL_ERROR) && c->conn) {
+            char discard[PROTO_IOBUF_LEN];
+            while (connRead(c->conn,discard,sizeof(discard)) > 0) {}
+        }
+#endif
 
         c->flags &= ~CLIENT_CLOSE_ASAP;
         freeClient(c);
@@ -1609,7 +1637,6 @@ int writeToClient(client *c, int handler_installed) {
         if (c->bufpos > 0) {
             nwritten = connWrite(c->conn,c->buf+c->sentlen,c->bufpos-c->sentlen);
             if (nwritten <= 0) break;
-#endif
             c->sentlen += nwritten;
             totwritten += nwritten;
 
@@ -1633,7 +1660,6 @@ int writeToClient(client *c, int handler_installed) {
             if (nwritten <= 0) break;
             c->sentlen += nwritten;
             totwritten += nwritten;
-#endif
 
             /* If we fully sent the object on head go to the next one */
             if (c->sentlen == objlen) {
@@ -1908,7 +1934,10 @@ static void setProtocolError(const char *errstr, client *c) {
         if (sdslen(c->querybuf)-c->qb_pos < PROTO_DUMP_LEN) {
             snprintf(buf,sizeof(buf),"Query buffer during protocol error: '%s'", c->querybuf+c->qb_pos);
         } else {
-            snprintf(buf,sizeof(buf),"Query buffer during protocol error: '%.*s' (... more %zu bytes ...) '%.*s'", PROTO_DUMP_LEN/2, c->querybuf+c->qb_pos, sdslen(c->querybuf)-c->qb_pos-PROTO_DUMP_LEN, PROTO_DUMP_LEN/2, c->querybuf+sdslen(c->querybuf)-PROTO_DUMP_LEN/2);
+            snprintf(buf,sizeof(buf),"Query buffer during protocol error: '%.*s' (... more %llu bytes ...) '%.*s'",
+                PROTO_DUMP_LEN/2, c->querybuf+c->qb_pos,
+                (unsigned long long)(sdslen(c->querybuf)-c->qb_pos-PROTO_DUMP_LEN),
+                PROTO_DUMP_LEN/2, c->querybuf+sdslen(c->querybuf)-PROTO_DUMP_LEN/2);
         }
 
         /* Remove non printable chars. */
@@ -2308,7 +2337,7 @@ void readQueryFromClient(connection *conn) {
         c->pending_querybuf = sdscatlen(c->pending_querybuf,
                                         c->querybuf+qblen,nread);
     }
-    WIN32_ONLY(WSIOCP_QueueNextRead(fd);)
+    WIN32_ONLY(WSIOCP_QueueNextRead(conn->fd);)
     sdsIncrLen(c->querybuf,nread);
     c->lastinteraction = server.unixtime;
     if (c->flags & CLIENT_MASTER) c->read_reploff += nread;
@@ -3571,10 +3600,10 @@ static inline void setIOPendingCount(int i, unsigned long count) {
 void *IOThreadMain(void *myid) {
     /* The ID is the thread number (from 0 to server.iothreads_num-1), and is
      * used by the thread to just manipulate a single sub-array of clients. */
-    long id = (unsigned long)myid;
+    int id = (int)(intptr_t)myid;
     char thdname[16];
 
-    snprintf(thdname, sizeof(thdname), "io_thd_%ld", id);
+    snprintf(thdname, sizeof(thdname), "io_thd_%d", id);
     redis_set_thread_title(thdname);
     redisSetCpuAffinity(server.server_cpulist);
     makeThreadKillable();
@@ -3617,6 +3646,9 @@ void *IOThreadMain(void *myid) {
 /* Initialize the data structures needed for threaded I/O. */
 void initThreadedIO(void) {
     server.io_threads_active = 0; /* We start with threads not active. */
+#ifdef _WIN32
+    pthread_mutex_init(&async_free_queue_mutex,NULL);
+#endif
 
     /* Don't spawn any thread if the user selected a single thread:
      * we'll handle I/O directly from the main thread. */
@@ -3639,7 +3671,7 @@ void initThreadedIO(void) {
         pthread_mutex_init(&io_threads_mutex[i],NULL);
         setIOPendingCount(i, 0);
         pthread_mutex_lock(&io_threads_mutex[i]); /* Thread will be stopped. */
-        if (pthread_create(&tid,NULL,IOThreadMain,(void*)(long)i) != 0) {
+        if (pthread_create(&tid,NULL,IOThreadMain,(void*)(intptr_t)i) != 0) {
             serverLog(LL_WARNING,"Fatal: Can't initialize IO thread.");
             exit(1);
         }
@@ -3648,6 +3680,7 @@ void initThreadedIO(void) {
 }
 
 void killIOThreads(void) {
+#ifndef _WIN32
     int err, j;
     for (j = 0; j < server.io_threads_num; j++) {
         if (io_threads[j] == pthread_self()) continue;
@@ -3662,6 +3695,7 @@ void killIOThreads(void) {
             }
         }
     }
+#endif
 }
 
 void startThreadedIO(void) {

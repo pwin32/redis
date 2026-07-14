@@ -731,7 +731,7 @@ static void connTLSClose(connection *conn_) {
         conn->pending_list_node = NULL;
     }
 
-    CT_Socket.close(conn_);
+    CT_Socket.close_func(conn_);
 }
 
 static int connTLSAccept(connection *_conn, ConnectionCallbackFunc accept_handler) {
@@ -963,7 +963,7 @@ ConnectionType CT_TLS = {
     .blocking_connect = connTLSBlockingConnect,
     .read = connTLSRead,
     .write = connTLSWrite,
-    .close = connTLSClose,
+    .close_func = connTLSClose,
     .set_write_handler = connTLSSetWriteHandler,
     .set_read_handler = connTLSSetReadHandler,
     .get_last_error = connTLSGetLastError,

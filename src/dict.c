@@ -51,6 +51,7 @@ extern BOOL g_IsForkedProcess;
 #include <limits.h>
 #ifndef _WIN32
 #include <sys/time.h>
+#endif
 
 #include "dict.h"
 #include "zmalloc.h"
@@ -74,8 +75,8 @@ static unsigned int dict_force_resize_ratio = 5;
 /* -------------------------- private prototypes ---------------------------- */
 
 static int _dictExpandIfNeeded(dict *ht);
-static unsigned long _dictNextPower(unsigned long size);
-static long _dictKeyIndex(dict *ht, const void *key, uint64_t hash, dictEntry **existing);
+static PORT_ULONG _dictNextPower(PORT_ULONG size);
+static PORT_LONG _dictKeyIndex(dict *ht, const void *key, uint64_t hash, dictEntry **existing);
 static int _dictInit(dict *ht, dictType *type, void *privDataPtr);
 
 /* -------------------------- hash functions -------------------------------- */
@@ -350,7 +351,7 @@ int dictAdd(dict *d, void *key, void *val)
  */
 dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing)
 {
-    long index;
+    PORT_LONG index;
     dictEntry *entry;
     dictht *ht;
 
@@ -924,7 +925,7 @@ PORT_ULONG dictScan(dict *d,
 {
     dictht *t0, *t1;
     const dictEntry *de, *next;
-    unsigned long m0, m1;
+    PORT_ULONG m0, m1;
 
     if (dictSize(d) == 0) return 0;
 
@@ -1044,7 +1045,7 @@ static PORT_ULONG _dictNextPower(PORT_ULONG size)
 {
     PORT_ULONG i = DICT_HT_INITIAL_SIZE;
 
-    if (size >= LONG_MAX) return LONG_MAX + 1LU;
+    if (size >= PORT_LONG_MAX) return (PORT_ULONG)PORT_LONG_MAX + 1;
     while(1) {
         if (i >= size)
             return i;
@@ -1059,9 +1060,9 @@ static PORT_ULONG _dictNextPower(PORT_ULONG size)
  *
  * Note that if we are in the process of rehashing the hash table, the
  * index is always returned in the context of the second (new) hash table. */
-static long _dictKeyIndex(dict *d, const void *key, uint64_t hash, dictEntry **existing)
+static PORT_LONG _dictKeyIndex(dict *d, const void *key, uint64_t hash, dictEntry **existing)
 {
-    unsigned long idx, table;
+    PORT_ULONG idx, table;
     dictEntry *he;
     if (existing) *existing = NULL;
 
@@ -1106,38 +1107,9 @@ uint64_t dictGetHash(dict *d, const void *key) {
  * return value is the reference to the dictEntry if found, or NULL if not found. */
 dictEntry **dictFindEntryRefByPtrAndHash(dict *d, const void *oldptr, uint64_t hash) {
     dictEntry *he, **heref;
-    unsigned long idx, table;
-
-    if (dictSize(d) == 0) return NULL; /* dict is empty */
-    for (table = 0; table <= 1; table++) {
-        idx = hash & d->ht[table].sizemask;
-        heref = &d->ht[table].table[idx];
-        he = *heref;
-        while(he) {
-            if (oldptr==he->key)
-                return heref;
-            heref = &he->next;
-            he = *heref;
-        }
-        if (!dictIsRehashing(d)) return NULL;
-    }
-    return NULL;
-}
-
-uint64_t dictGetHash(dict *d, const void *key) {
-    return dictHashKey(d, key);
-}
-
-/* Finds the dictEntry reference by using pointer and pre-calculated hash.
- * oldkey is a dead pointer and should not be accessed.
- * the hash value should be provided using dictGetHash.
- * no string / key comparison is performed.
- * return value is the reference to the dictEntry if found, or NULL if not found. */
-dictEntry **dictFindEntryRefByPtrAndHash(dict *d, const void *oldptr, uint64_t hash) {
-    dictEntry *he, **heref;
     PORT_ULONG idx, table;
 
-    if (d->ht[0].used + d->ht[1].used == 0) return NULL; /* dict is empty */
+    if (dictSize(d) == 0) return NULL; /* dict is empty */
     for (table = 0; table <= 1; table++) {
         idx = hash & d->ht[table].sizemask;
         heref = &d->ht[table].table[idx];
@@ -1194,10 +1166,10 @@ size_t _dictGetStatsHt(char *buf, size_t bufsize, dictht *ht, int tableid) {
     /* Generate human readable stats. */
     l += snprintf(buf+l,bufsize-l,
         "Hash table %d stats (%s):\n"
-        " table size: %lu\n"
-        " number of elements: %lu\n"
-        " different slots: %lu\n"
-        " max chain length: %lu\n"
+        " table size: %llu\n"
+        " number of elements: %llu\n"
+        " different slots: %llu\n"
+        " max chain length: %llu\n"
         " avg chain length (counted): %.02f\n"
         " avg chain length (computed): %.02f\n"
         " Chain length distribution:\n",
@@ -1209,7 +1181,7 @@ size_t _dictGetStatsHt(char *buf, size_t bufsize, dictht *ht, int tableid) {
         if (clvector[i] == 0) continue;
         if (l >= bufsize) break;
         l += snprintf(buf+l,bufsize-l,
-            "   %s%Id: %Id (%.02f%%)\n",                                          WIN_PORT_FIX /* %ld -> %Id */
+            "   %s%llu: %llu (%.02f%%)\n",                              WIN_PORT_FIX /* PORT_ULONG */
             (i == DICT_STATS_VECTLEN-1)?">= ":"",
             i, clvector[i], ((float)clvector[i]/ht->size)*100);
     }

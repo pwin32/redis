@@ -1,1 +1,2 @@
 #define REDIS_VERSION "5.0.14"
+#define REDIS_VERSION_NUM 0x0005000e

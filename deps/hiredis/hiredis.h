@@ -152,21 +152,10 @@ struct redisSsl;
 /* Don't automatically intercept and free RESP3 PUSH replies. */
 #define REDIS_OPT_NO_PUSH_AUTOFREE 0x08
 
-/* In Unix systems a file descriptor is a regular signed int, with -1
- * representing an invalid descriptor. In Windows it is a SOCKET
- * (32- or 64-bit unsigned integer depending on the architecture), where
- * all bits set (~0) is INVALID_SOCKET.  */
-#ifndef _WIN32
+/* This Windows port maps native SOCKET handles to Unix-like integer file
+ * descriptors in Win32_FDAPI, so hiredis must keep the descriptor ABI as int. */
 typedef int redisFD;
 #define REDIS_INVALID_FD -1
-#else
-#ifdef _WIN64
-typedef unsigned long long redisFD; /* SOCKET = 64-bit UINT_PTR */
-#else
-typedef unsigned long redisFD;      /* SOCKET = 32-bit UINT_PTR */
-#endif
-#define REDIS_INVALID_FD ((redisFD)(~0)) /* INVALID_SOCKET */
-#endif
 
 typedef struct {
     /*
@@ -302,6 +291,10 @@ void redisFree(redisContext *c);
 redisFD redisFreeKeepFd(redisContext *c);
 int redisBufferRead(redisContext *c);
 int redisBufferWrite(redisContext *c, int *done);
+#ifdef _WIN32
+int redisBufferReadDone(redisContext *c, const char *buf, ssize_t nread);
+int redisBufferWriteDone(redisContext *c, ssize_t nwritten, int *done);
+#endif
 
 /* In a blocking context, this function first checks if there are unconsumed
  * replies to return and returns one if so. Otherwise, it flushes the output
