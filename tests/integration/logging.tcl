@@ -37,7 +37,8 @@ if {$system_supported} {
     }
 
     # Valgrind will complain that the process terminated by a signal, skip it.
-    if {!$::valgrind} {
+    # Windows has no external POSIX SIGABRT delivery equivalent.
+    if {!$::valgrind && $::tcl_platform(platform) ne "windows"} {
         set server_path [tmpdir server1.log]
         start_server [list overrides [list dir $server_path]] {
             test "Crash report generated on SIGABRT" {
