@@ -110,6 +110,8 @@ const int ACCEPTEX_ADDRESS_BUFFER_SIZE = sizeof(struct sockaddr_storage) + 32;
 int WSIOCP_QueueAccept(int listenfd) {
     iocpSockState *sockstate;
     iocpSockState *accsockstate;
+    SOCKADDR_STORAGE listenaddr;
+    int listenaddrlen = sizeof(listenaddr);
     DWORD result, bytes;
     int acceptfd;
     aacceptreq * areq;
@@ -119,9 +121,20 @@ int WSIOCP_QueueAccept(int listenfd) {
         return -1;
     }
 
-    acceptfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (getsockname(listenfd, (struct sockaddr *) &listenaddr,
+                    &listenaddrlen) == SOCKET_ERROR) {
+        errno = FDAPI_WSAGetLastError();
+        return -1;
+    }
+    if (listenaddr.ss_family != AF_INET &&
+        listenaddr.ss_family != AF_INET6) {
+        errno = WSAEAFNOSUPPORT;
+        return -1;
+    }
+
+    /* Keep the AcceptEx target socket in the listener's address family. */
+    acceptfd = socket(listenaddr.ss_family, SOCK_STREAM, IPPROTO_TCP);
     if (acceptfd == -1) {
-        errno = WSAEINVAL;
         return -1;
     }
 

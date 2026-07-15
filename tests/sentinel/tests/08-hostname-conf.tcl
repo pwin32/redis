@@ -19,6 +19,20 @@ proc set_all_instances_hostname {hostname} {
     }
 }
 
+# This helper is normally defined by a preceding unit's shared initialization.
+# Define it locally as well so --single can run this pre-init block directly.
+if {![llength [info commands restart_killed_instances]]} {
+    proc restart_killed_instances {} {
+        foreach type {redis sentinel} {
+            foreach_${type}_id id {
+                if {[get_instance_attrib $type $id pid] == -1} {
+                    restart_instance $type $id
+                }
+            }
+        }
+    }
+}
+
 test "(pre-init) Configure instances and sentinel for hostname use" {
     set ::host "localhost"
     restart_killed_instances

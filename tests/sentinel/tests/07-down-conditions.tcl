@@ -30,7 +30,7 @@ test "Crash the majority of Sentinels to prevent failovers for this unit" {
 test "SDOWN is triggered by non-responding but not crashed instance" {
     lassign [S $::alive_sentinel SENTINEL GET-MASTER-ADDR-BY-NAME mymaster] host port
     ensure_master_up
-    exec $::redis_cli_path -h $host -p $port {*}[rediscli_tls_config "../../../tests"] debug sleep 10 > /dev/null &
+    exec $::redis_cli_path -h $host -p $port {*}[rediscli_tls_config "../../../tests"] debug sleep 10 > $::test_null_device &
     ensure_master_down
     ensure_master_up
 }

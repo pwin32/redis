@@ -5,6 +5,29 @@ proc log_file_matches {log pattern} {
     string match $pattern $content
 }
 
+if {$::tcl_platform(platform) eq "windows"} {
+    start_server {tags {"regression network external:skip tls:skip"} omit {bind}} {
+        test {Protected mode accepts IPv6 loopback through IOCP} {
+            set replies {}
+            for {set i 0} {$i < 2} {incr i} {
+                set c [redis ::1 [srv 0 port]]
+                set failed [catch {
+                    set pong [$c ping]
+                    set info [$c client info]
+                    if {![regexp {addr=\[::1\]:[0-9]+} $info]} {
+                        error "unexpected IPv6 client address: $info"
+                    }
+                    set pong
+                } reply]
+                catch {$c close}
+                if {$failed} {error $reply}
+                lappend replies $reply
+            }
+            set replies
+        } {PONG PONG}
+    }
+}
+
 start_server {tags {"regression"}} {
     set slave [srv 0 client]
     set slave_host [srv 0 host]
