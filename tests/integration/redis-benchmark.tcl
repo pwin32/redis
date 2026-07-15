@@ -90,6 +90,20 @@ start_server {tags {"benchmark network"}} {
             assert_match  {1} [scan [regexp -inline {keys\=([\d]*)} [r info keyspace]] keys=%d]
         }
 
+        test {benchmark: threaded non-divisible pipeline} {
+            r config resetstat
+            r flushall
+            set cmd [redisbenchmark $master_host $master_port "--threads 10 -P 5 -c 20 -n 3 -e -t set"]
+            if {[catch { exec {*}$cmd } error]} {
+                set first_line [lindex [split $error "\n"] 0]
+                puts [colorstr red "redis-benchmark non zero code. first line: $first_line"]
+                fail "redis-benchmark non zero code. first line: $first_line"
+            }
+            # Pipelines are issued atomically, so the final batch may exceed -n.
+            assert_match  {*calls=5,*} [cmdstat set]
+            assert_match  {} [cmdstat get]
+        }
+
         test {benchmark: arbitrary command} {
             r config resetstat
             r flushall

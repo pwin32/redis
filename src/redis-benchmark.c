@@ -679,6 +679,10 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         int requests_issued = 0;
         atomicGetIncr(config.requests_issued, requests_issued, config.pipeline);
         if (requests_issued >= config.requests) {
+            /* IOCP writable notifications are one-shot. Once the request
+             * quota is exhausted, discard this client instead of leaving it
+             * registered without another completion to wake it. */
+            WIN32_ONLY(freeClient(c);)
             return;
         }
 
@@ -777,7 +781,14 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
             port = node->port;
             c->cluster_node = node;
         }
+#ifdef _WIN32
+        /* The IOCP backend synthesizes writable readiness. Complete the normal
+         * Winsock connect before attaching the socket, otherwise the first
+         * WSASend can race connect completion and fail with WSAENOTCONN. */
+        c->context = redisConnect(ip,port);
+#else
         c->context = redisConnectNonBlock(ip,port);
+#endif
     } else {
         c->context = redisConnectUnixNonBlock(config.hostsocket);
     }
@@ -921,8 +932,13 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
         benchmarkThread *thread = config.threads[thread_id];
         el = thread->el;
     }
-    if (config.idlemode == 0)
+    if (config.idlemode == 0) {
         aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
+#ifdef _WIN32
+        /* IOCP attachment above switches the socket back to nonblocking mode. */
+        c->context->flags &= ~REDIS_BLOCK;
+#endif
+    }
     listAddNodeTail(config.clients,c);
     atomicIncr(config.liveclients, 1);
     atomicGet(config.slots_last_update, c->slots_last_update);
@@ -1717,7 +1733,8 @@ int showThroughput(struct aeEventLoop *eventLoop, PORT_LONGLONG id, void *client
     atomicGet(config.requests_finished, requests_finished);
     atomicGet(config.previous_requests_finished, previous_requests_finished);
     
-    if (liveclients == 0 && requests_finished != config.requests) {
+    /* A pipeline may validly finish more requests than the requested count. */
+    if (liveclients == 0 && requests_finished < config.requests) {
         fprintf(stderr,"All clients disconnected... aborting.\n");
         exit(1);
     }
