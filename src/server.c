@@ -6504,6 +6504,14 @@ int main(int argc, char **argv) {
         sdsfree(options);
     }
     if (server.sentinel_mode) sentinelCheckConfigFile();
+#ifdef _WIN32
+    if (server.io_threads_num != 1 || server.io_threads_do_reads) {
+        serverLog(LL_WARNING,
+            "Fatal: server I/O threads are not supported on Windows; "
+            "use io-threads 1 and io-threads-do-reads no.");
+        exit(1);
+    }
+#endif
     server.supervised = redisIsSupervised(server.supervised_mode);
     int background = server.daemonize && !server.supervised;
     if (background) daemonize();

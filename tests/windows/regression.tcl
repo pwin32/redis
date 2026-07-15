@@ -26,6 +26,19 @@ if {$::tcl_platform(platform) eq "windows"} {
             set replies
         } {PONG PONG}
     }
+
+    tags {regression external:skip} {
+        test {Windows rejects unsupported server I/O threads} {
+            foreach options {{--io-threads 4} {--io-threads-do-reads yes}} {
+                set cmd [concat \
+                    [list $::redis_server_path --port 0 --save ""] $options]
+                set failed [catch {exec {*}$cmd 2>@1} output]
+                assert {$failed}
+                assert_match \
+                    "*server I/O threads are not supported on Windows*" $output
+            }
+        }
+    }
 }
 
 start_server {tags {"regression"}} {
