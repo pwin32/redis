@@ -8,9 +8,10 @@
 set ::cluster_master_nodes 0
 set ::cluster_replica_nodes 0
 
-# Returns a parsed CLUSTER NODES output as a list of dictionaries.
-proc get_cluster_nodes id {
-    set lines [split [R $id cluster nodes] "\r\n"]
+# Parse CLUSTER NODES output. Optional status can be specified to return only
+# entries with a matching link state.
+proc parse_cluster_nodes {reply {status "*"}} {
+    set lines [split $reply "\r\n"]
     set nodes {}
     foreach l $lines {
         set l [string trim $l]
