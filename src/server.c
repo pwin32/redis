@@ -4452,6 +4452,7 @@ int prepareForShutdown(int flags) {
     if (server.child_type == CHILD_TYPE_RDB) {
         serverLog(LL_WARNING,"There is a child saving an .rdb. Killing it!");
         killRDBChild();
+#ifndef _WIN32
         /* Note that, in killRDBChild normally has backgroundSaveDoneHandler
          * doing it's cleanup, but in this case this code will not be reached,
          * so we need to call rdbRemoveTempFile which will close fd(in order
@@ -4459,6 +4460,7 @@ int prepareForShutdown(int flags) {
          * The temp rdb file fd may won't be closed when redis exits quickly,
          * but OS will close this fd when process exits. */
         rdbRemoveTempFile(server.child_pid, 0);
+#endif
     }
 
     /* Kill module child if there is one. */

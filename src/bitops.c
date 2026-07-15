@@ -625,7 +625,7 @@ void bitopCommand(client *c) {
     /* Lookup keys, and store pointers to the string objects into an array. */
     numkeys = c->argc - 3;
     src = zmalloc(sizeof(unsigned char*) * numkeys);
-    len = zmalloc(sizeof(PORT_LONG) * numkeys);
+    len = zmalloc(sizeof(*len) * numkeys);
     objects = zmalloc(sizeof(robj*) * numkeys);
     for (j = 0; j < numkeys; j++) {
         o = lookupKeyRead(c->db,c->argv[j+3]);
@@ -651,7 +651,7 @@ void bitopCommand(client *c) {
         }
         objects[j] = getDecodedObject(o);
         src[j] = objects[j]->ptr;
-        len[j] = (PORT_LONG) sdslen(objects[j]->ptr);                           WIN_PORT_FIX /* cast (PORT_LONG) */
+        len[j] = (PORT_ULONG) sdslen(objects[j]->ptr);                          WIN_PORT_FIX /* cast (PORT_ULONG) */
         if (len[j] > maxlen) maxlen = len[j];
         if (j == 0 || len[j] < minlen) minlen = len[j];
     }
@@ -669,12 +669,12 @@ void bitopCommand(client *c) {
          * operations that are not supported even in ARM >= v6. */
         j = 0;
         #ifndef USE_ALIGNED_ACCESS
-        if (minlen >= sizeof(unsigned long)*4 && numkeys <= 16) {
-            unsigned long *lp[16];
-            unsigned long *lres = (unsigned long*) res;
+        if (minlen >= sizeof(PORT_ULONG)*4 && numkeys <= 16) {
+            PORT_ULONG *lp[16];
+            PORT_ULONG *lres = (PORT_ULONG*) res;
 
             /* Note: sds pointer is always aligned to 8 byte boundary. */
-            memcpy(lp,src,sizeof(PORT_ULONG*)*numkeys);
+            memcpy(lp,src,sizeof(*lp)*numkeys);
             memcpy(res,src[0],minlen);
 
             /* Different branches per different operations for speed (sorry). */

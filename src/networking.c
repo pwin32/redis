@@ -1119,6 +1119,16 @@ void clientAcceptHandler(connection *conn) {
 
 #define MAX_ACCEPTS_PER_CALL 1000
 #ifdef _WIN32
+#define REJECTED_REPLY_CLOSE_DELAY 100
+#define REJECTED_REPLY_WRITE_TIMEOUT 1000
+
+typedef struct rejectedConnection {
+    connection *conn;
+    sds reply;
+    size_t sent;
+    long long timeout_id;
+} rejectedConnection;
+
 static int closeRejectedConnection(aeEventLoop *el, long long id,
                                    void *clientData) {
     UNUSED(el);
@@ -1129,12 +1139,90 @@ static int closeRejectedConnection(aeEventLoop *el, long long id,
 
 static void closeRejectedConnectionAfterReply(connection *conn) {
     if (FDAPI_shutdown(conn->fd, SD_SEND) == 0 &&
-        aeCreateTimeEvent(server.el, 100, closeRejectedConnection,
+        aeCreateTimeEvent(server.el, REJECTED_REPLY_CLOSE_DELAY,
+                          closeRejectedConnection,
                           conn, NULL) != AE_ERR)
     {
         return;
     }
     connClose(conn);
+}
+
+static void freeRejectedConnection(rejectedConnection *state) {
+    sdsfree(state->reply);
+    zfree(state);
+}
+
+static int rejectedConnectionWriteTimeout(aeEventLoop *el, long long id,
+                                          void *clientData) {
+    UNUSED(el);
+    UNUSED(id);
+    rejectedConnection *state = clientData;
+    connection *conn = state->conn;
+
+    connSetWriteHandler(conn,NULL);
+    connSetPrivateData(conn,NULL);
+    connClose(conn);
+    freeRejectedConnection(state);
+    return AE_NOMORE;
+}
+
+static void finishRejectedConnectionWrite(rejectedConnection *state) {
+    connection *conn = state->conn;
+
+    aeDeleteTimeEvent(server.el,state->timeout_id);
+    connSetWriteHandler(conn,NULL);
+    connSetPrivateData(conn,NULL);
+    freeRejectedConnection(state);
+    closeRejectedConnectionAfterReply(conn);
+}
+
+static void writeRejectedConnectionReply(connection *conn) {
+    rejectedConnection *state = connGetPrivateData(conn);
+    int nwritten = connWrite(conn,state->reply+state->sent,
+                             sdslen(state->reply)-state->sent);
+
+    if (nwritten > 0) state->sent += nwritten;
+    if (state->sent == sdslen(state->reply))
+        finishRejectedConnectionWrite(state);
+}
+
+static void rejectConnection(connection *conn, char *err) {
+    size_t reply_len = strlen(err);
+
+    /* TLS did not perform a handshake yet, so retain upstream's best-effort
+     * write and immediate close for that connection type. */
+    if (connGetType(conn) != CONN_TYPE_SOCKET) {
+        connWrite(conn,err,reply_len);
+        connClose(conn);
+        return;
+    }
+
+    int nwritten = connWrite(conn,err,reply_len);
+    if (nwritten == (int)reply_len) {
+        closeRejectedConnectionAfterReply(conn);
+        return;
+    }
+
+    rejectedConnection *state = zmalloc(sizeof(*state));
+    state->conn = conn;
+    state->reply = sdsnewlen(err,reply_len);
+    state->sent = nwritten > 0 ? (size_t)nwritten : 0;
+    state->timeout_id = aeCreateTimeEvent(server.el,
+        REJECTED_REPLY_WRITE_TIMEOUT,rejectedConnectionWriteTimeout,state,NULL);
+    if (state->timeout_id == AE_ERR) {
+        freeRejectedConnection(state);
+        connClose(conn);
+        return;
+    }
+
+    connSetPrivateData(conn,state);
+    if (connSetWriteHandler(conn,writeRejectedConnectionReply) == C_ERR) {
+        aeDeleteTimeEvent(server.el,state->timeout_id);
+        connSetPrivateData(conn,NULL);
+        freeRejectedConnection(state);
+        connClose(conn);
+    }
 }
 #endif
 
@@ -1170,13 +1258,15 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
         /* That's a best effort error message, don't check write errors.
          * Note that for TLS connections, no handshake was done yet so nothing
          * is written and the connection will just drop. */
+#ifdef _WIN32
+        rejectConnection(conn,err);
+#else
         if (connWrite(conn,err,strlen(err)) == -1) {
             /* Nothing to do, Just to avoid the warning... */
         }
+#endif
         server.stat_rejected_conn++;
-#ifdef _WIN32
-        closeRejectedConnectionAfterReply(conn);
-#else
+#ifndef _WIN32
         connClose(conn);
 #endif
         return;

@@ -163,6 +163,19 @@ start_server {tags {"bitops"}} {
         list [r get res1] [r get res2] [r get res3]
     } [list "\x01\x02\xff\x00" "\x01\x02\xff\xff" "\x00\x00\x00\xff"]
 
+    test {BITOP fast path processes every word on LLP64} {
+        set a "[string repeat \x0f 16][string repeat \xf0 16]"
+        set b "[string repeat \x33 16][string repeat \x55 16]"
+        r set bitop-a $a
+        r set bitop-b $b
+        foreach op {and or xor} {
+            r bitop $op bitop-result bitop-a bitop-b
+            assert_equal [simulate_bit_op $op $a $b] [r get bitop-result]
+        }
+        r bitop not bitop-result bitop-a
+        assert_equal [simulate_bit_op not $a] [r get bitop-result]
+    }
+
     foreach op {and or xor} {
         test "BITOP $op fuzzing" {
             for {set i 0} {$i < 10} {incr i} {

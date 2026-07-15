@@ -93,6 +93,12 @@ char *replicationGetSlaveName(client *c) {
  * the foreground unlink() will only remove the fs name, and deleting the
  * file's storage space will only happen once the last reference is lost. */
 int bg_unlink(const char *filename) {
+#ifdef _WIN32
+    /* The POSIX open-then-unlink technique below is invalid with Windows CRT
+     * sharing semantics: our own read handle prevents unlink(). QFork and AOF
+     * callers wait for their writer before cleanup, so delete synchronously. */
+    return unlink(filename);
+#else
     int fd = open(filename,O_RDONLY|O_NONBLOCK,0);
     if (fd == -1) {
         /* Can't open the file? Fall back to unlinking in the main thread. */
@@ -112,6 +118,7 @@ int bg_unlink(const char *filename) {
         bioCreateCloseJob(fd);
         return 0; /* Success. */
     }
+#endif
 }
 
 /* ---------------------------------- MASTER -------------------------------- */
