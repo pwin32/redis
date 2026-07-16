@@ -769,6 +769,7 @@ test "diskless replication child being killed is collected" {
             after 500
 
             # simulate the OOM killer or anyone else kills the child
+            set master_loglines [count_log_lines -1]
             if {[catch {
                 set fork_child_pid [get_qfork_child_pid -1]
             } child_error]} {
@@ -787,12 +788,16 @@ test "diskless replication child being killed is collected" {
                 fail "failed to terminate QFork child $fork_child_pid"
             }
 
-            # wait for the parent to notice the child have exited
-            wait_for_condition 50 100 {
-                [s -1 rdb_bgsave_in_progress] == 0
+            # Wait for the parent to collect this child and run the socket
+            # completion handler. The aggregate INFO flag can already refer to
+            # a replacement child if the replica reconnects immediately.
+            if {$::tcl_platform(platform) eq "windows"} {
+                set child_exit_pattern "*Background transfer terminated by signal 1*"
             } else {
-                fail "parent failed to collect terminated QFork child $fork_child_pid"
+                set child_exit_pattern "*Background transfer terminated by signal 9*"
             }
+            wait_for_log_messages -1 [list $child_exit_pattern] \
+                $master_loglines 50 100
 
             # Speed up shutdown after the deliberately stalled diskless load.
             $replica config set key-load-delay 0
