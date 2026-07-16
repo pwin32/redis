@@ -44,13 +44,16 @@ tags "modules" {
             r debug populate 1000 foo 10000 ;# 10mb worth of data
             r config set rdbcompression no ;# rdb progress is only checked once in 2mb
             assert_equal [r hooks.timer_arm] OK
-            set loglines [count_log_lines 0]
+            set aof_start_count [count_log_message 0 "module-event-persistence-aof-start"]
+            set persistence_end_count [count_log_message 0 "module-event-persistence-end"]
+            set timer_info_count [count_log_message 0 "module-event-qfork-timer-info-ok"]
             r BGREWRITEAOF
             waitForBgrewriteaof r
             assert_equal [r hooks.timer_clear] 1
-            verify_log_message 0 "*module-event-persistence-aof-start*" $loglines
-            verify_log_message 0 "*module-event-persistence-end*" $loglines
-            verify_log_message 0 "*module-event-qfork-timer-info-ok*" $loglines
+            assert_equal ok [s aof_last_bgrewrite_status]
+            assert_equal [expr {$aof_start_count + 1}] [count_log_message 0 "module-event-persistence-aof-start"]
+            assert_equal [expr {$persistence_end_count + 1}] [count_log_message 0 "module-event-persistence-end"]
+            assert_equal [expr {$timer_info_count + 1}] [count_log_message 0 "module-event-qfork-timer-info-ok"]
         }
 
         test {Test module aof load and rdb/aof progress hooks} {
