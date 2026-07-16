@@ -51,6 +51,19 @@ extern "C" {
         ssCHILD_EXIT = 2              // Child completed operation. Call QForkShutdown and exit.
     } StartupStatus;
 
+    /* Module subsystem globals that live outside the QFork heap. The pointed
+     * objects themselves are allocated in the mapped Redis heap; copying this
+     * POD reconnects the fresh persistence process to that snapshot after its
+     * module DLL images have been restored. */
+    typedef struct redisModuleForkData {
+        LPVOID modules;
+        LPVOID keyspaceSubscribers;
+        LPVOID commandFilters;
+        LPVOID eventListeners;
+        LPVOID freeContextClient;
+        unsigned long long modulesInHooks;
+    } RedisModuleForkData;
+
     // For parent process use only
     pid_t BeginForkOperation_Rdb(
         char* fileName,

@@ -108,11 +108,16 @@ typedef unsigned char byte;
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 using namespace std;
 
 extern "C" {
 BOOL g_IsForkedProcess = FALSE;
+int moduleForEachForkModule(
+    int (*callback)(const char *, void *, const wchar_t *, uint64_t, void *),
+    void *privdata);
+void moduleSetQForkChildReady(int ready);
 }
 
 //#define DEBUG_WITH_PROCMON
@@ -152,7 +157,7 @@ struct QForkInfo {
     BYTE redisData[MAX_REDIS_DATA_SIZE];
     size_t redisDataSize;
     uint8_t dictHashSeed[16];
-    LPVOID modules;
+    RedisModuleForkData modules;
     size_t usedMemory;
     char filename[MAX_PATH];
     int rdb_pipe_write_fd;
@@ -274,16 +279,320 @@ bool ReportSpecialSystemErrors(int error) {
     }
 }
 
+struct QForkModuleDescriptor {
+    string name;
+    wstring path;
+    HMODULE expectedBase;
+    uint64_t sequence;
+};
+
+struct QForkModuleProtectedRange {
+    DWORD rva;
+    size_t size;
+};
+
+struct QForkModuleWritableRange {
+    byte *address;
+    DWORD rva;
+    vector<byte> childBytes;
+};
+
+struct QForkLoadedModule {
+    string name;
+    HMODULE handle;
+    vector<QForkModuleWritableRange> writableRanges;
+};
+
+static int CollectQForkModule(const char *name, void *handle,
+    const wchar_t *path, uint64_t sequence, void *privdata)
+{
+    try {
+        vector<QForkModuleDescriptor> *modules =
+            reinterpret_cast<vector<QForkModuleDescriptor> *>(privdata);
+        QForkModuleDescriptor descriptor;
+        descriptor.name = name;
+        descriptor.path = path;
+        descriptor.expectedBase = reinterpret_cast<HMODULE>(handle);
+        descriptor.sequence = sequence;
+        modules->push_back(descriptor);
+        return 0;
+    }
+    catch (...) {
+        return -1;
+    }
+}
+
+static bool QForkModuleRangeInsideImage(uint64_t rva, uint64_t size,
+    uint64_t imageSize)
+{
+    return rva <= imageSize && size <= imageSize - rva;
+}
+
+static void AddQForkModuleProtectedRange(
+    vector<QForkModuleProtectedRange>& ranges,
+    uint64_t rva, uint64_t size, uint64_t imageSize)
+{
+    if (size == 0 || !QForkModuleRangeInsideImage(rva, size, imageSize) ||
+        rva > MAXDWORD || size > MAXDWORD)
+        return;
+
+    QForkModuleProtectedRange range;
+    range.rva = static_cast<DWORD>(rva);
+    range.size = static_cast<size_t>(size);
+    ranges.push_back(range);
+}
+
+static void RestoreQForkModuleProtectedRanges(byte *imageBase,
+    DWORD sectionRva, vector<byte>& childBytes,
+    const vector<QForkModuleProtectedRange>& protectedRanges)
+{
+    uint64_t sectionStart = sectionRva;
+    uint64_t sectionEnd = sectionStart + childBytes.size();
+
+    for (const QForkModuleProtectedRange& range : protectedRanges) {
+        uint64_t protectedStart = range.rva;
+        uint64_t protectedEnd = protectedStart + range.size;
+        uint64_t copyStart = max(sectionStart, protectedStart);
+        uint64_t copyEnd = min(sectionEnd, protectedEnd);
+        if (copyStart >= copyEnd) continue;
+
+        memcpy(imageBase + copyStart,
+               childBytes.data() + (copyStart - sectionStart),
+               static_cast<size_t>(copyEnd - copyStart));
+    }
+}
+
+static bool RestoreQForkModuleImage(HANDLE parentProcess,
+    const QForkModuleDescriptor& descriptor, QForkLoadedModule& loaded)
+{
+    HMODULE childBase = LoadLibraryExW(descriptor.path.c_str(), NULL,
+                                      LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (childBase == NULL) {
+        serverLog(LL_WARNING,
+            "QFork module restore: LoadLibrary failed for %s (0x%08x)",
+            descriptor.name.c_str(), GetLastError());
+        return false;
+    }
+
+    loaded.name = descriptor.name;
+    loaded.handle = childBase;
+
+    if (childBase != descriptor.expectedBase) {
+        serverLog(LL_WARNING,
+            "QFork module restore: %s loaded at %p, expected %p",
+            descriptor.name.c_str(), childBase, descriptor.expectedBase);
+        return false;
+    }
+
+    byte *imageBase = reinterpret_cast<byte *>(childBase);
+    PIMAGE_DOS_HEADER dos = reinterpret_cast<PIMAGE_DOS_HEADER>(imageBase);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) {
+        serverLog(LL_WARNING,
+            "QFork module restore: invalid DOS header for %s",
+            descriptor.name.c_str());
+        return false;
+    }
+
+    PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(
+        imageBase + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE ||
+        nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        serverLog(LL_WARNING,
+            "QFork module restore: unsupported PE image for %s",
+            descriptor.name.c_str());
+        return false;
+    }
+
+    uint64_t imageSize = nt->OptionalHeader.SizeOfImage;
+    vector<QForkModuleProtectedRange> protectedRanges;
+
+    IMAGE_DATA_DIRECTORY iat =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
+    AddQForkModuleProtectedRange(protectedRanges, iat.VirtualAddress,
+                                iat.Size, imageSize);
+
+    IMAGE_DATA_DIRECTORY tlsDirectory =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+    if (tlsDirectory.VirtualAddress != 0 &&
+        QForkModuleRangeInsideImage(tlsDirectory.VirtualAddress,
+            sizeof(IMAGE_TLS_DIRECTORY64), imageSize))
+    {
+        PIMAGE_TLS_DIRECTORY64 tls =
+            reinterpret_cast<PIMAGE_TLS_DIRECTORY64>(
+                imageBase + tlsDirectory.VirtualAddress);
+        uint64_t base = reinterpret_cast<uint64_t>(imageBase);
+        if (tls->StartAddressOfRawData >= base &&
+            tls->EndAddressOfRawData >= tls->StartAddressOfRawData)
+        {
+            AddQForkModuleProtectedRange(protectedRanges,
+                tls->StartAddressOfRawData - base,
+                tls->EndAddressOfRawData - tls->StartAddressOfRawData,
+                imageSize);
+        }
+        if (tls->AddressOfIndex >= base) {
+            AddQForkModuleProtectedRange(protectedRanges,
+                tls->AddressOfIndex - base, sizeof(DWORD), imageSize);
+        }
+    }
+
+    IMAGE_DATA_DIRECTORY loadConfigDirectory =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    if (loadConfigDirectory.VirtualAddress != 0 &&
+        QForkModuleRangeInsideImage(loadConfigDirectory.VirtualAddress,
+            sizeof(IMAGE_LOAD_CONFIG_DIRECTORY64), imageSize))
+    {
+        PIMAGE_LOAD_CONFIG_DIRECTORY64 loadConfig =
+            reinterpret_cast<PIMAGE_LOAD_CONFIG_DIRECTORY64>(
+                imageBase + loadConfigDirectory.VirtualAddress);
+        uint64_t base = reinterpret_cast<uint64_t>(imageBase);
+        if (loadConfig->SecurityCookie >= base) {
+            AddQForkModuleProtectedRange(protectedRanges,
+                loadConfig->SecurityCookie - base, sizeof(uint64_t), imageSize);
+        }
+    }
+
+    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
+        if (!(section->Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
+        if (section->Characteristics &
+            (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_MEM_SHARED))
+        {
+            serverLog(LL_WARNING,
+                "QFork module restore: unsafe writable section in %s",
+                descriptor.name.c_str());
+            return false;
+        }
+
+        size_t sectionSize = section->Misc.VirtualSize != 0 ?
+            section->Misc.VirtualSize : section->SizeOfRawData;
+        if (sectionSize == 0) continue;
+        if (!QForkModuleRangeInsideImage(section->VirtualAddress,
+                                          sectionSize, imageSize))
+        {
+            serverLog(LL_WARNING,
+                "QFork module restore: invalid section bounds in %s",
+                descriptor.name.c_str());
+            return false;
+        }
+
+        loaded.writableRanges.push_back(QForkModuleWritableRange());
+        QForkModuleWritableRange& writable = loaded.writableRanges.back();
+        writable.address = imageBase + section->VirtualAddress;
+        writable.rva = section->VirtualAddress;
+        writable.childBytes.resize(sectionSize);
+        vector<byte> parentBytes(sectionSize);
+        memcpy(writable.childBytes.data(), writable.address, sectionSize);
+
+        SIZE_T bytesRead = 0;
+        if (!ReadProcessMemory(parentProcess,
+                reinterpret_cast<const void *>(
+                    reinterpret_cast<uintptr_t>(descriptor.expectedBase) +
+                    section->VirtualAddress),
+                parentBytes.data(), sectionSize, &bytesRead) ||
+            bytesRead != sectionSize)
+        {
+            serverLog(LL_WARNING,
+                "QFork module restore: could not read %s state (0x%08x)",
+                descriptor.name.c_str(), GetLastError());
+            return false;
+        }
+
+        DWORD oldProtect;
+        if (!VirtualProtect(writable.address, sectionSize, PAGE_READWRITE,
+                            &oldProtect))
+        {
+            serverLog(LL_WARNING,
+                "QFork module restore: could not unprotect %s state (0x%08x)",
+                descriptor.name.c_str(), GetLastError());
+            return false;
+        }
+
+        memcpy(writable.address, parentBytes.data(), sectionSize);
+        RestoreQForkModuleProtectedRanges(imageBase, writable.rva,
+                                          writable.childBytes,
+                                          protectedRanges);
+
+        DWORD ignored;
+        if (!VirtualProtect(writable.address, sectionSize, oldProtect, &ignored)) {
+            serverLog(LL_WARNING,
+                "QFork module restore: could not reprotect %s state (0x%08x)",
+                descriptor.name.c_str(), GetLastError());
+            return false;
+        }
+    }
+
+    serverLog(LL_DEBUG, "QFork restored module %s at %p",
+              descriptor.name.c_str(), childBase);
+    return true;
+}
+
+static bool CleanupQForkModules(vector<QForkLoadedModule>& modules) {
+    bool success = true;
+    for (auto module = modules.rbegin(); module != modules.rend(); ++module) {
+        for (auto range = module->writableRanges.rbegin();
+             range != module->writableRanges.rend(); ++range)
+        {
+            DWORD oldProtect;
+            if (!VirtualProtect(range->address, range->childBytes.size(),
+                                PAGE_READWRITE, &oldProtect))
+            {
+                success = false;
+                continue;
+            }
+            memcpy(range->address, range->childBytes.data(),
+                   range->childBytes.size());
+            DWORD ignored;
+            if (!VirtualProtect(range->address, range->childBytes.size(),
+                                oldProtect, &ignored))
+                success = false;
+        }
+        if (module->handle != NULL && !FreeLibrary(module->handle))
+            success = false;
+    }
+    modules.clear();
+    return success;
+}
+
+static bool RestoreQForkModules(HANDLE parentProcess,
+    vector<QForkLoadedModule>& loadedModules)
+{
+    vector<QForkModuleDescriptor> descriptors;
+    if (moduleForEachForkModule(CollectQForkModule, &descriptors) != 0)
+        return false;
+
+    sort(descriptors.begin(), descriptors.end(),
+        [](const QForkModuleDescriptor& a, const QForkModuleDescriptor& b) {
+            return a.sequence < b.sequence;
+        });
+
+    for (const QForkModuleDescriptor& descriptor : descriptors) {
+        loadedModules.push_back(QForkLoadedModule());
+        if (!RestoreQForkModuleImage(parentProcess, descriptor,
+                                     loadedModules.back()))
+        {
+            CleanupQForkModules(loadedModules);
+            return false;
+        }
+    }
+    return true;
+}
+
 BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
     SmartHandle shParent;
     SmartHandle shQForkControlHeapMap;
     SmartFileView<QForkControl> sfvParentQForkControl;
     SmartHandle dupOperationComplete;
     SmartHandle dupOperationFailed;
+    vector<QForkLoadedModule> loadedModules;
+    bool moduleChildReady = false;
 
     try {
         shParent.Assign(
-            OpenProcess(SYNCHRONIZE | PROCESS_DUP_HANDLE, TRUE, ParentProcessID),
+            OpenProcess(SYNCHRONIZE | PROCESS_DUP_HANDLE | PROCESS_VM_READ |
+                        PROCESS_QUERY_LIMITED_INFORMATION,
+                        TRUE, ParentProcessID),
             string("Could not open parent process"));
 
         shQForkControlHeapMap.Assign(shParent, QForkControlMemoryMapHandle);
@@ -327,8 +636,14 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
         SetupRedisGlobals(g_pQForkControl->globalData.redisData,
             g_pQForkControl->globalData.redisDataSize,
             g_pQForkControl->globalData.dictHashSeed,
-            g_pQForkControl->globalData.modules,
+            &g_pQForkControl->globalData.modules,
             g_pQForkControl->globalData.usedMemory);
+
+        if (!RestoreQForkModules(shParent, loadedModules)) {
+            throw runtime_error("Could not restore loaded modules in QFork child");
+        }
+        moduleSetQForkChildReady(1);
+        moduleChildReady = true;
 
         // Execute requested operation
         if (g_pQForkControl->typeOfOperation == OperationType::otRDB) {
@@ -377,6 +692,12 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
             throw runtime_error("unexpected operation type");
         }
 
+        moduleSetQForkChildReady(0);
+        moduleChildReady = false;
+        if (!CleanupQForkModules(loadedModules)) {
+            throw runtime_error("Could not clean up restored QFork modules");
+        }
+
         // Let parent know we are done
         SetEvent(g_pQForkControl->operationComplete);
 
@@ -393,6 +714,11 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
         RedisEventLog().LogError("QForkChildInit: runtime error. " + string(runerr.what()));
         serverLog(LL_WARNING, "QForkChildInit: runtime error caught. message=%s\n", runerr.what());
     }
+
+    if (moduleChildReady) {
+        moduleSetQForkChildReady(0);
+    }
+    CleanupQForkModules(loadedModules);
 
     if (g_pQForkControl != NULL) {
         if (g_pQForkControl->operationFailed != NULL) {
@@ -578,7 +904,8 @@ void CopyForkOperationData(OperationType type, LPVOID redisData, int redisDataSi
     }
     memcpy(&(g_pQForkControl->globalData.redisData), redisData, redisDataSize);
     g_pQForkControl->globalData.redisDataSize = redisDataSize;
-    g_pQForkControl->globalData.modules = modules;
+    memcpy(&g_pQForkControl->globalData.modules, modules,
+           sizeof(g_pQForkControl->globalData.modules));
     g_pQForkControl->globalData.usedMemory = zmalloc_used_memory();
     memcpy(&(g_pQForkControl->globalData.dictHashSeed), dictHashSeed, sizeof(g_pQForkControl->globalData.dictHashSeed));
 

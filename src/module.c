@@ -62,6 +62,7 @@
 #else
 #include "Win32_Interop/dlfcn.h"
 #include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/Win32_QFork.h"
 #endif
 #include <sys/stat.h>
 
@@ -99,6 +100,10 @@ struct RedisModule {
     int blocked_clients;         /* Count of RedisModuleBlockedClient in this module. */
     RedisModuleInfoFunc info_cb; /* Callback for module to add INFO fields. */
     RedisModuleDefragFunc defrag_cb;    /* Callback for global data defrag. */
+#ifdef _WIN32
+    wchar_t *qfork_path;         /* Absolute DLL path for the QFork child. */
+    uint64_t qfork_load_seq;     /* Preserve module loader order in QFork. */
+#endif
 };
 typedef struct RedisModule RedisModule;
 
@@ -113,18 +118,6 @@ struct RedisModuleSharedAPI {
 typedef struct RedisModuleSharedAPI RedisModuleSharedAPI;
 
 static dict *modules; /* Hash table of modules. SDS -> RedisModule ptr.*/
-
-#ifdef _WIN32
-/* QFork starts a fresh process and restores the Redis heap snapshot before
- * running the persistence child. Keep the module registry in that snapshot. */
-void *moduleGetForkData(void) {
-    return modules;
-}
-
-void moduleSetForkData(void *data) {
-    modules = data;
-}
-#endif
 
 /* Entries in the context->amqueue array, representing objects to free
  * when the callback returns. */
@@ -420,6 +413,63 @@ typedef struct RedisModuleEventListener {
 list *RedisModule_EventListeners; /* Global list of all the active events. */
 unsigned long long ModulesInHooks = 0; /* Total number of modules in hooks
                                           callbacks right now. */
+
+#ifdef _WIN32
+static uint64_t moduleQForkLoadSequence = 0;
+static int moduleQForkChildReady = 0;
+
+/* QFork maps the Redis heap into a fresh process, but these module subsystem
+ * roots live in the executable's private data section. Copy the roots by
+ * value so they point back into the mapped heap after module images have been
+ * restored in the child. */
+void *moduleGetForkData(void) {
+    static RedisModuleForkData data;
+    data.modules = modules;
+    data.keyspaceSubscribers = moduleKeyspaceSubscribers;
+    data.commandFilters = moduleCommandFilters;
+    data.eventListeners = RedisModule_EventListeners;
+    data.freeContextClient = moduleFreeContextReusedClient;
+    data.modulesInHooks = ModulesInHooks;
+    return &data;
+}
+
+void moduleSetForkData(void *fork_data) {
+    RedisModuleForkData *data = fork_data;
+    modules = data->modules;
+    moduleKeyspaceSubscribers = data->keyspaceSubscribers;
+    moduleCommandFilters = data->commandFilters;
+    RedisModule_EventListeners = data->eventListeners;
+    moduleFreeContextReusedClient = data->freeContextClient;
+    ModulesInHooks = data->modulesInHooks;
+}
+
+void moduleSetQForkChildReady(int ready) {
+    moduleQForkChildReady = ready;
+}
+
+int moduleForEachForkModule(
+    int (*callback)(const char *name, void *handle, const wchar_t *path,
+                    uint64_t sequence, void *privdata),
+    void *privdata)
+{
+    if (modules == NULL || dictSize(modules) == 0) return C_OK;
+
+    dictIterator *di = dictGetIterator(modules);
+    dictEntry *de;
+    while ((de = dictNext(di)) != NULL) {
+        RedisModule *module = dictGetVal(de);
+        if (module->qfork_path == NULL ||
+            callback(module->name, module->handle, module->qfork_path,
+                     module->qfork_load_seq, privdata) == C_ERR)
+        {
+            dictReleaseIterator(di);
+            return C_ERR;
+        }
+    }
+    dictReleaseIterator(di);
+    return C_OK;
+}
+#endif
 
 /* Data structures related to the redis module users */
 
@@ -973,6 +1023,10 @@ void RM_SetModuleAttribs(RedisModuleCtx *ctx, const char *name, int ver, int api
     module->options = 0;
     module->info_cb = 0;
     module->defrag_cb = 0;
+#ifdef _WIN32
+    module->qfork_path = NULL;
+    module->qfork_load_seq = 0;
+#endif
     ctx->module = module;
 }
 
@@ -8330,9 +8384,10 @@ int RM_IsSubEventSupported(RedisModuleEvent event, int64_t subevent) {
  * with the event, depending on what exactly happened. */
 void moduleFireServerEvent(uint64_t eid, int subid, void *data) {
 #ifdef _WIN32
-    /* QFork children start as fresh processes and do not initialize or load
-     * the module subsystem. Parent-side fork events are still delivered. */
-    if (server.in_fork_child != CHILD_TYPE_NONE) return;
+    /* QFork children start as fresh processes. Do not enter copied module
+     * callbacks until their DLL images and private module roots are restored. */
+    if (server.in_fork_child != CHILD_TYPE_NONE && !moduleQForkChildReady)
+        return;
 #endif
     /* Fast path to return ASAP if there is nothing to do, avoiding to
      * setup the iterator and so forth: we want this call to be extremely
@@ -8593,6 +8648,9 @@ void moduleFreeModuleStructure(struct RedisModule *module) {
     listRelease(module->usedby);
     listRelease(module->using);
     sdsfree(module->name);
+#ifdef _WIN32
+    zfree(module->qfork_path);
+#endif
     zfree(module);
 }
 
@@ -8617,6 +8675,27 @@ void moduleUnregisterCommands(struct RedisModule *module) {
     }
     dictReleaseIterator(di);
 }
+
+#ifdef _WIN32
+static wchar_t *moduleGetQForkPath(void *handle) {
+    DWORD capacity = MAX_PATH;
+    while (capacity <= 32768) {
+        wchar_t *path = zmalloc(sizeof(wchar_t) * capacity);
+        DWORD length = GetModuleFileNameW((HMODULE)handle, path, capacity);
+        if (length == 0) {
+            zfree(path);
+            return NULL;
+        }
+        if (length < capacity) {
+            path[length] = L'\0';
+            return path;
+        }
+        zfree(path);
+        capacity *= 2;
+    }
+    return NULL;
+}
+#endif
 
 /* Load a module and initialize it. On success C_OK is returned, otherwise
  * C_ERR is returned. */
@@ -8643,8 +8722,21 @@ int moduleLoad(const char *path, void **module_argv, int module_argc) {
         serverLog(LL_WARNING, "Module %s failed to load: %s", path, dlerror());
         return C_ERR;
     }
+#ifdef _WIN32
+    wchar_t *qfork_path = moduleGetQForkPath(handle);
+    if (qfork_path == NULL) {
+        dlclose(handle);
+        serverLog(LL_WARNING,
+            "Module %s loaded but its absolute DLL path could not be resolved",
+            path);
+        return C_ERR;
+    }
+#endif
     onload = (int (*)(void *, void **, int))(uintptr_t)dlsym(handle,"RedisModule_OnLoad");
     if (onload == NULL) {
+#ifdef _WIN32
+        zfree(qfork_path);
+#endif
         dlclose(handle);
         serverLog(LL_WARNING,
             "Module %s does not export RedisModule_OnLoad() "
@@ -8658,6 +8750,9 @@ int moduleLoad(const char *path, void **module_argv, int module_argc) {
             moduleUnregisterUsedAPI(ctx.module);
             moduleFreeModuleStructure(ctx.module);
         }
+#ifdef _WIN32
+        zfree(qfork_path);
+#endif
         dlclose(handle);
         serverLog(LL_WARNING,
             "Module %s initialization failed. Module not loaded",path);
@@ -8668,6 +8763,10 @@ int moduleLoad(const char *path, void **module_argv, int module_argc) {
     dictAdd(modules,ctx.module->name,ctx.module);
     ctx.module->blocked_clients = 0;
     ctx.module->handle = handle;
+#ifdef _WIN32
+    ctx.module->qfork_path = qfork_path;
+    ctx.module->qfork_load_seq = ++moduleQForkLoadSequence;
+#endif
     serverLog(LL_NOTICE,"Module '%s' loaded from %s",ctx.module->name,path);
     /* Fire the loaded modules event. */
     moduleFireServerEvent(REDISMODULE_EVENT_MODULE_CHANGE,
