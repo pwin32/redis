@@ -12,6 +12,21 @@ RedisModuleType *testrdb_type = NULL;
 /* Global values to store and persist to aux */
 RedisModuleString *before_str = NULL;
 RedisModuleString *after_str = NULL;
+RedisModuleString *fork_mutation_str = NULL;
+
+void forkChildCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, void *data)
+{
+    REDISMODULE_NOT_USED(e);
+    REDISMODULE_NOT_USED(data);
+
+    if (sub != REDISMODULE_SUBEVENT_FORK_CHILD_BORN || !fork_mutation_str)
+        return;
+
+    RedisModule_RetainString(ctx, fork_mutation_str);
+    if (before_str)
+        RedisModule_FreeString(ctx, before_str);
+    before_str = fork_mutation_str;
+}
 
 void replBackupCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, void *data)
 {
@@ -162,6 +177,21 @@ int testrdb_get_before(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     return REDISMODULE_OK;
 }
 
+int testrdb_set_fork_mutation(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+    if (argc != 2) {
+        RedisModule_WrongArity(ctx);
+        return REDISMODULE_OK;
+    }
+
+    if (fork_mutation_str)
+        RedisModule_FreeString(ctx, fork_mutation_str);
+    fork_mutation_str = argv[1];
+    RedisModule_RetainString(ctx, argv[1]);
+    RedisModule_ReplyWithLongLong(ctx, 1);
+    return REDISMODULE_OK;
+}
+
 int testrdb_set_after(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
     if (argc != 2){
@@ -274,6 +304,9 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     if (RedisModule_CreateCommand(ctx,"testrdb.get.before", testrdb_get_before,"",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
+    if (RedisModule_CreateCommand(ctx,"testrdb.set.fork", testrdb_set_fork_mutation,"deny-oom",0,0,0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+
     if (RedisModule_CreateCommand(ctx,"testrdb.set.after", testrdb_set_after,"deny-oom",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
@@ -288,6 +321,8 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 
     RedisModule_SubscribeToServerEvent(ctx,
         RedisModuleEvent_ReplBackup, replBackupCallback);
+    RedisModule_SubscribeToServerEvent(ctx,
+        RedisModuleEvent_ForkChild, forkChildCallback);
 
     return REDISMODULE_OK;
 }
@@ -297,5 +332,7 @@ int RedisModule_OnUnload(RedisModuleCtx *ctx) {
         RedisModule_FreeString(ctx, before_str);
     if (after_str)
         RedisModule_FreeString(ctx, after_str);
+    if (fork_mutation_str)
+        RedisModule_FreeString(ctx, fork_mutation_str);
     return REDISMODULE_OK;
 }

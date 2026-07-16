@@ -414,6 +414,11 @@ list *RedisModule_EventListeners; /* Global list of all the active events. */
 unsigned long long ModulesInHooks = 0; /* Total number of modules in hooks
                                           callbacks right now. */
 
+/* Declared here because the Windows QFork root snapshot is assembled before
+ * the timer API implementation later in this file. */
+static rax *Timers;     /* The radix tree of all the timers sorted by expire. */
+long long aeTimer = -1; /* Main event loop (ae.c) timer identifier. */
+
 #ifdef _WIN32
 static uint64_t moduleQForkLoadSequence = 0;
 static int moduleQForkChildReady = 0;
@@ -429,6 +434,8 @@ void *moduleGetForkData(void) {
     data.commandFilters = moduleCommandFilters;
     data.eventListeners = RedisModule_EventListeners;
     data.freeContextClient = moduleFreeContextReusedClient;
+    data.timers = Timers;
+    data.aeTimer = aeTimer;
     data.modulesInHooks = ModulesInHooks;
     return &data;
 }
@@ -440,11 +447,67 @@ void moduleSetForkData(void *fork_data) {
     moduleCommandFilters = data->commandFilters;
     RedisModule_EventListeners = data->eventListeners;
     moduleFreeContextReusedClient = data->freeContextClient;
+    Timers = data->timers;
+    aeTimer = data->aeTimer;
     ModulesInHooks = data->modulesInHooks;
 }
 
 void moduleSetQForkChildReady(int ready) {
     moduleQForkChildReady = ready;
+}
+
+static int moduleQForkValidateCallback(RedisModule *module,
+                                       uintptr_t callback,
+                                       const char *callback_kind)
+{
+    if (callback == 0) return C_OK;
+
+    MEMORY_BASIC_INFORMATION info;
+    if (VirtualQuery((const void *)callback, &info, sizeof(info)) == 0 ||
+        info.AllocationBase != module->handle)
+    {
+        serverLog(LL_WARNING,
+            "Module %s cannot participate in Windows QFork persistence: "
+            "%s callback %p is outside its primary DLL image",
+            module->name, callback_kind, (void *)callback);
+        return C_ERR;
+    }
+    return C_OK;
+}
+
+/* The fresh QFork child reloads each primary module DLL at its parent address.
+ * Fail closed when Redis would directly invoke persistence code from a helper
+ * image whose load address and writable state are not part of that snapshot. */
+static int moduleQForkValidatePersistenceCallbacks(RedisModule *module) {
+    listIter li;
+    listNode *ln;
+
+    listRewind(module->types, &li);
+    while ((ln = listNext(&li)) != NULL) {
+        moduleType *mt = listNodeValue(ln);
+        if (moduleQForkValidateCallback(module, (uintptr_t)mt->rdb_save,
+                                        "RDB save") == C_ERR ||
+            moduleQForkValidateCallback(module, (uintptr_t)mt->aof_rewrite,
+                                        "AOF rewrite") == C_ERR ||
+            moduleQForkValidateCallback(module, (uintptr_t)mt->aux_save,
+                                        "RDB AUX save") == C_ERR)
+            return C_ERR;
+    }
+
+    if (RedisModule_EventListeners != NULL) {
+        listRewind(RedisModule_EventListeners, &li);
+        while ((ln = listNext(&li)) != NULL) {
+            RedisModuleEventListener *listener = listNodeValue(ln);
+            if (listener->module == module &&
+                listener->event.id == REDISMODULE_EVENT_PERSISTENCE &&
+                moduleQForkValidateCallback(module,
+                    (uintptr_t)listener->callback,
+                    "persistence event") == C_ERR)
+                return C_ERR;
+        }
+    }
+
+    return C_OK;
 }
 
 int moduleForEachForkModule(
@@ -458,7 +521,8 @@ int moduleForEachForkModule(
     dictEntry *de;
     while ((de = dictNext(di)) != NULL) {
         RedisModule *module = dictGetVal(de);
-        if (module->qfork_path == NULL ||
+        if (moduleQForkValidatePersistenceCallbacks(module) == C_ERR ||
+            module->qfork_path == NULL ||
             callback(module->name, module->handle, module->qfork_path,
                      module->qfork_load_seq, privdata) == C_ERR)
         {
@@ -6370,9 +6434,6 @@ void RM_SetClusterFlags(RedisModuleCtx *ctx, uint64_t flags) {
  * not used.
  * -------------------------------------------------------------------------- */
 
-static rax *Timers;     /* The radix tree of all the timers sorted by expire. */
-long long aeTimer = -1; /* Main event loop (ae.c) timer identifier. */
-
 typedef void (*RedisModuleTimerProc)(RedisModuleCtx *ctx, void *data);
 
 /* The timer descriptor, stored as value in the radix tree. */
@@ -8729,6 +8790,11 @@ int moduleLoad(const char *path, void **module_argv, int module_argc) {
         serverLog(LL_WARNING,
             "Module %s loaded but its absolute DLL path could not be resolved",
             path);
+        return C_ERR;
+    }
+    if (!QForkValidateModuleImage(handle, qfork_path, path)) {
+        zfree(qfork_path);
+        dlclose(handle);
         return C_ERR;
     }
 #endif

@@ -107,6 +107,7 @@ typedef unsigned char byte;
 #include <jemalloc/internal/jemalloc_internal_defs.h>
 
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -117,6 +118,7 @@ BOOL g_IsForkedProcess = FALSE;
 int moduleForEachForkModule(
     int (*callback)(const char *, void *, const wchar_t *, uint64_t, void *),
     void *privdata);
+size_t moduleCount(void);
 void moduleSetQForkChildReady(int ready);
 }
 
@@ -158,6 +160,10 @@ struct QForkInfo {
     size_t redisDataSize;
     uint8_t dictHashSeed[16];
     RedisModuleForkData modules;
+    HANDLE moduleSnapshotMap;
+    uint64_t moduleSnapshotSize;
+    uint32_t moduleSnapshotCount;
+    uint32_t moduleSnapshotReserved;
     size_t usedMemory;
     char filename[MAX_PATH];
     int rdb_pipe_write_fd;
@@ -211,7 +217,9 @@ struct QForkControl {
 
 QForkControl* g_pQForkControl;
 HANDLE g_hQForkControlFileMap;
+HANDLE g_hQForkModuleSnapshotMap;
 HANDLE g_hForkedProcess = 0;
+vector<HMODULE> g_QForkPinnedModules;
 int g_ChildExitCode = 0; // For child process
 BOOL g_SentinelMode;
 BOOL g_PersistenceDisabled;
@@ -286,21 +294,100 @@ struct QForkModuleDescriptor {
     uint64_t sequence;
 };
 
+struct QForkModuleFileIdentity {
+    DWORD volumeSerialNumber;
+    DWORD fileIndexHigh;
+    DWORD fileIndexLow;
+    uint64_t fileSize;
+    uint64_t lastWriteTime;
+};
+
 struct QForkModuleProtectedRange {
     DWORD rva;
     size_t size;
 };
 
-struct QForkModuleWritableRange {
+struct QForkModuleImageRange {
     byte *address;
     DWORD rva;
-    vector<byte> childBytes;
+    DWORD size;
+    DWORD characteristics;
+    WORD sectionIndex;
+    char name[IMAGE_SIZEOF_SHORT_NAME];
+    uint64_t snapshotOffset;
 };
 
-struct QForkLoadedModule {
-    string name;
-    HMODULE handle;
-    vector<QForkModuleWritableRange> writableRanges;
+struct QForkModuleImageInfo {
+    DWORD imageSize;
+    DWORD sizeOfHeaders;
+    DWORD timeDateStamp;
+    DWORD checkSum;
+    WORD machine;
+    WORD optionalMagic;
+    WORD numberOfSections;
+    QForkModuleFileIdentity fileIdentity;
+    vector<QForkModuleProtectedRange> protectedRanges;
+    vector<QForkModuleImageRange> writableRanges;
+};
+
+struct QForkCapturedModule {
+    QForkModuleDescriptor descriptor;
+    QForkModuleImageInfo image;
+    uint64_t nameOffset;
+    uint64_t pathOffset;
+    uint32_t firstRange;
+};
+
+static const uint32_t cQForkModuleSnapshotMagic = 0x534d4651; /* QFMS */
+static const uint16_t cQForkModuleSnapshotVersion = 1;
+static const uint64_t cQForkModuleTlsTemplateSize = sizeof(uintptr_t);
+static const size_t cQForkModuleMaxTlsCallbacks = 32;
+
+struct QForkModuleSnapshotHeader {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t headerSize;
+    uint32_t moduleCount;
+    uint32_t rangeCount;
+    uint64_t totalSize;
+    uint64_t modulesOffset;
+    uint64_t rangesOffset;
+    uint64_t payloadOffset;
+};
+
+struct QForkModuleSnapshotRecord {
+    uint64_t sequence;
+    uint64_t expectedBase;
+    uint64_t nameOffset;
+    uint64_t pathOffset;
+    uint32_t nameBytes;
+    uint32_t pathChars;
+    uint32_t firstRange;
+    uint32_t rangeCount;
+    uint32_t imageSize;
+    uint32_t sizeOfHeaders;
+    uint32_t timeDateStamp;
+    uint32_t checkSum;
+    uint16_t machine;
+    uint16_t optionalMagic;
+    uint16_t numberOfSections;
+    uint16_t reserved;
+    uint32_t volumeSerialNumber;
+    uint32_t fileIndexHigh;
+    uint32_t fileIndexLow;
+    uint32_t fileIdentityReserved;
+    uint64_t fileSize;
+    uint64_t lastWriteTime;
+};
+
+struct QForkModuleSnapshotRange {
+    uint64_t bytesOffset;
+    uint32_t rva;
+    uint32_t size;
+    uint32_t characteristics;
+    uint16_t sectionIndex;
+    uint16_t reserved;
+    char name[IMAGE_SIZEOF_SHORT_NAME];
 };
 
 static int CollectQForkModule(const char *name, void *handle,
@@ -328,18 +415,47 @@ static bool QForkModuleRangeInsideImage(uint64_t rva, uint64_t size,
     return rva <= imageSize && size <= imageSize - rva;
 }
 
-static void AddQForkModuleProtectedRange(
+static bool QForkCheckedAdd(uint64_t left, uint64_t right, uint64_t *result)
+{
+    if (right > numeric_limits<uint64_t>::max() - left) return false;
+    *result = left + right;
+    return true;
+}
+
+static bool QForkCheckedMultiply(uint64_t left, uint64_t right,
+    uint64_t *result)
+{
+    if (left != 0 && right > numeric_limits<uint64_t>::max() / left)
+        return false;
+    *result = left * right;
+    return true;
+}
+
+static bool QForkCheckedAlign(uint64_t value, uint64_t alignment,
+    uint64_t *result)
+{
+    if (alignment == 0) return false;
+    uint64_t remainder = value % alignment;
+    if (remainder == 0) {
+        *result = value;
+        return true;
+    }
+    return QForkCheckedAdd(value, alignment - remainder, result);
+}
+
+static bool AddQForkModuleProtectedRange(
     vector<QForkModuleProtectedRange>& ranges,
     uint64_t rva, uint64_t size, uint64_t imageSize)
 {
     if (size == 0 || !QForkModuleRangeInsideImage(rva, size, imageSize) ||
         rva > MAXDWORD || size > MAXDWORD)
-        return;
+        return false;
 
     QForkModuleProtectedRange range;
     range.rva = static_cast<DWORD>(rva);
     range.size = static_cast<size_t>(size);
     ranges.push_back(range);
+    return true;
 }
 
 static void RestoreQForkModuleProtectedRanges(byte *imageBase,
@@ -362,219 +478,884 @@ static void RestoreQForkModuleProtectedRanges(byte *imageBase,
     }
 }
 
-static bool RestoreQForkModuleImage(HANDLE parentProcess,
-    const QForkModuleDescriptor& descriptor, QForkLoadedModule& loaded)
+static bool GetQForkModuleFileIdentity(const wchar_t *path,
+    QForkModuleFileIdentity& identity, const char *name)
 {
-    HMODULE childBase = LoadLibraryExW(descriptor.path.c_str(), NULL,
-                                      LOAD_WITH_ALTERED_SEARCH_PATH);
-    if (childBase == NULL) {
+    HANDLE file = CreateFileW(path, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
         serverLog(LL_WARNING,
-            "QFork module restore: LoadLibrary failed for %s (0x%08x)",
-            descriptor.name.c_str(), GetLastError());
+            "QFork module validation: could not open %s image (0x%08x)",
+            name, GetLastError());
         return false;
     }
 
-    loaded.name = descriptor.name;
-    loaded.handle = childBase;
-
-    if (childBase != descriptor.expectedBase) {
+    BY_HANDLE_FILE_INFORMATION info;
+    BOOL ok = GetFileInformationByHandle(file, &info);
+    DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(file);
+    if (!ok) {
         serverLog(LL_WARNING,
-            "QFork module restore: %s loaded at %p, expected %p",
-            descriptor.name.c_str(), childBase, descriptor.expectedBase);
+            "QFork module validation: could not identify %s image (0x%08x)",
+            name, error);
         return false;
     }
 
-    byte *imageBase = reinterpret_cast<byte *>(childBase);
+    ULARGE_INTEGER size;
+    size.LowPart = info.nFileSizeLow;
+    size.HighPart = info.nFileSizeHigh;
+    ULARGE_INTEGER writeTime;
+    writeTime.LowPart = info.ftLastWriteTime.dwLowDateTime;
+    writeTime.HighPart = info.ftLastWriteTime.dwHighDateTime;
+    identity.volumeSerialNumber = info.dwVolumeSerialNumber;
+    identity.fileIndexHigh = info.nFileIndexHigh;
+    identity.fileIndexLow = info.nFileIndexLow;
+    identity.fileSize = size.QuadPart;
+    identity.lastWriteTime = writeTime.QuadPart;
+    return true;
+}
+
+static bool QForkModuleFileIdentityEqual(
+    const QForkModuleFileIdentity& left,
+    const QForkModuleFileIdentity& right)
+{
+    return left.volumeSerialNumber == right.volumeSerialNumber &&
+           left.fileIndexHigh == right.fileIndexHigh &&
+           left.fileIndexLow == right.fileIndexLow &&
+           left.fileSize == right.fileSize &&
+           left.lastWriteTime == right.lastWriteTime;
+}
+
+static bool GetQForkModuleHeaders(HMODULE module, const char *name,
+    PIMAGE_NT_HEADERS64 *ntOut, DWORD *imageSizeOut)
+{
+    MODULEINFO moduleInfo;
+    if (!GetModuleInformation(GetCurrentProcess(), module, &moduleInfo,
+                              sizeof(moduleInfo)))
+    {
+        serverLog(LL_WARNING,
+            "QFork module validation: GetModuleInformation failed for %s (0x%08x)",
+            name, GetLastError());
+        return false;
+    }
+
+    byte *imageBase = reinterpret_cast<byte *>(moduleInfo.lpBaseOfDll);
     PIMAGE_DOS_HEADER dos = reinterpret_cast<PIMAGE_DOS_HEADER>(imageBase);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) {
+    if (moduleInfo.lpBaseOfDll != module ||
+        moduleInfo.SizeOfImage < sizeof(*dos) ||
+        dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
+        moduleInfo.SizeOfImage < sizeof(IMAGE_NT_HEADERS64) ||
+        static_cast<uint64_t>(dos->e_lfanew) >
+            moduleInfo.SizeOfImage - sizeof(IMAGE_NT_HEADERS64))
+    {
         serverLog(LL_WARNING,
-            "QFork module restore: invalid DOS header for %s",
-            descriptor.name.c_str());
+            "QFork module validation: invalid DOS header for %s", name);
         return false;
     }
 
-    PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(
+    PIMAGE_NT_HEADERS64 nt = reinterpret_cast<PIMAGE_NT_HEADERS64>(
         imageBase + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE ||
         nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+        nt->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64) ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        nt->OptionalHeader.SizeOfImage != moduleInfo.SizeOfImage ||
+        nt->OptionalHeader.NumberOfRvaAndSizes >
+            IMAGE_NUMBEROF_DIRECTORY_ENTRIES ||
+        nt->OptionalHeader.SizeOfHeaders > moduleInfo.SizeOfImage ||
+        nt->FileHeader.NumberOfSections == 0)
     {
         serverLog(LL_WARNING,
-            "QFork module restore: unsupported PE image for %s",
-            descriptor.name.c_str());
+            "QFork module validation: unsupported PE image for %s", name);
         return false;
     }
 
-    uint64_t imageSize = nt->OptionalHeader.SizeOfImage;
-    vector<QForkModuleProtectedRange> protectedRanges;
-
-    IMAGE_DATA_DIRECTORY iat =
-        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
-    AddQForkModuleProtectedRange(protectedRanges, iat.VirtualAddress,
-                                iat.Size, imageSize);
-
-    IMAGE_DATA_DIRECTORY tlsDirectory =
-        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
-    if (tlsDirectory.VirtualAddress != 0 &&
-        QForkModuleRangeInsideImage(tlsDirectory.VirtualAddress,
-            sizeof(IMAGE_TLS_DIRECTORY64), imageSize))
+    uint64_t sectionTableOffset = static_cast<uint64_t>(dos->e_lfanew) +
+        sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) +
+        nt->FileHeader.SizeOfOptionalHeader;
+    uint64_t sectionTableSize;
+    uint64_t sectionTableEnd;
+    if (!QForkCheckedMultiply(nt->FileHeader.NumberOfSections,
+                             sizeof(IMAGE_SECTION_HEADER),
+                             &sectionTableSize) ||
+        !QForkCheckedAdd(sectionTableOffset, sectionTableSize,
+                         &sectionTableEnd) ||
+        sectionTableEnd > nt->OptionalHeader.SizeOfHeaders ||
+        sectionTableEnd > moduleInfo.SizeOfImage)
     {
+        serverLog(LL_WARNING,
+            "QFork module validation: invalid section table for %s", name);
+        return false;
+    }
+
+    *ntOut = nt;
+    *imageSizeOut = moduleInfo.SizeOfImage;
+    return true;
+}
+
+static IMAGE_DATA_DIRECTORY GetQForkModuleDataDirectory(
+    PIMAGE_NT_HEADERS64 nt, DWORD index)
+{
+    IMAGE_DATA_DIRECTORY empty = { 0, 0 };
+    if (index >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES ||
+        index >= nt->OptionalHeader.NumberOfRvaAndSizes)
+        return empty;
+    return nt->OptionalHeader.DataDirectory[index];
+}
+
+static bool InspectQForkModuleImage(HMODULE module, const wchar_t *path,
+    const char *name, QForkModuleImageInfo& image)
+{
+    const char *safeName = name != NULL ? name : "unknown";
+    if (module == NULL || path == NULL || path[0] == L'\0') {
+        serverLog(LL_WARNING,
+            "QFork module validation: missing handle or path for %s", safeName);
+        return false;
+    }
+
+    PIMAGE_NT_HEADERS64 nt;
+    DWORD imageSize;
+    if (!GetQForkModuleHeaders(module, safeName, &nt, &imageSize) ||
+        !GetQForkModuleFileIdentity(path, image.fileIdentity, safeName))
+        return false;
+
+    image.imageSize = imageSize;
+    image.sizeOfHeaders = nt->OptionalHeader.SizeOfHeaders;
+    image.timeDateStamp = nt->FileHeader.TimeDateStamp;
+    image.checkSum = nt->OptionalHeader.CheckSum;
+    image.machine = nt->FileHeader.Machine;
+    image.optionalMagic = nt->OptionalHeader.Magic;
+    image.numberOfSections = nt->FileHeader.NumberOfSections;
+
+    IMAGE_DATA_DIRECTORY delayImports = GetQForkModuleDataDirectory(nt,
+        IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT);
+    if (delayImports.VirtualAddress != 0 || delayImports.Size != 0) {
+        serverLog(LL_WARNING,
+            "QFork module validation: delay imports are unsupported in %s",
+            safeName);
+        return false;
+    }
+
+    uint64_t base = reinterpret_cast<uint64_t>(module);
+
+    IMAGE_DATA_DIRECTORY iat = GetQForkModuleDataDirectory(nt,
+        IMAGE_DIRECTORY_ENTRY_IAT);
+    if (iat.VirtualAddress != 0 || iat.Size != 0) {
+        if (iat.VirtualAddress == 0 || iat.Size == 0 ||
+            !AddQForkModuleProtectedRange(image.protectedRanges,
+                iat.VirtualAddress, iat.Size, imageSize))
+        {
+            serverLog(LL_WARNING,
+                "QFork module validation: invalid IAT range in %s", safeName);
+            return false;
+        }
+    }
+
+    IMAGE_DATA_DIRECTORY tlsDirectory = GetQForkModuleDataDirectory(nt,
+        IMAGE_DIRECTORY_ENTRY_TLS);
+    if (tlsDirectory.VirtualAddress != 0 || tlsDirectory.Size != 0) {
+        if (tlsDirectory.VirtualAddress == 0 ||
+            tlsDirectory.Size < sizeof(IMAGE_TLS_DIRECTORY64) ||
+            !QForkModuleRangeInsideImage(tlsDirectory.VirtualAddress,
+                sizeof(IMAGE_TLS_DIRECTORY64), imageSize))
+        {
+            serverLog(LL_WARNING,
+                "QFork module validation: invalid TLS directory in %s",
+                safeName);
+            return false;
+        }
         PIMAGE_TLS_DIRECTORY64 tls =
             reinterpret_cast<PIMAGE_TLS_DIRECTORY64>(
-                imageBase + tlsDirectory.VirtualAddress);
-        uint64_t base = reinterpret_cast<uint64_t>(imageBase);
-        if (tls->StartAddressOfRawData >= base &&
-            tls->EndAddressOfRawData >= tls->StartAddressOfRawData)
-        {
-            AddQForkModuleProtectedRange(protectedRanges,
-                tls->StartAddressOfRawData - base,
+                reinterpret_cast<byte *>(module) + tlsDirectory.VirtualAddress);
+        uint64_t tlsTemplateRva = tls->StartAddressOfRawData - base;
+        if (tls->StartAddressOfRawData < base ||
+            tls->EndAddressOfRawData < tls->StartAddressOfRawData ||
+            tls->EndAddressOfRawData - tls->StartAddressOfRawData !=
+                cQForkModuleTlsTemplateSize ||
+            tls->SizeOfZeroFill != 0 ||
+            !AddQForkModuleProtectedRange(image.protectedRanges,
+                tlsTemplateRva,
                 tls->EndAddressOfRawData - tls->StartAddressOfRawData,
-                imageSize);
+                imageSize))
+        {
+            serverLog(LL_WARNING,
+                "QFork module validation: non-boilerplate TLS data in %s",
+                safeName);
+            return false;
         }
-        if (tls->AddressOfIndex >= base) {
-            AddQForkModuleProtectedRange(protectedRanges,
-                tls->AddressOfIndex - base, sizeof(DWORD), imageSize);
+        const byte *tlsTemplate = reinterpret_cast<const byte *>(module) +
+            tlsTemplateRva;
+        for (size_t i = 0; i < cQForkModuleTlsTemplateSize; i++) {
+            if (tlsTemplate[i] != 0) {
+                serverLog(LL_WARNING,
+                    "QFork module validation: initialized TLS data in %s",
+                    safeName);
+                return false;
+            }
+        }
+        if (tls->AddressOfIndex < base ||
+            !AddQForkModuleProtectedRange(image.protectedRanges,
+                tls->AddressOfIndex - base, sizeof(DWORD), imageSize))
+        {
+            serverLog(LL_WARNING,
+                "QFork module validation: invalid TLS index in %s", safeName);
+            return false;
+        }
+
+        if (tls->AddressOfCallBacks != 0) {
+            if (tls->AddressOfCallBacks < base ||
+                !QForkModuleRangeInsideImage(tls->AddressOfCallBacks - base,
+                    sizeof(uint64_t), imageSize))
+            {
+                serverLog(LL_WARNING,
+                    "QFork module validation: invalid TLS callback table in %s",
+                    safeName);
+                return false;
+            }
+            bool terminated = false;
+            uint64_t callbacksRva = tls->AddressOfCallBacks - base;
+            for (size_t i = 0; i < cQForkModuleMaxTlsCallbacks; i++) {
+                uint64_t entryRva = callbacksRva + i * sizeof(uint64_t);
+                if (!QForkModuleRangeInsideImage(entryRva,
+                                                  sizeof(uint64_t), imageSize))
+                    break;
+                uint64_t callback = *reinterpret_cast<uint64_t *>(
+                    reinterpret_cast<byte *>(module) + entryRva);
+                if (callback == 0) {
+                    terminated = true;
+                    break;
+                }
+                if (callback < base || callback - base >= imageSize) break;
+            }
+            if (!terminated) {
+                serverLog(LL_WARNING,
+                    "QFork module validation: unsupported TLS callbacks in %s",
+                    safeName);
+                return false;
+            }
         }
     }
 
-    IMAGE_DATA_DIRECTORY loadConfigDirectory =
-        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
-    if (loadConfigDirectory.VirtualAddress != 0 &&
-        QForkModuleRangeInsideImage(loadConfigDirectory.VirtualAddress,
-            sizeof(IMAGE_LOAD_CONFIG_DIRECTORY64), imageSize))
+    IMAGE_DATA_DIRECTORY loadConfigDirectory = GetQForkModuleDataDirectory(nt,
+        IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
+    if (loadConfigDirectory.VirtualAddress != 0 ||
+        loadConfigDirectory.Size != 0)
     {
+        const uint64_t securityCookieEnd =
+            FIELD_OFFSET(IMAGE_LOAD_CONFIG_DIRECTORY64, SecurityCookie) +
+                sizeof(uint64_t);
+        if (loadConfigDirectory.VirtualAddress == 0 ||
+            loadConfigDirectory.Size < securityCookieEnd ||
+            !QForkModuleRangeInsideImage(loadConfigDirectory.VirtualAddress,
+                securityCookieEnd, imageSize))
+        {
+            serverLog(LL_WARNING,
+                "QFork module validation: invalid load config in %s",
+                safeName);
+            return false;
+        }
         PIMAGE_LOAD_CONFIG_DIRECTORY64 loadConfig =
             reinterpret_cast<PIMAGE_LOAD_CONFIG_DIRECTORY64>(
-                imageBase + loadConfigDirectory.VirtualAddress);
-        uint64_t base = reinterpret_cast<uint64_t>(imageBase);
-        if (loadConfig->SecurityCookie >= base) {
-            AddQForkModuleProtectedRange(protectedRanges,
-                loadConfig->SecurityCookie - base, sizeof(uint64_t), imageSize);
+                reinterpret_cast<byte *>(module) +
+                    loadConfigDirectory.VirtualAddress);
+        if (loadConfig->SecurityCookie != 0 &&
+            (loadConfig->SecurityCookie < base ||
+             !AddQForkModuleProtectedRange(image.protectedRanges,
+                loadConfig->SecurityCookie - base, sizeof(uint64_t), imageSize)))
+        {
+            serverLog(LL_WARNING,
+                "QFork module validation: invalid security cookie in %s",
+                safeName);
+            return false;
         }
     }
 
-    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(nt);
+    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(
+        reinterpret_cast<PIMAGE_NT_HEADERS>(nt));
     for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
         if (!(section->Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
         if (section->Characteristics &
             (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_MEM_SHARED))
         {
             serverLog(LL_WARNING,
-                "QFork module restore: unsafe writable section in %s",
-                descriptor.name.c_str());
+                "QFork module validation: unsafe writable section in %s",
+                safeName);
             return false;
         }
 
-        size_t sectionSize = section->Misc.VirtualSize != 0 ?
-            section->Misc.VirtualSize : section->SizeOfRawData;
+        DWORD sectionSize = max(section->Misc.VirtualSize,
+                                section->SizeOfRawData);
         if (sectionSize == 0) continue;
         if (!QForkModuleRangeInsideImage(section->VirtualAddress,
                                           sectionSize, imageSize))
         {
             serverLog(LL_WARNING,
-                "QFork module restore: invalid section bounds in %s",
-                descriptor.name.c_str());
+                "QFork module validation: invalid section bounds in %s",
+                safeName);
             return false;
         }
 
-        loaded.writableRanges.push_back(QForkModuleWritableRange());
-        QForkModuleWritableRange& writable = loaded.writableRanges.back();
-        writable.address = imageBase + section->VirtualAddress;
+        QForkModuleImageRange writable;
+        writable.address = reinterpret_cast<byte *>(module) +
+            section->VirtualAddress;
         writable.rva = section->VirtualAddress;
-        writable.childBytes.resize(sectionSize);
-        vector<byte> parentBytes(sectionSize);
-        memcpy(writable.childBytes.data(), writable.address, sectionSize);
+        writable.size = sectionSize;
+        writable.characteristics = section->Characteristics;
+        writable.sectionIndex = i;
+        memcpy(writable.name, section->Name, sizeof(writable.name));
+        writable.snapshotOffset = 0;
+        image.writableRanges.push_back(writable);
+    }
 
-        SIZE_T bytesRead = 0;
-        if (!ReadProcessMemory(parentProcess,
-                reinterpret_cast<const void *>(
-                    reinterpret_cast<uintptr_t>(descriptor.expectedBase) +
-                    section->VirtualAddress),
-                parentBytes.data(), sectionSize, &bytesRead) ||
-            bytesRead != sectionSize)
+    return true;
+}
+
+extern "C" BOOL QForkValidateModuleImage(void *handle, const wchar_t *path,
+    const char *name)
+{
+    try {
+        QForkModuleImageInfo image;
+        return InspectQForkModuleImage(reinterpret_cast<HMODULE>(handle),
+            path, name, image) ? TRUE : FALSE;
+    }
+    catch (const exception& ex) {
+        serverLog(LL_WARNING,
+            "QFork module validation: exception for %s: %s",
+            name != NULL ? name : "unknown", ex.what());
+        return FALSE;
+    }
+    catch (...) {
+        serverLog(LL_WARNING,
+            "QFork module validation: unknown exception for %s",
+            name != NULL ? name : "unknown");
+        return FALSE;
+    }
+}
+
+static void ReleasePinnedQForkModules(vector<HMODULE>& modules)
+{
+    for (vector<HMODULE>::reverse_iterator module = modules.rbegin();
+         module != modules.rend(); ++module)
+    {
+        if (*module != NULL) FreeLibrary(*module);
+    }
+    modules.clear();
+}
+
+static bool ReleaseQForkModuleSnapshot()
+{
+    if (g_IsForkedProcess) return true;
+
+    bool success = true;
+    if (g_hQForkModuleSnapshotMap != NULL) {
+        if (!CloseHandle(g_hQForkModuleSnapshotMap)) success = false;
+        g_hQForkModuleSnapshotMap = NULL;
+    }
+    for (vector<HMODULE>::reverse_iterator module =
+             g_QForkPinnedModules.rbegin();
+         module != g_QForkPinnedModules.rend(); ++module)
+    {
+        if (*module != NULL && !FreeLibrary(*module)) success = false;
+    }
+    g_QForkPinnedModules.clear();
+
+    if (g_pQForkControl != NULL) {
+        g_pQForkControl->globalData.moduleSnapshotMap = NULL;
+        g_pQForkControl->globalData.moduleSnapshotSize = 0;
+        g_pQForkControl->globalData.moduleSnapshotCount = 0;
+        g_pQForkControl->globalData.moduleSnapshotReserved = 0;
+    }
+    return success;
+}
+
+static void PrepareQForkModuleSnapshot()
+{
+    if (g_hQForkModuleSnapshotMap != NULL ||
+        !g_QForkPinnedModules.empty())
+        throw runtime_error("A QFork module snapshot is already active");
+
+    g_pQForkControl->globalData.moduleSnapshotMap = NULL;
+    g_pQForkControl->globalData.moduleSnapshotSize = 0;
+    g_pQForkControl->globalData.moduleSnapshotCount = 0;
+    g_pQForkControl->globalData.moduleSnapshotReserved = 0;
+
+    vector<QForkModuleDescriptor> descriptors;
+    if (moduleForEachForkModule(CollectQForkModule, &descriptors) != 0)
+        throw runtime_error("Could not enumerate modules for QFork snapshot");
+    if (descriptors.empty()) return;
+
+    sort(descriptors.begin(), descriptors.end(),
+        [](const QForkModuleDescriptor& left,
+           const QForkModuleDescriptor& right) {
+            return left.sequence < right.sequence;
+        });
+
+    if (descriptors.size() > numeric_limits<uint32_t>::max())
+        throw runtime_error("Too many modules for QFork snapshot");
+
+    vector<QForkCapturedModule> modules;
+    vector<HMODULE> pinnedModules;
+    HANDLE writableMap = NULL;
+    HANDLE readOnlyMap = NULL;
+    byte *view = NULL;
+
+    try {
+        uint64_t totalRanges = 0;
+        for (size_t i = 0; i < descriptors.size(); i++) {
+            if (i != 0 &&
+                descriptors[i - 1].sequence >= descriptors[i].sequence)
+                throw runtime_error("Duplicate QFork module load sequence");
+            for (size_t j = 0; j < i; j++) {
+                if (descriptors[j].expectedBase == descriptors[i].expectedBase)
+                    throw runtime_error("Duplicate QFork module image base");
+            }
+
+            HMODULE pinned = NULL;
+            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                    reinterpret_cast<LPCWSTR>(descriptors[i].expectedBase),
+                    &pinned)) {
+                throw system_error(GetLastError(), system_category(),
+                    "Could not pin QFork module image");
+            }
+            if (pinned != descriptors[i].expectedBase) {
+                FreeLibrary(pinned);
+                throw runtime_error("Pinned QFork module image base changed");
+            }
+            pinnedModules.push_back(pinned);
+
+            QForkCapturedModule captured;
+            captured.descriptor = descriptors[i];
+            captured.nameOffset = 0;
+            captured.pathOffset = 0;
+            captured.firstRange = static_cast<uint32_t>(totalRanges);
+            if (!InspectQForkModuleImage(pinned,
+                    captured.descriptor.path.c_str(),
+                    captured.descriptor.name.c_str(), captured.image))
+                throw runtime_error("Could not validate QFork module image");
+            if (!QForkCheckedAdd(totalRanges,
+                    captured.image.writableRanges.size(), &totalRanges) ||
+                totalRanges > numeric_limits<uint32_t>::max())
+                throw runtime_error("Too many writable ranges in QFork snapshot");
+            modules.push_back(captured);
+        }
+
+        uint64_t cursor;
+        uint64_t bytes;
+        if (!QForkCheckedAlign(sizeof(QForkModuleSnapshotHeader), 8, &cursor))
+            throw runtime_error("QFork snapshot size overflow");
+        uint64_t modulesOffset = cursor;
+        if (!QForkCheckedMultiply(modules.size(),
+                sizeof(QForkModuleSnapshotRecord), &bytes) ||
+            !QForkCheckedAdd(cursor, bytes, &cursor) ||
+            !QForkCheckedAlign(cursor, 8, &cursor))
+            throw runtime_error("QFork snapshot module table overflow");
+        uint64_t rangesOffset = cursor;
+        if (!QForkCheckedMultiply(totalRanges,
+                sizeof(QForkModuleSnapshotRange), &bytes) ||
+            !QForkCheckedAdd(cursor, bytes, &cursor) ||
+            !QForkCheckedAlign(cursor, 8, &cursor))
+            throw runtime_error("QFork snapshot range table overflow");
+        uint64_t payloadOffset = cursor;
+
+        for (size_t i = 0; i < modules.size(); i++) {
+            if (modules[i].descriptor.name.size() + 1 >
+                    numeric_limits<uint32_t>::max() ||
+                modules[i].descriptor.path.size() + 1 >
+                    numeric_limits<uint32_t>::max())
+                throw runtime_error("QFork module name or path is too long");
+
+            modules[i].nameOffset = cursor;
+            if (!QForkCheckedAdd(cursor,
+                    modules[i].descriptor.name.size() + 1, &cursor) ||
+                !QForkCheckedAlign(cursor, sizeof(wchar_t), &cursor))
+                throw runtime_error("QFork snapshot name overflow");
+            modules[i].pathOffset = cursor;
+            if (!QForkCheckedMultiply(modules[i].descriptor.path.size() + 1,
+                    sizeof(wchar_t), &bytes) ||
+                !QForkCheckedAdd(cursor, bytes, &cursor) ||
+                !QForkCheckedAlign(cursor, 8, &cursor))
+                throw runtime_error("QFork snapshot path overflow");
+
+            for (size_t j = 0; j < modules[i].image.writableRanges.size(); j++) {
+                modules[i].image.writableRanges[j].snapshotOffset = cursor;
+                if (!QForkCheckedAdd(cursor,
+                        modules[i].image.writableRanges[j].size, &cursor) ||
+                    !QForkCheckedAlign(cursor, 8, &cursor))
+                    throw runtime_error("QFork snapshot data overflow");
+            }
+        }
+
+        if (cursor > numeric_limits<SIZE_T>::max())
+            throw runtime_error("QFork module snapshot is too large");
+
+        DWORD sizeHigh = static_cast<DWORD>(cursor >> 32);
+        DWORD sizeLow = static_cast<DWORD>(cursor & MAXDWORD);
+        writableMap = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL,
+            PAGE_READWRITE, sizeHigh, sizeLow, NULL);
+        if (writableMap == NULL)
+            throw system_error(GetLastError(), system_category(),
+                "Could not create QFork module snapshot mapping");
+        view = reinterpret_cast<byte *>(MapViewOfFile(writableMap,
+            FILE_MAP_WRITE, 0, 0, static_cast<SIZE_T>(cursor)));
+        if (view == NULL)
+            throw system_error(GetLastError(), system_category(),
+                "Could not map writable QFork module snapshot");
+        memset(view, 0, static_cast<SIZE_T>(cursor));
+
+        QForkModuleSnapshotHeader *header =
+            reinterpret_cast<QForkModuleSnapshotHeader *>(view);
+        header->magic = cQForkModuleSnapshotMagic;
+        header->version = cQForkModuleSnapshotVersion;
+        header->headerSize = sizeof(*header);
+        header->moduleCount = static_cast<uint32_t>(modules.size());
+        header->rangeCount = static_cast<uint32_t>(totalRanges);
+        header->totalSize = cursor;
+        header->modulesOffset = modulesOffset;
+        header->rangesOffset = rangesOffset;
+        header->payloadOffset = payloadOffset;
+
+        QForkModuleSnapshotRecord *records =
+            reinterpret_cast<QForkModuleSnapshotRecord *>(view + modulesOffset);
+        QForkModuleSnapshotRange *ranges =
+            reinterpret_cast<QForkModuleSnapshotRange *>(view + rangesOffset);
+        uint32_t rangeIndex = 0;
+        for (size_t i = 0; i < modules.size(); i++) {
+            QForkModuleSnapshotRecord& record = records[i];
+            record.sequence = modules[i].descriptor.sequence;
+            record.expectedBase = reinterpret_cast<uint64_t>(
+                modules[i].descriptor.expectedBase);
+            record.nameOffset = modules[i].nameOffset;
+            record.pathOffset = modules[i].pathOffset;
+            record.nameBytes = static_cast<uint32_t>(
+                modules[i].descriptor.name.size() + 1);
+            record.pathChars = static_cast<uint32_t>(
+                modules[i].descriptor.path.size() + 1);
+            record.firstRange = modules[i].firstRange;
+            record.rangeCount = static_cast<uint32_t>(
+                modules[i].image.writableRanges.size());
+            record.imageSize = modules[i].image.imageSize;
+            record.sizeOfHeaders = modules[i].image.sizeOfHeaders;
+            record.timeDateStamp = modules[i].image.timeDateStamp;
+            record.checkSum = modules[i].image.checkSum;
+            record.machine = modules[i].image.machine;
+            record.optionalMagic = modules[i].image.optionalMagic;
+            record.numberOfSections = modules[i].image.numberOfSections;
+            record.volumeSerialNumber =
+                modules[i].image.fileIdentity.volumeSerialNumber;
+            record.fileIndexHigh = modules[i].image.fileIdentity.fileIndexHigh;
+            record.fileIndexLow = modules[i].image.fileIdentity.fileIndexLow;
+            record.fileSize = modules[i].image.fileIdentity.fileSize;
+            record.lastWriteTime = modules[i].image.fileIdentity.lastWriteTime;
+
+            memcpy(view + record.nameOffset,
+                   modules[i].descriptor.name.c_str(), record.nameBytes);
+            memcpy(view + record.pathOffset,
+                   modules[i].descriptor.path.c_str(),
+                   static_cast<size_t>(record.pathChars) * sizeof(wchar_t));
+
+            for (size_t j = 0; j < modules[i].image.writableRanges.size(); j++) {
+                QForkModuleImageRange& source =
+                    modules[i].image.writableRanges[j];
+                QForkModuleSnapshotRange& range = ranges[rangeIndex++];
+                range.bytesOffset = source.snapshotOffset;
+                range.rva = source.rva;
+                range.size = source.size;
+                range.characteristics = source.characteristics;
+                range.sectionIndex = source.sectionIndex;
+                memcpy(range.name, source.name, sizeof(range.name));
+                memcpy(view + range.bytesOffset, source.address, range.size);
+            }
+        }
+
+        if (!UnmapViewOfFile(view))
+            throw system_error(GetLastError(), system_category(),
+                "Could not unmap writable QFork module snapshot");
+        view = NULL;
+
+        if (!DuplicateHandle(GetCurrentProcess(), writableMap,
+                GetCurrentProcess(), &readOnlyMap,
+                SECTION_MAP_READ | SECTION_QUERY, FALSE, 0))
+            throw system_error(GetLastError(), system_category(),
+                "Could not create read-only QFork module snapshot handle");
+        CloseHandle(writableMap);
+        writableMap = NULL;
+
+        g_hQForkModuleSnapshotMap = readOnlyMap;
+        readOnlyMap = NULL;
+        g_QForkPinnedModules.swap(pinnedModules);
+        g_pQForkControl->globalData.moduleSnapshotMap =
+            g_hQForkModuleSnapshotMap;
+        g_pQForkControl->globalData.moduleSnapshotSize = cursor;
+        g_pQForkControl->globalData.moduleSnapshotCount =
+            static_cast<uint32_t>(modules.size());
+        serverLog(LL_DEBUG,
+            "QFork captured %u module images in %llu bytes",
+            static_cast<unsigned>(modules.size()),
+            static_cast<unsigned long long>(cursor));
+    }
+    catch (...) {
+        if (view != NULL) UnmapViewOfFile(view);
+        if (readOnlyMap != NULL) CloseHandle(readOnlyMap);
+        if (writableMap != NULL) CloseHandle(writableMap);
+        ReleasePinnedQForkModules(pinnedModules);
+        throw;
+    }
+}
+
+static const byte *QForkSnapshotSpan(const byte *snapshot, size_t snapshotSize,
+    uint64_t offset, uint64_t size, size_t alignment)
+{
+    if (alignment != 0 && offset % alignment != 0) return NULL;
+    if (offset > snapshotSize || size > snapshotSize - offset) return NULL;
+    return snapshot + offset;
+}
+
+static bool ValidateQForkModuleSnapshot(const byte *snapshot,
+    size_t snapshotSize, uint32_t expectedCount,
+    const QForkModuleSnapshotHeader **headerOut,
+    const QForkModuleSnapshotRecord **recordsOut,
+    const QForkModuleSnapshotRange **rangesOut)
+{
+    if (snapshot == NULL ||
+        snapshotSize < sizeof(QForkModuleSnapshotHeader))
+        return false;
+
+    const QForkModuleSnapshotHeader *header =
+        reinterpret_cast<const QForkModuleSnapshotHeader *>(snapshot);
+    if (header->magic != cQForkModuleSnapshotMagic ||
+        header->version != cQForkModuleSnapshotVersion ||
+        header->headerSize != sizeof(*header) ||
+        header->moduleCount != expectedCount ||
+        header->totalSize != snapshotSize)
+        return false;
+
+    uint64_t moduleBytes;
+    uint64_t rangeBytes;
+    uint64_t modulesOffset;
+    uint64_t modulesEnd;
+    uint64_t rangesOffset;
+    uint64_t rangesEnd;
+    uint64_t payloadOffset;
+    if (!QForkCheckedMultiply(header->moduleCount,
+            sizeof(QForkModuleSnapshotRecord), &moduleBytes) ||
+        !QForkCheckedMultiply(header->rangeCount,
+            sizeof(QForkModuleSnapshotRange), &rangeBytes) ||
+        !QForkCheckedAlign(sizeof(QForkModuleSnapshotHeader), 8,
+            &modulesOffset) ||
+        !QForkCheckedAdd(modulesOffset, moduleBytes, &modulesEnd) ||
+        !QForkCheckedAlign(modulesEnd, 8, &rangesOffset) ||
+        !QForkCheckedAdd(rangesOffset, rangeBytes, &rangesEnd) ||
+        !QForkCheckedAlign(rangesEnd, 8, &payloadOffset) ||
+        header->modulesOffset != modulesOffset ||
+        header->rangesOffset != rangesOffset ||
+        header->payloadOffset != payloadOffset)
+        return false;
+
+    const byte *moduleTable = QForkSnapshotSpan(snapshot, snapshotSize,
+        header->modulesOffset, moduleBytes, 8);
+    const byte *rangeTable = QForkSnapshotSpan(snapshot, snapshotSize,
+        header->rangesOffset, rangeBytes, 8);
+    if (moduleTable == NULL || rangeTable == NULL ||
+        header->payloadOffset > snapshotSize)
+        return false;
+
+    const QForkModuleSnapshotRecord *records =
+        reinterpret_cast<const QForkModuleSnapshotRecord *>(moduleTable);
+    const QForkModuleSnapshotRange *ranges =
+        reinterpret_cast<const QForkModuleSnapshotRange *>(rangeTable);
+    uint64_t previousSequence = 0;
+    uint64_t payloadCursor = header->payloadOffset;
+    uint32_t nextRange = 0;
+    for (uint32_t i = 0; i < header->moduleCount; i++) {
+        const QForkModuleSnapshotRecord& record = records[i];
+        if (record.nameBytes == 0 || record.pathChars == 0 ||
+            record.expectedBase == 0 ||
+            (i != 0 && record.sequence <= previousSequence) ||
+            record.firstRange != nextRange ||
+            record.rangeCount > header->rangeCount - nextRange ||
+            record.imageSize == 0 || record.sizeOfHeaders == 0 ||
+            record.sizeOfHeaders > record.imageSize ||
+            record.machine != IMAGE_FILE_MACHINE_AMD64 ||
+            record.optionalMagic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+            record.numberOfSections == 0 || record.reserved != 0 ||
+            record.fileIdentityReserved != 0 ||
+            record.expectedBase >
+                numeric_limits<uint64_t>::max() - record.imageSize)
+            return false;
+        previousSequence = record.sequence;
+
+        if (record.nameOffset != payloadCursor) return false;
+        const char *name = reinterpret_cast<const char *>(
+            QForkSnapshotSpan(snapshot, snapshotSize, record.nameOffset,
+                record.nameBytes, 1));
+        uint64_t nameEnd;
+        uint64_t pathBytes;
+        if (!QForkCheckedAdd(record.nameOffset, record.nameBytes, &nameEnd) ||
+            !QForkCheckedAlign(nameEnd, sizeof(wchar_t), &payloadCursor) ||
+            record.pathOffset != payloadCursor ||
+            !QForkCheckedMultiply(record.pathChars, sizeof(wchar_t),
+                                  &pathBytes))
+            return false;
+        const wchar_t *path = reinterpret_cast<const wchar_t *>(
+            QForkSnapshotSpan(snapshot, snapshotSize, record.pathOffset,
+                pathBytes, sizeof(wchar_t)));
+        uint64_t pathEnd;
+        if (name == NULL || path == NULL ||
+            name[record.nameBytes - 1] != '\0' ||
+            path[record.pathChars - 1] != L'\0' ||
+            memchr(name, '\0', record.nameBytes - 1) != NULL ||
+            wmemchr(path, L'\0', record.pathChars - 1) != NULL ||
+            !QForkCheckedAdd(record.pathOffset, pathBytes, &pathEnd) ||
+            !QForkCheckedAlign(pathEnd, 8, &payloadCursor))
+            return false;
+
+        uint64_t previousEnd = 0;
+        for (uint32_t j = 0; j < record.rangeCount; j++) {
+            const QForkModuleSnapshotRange& range =
+                ranges[record.firstRange + j];
+            if (range.size == 0 ||
+                range.bytesOffset != payloadCursor ||
+                range.reserved != 0 ||
+                range.sectionIndex >= record.numberOfSections ||
+                !(range.characteristics & IMAGE_SCN_MEM_WRITE) ||
+                (range.characteristics & (IMAGE_SCN_MEM_EXECUTE |
+                    IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_MEM_SHARED)) ||
+                QForkSnapshotSpan(snapshot, snapshotSize, range.bytesOffset,
+                    range.size, 1) == NULL ||
+                !QForkModuleRangeInsideImage(range.rva, range.size,
+                                              record.imageSize) ||
+                (j != 0 && range.rva < previousEnd))
+                return false;
+            previousEnd = static_cast<uint64_t>(range.rva) + range.size;
+            uint64_t rangeEnd;
+            if (!QForkCheckedAdd(range.bytesOffset, range.size, &rangeEnd) ||
+                !QForkCheckedAlign(rangeEnd, 8, &payloadCursor))
+                return false;
+        }
+        nextRange += record.rangeCount;
+    }
+
+    if (nextRange != header->rangeCount || payloadCursor != header->totalSize)
+        return false;
+
+    *headerOut = header;
+    *recordsOut = records;
+    *rangesOut = ranges;
+    return true;
+}
+
+static bool RestoreQForkModuleImage(const byte *snapshot, size_t snapshotSize,
+    const QForkModuleSnapshotRecord& record,
+    const QForkModuleSnapshotRange *ranges)
+{
+    const char *name = reinterpret_cast<const char *>(snapshot +
+                                                       record.nameOffset);
+    const wchar_t *path = reinterpret_cast<const wchar_t *>(snapshot +
+                                                             record.pathOffset);
+    HMODULE childBase = LoadLibraryExW(path, NULL,
+                                      LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (childBase == NULL) {
+        serverLog(LL_WARNING,
+            "QFork module restore: LoadLibrary failed for %s (0x%08x)",
+            name, GetLastError());
+        return false;
+    }
+    if (reinterpret_cast<uint64_t>(childBase) != record.expectedBase) {
+        serverLog(LL_WARNING,
+            "QFork module restore: %s loaded at %p, expected %p",
+            name, childBase, reinterpret_cast<void *>(record.expectedBase));
+        return false;
+    }
+
+    QForkModuleImageInfo image;
+    if (!InspectQForkModuleImage(childBase, path, name, image)) return false;
+    QForkModuleFileIdentity recordedIdentity;
+    recordedIdentity.volumeSerialNumber = record.volumeSerialNumber;
+    recordedIdentity.fileIndexHigh = record.fileIndexHigh;
+    recordedIdentity.fileIndexLow = record.fileIndexLow;
+    recordedIdentity.fileSize = record.fileSize;
+    recordedIdentity.lastWriteTime = record.lastWriteTime;
+    if (image.imageSize != record.imageSize ||
+        image.sizeOfHeaders != record.sizeOfHeaders ||
+        image.timeDateStamp != record.timeDateStamp ||
+        image.checkSum != record.checkSum ||
+        image.machine != record.machine ||
+        image.optionalMagic != record.optionalMagic ||
+        image.numberOfSections != record.numberOfSections ||
+        !QForkModuleFileIdentityEqual(image.fileIdentity, recordedIdentity) ||
+        image.writableRanges.size() != record.rangeCount)
+    {
+        serverLog(LL_WARNING,
+            "QFork module restore: image metadata changed for %s", name);
+        return false;
+    }
+
+    byte *imageBase = reinterpret_cast<byte *>(childBase);
+    for (uint32_t i = 0; i < record.rangeCount; i++) {
+        const QForkModuleSnapshotRange& source = ranges[record.firstRange + i];
+        const QForkModuleImageRange& target = image.writableRanges[i];
+        if (target.rva != source.rva || target.size != source.size ||
+            target.characteristics != source.characteristics ||
+            target.sectionIndex != source.sectionIndex ||
+            memcmp(target.name, source.name, sizeof(source.name)) != 0)
         {
             serverLog(LL_WARNING,
-                "QFork module restore: could not read %s state (0x%08x)",
-                descriptor.name.c_str(), GetLastError());
+                "QFork module restore: writable section layout changed for %s",
+                name);
             return false;
         }
 
+        const byte *parentBytes = QForkSnapshotSpan(snapshot, snapshotSize,
+            source.bytesOffset, source.size, 1);
+        if (parentBytes == NULL) return false;
+        vector<byte> childBytes(source.size);
+        memcpy(childBytes.data(), target.address, source.size);
+
         DWORD oldProtect;
-        if (!VirtualProtect(writable.address, sectionSize, PAGE_READWRITE,
+        if (!VirtualProtect(target.address, source.size, PAGE_READWRITE,
                             &oldProtect))
         {
             serverLog(LL_WARNING,
                 "QFork module restore: could not unprotect %s state (0x%08x)",
-                descriptor.name.c_str(), GetLastError());
+                name, GetLastError());
             return false;
         }
 
-        memcpy(writable.address, parentBytes.data(), sectionSize);
-        RestoreQForkModuleProtectedRanges(imageBase, writable.rva,
-                                          writable.childBytes,
-                                          protectedRanges);
+        memcpy(target.address, parentBytes, source.size);
+        RestoreQForkModuleProtectedRanges(imageBase, target.rva, childBytes,
+                                          image.protectedRanges);
 
         DWORD ignored;
-        if (!VirtualProtect(writable.address, sectionSize, oldProtect, &ignored)) {
+        if (!VirtualProtect(target.address, source.size, oldProtect, &ignored)) {
             serverLog(LL_WARNING,
                 "QFork module restore: could not reprotect %s state (0x%08x)",
-                descriptor.name.c_str(), GetLastError());
+                name, GetLastError());
             return false;
         }
     }
 
     serverLog(LL_DEBUG, "QFork restored module %s at %p",
-              descriptor.name.c_str(), childBase);
+              name, childBase);
     return true;
 }
 
-static bool CleanupQForkModules(vector<QForkLoadedModule>& modules) {
-    bool success = true;
-    for (auto module = modules.rbegin(); module != modules.rend(); ++module) {
-        for (auto range = module->writableRanges.rbegin();
-             range != module->writableRanges.rend(); ++range)
-        {
-            DWORD oldProtect;
-            if (!VirtualProtect(range->address, range->childBytes.size(),
-                                PAGE_READWRITE, &oldProtect))
-            {
-                success = false;
-                continue;
-            }
-            memcpy(range->address, range->childBytes.data(),
-                   range->childBytes.size());
-            DWORD ignored;
-            if (!VirtualProtect(range->address, range->childBytes.size(),
-                                oldProtect, &ignored))
-                success = false;
-        }
-        if (module->handle != NULL && !FreeLibrary(module->handle))
-            success = false;
-    }
-    modules.clear();
-    return success;
-}
-
-static bool RestoreQForkModules(HANDLE parentProcess,
-    vector<QForkLoadedModule>& loadedModules)
+static bool RestoreQForkModules(const byte *snapshot, size_t snapshotSize,
+    uint32_t expectedCount)
 {
-    vector<QForkModuleDescriptor> descriptors;
-    if (moduleForEachForkModule(CollectQForkModule, &descriptors) != 0)
+    if (expectedCount == 0)
+        return snapshot == NULL && snapshotSize == 0;
+
+    const QForkModuleSnapshotHeader *header;
+    const QForkModuleSnapshotRecord *records;
+    const QForkModuleSnapshotRange *ranges;
+    if (!ValidateQForkModuleSnapshot(snapshot, snapshotSize, expectedCount,
+                                     &header, &records, &ranges))
         return false;
 
-    sort(descriptors.begin(), descriptors.end(),
-        [](const QForkModuleDescriptor& a, const QForkModuleDescriptor& b) {
-            return a.sequence < b.sequence;
-        });
-
-    for (const QForkModuleDescriptor& descriptor : descriptors) {
-        loadedModules.push_back(QForkLoadedModule());
-        if (!RestoreQForkModuleImage(parentProcess, descriptor,
-                                     loadedModules.back()))
-        {
-            CleanupQForkModules(loadedModules);
+    for (uint32_t i = 0; i < header->moduleCount; i++) {
+        if (!RestoreQForkModuleImage(snapshot, snapshotSize, records[i], ranges))
             return false;
-        }
     }
     return true;
 }
@@ -585,13 +1366,14 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
     SmartFileView<QForkControl> sfvParentQForkControl;
     SmartHandle dupOperationComplete;
     SmartHandle dupOperationFailed;
-    vector<QForkLoadedModule> loadedModules;
-    bool moduleChildReady = false;
+    SmartHandle dupModuleSnapshot;
+    SmartFileView<byte> sfvModuleSnapshot;
+    const byte *moduleSnapshot = NULL;
+    size_t moduleSnapshotSize = 0;
 
     try {
         shParent.Assign(
-            OpenProcess(SYNCHRONIZE | PROCESS_DUP_HANDLE | PROCESS_VM_READ |
-                        PROCESS_QUERY_LIMITED_INFORMATION,
+            OpenProcess(SYNCHRONIZE | PROCESS_DUP_HANDLE,
                         TRUE, ParentProcessID),
             string("Could not open parent process"));
 
@@ -609,6 +1391,33 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
 
         dupOperationFailed.Assign(shParent, sfvParentQForkControl->operationFailed);
         g_pQForkControl->operationFailed = dupOperationFailed;
+
+        const QForkInfo& parentData = sfvParentQForkControl->globalData;
+        if (parentData.moduleSnapshotReserved != 0) {
+            throw runtime_error("Invalid QFork module snapshot metadata");
+        }
+        if (parentData.moduleSnapshotCount == 0) {
+            if (parentData.moduleSnapshotMap != NULL ||
+                parentData.moduleSnapshotSize != 0)
+                throw runtime_error("Inconsistent empty QFork module snapshot");
+        }
+        else {
+            if (parentData.moduleSnapshotMap == NULL ||
+                parentData.moduleSnapshotSize <
+                    sizeof(QForkModuleSnapshotHeader) ||
+                parentData.moduleSnapshotSize >
+                    numeric_limits<SIZE_T>::max())
+                throw runtime_error("Invalid QFork module snapshot size");
+
+            dupModuleSnapshot.Assign(shParent,
+                                     parentData.moduleSnapshotMap);
+            moduleSnapshotSize = static_cast<size_t>(
+                parentData.moduleSnapshotSize);
+            moduleSnapshot = sfvModuleSnapshot.Assign(
+                dupModuleSnapshot, FILE_MAP_READ, 0, 0,
+                static_cast<SIZE_T>(moduleSnapshotSize),
+                string("Could not map QFork module snapshot in child"));
+        }
 
         vector<SmartHandle> dupHeapHandle(g_pQForkControl->numMappedBlocks);
         vector<SmartFileView<byte>> sfvHeap(g_pQForkControl->numMappedBlocks);
@@ -639,11 +1448,15 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
             &g_pQForkControl->globalData.modules,
             g_pQForkControl->globalData.usedMemory);
 
-        if (!RestoreQForkModules(shParent, loadedModules)) {
+        if (moduleCount() !=
+            g_pQForkControl->globalData.moduleSnapshotCount)
+            throw runtime_error("QFork module registry count does not match snapshot");
+
+        if (!RestoreQForkModules(moduleSnapshot, moduleSnapshotSize,
+                g_pQForkControl->globalData.moduleSnapshotCount)) {
             throw runtime_error("Could not restore loaded modules in QFork child");
         }
         moduleSetQForkChildReady(1);
-        moduleChildReady = true;
 
         // Execute requested operation
         if (g_pQForkControl->typeOfOperation == OperationType::otRDB) {
@@ -692,40 +1505,36 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
             throw runtime_error("unexpected operation type");
         }
 
-        moduleSetQForkChildReady(0);
-        moduleChildReady = false;
-        if (!CleanupQForkModules(loadedModules)) {
-            throw runtime_error("Could not clean up restored QFork modules");
-        }
-
         // Let parent know we are done
-        SetEvent(g_pQForkControl->operationComplete);
+        IFFAILTHROW(SetEvent(g_pQForkControl->operationComplete),
+            "Could not signal QFork operation completion");
 
-        g_pQForkControl = NULL;
-        return TRUE;
+        IFFAILTHROW(TerminateProcess(GetCurrentProcess(),
+            static_cast<UINT>(g_ChildExitCode)),
+            "Could not terminate completed QFork child");
     }
-    catch (system_error syserr) {
+    catch (const system_error& syserr) {
         if (ReportSpecialSystemErrors(syserr.code().value()) == false) {
             RedisEventLog().LogError("QForkChildInit: system error. " + string(syserr.what()));
             serverLog(LL_WARNING, "QForkChildInit: system error caught. error code=0x%08x, message=%s\n", syserr.code().value(), syserr.what());
         }
     }
-    catch (runtime_error runerr) {
-        RedisEventLog().LogError("QForkChildInit: runtime error. " + string(runerr.what()));
-        serverLog(LL_WARNING, "QForkChildInit: runtime error caught. message=%s\n", runerr.what());
+    catch (const exception& ex) {
+        RedisEventLog().LogError("QForkChildInit: exception. " + string(ex.what()));
+        serverLog(LL_WARNING,
+            "QForkChildInit: exception caught. message=%s\n", ex.what());
     }
-
-    if (moduleChildReady) {
-        moduleSetQForkChildReady(0);
+    catch (...) {
+        RedisEventLog().LogError("QForkChildInit: unknown exception.");
+        serverLog(LL_WARNING, "QForkChildInit: unknown exception caught.\n");
     }
-    CleanupQForkModules(loadedModules);
 
     if (g_pQForkControl != NULL) {
         if (g_pQForkControl->operationFailed != NULL) {
             SetEvent(g_pQForkControl->operationFailed);
         }
-        g_pQForkControl = NULL;
     }
+    TerminateProcess(GetCurrentProcess(), 1);
     return FALSE;
 }
 
@@ -862,11 +1671,30 @@ void CloseEventHandle(HANDLE * phandle) {
 }
 
 BOOL QForkShutdown() {
+    BOOL success = TRUE;
     if (g_hForkedProcess != NULL) {
-        TerminateProcess(g_hForkedProcess, -1);
+        DWORD waitResult = WaitForSingleObject(g_hForkedProcess, 0);
+        if (waitResult == WAIT_TIMEOUT) {
+            if (!TerminateProcess(g_hForkedProcess, -1) &&
+                WaitForSingleObject(g_hForkedProcess, 0) != WAIT_OBJECT_0)
+            {
+                serverLog(LL_WARNING,
+                    "QForkShutdown: could not terminate forked process\n");
+                return FALSE;
+            }
+            waitResult = WaitForSingleObject(g_hForkedProcess,
+                                             cDeadForkWait);
+        }
+        if (waitResult != WAIT_OBJECT_0) {
+            serverLog(LL_WARNING,
+                "QForkShutdown: forked process did not terminate\n");
+            return FALSE;
+        }
         CloseHandle(g_hForkedProcess);
         g_hForkedProcess = NULL;
     }
+
+    if (!ReleaseQForkModuleSnapshot()) success = FALSE;
 
     if (g_pQForkControl != NULL)
     {
@@ -893,7 +1721,7 @@ BOOL QForkShutdown() {
         CloseEventHandle(&g_hQForkControlFileMap);
     }
 
-    return TRUE;
+    return success;
 }
 
 void CopyForkOperationData(OperationType type, LPVOID redisData, int redisDataSize, uint8_t *dictHashSeed, LPVOID modules) {
@@ -918,10 +1746,13 @@ void CopyForkOperationData(OperationType type, LPVOID redisData, int redisDataSi
     for (int i = 0; i < g_pQForkControl->numMappedBlocks; i++) {
         if (g_pQForkControl->heapBlockList[i].state == BlockState::bsMAPPED_IN_USE) {
             oldProtect = 0;
-            VirtualProtect((byte*) g_pQForkControl->heapStart + i * cAllocationGranularity,
-                cAllocationGranularity,
-                PAGE_WRITECOPY,
-                &oldProtect);
+            IFFAILTHROW(VirtualProtect(
+                    (byte*) g_pQForkControl->heapStart +
+                        i * cAllocationGranularity,
+                    cAllocationGranularity,
+                    PAGE_WRITECOPY,
+                    &oldProtect),
+                "CopyForkOperationData: VirtualProtect failed for heap block");
         }
     }
 }
@@ -968,24 +1799,25 @@ pid_t BeginForkOperation(OperationType type,
     LPVOID modules)
 {
     PROCESS_INFORMATION pi;
+    pi.hProcess = INVALID_HANDLE_VALUE;
+    pi.hThread = INVALID_HANDLE_VALUE;
+    pi.dwProcessId = -1;
+    bool mapsMayBeProtected = false;
     try {
-        pi.hProcess = INVALID_HANDLE_VALUE;
-        pi.hThread = INVALID_HANDLE_VALUE;
-        pi.dwProcessId = -1;
-
+        PrepareQForkModuleSnapshot();
+        CreateChildProcess(&pi, CREATE_SUSPENDED);
         if (type == OperationType::otSocket) {
-            CreateChildProcess(&pi, CREATE_SUSPENDED);
             BeginForkOperation_Socket_Duplicate(pi.dwProcessId);
-            CopyForkOperationData(type, redisData, redisDataSize, dictHashSeed, modules);
-            IFFAILTHROW(ResumeThread(pi.hThread) != (DWORD)-1,
-                "Problem resuming QFork child process");
         }
-        else {
-            CopyForkOperationData(type, redisData, redisDataSize, dictHashSeed, modules);
-            CreateChildProcess(&pi, 0);
-        }
+        /* CopyForkOperationData can fail after protecting only part of the
+         * QFork maps, so every exception from this point needs full rejoin. */
+        mapsMayBeProtected = true;
+        CopyForkOperationData(type, redisData, redisDataSize, dictHashSeed, modules);
+        IFFAILTHROW(ResumeThread(pi.hThread) != (DWORD)-1,
+            "Problem resuming QFork child process");
 
         CloseHandle(pi.hThread);
+        pi.hThread = INVALID_HANDLE_VALUE;
 
         return pi.dwProcessId;
     }
@@ -1000,12 +1832,37 @@ pid_t BeginForkOperation(OperationType type,
     }
     if (pi.hThread != INVALID_HANDLE_VALUE) {
         CloseHandle(pi.hThread);
+        pi.hThread = INVALID_HANDLE_VALUE;
     }
     if (pi.hProcess != INVALID_HANDLE_VALUE) {
-        TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, cDeadForkWait);
-        CloseHandle(pi.hProcess);
-        if (g_hForkedProcess == pi.hProcess) g_hForkedProcess = 0;
+        if (mapsMayBeProtected) {
+            AbortForkOperation();
+        }
+        else {
+            DWORD waitResult = WaitForSingleObject(pi.hProcess, 0);
+            if (waitResult == WAIT_TIMEOUT) {
+                TerminateProcess(pi.hProcess, 1);
+                waitResult = WaitForSingleObject(pi.hProcess,
+                                                 cDeadForkWait);
+            }
+            if (waitResult != WAIT_OBJECT_0) {
+                serverLog(LL_WARNING,
+                    "BeginForkOperation: child cleanup did not complete\n");
+                exit(1);
+            }
+            CloseHandle(pi.hProcess);
+            if (g_hForkedProcess == pi.hProcess) g_hForkedProcess = 0;
+            if (!ReleaseQForkModuleSnapshot()) {
+                serverLog(LL_WARNING,
+                    "BeginForkOperation: could not release module snapshot\n");
+            }
+        }
+    }
+    else {
+        if (!ReleaseQForkModuleSnapshot()) {
+            serverLog(LL_WARNING,
+                "BeginForkOperation: could not release module snapshot\n");
+        }
     }
     return -1;
 }
@@ -1197,13 +2054,25 @@ void RejoinCOWPages(HANDLE mmHandle, byte* mmStart, size_t mmSize) {
 BOOL EndForkOperation(int * pExitCode) {
     try {
         if (g_hForkedProcess != 0) {
-            if (WaitForSingleObject(g_hForkedProcess, cDeadForkWait) == WAIT_TIMEOUT) {
+            DWORD waitResult = WaitForSingleObject(g_hForkedProcess,
+                                                   cDeadForkWait);
+            if (waitResult == WAIT_TIMEOUT) {
                 IFFAILTHROW(TerminateProcess(g_hForkedProcess, 1),
                     "EndForkOperation: Killing forked process failed.");
+                waitResult = WaitForSingleObject(g_hForkedProcess,
+                                                 cDeadForkWait);
+            }
+            if (waitResult != WAIT_OBJECT_0) {
+                DWORD error = waitResult == WAIT_FAILED ?
+                    GetLastError() : ERROR_TIMEOUT;
+                throw system_error(error, system_category(),
+                    "EndForkOperation: waiting for forked process failed");
             }
 
             if (pExitCode != NULL) {
-                GetExitCodeProcess(g_hForkedProcess, (DWORD*) pExitCode);
+                IFFAILTHROW(GetExitCodeProcess(g_hForkedProcess,
+                    (DWORD*) pExitCode),
+                    "EndForkOperation: could not get child exit code");
             }
 
             CloseHandle(g_hForkedProcess);
@@ -1225,6 +2094,11 @@ BOOL EndForkOperation(int * pExitCode) {
         }
 
         RejoinCOWPages(g_hQForkControlFileMap, (byte*) g_pQForkControl, sizeof(QForkControl));
+
+        if (!ReleaseQForkModuleSnapshot()) {
+            throw runtime_error(
+                "EndForkOperation: could not release module snapshot");
+        }
 
         return TRUE;
     }

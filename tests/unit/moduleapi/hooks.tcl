@@ -47,6 +47,7 @@ tags "modules" {
             waitForBgrewriteaof r
             assert_equal [string match {*module-event-persistence-aof-start*} [exec tail -20 < [srv 0 stdout]]] 1
             assert_equal [string match {*module-event-persistence-end*} [exec tail -20 < [srv 0 stdout]]] 1
+            assert_equal [string match {*module-event-qfork-timer-api-ok*} [exec tail -20 < [srv 0 stdout]]] 1
         }
 
         test {Test module aof load and rdb/aof progress hooks} {

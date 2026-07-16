@@ -180,6 +180,12 @@ void rasterLinkChangeCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t 
     LogNumericEvent(ctx, keyname, 0);
 }
 
+void persistenceTimerCallback(RedisModuleCtx *ctx, void *data)
+{
+    REDISMODULE_NOT_USED(ctx);
+    REDISMODULE_NOT_USED(data);
+}
+
 void persistenceCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, void *data)
 {
     REDISMODULE_NOT_USED(e);
@@ -195,6 +201,14 @@ void persistenceCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, 
     }
     /* modifying the keyspace from the fork child is not an option, using log instead */
     RedisModule_Log(ctx, "warning", "module-event-%s", keyname);
+    if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_AOF_START) {
+        RedisModuleTimerID timer = RedisModule_CreateTimer(
+            ctx, 60000, persistenceTimerCallback, NULL);
+        uint64_t remaining = 0;
+        if (RedisModule_GetTimerInfo(ctx, timer, &remaining, NULL) == REDISMODULE_OK &&
+            RedisModule_StopTimer(ctx, timer, NULL) == REDISMODULE_OK)
+            RedisModule_Log(ctx, "warning", "module-event-qfork-timer-api-ok");
+    }
     if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_RDB_START)
         LogNumericEvent(ctx, keyname, 0);
 }
@@ -331,4 +345,3 @@ int RedisModule_OnUnload(RedisModuleCtx *ctx) {
     event_log = NULL;
     return REDISMODULE_OK;
 }
-

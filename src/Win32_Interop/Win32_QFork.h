@@ -61,8 +61,17 @@ extern "C" {
         LPVOID commandFilters;
         LPVOID eventListeners;
         LPVOID freeContextClient;
+        LPVOID timers;
+        long long aeTimer;
         unsigned long long modulesInHooks;
     } RedisModuleForkData;
+
+    /* Validate that a native module image can be restored safely enough for
+     * callbacks executed inside the disposable QFork persistence child. */
+    BOOL QForkValidateModuleImage(
+        void *handle,
+        const wchar_t *path,
+        const char *name);
 
     // For parent process use only
     pid_t BeginForkOperation_Rdb(
