@@ -1,6 +1,6 @@
 set testmodule [redis_test_module fork]
 
-proc count_log_message {pattern} {
+proc count_fork_log_message {pattern} {
     set result [exec grep -c $pattern < [srv 0 stdout]]
 }
 
@@ -29,9 +29,9 @@ start_server {tags {"modules"}} {
             after 250
             r fork.kill
 
-            assert {[count_log_message "fork child started"] eq "2"}
-            assert {[count_log_message "Received SIGUSR1 in child"] eq "1"}
-            assert {[count_log_message "fork child exiting"] eq "1"}
+            assert {[count_fork_log_message "fork child started"] eq "2"}
+            assert {[count_fork_log_message "Received SIGUSR1 in child"] eq "1"}
+            assert {[count_fork_log_message "fork child exiting"] eq "1"}
         }
     }
 
