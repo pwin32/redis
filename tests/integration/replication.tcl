@@ -769,15 +769,33 @@ test "diskless replication child being killed is collected" {
             after 500
 
             # simulate the OOM killer or anyone else kills the child
-            set fork_child_pid [get_child_pid -1]
-            kill_proc2 $fork_child_pid
+            if {[catch {
+                set fork_child_pid [get_qfork_child_pid -1]
+            } child_error]} {
+                fail "failed to find QFork child: $child_error"
+            }
+            if {[catch {
+                kill_proc2_checked $fork_child_pid
+            } kill_error]} {
+                fail "failed to terminate QFork child $fork_child_pid: $kill_error"
+            }
+
+            # Distinguish a failed external kill from a parent collection bug.
+            wait_for_condition 50 100 {
+                [process_is_alive $fork_child_pid] == 0
+            } else {
+                fail "failed to terminate QFork child $fork_child_pid"
+            }
 
             # wait for the parent to notice the child have exited
             wait_for_condition 50 100 {
                 [s -1 rdb_bgsave_in_progress] == 0
             } else {
-                fail "rdb child didn't terminate"
+                fail "parent failed to collect terminated QFork child $fork_child_pid"
             }
+
+            # Speed up shutdown after the deliberately stalled diskless load.
+            $replica config set key-load-delay 0
         }
     }
 }

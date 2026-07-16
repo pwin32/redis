@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Suspend", "Resume")]
+    [ValidateSet("FindQForkChild", "Suspend", "Resume")]
     [string]$Action,
 
     [Parameter(Mandatory = $true)]
@@ -11,6 +11,39 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($Action -eq "FindQForkChild") {
+    $expected = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+    $children = @(
+        Get-CimInstance Win32_Process -Filter "ParentProcessId = $TargetProcessId"
+    )
+    $matches = @(
+        $children | Where-Object {
+            $_.ExecutablePath -and
+            $_.CommandLine -and
+            [String]::Equals(
+                [System.IO.Path]::GetFullPath($_.ExecutablePath),
+                $expected,
+                [StringComparison]::OrdinalIgnoreCase) -and
+            $_.CommandLine -match '(?i)(?:^|\s)--qfork(?:\s|$)'
+        }
+    )
+
+    if ($matches.Count -ne 1) {
+        $details = @(
+            $children | ForEach-Object {
+                "PID=$($_.ProcessId) ExecutablePath=$($_.ExecutablePath) CommandLine=$($_.CommandLine)"
+            }
+        ) -join [Environment]::NewLine
+        if (-not $details) {
+            $details = "<none>"
+        }
+        throw "Expected exactly one QFork child of process $TargetProcessId, found $($matches.Count). Direct children: $details"
+    }
+
+    Write-Output ([int]$matches[0].ProcessId)
+    return
+}
 
 Add-Type -TypeDefinition @"
 using System;

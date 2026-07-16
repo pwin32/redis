@@ -621,6 +621,20 @@ proc process_is_alive pid {
     }
 }
 
+proc get_qfork_child_pid {idx} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        set parent_pid [srv $idx pid]
+        set child_pid [string trim \
+            [windows_control_process FindQForkChild $parent_pid]]
+        if {![string is integer -strict $child_pid] || $child_pid <= 0} {
+            error "Invalid QFork child PID: $child_pid"
+        }
+        return $child_pid
+    }
+
+    return [get_child_pid $idx]
+}
+
 if {$::tcl_platform(platform) eq "windows"} {
     proc windows_control_process {action pid} {
         set script [file normalize tests/support/windows_process_control.ps1]

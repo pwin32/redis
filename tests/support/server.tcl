@@ -170,6 +170,10 @@ proc windows_kill_proc2 pid {
     catch {exec taskkill.exe /F /T /PID $pid}
 }
 
+proc windows_kill_proc2_checked pid {
+    exec taskkill.exe /F /T /PID $pid 2>@1
+}
+
 if { $tcl_platform(platform) == "windows" } {
     proc is_alive config {
         return [windows_is_alive $config]
@@ -185,6 +189,10 @@ if { $tcl_platform(platform) == "windows" } {
 if { $tcl_platform(platform) == "windows" } {
     proc kill_proc2 pid {
         windows_kill_proc2 $pid
+    }
+
+    proc kill_proc2_checked pid {
+        windows_kill_proc2_checked $pid
     }
 }
 
@@ -209,6 +217,10 @@ if { $tcl_platform(platform) != "windows" } {
 if { $tcl_platform(platform) != "windows" } {
     proc kill_proc2 pid {
         catch {exec /bin/kill -9 $pid}
+    }
+
+    proc kill_proc2_checked pid {
+        exec /bin/kill -9 $pid
     }
 }
 
