@@ -915,10 +915,16 @@ BOOL EndForkOperation(int * pExitCode) {
 }
 
 HANDLE CreateBlockMap(int blockIndex) {
+    HANDLE map = NULL;
+    LPVOID realAddr = NULL;
+    LPVOID addr = (byte*) g_pQForkControl->heapStart +
+        blockIndex * cAllocationGranularity;
+    BOOL reservationReleased = FALSE;
+
     try {
         // cAllocationGranularity is guaranteed to be < 2^31
         ASSERT(cAllocationGranularity < (1 << 31));
-        HANDLE map = CreateFileMappingW(INVALID_HANDLE_VALUE,
+        map = CreateFileMappingW(INVALID_HANDLE_VALUE,
             NULL,
             PAGE_READWRITE,
             0,
@@ -926,13 +932,12 @@ HANDLE CreateBlockMap(int blockIndex) {
             NULL);
         IFFAILTHROW(map, "PhysicalMapMemory: CreateFileMapping failed");
 
-        LPVOID addr = (byte*) g_pQForkControl->heapStart + blockIndex * cAllocationGranularity;
-
         // Free the memory that was reserved in QForkParentInit() before mapping it
         IFFAILTHROW(VirtualFree(addr, 0, MEM_RELEASE),
             "PhysicalMapMemory: VirtualFree failed");
+        reservationReleased = TRUE;
 
-        LPVOID realAddr = MapViewOfFileEx(map, FILE_MAP_ALL_ACCESS, 0, 0, 0, addr);
+        realAddr = MapViewOfFileEx(map, FILE_MAP_ALL_ACCESS, 0, 0, 0, addr);
         IFFAILTHROW(realAddr, "PhysicalMapMemory: MapViewOfFileEx failed");
 
         DWORD old;
@@ -951,7 +956,51 @@ HANDLE CreateBlockMap(int blockIndex) {
         serverLog(LL_WARNING, "PhysicalMapMemory: exception caught");
     }
 
+    if (realAddr != NULL) {
+        UnmapViewOfFile(realAddr);
+    }
+    if (map != NULL) {
+        CloseHandle(map);
+    }
+    if (reservationReleased) {
+        LPVOID reserved = VirtualAlloc(addr, cAllocationGranularity,
+            MEM_RESERVE, PAGE_READWRITE);
+        if (reserved != addr) {
+            serverLog(LL_WARNING,
+                "PhysicalMapMemory: could not restore reserved heap block %d",
+                blockIndex);
+            g_pQForkControl->heapBlockList[blockIndex].state =
+                BlockState::bsINVALID;
+        }
+    }
+
     return NULL;
+}
+
+void RollBackNewBlockMap(int blockIndex) {
+    LPVOID addr = (byte*) g_pQForkControl->heapStart +
+        blockIndex * cAllocationGranularity;
+    HANDLE map = g_pQForkControl->heapBlockList[blockIndex].heapMap;
+
+    if (map == NULL) return;
+
+    if (!UnmapViewOfFile(addr)) {
+        serverLog(LL_WARNING,
+            "PhysicalMapMemory: could not unmap rolled-back heap block %d",
+            blockIndex);
+    }
+    CloseHandle(map);
+    g_pQForkControl->heapBlockList[blockIndex].heapMap = NULL;
+
+    LPVOID reserved = VirtualAlloc(addr, cAllocationGranularity,
+        MEM_RESERVE, PAGE_READWRITE);
+    if (reserved != addr) {
+        serverLog(LL_WARNING,
+            "PhysicalMapMemory: could not re-reserve rolled-back heap block %d",
+            blockIndex);
+        g_pQForkControl->heapBlockList[blockIndex].state =
+            BlockState::bsINVALID;
+    }
 }
 
 LPVOID AllocHeapBlock(LPVOID addr, size_t size, BOOL zero) {
@@ -1012,10 +1061,32 @@ LPVOID AllocHeapBlock(LPVOID addr, size_t size, BOOL zero) {
 
     ASSERT(allocationStartIndex + contiguousBlocksToAllocate < g_pQForkControl->maxAvailableBlocks);
 
+    /* Map every previously unused block before changing allocator state. If
+     * the system paging file cannot back any block, undo the maps created for
+     * this request and let jemalloc observe ENOMEM instead of returning an
+     * address that is still only reserved. */
     for (int i = 0; i < contiguousBlocksToAllocate; i++) {
         int index = allocationStartIndex + i;
         if (g_pQForkControl->heapBlockList[index].state == BlockState::bsUNMAPPED) {
-            g_pQForkControl->heapBlockList[index].heapMap = CreateBlockMap(index);
+            HANDLE map = CreateBlockMap(index);
+            if (map == NULL) {
+                for (int j = 0; j < i; j++) {
+                    int rollbackIndex = allocationStartIndex + j;
+                    if (g_pQForkControl->heapBlockList[rollbackIndex].state ==
+                            BlockState::bsUNMAPPED) {
+                        RollBackNewBlockMap(rollbackIndex);
+                    }
+                }
+                errno = ENOMEM;
+                return NULL;
+            }
+            g_pQForkControl->heapBlockList[index].heapMap = map;
+        }
+    }
+
+    for (int i = 0; i < contiguousBlocksToAllocate; i++) {
+        int index = allocationStartIndex + i;
+        if (g_pQForkControl->heapBlockList[index].state == BlockState::bsUNMAPPED) {
             g_pQForkControl->numMappedBlocks += 1;
         }
         else {

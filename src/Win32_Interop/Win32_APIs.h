@@ -25,6 +25,7 @@
 
 #include "Win32_types.h"
 #include <Windows.h>
+#include <limits.h>
 #include <stdio.h>      // for rename
 
 // API replacement for non-fd stdio functions
@@ -69,6 +70,10 @@ extern RtlGenRandomFunc RtlGenRandom;
 
 #define random()    replace_random()
 #define rand()      replace_random()
+#ifdef RAND_MAX
+#undef RAND_MAX
+#endif
+#define RAND_MAX INT_MAX
 #define srandom     srand
 int replace_random();
 

@@ -140,7 +140,30 @@ proc windows_is_alive config {
 
 proc windows_kill_proc config {
     set pid [dict get $config pid]
-    catch {exec taskkill.exe /F /T /PID $pid}
+    set shutdown_client {}
+    set shutdown_sent 0
+
+    # POSIX kill_server sends SIGTERM, which runs Redis' normal shutdown path
+    # (including module hooks and a final RDB save when configured). Attempt
+    # the equivalent command on Windows without waiting for a reply; the
+    # generic kill_server timeout below still falls back to taskkill /F.
+    catch {
+        set shutdown_client [redis [dict get $config host] \
+                                   [dict get $config port] 1 $::tls]
+        set server_config [dict get $config config]
+        if {[dict exists $server_config requirepass]} {
+            $shutdown_client auth [dict get $server_config requirepass]
+        }
+        $shutdown_client shutdown
+        set shutdown_sent 1
+    }
+    if {$shutdown_client ne {}} {
+        catch {$shutdown_client close}
+    }
+
+    if {!$shutdown_sent} {
+        catch {exec taskkill.exe /F /T /PID $pid}
+    }
 }
 
 proc windows_kill_proc2 pid {

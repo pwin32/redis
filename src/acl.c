@@ -302,6 +302,15 @@ void ACLFreeUserAndKillClients(user *u) {
     while ((ln = listNext(&li)) != NULL) {
         client *c = listNodeValue(ln);
         if (c->user == u) {
+#ifdef _WIN32
+            /* A module authentication callback tracks the logical user
+             * transition, not the eventual destruction of the connection.
+             * This is especially important on Windows, where the reply-drain
+             * path can keep a closing client alive briefly after EOF is
+             * observable by its peer. The callback clears itself, so the
+             * later freeClient() notification remains idempotent. */
+            moduleNotifyUserChanged(c);
+#endif
             /* We'll free the connection asynchronously, so
              * in theory to set a different user is not needed.
              * However if there are bugs in Redis, soon or later
