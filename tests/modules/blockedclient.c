@@ -102,7 +102,7 @@ void *bg_call_worker(void *arg) {
 
     // Call the command
     const char* cmd = RedisModule_StringPtrLen(bg->argv[1], NULL);
-    RedisModuleCallReply* rep = RedisModule_Call(ctx, cmd, "v", bg->argv + 2, bg->argc - 2);
+    RedisModuleCallReply* rep = RedisModule_Call(ctx, cmd, "v", bg->argv + 2, (size_t)bg->argc - 2);
 
     // Release GIL
     RedisModule_ThreadSafeContextUnlock(ctx);
@@ -177,7 +177,7 @@ int do_rm_call(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
 
     const char* cmd = RedisModule_StringPtrLen(argv[1], NULL);
 
-    RedisModuleCallReply* rep = RedisModule_Call(ctx, cmd, "v", argv + 2, argc - 2);
+    RedisModuleCallReply* rep = RedisModule_Call(ctx, cmd, "v", argv + 2, (size_t)argc - 2);
     if(!rep){
         RedisModule_ReplyWithError(ctx, "NULL reply returned");
     }else{
