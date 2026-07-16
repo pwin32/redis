@@ -152,6 +152,10 @@ BOOL WriteToProcmon(wstring message)
 #define PAGE_REVERT_TO_FILE_MAP 0x80000000  // From Win8.1 SDK
 #endif
 
+#ifndef IMAGE_DLLCHARACTERISTICS_GUARD_CF
+#define IMAGE_DLLCHARACTERISTICS_GUARD_CF 0x4000
+#endif
+
 #define IFFAILTHROW(a,m) if(!(a)) { throw system_error(GetLastError(), system_category(), m); }
 
 #define MAX_REDIS_DATA_SIZE 10000
@@ -220,6 +224,7 @@ HANDLE g_hQForkControlFileMap;
 HANDLE g_hQForkModuleSnapshotMap;
 HANDLE g_hForkedProcess = 0;
 vector<HMODULE> g_QForkPinnedModules;
+vector<HANDLE> g_QForkPinnedModuleFiles;
 int g_ChildExitCode = 0; // For child process
 BOOL g_SentinelMode;
 BOOL g_PersistenceDisabled;
@@ -342,6 +347,10 @@ static const uint32_t cQForkModuleSnapshotMagic = 0x534d4651; /* QFMS */
 static const uint16_t cQForkModuleSnapshotVersion = 1;
 static const uint64_t cQForkModuleTlsTemplateSize = sizeof(uintptr_t);
 static const size_t cQForkModuleMaxTlsCallbacks = 32;
+/* The PE32+ load-config fields from GuardCFCheckFunctionPointer onward are
+ * loader/security metadata. Reject any nonzero extension rather than copying
+ * parent-process pointer state over the child loader's values. */
+static const uint64_t cQForkModuleLoadConfigGuardOffset = 112;
 
 struct QForkModuleSnapshotHeader {
     uint32_t magic;
@@ -415,6 +424,13 @@ static bool QForkModuleRangeInsideImage(uint64_t rva, uint64_t size,
     return rva <= imageSize && size <= imageSize - rva;
 }
 
+static bool QForkModuleRangeInsideRange(uint64_t rva, uint64_t size,
+    uint64_t outerRva, uint64_t outerSize)
+{
+    return rva >= outerRva && rva - outerRva <= outerSize &&
+           size <= outerSize - (rva - outerRva);
+}
+
 static bool QForkCheckedAdd(uint64_t left, uint64_t right, uint64_t *result)
 {
     if (right > numeric_limits<uint64_t>::max() - left) return false;
@@ -478,27 +494,21 @@ static void RestoreQForkModuleProtectedRanges(byte *imageBase,
     }
 }
 
-static bool GetQForkModuleFileIdentity(const wchar_t *path,
+static bool GetQForkModuleFileIdentity(HANDLE file,
     QForkModuleFileIdentity& identity, const char *name)
 {
-    HANDLE file = CreateFileW(path, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) {
-        serverLog(LL_WARNING,
-            "QFork module validation: could not open %s image (0x%08x)",
-            name, GetLastError());
-        return false;
-    }
-
     BY_HANDLE_FILE_INFORMATION info;
     BOOL ok = GetFileInformationByHandle(file, &info);
     DWORD error = ok ? ERROR_SUCCESS : GetLastError();
-    CloseHandle(file);
     if (!ok) {
         serverLog(LL_WARNING,
             "QFork module validation: could not identify %s image (0x%08x)",
             name, error);
+        return false;
+    }
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        serverLog(LL_WARNING,
+            "QFork module validation: %s image path is a directory", name);
         return false;
     }
 
@@ -514,6 +524,60 @@ static bool GetQForkModuleFileIdentity(const wchar_t *path,
     identity.fileSize = size.QuadPart;
     identity.lastWriteTime = writeTime.QuadPart;
     return true;
+}
+
+static HANDLE OpenQForkModuleFile(const wchar_t *path,
+    wstring& canonicalPath, const char *name)
+{
+    HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        serverLog(LL_WARNING,
+            "QFork module validation: could not lock %s image (0x%08x)",
+            name, GetLastError());
+        return NULL;
+    }
+
+    if (GetFileType(file) != FILE_TYPE_DISK) {
+        serverLog(LL_WARNING,
+            "QFork module validation: %s image is not a disk file", name);
+        CloseHandle(file);
+        return NULL;
+    }
+
+    try {
+        DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_GUID;
+        DWORD required = GetFinalPathNameByHandleW(file, NULL, 0, flags);
+        if (required == 0 || required == MAXDWORD) {
+            DWORD error = required == 0 ? GetLastError() :
+                ERROR_INSUFFICIENT_BUFFER;
+            serverLog(LL_WARNING,
+                "QFork module validation: could not resolve %s image path (0x%08x)",
+                name, error);
+            CloseHandle(file);
+            return NULL;
+        }
+
+        vector<wchar_t> pathBuffer(static_cast<size_t>(required) + 1);
+        DWORD copied = GetFinalPathNameByHandleW(file, pathBuffer.data(),
+            static_cast<DWORD>(pathBuffer.size()), flags);
+        if (copied == 0 || copied >= pathBuffer.size()) {
+            DWORD error = copied == 0 ? GetLastError() :
+                ERROR_INSUFFICIENT_BUFFER;
+            serverLog(LL_WARNING,
+                "QFork module validation: could not canonicalize %s image path (0x%08x)",
+                name, error);
+            CloseHandle(file);
+            return NULL;
+        }
+
+        canonicalPath.assign(pathBuffer.data(), copied);
+        return file;
+    }
+    catch (...) {
+        CloseHandle(file);
+        throw;
+    }
 }
 
 static bool QForkModuleFileIdentityEqual(
@@ -604,20 +668,106 @@ static IMAGE_DATA_DIRECTORY GetQForkModuleDataDirectory(
     return nt->OptionalHeader.DataDirectory[index];
 }
 
-static bool InspectQForkModuleImage(HMODULE module, const wchar_t *path,
+static bool ValidateQForkModuleImportThunks(HMODULE module, DWORD imageSize,
+    const IMAGE_DATA_DIRECTORY& imports, const IMAGE_DATA_DIRECTORY& iat,
+    const char *name)
+{
+    bool importsPresent = imports.VirtualAddress != 0 || imports.Size != 0;
+    bool iatPresent = iat.VirtualAddress != 0 || iat.Size != 0;
+    if (!importsPresent) return true;
+
+    if (imports.VirtualAddress == 0 || imports.Size == 0 ||
+        iat.VirtualAddress == 0 || iat.Size == 0 ||
+        imports.Size < sizeof(IMAGE_IMPORT_DESCRIPTOR) ||
+        !QForkModuleRangeInsideImage(imports.VirtualAddress, imports.Size,
+                                     imageSize) ||
+        !QForkModuleRangeInsideImage(iat.VirtualAddress, iat.Size, imageSize))
+    {
+        serverLog(LL_WARNING,
+            "QFork module validation: invalid import/IAT directory in %s",
+            name);
+        return false;
+    }
+
+    byte *imageBase = reinterpret_cast<byte *>(module);
+    size_t descriptorCount = imports.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+    bool descriptorsTerminated = false;
+    for (size_t i = 0; i < descriptorCount; i++) {
+        IMAGE_IMPORT_DESCRIPTOR descriptor;
+        memcpy(&descriptor,
+            imageBase + imports.VirtualAddress +
+                i * sizeof(IMAGE_IMPORT_DESCRIPTOR),
+            sizeof(descriptor));
+
+        if (descriptor.OriginalFirstThunk == 0 &&
+            descriptor.TimeDateStamp == 0 &&
+            descriptor.ForwarderChain == 0 && descriptor.Name == 0 &&
+            descriptor.FirstThunk == 0)
+        {
+            descriptorsTerminated = true;
+            break;
+        }
+
+        if (descriptor.FirstThunk == 0 ||
+            descriptor.FirstThunk % sizeof(IMAGE_THUNK_DATA64) != 0 ||
+            !QForkModuleRangeInsideRange(descriptor.FirstThunk,
+                sizeof(IMAGE_THUNK_DATA64), iat.VirtualAddress, iat.Size))
+        {
+            serverLog(LL_WARNING,
+                "QFork module validation: import thunk outside IAT in %s",
+                name);
+            return false;
+        }
+
+        uint64_t available = static_cast<uint64_t>(iat.VirtualAddress) +
+            iat.Size - descriptor.FirstThunk;
+        size_t thunkCount = static_cast<size_t>(
+            available / sizeof(IMAGE_THUNK_DATA64));
+        bool thunksTerminated = false;
+        for (size_t j = 0; j < thunkCount; j++) {
+            IMAGE_THUNK_DATA64 thunk;
+            memcpy(&thunk,
+                imageBase + descriptor.FirstThunk +
+                    j * sizeof(IMAGE_THUNK_DATA64),
+                sizeof(thunk));
+            if (thunk.u1.Function == 0) {
+                thunksTerminated = true;
+                break;
+            }
+        }
+        if (!thunksTerminated) {
+            serverLog(LL_WARNING,
+                "QFork module validation: unterminated import thunk array in %s",
+                name);
+            return false;
+        }
+    }
+
+    if (!descriptorsTerminated) {
+        serverLog(LL_WARNING,
+            "QFork module validation: unterminated import directory in %s",
+            name);
+        return false;
+    }
+    return iatPresent;
+}
+
+static bool InspectQForkModuleImage(HMODULE module, HANDLE moduleFile,
     const char *name, QForkModuleImageInfo& image)
 {
     const char *safeName = name != NULL ? name : "unknown";
-    if (module == NULL || path == NULL || path[0] == L'\0') {
+    if (module == NULL || moduleFile == NULL ||
+        moduleFile == INVALID_HANDLE_VALUE)
+    {
         serverLog(LL_WARNING,
-            "QFork module validation: missing handle or path for %s", safeName);
+            "QFork module validation: missing image handle for %s", safeName);
         return false;
     }
 
     PIMAGE_NT_HEADERS64 nt;
     DWORD imageSize;
     if (!GetQForkModuleHeaders(module, safeName, &nt, &imageSize) ||
-        !GetQForkModuleFileIdentity(path, image.fileIdentity, safeName))
+        !GetQForkModuleFileIdentity(moduleFile, image.fileIdentity, safeName))
         return false;
 
     image.imageSize = imageSize;
@@ -639,6 +789,8 @@ static bool InspectQForkModuleImage(HMODULE module, const wchar_t *path,
 
     uint64_t base = reinterpret_cast<uint64_t>(module);
 
+    IMAGE_DATA_DIRECTORY imports = GetQForkModuleDataDirectory(nt,
+        IMAGE_DIRECTORY_ENTRY_IMPORT);
     IMAGE_DATA_DIRECTORY iat = GetQForkModuleDataDirectory(nt,
         IMAGE_DIRECTORY_ENTRY_IAT);
     if (iat.VirtualAddress != 0 || iat.Size != 0) {
@@ -650,6 +802,18 @@ static bool InspectQForkModuleImage(HMODULE module, const wchar_t *path,
                 "QFork module validation: invalid IAT range in %s", safeName);
             return false;
         }
+    }
+    if (!ValidateQForkModuleImportThunks(module, imageSize, imports, iat,
+                                          safeName))
+        return false;
+
+    if (nt->OptionalHeader.DllCharacteristics &
+        IMAGE_DLLCHARACTERISTICS_GUARD_CF)
+    {
+        serverLog(LL_WARNING,
+            "QFork module validation: CFG/XFG is unsupported in %s",
+            safeName);
+        return false;
     }
 
     IMAGE_DATA_DIRECTORY tlsDirectory = GetQForkModuleDataDirectory(nt,
@@ -755,19 +919,52 @@ static bool InspectQForkModuleImage(HMODULE module, const wchar_t *path,
                 safeName);
             return false;
         }
-        PIMAGE_LOAD_CONFIG_DIRECTORY64 loadConfig =
-            reinterpret_cast<PIMAGE_LOAD_CONFIG_DIRECTORY64>(
-                reinterpret_cast<byte *>(module) +
-                    loadConfigDirectory.VirtualAddress);
-        if (loadConfig->SecurityCookie != 0 &&
-            (loadConfig->SecurityCookie < base ||
+        const byte *loadConfig = reinterpret_cast<const byte *>(module) +
+            loadConfigDirectory.VirtualAddress;
+        DWORD declaredLoadConfigSize;
+        memcpy(&declaredLoadConfigSize,
+            loadConfig + FIELD_OFFSET(IMAGE_LOAD_CONFIG_DIRECTORY64, Size),
+            sizeof(declaredLoadConfigSize));
+        uint64_t loadConfigSize = declaredLoadConfigSize;
+        if (loadConfigSize < securityCookieEnd ||
+            loadConfigSize > loadConfigDirectory.Size ||
+            loadConfigSize > sizeof(IMAGE_LOAD_CONFIG_DIRECTORY64) ||
+            !QForkModuleRangeInsideImage(loadConfigDirectory.VirtualAddress,
+                loadConfigSize, imageSize))
+        {
+            serverLog(LL_WARNING,
+                "QFork module validation: inconsistent load config in %s",
+                safeName);
+            return false;
+        }
+        uint64_t securityCookie;
+        memcpy(&securityCookie,
+            loadConfig + FIELD_OFFSET(IMAGE_LOAD_CONFIG_DIRECTORY64,
+                                      SecurityCookie),
+            sizeof(securityCookie));
+        if (securityCookie != 0 &&
+            (securityCookie < base ||
              !AddQForkModuleProtectedRange(image.protectedRanges,
-                loadConfig->SecurityCookie - base, sizeof(uint64_t), imageSize)))
+                securityCookie - base, sizeof(uint64_t), imageSize)))
         {
             serverLog(LL_WARNING,
                 "QFork module validation: invalid security cookie in %s",
                 safeName);
             return false;
+        }
+        if (loadConfigSize > cQForkModuleLoadConfigGuardOffset) {
+            const byte *guardState = loadConfig +
+                cQForkModuleLoadConfigGuardOffset;
+            size_t guardStateSize = static_cast<size_t>(
+                loadConfigSize - cQForkModuleLoadConfigGuardOffset);
+            for (size_t i = 0; i < guardStateSize; i++) {
+                if (guardState[i] != 0) {
+                    serverLog(LL_WARNING,
+                        "QFork module validation: extended load-config state is unsupported in %s",
+                        safeName);
+                    return false;
+                }
+            }
         }
     }
 
@@ -815,9 +1012,15 @@ extern "C" BOOL QForkValidateModuleImage(void *handle, const wchar_t *path,
     const char *name)
 {
     try {
+        const char *safeName = name != NULL ? name : "unknown";
+        if (path == NULL || path[0] == L'\0') return FALSE;
+        wstring canonicalPath;
+        HANDLE moduleFile = OpenQForkModuleFile(path, canonicalPath, safeName);
+        if (moduleFile == NULL) return FALSE;
+        SmartHandle pinnedFile(moduleFile);
         QForkModuleImageInfo image;
         return InspectQForkModuleImage(reinterpret_cast<HMODULE>(handle),
-            path, name, image) ? TRUE : FALSE;
+            moduleFile, name, image) ? TRUE : FALSE;
     }
     catch (const exception& ex) {
         serverLog(LL_WARNING,
@@ -843,6 +1046,20 @@ static void ReleasePinnedQForkModules(vector<HMODULE>& modules)
     modules.clear();
 }
 
+static bool ReleasePinnedQForkModuleFiles(vector<HANDLE>& files)
+{
+    bool success = true;
+    for (vector<HANDLE>::reverse_iterator file = files.rbegin();
+         file != files.rend(); ++file)
+    {
+        if (*file != NULL && *file != INVALID_HANDLE_VALUE &&
+            !CloseHandle(*file))
+            success = false;
+    }
+    files.clear();
+    return success;
+}
+
 static bool ReleaseQForkModuleSnapshot()
 {
     if (g_IsForkedProcess) return true;
@@ -859,6 +1076,8 @@ static bool ReleaseQForkModuleSnapshot()
         if (*module != NULL && !FreeLibrary(*module)) success = false;
     }
     g_QForkPinnedModules.clear();
+    if (!ReleasePinnedQForkModuleFiles(g_QForkPinnedModuleFiles))
+        success = false;
 
     if (g_pQForkControl != NULL) {
         g_pQForkControl->globalData.moduleSnapshotMap = NULL;
@@ -872,7 +1091,8 @@ static bool ReleaseQForkModuleSnapshot()
 static void PrepareQForkModuleSnapshot()
 {
     if (g_hQForkModuleSnapshotMap != NULL ||
-        !g_QForkPinnedModules.empty())
+        !g_QForkPinnedModules.empty() ||
+        !g_QForkPinnedModuleFiles.empty())
         throw runtime_error("A QFork module snapshot is already active");
 
     g_pQForkControl->globalData.moduleSnapshotMap = NULL;
@@ -896,11 +1116,15 @@ static void PrepareQForkModuleSnapshot()
 
     vector<QForkCapturedModule> modules;
     vector<HMODULE> pinnedModules;
+    vector<HANDLE> pinnedModuleFiles;
     HANDLE writableMap = NULL;
     HANDLE readOnlyMap = NULL;
     byte *view = NULL;
 
     try {
+        modules.reserve(descriptors.size());
+        pinnedModules.reserve(descriptors.size());
+        pinnedModuleFiles.reserve(descriptors.size());
         uint64_t totalRanges = 0;
         for (size_t i = 0; i < descriptors.size(); i++) {
             if (i != 0 &&
@@ -924,13 +1148,21 @@ static void PrepareQForkModuleSnapshot()
             }
             pinnedModules.push_back(pinned);
 
+            wstring canonicalPath;
+            HANDLE pinnedFile = OpenQForkModuleFile(
+                descriptors[i].path.c_str(), canonicalPath,
+                descriptors[i].name.c_str());
+            if (pinnedFile == NULL)
+                throw runtime_error("Could not lock QFork module image file");
+            pinnedModuleFiles.push_back(pinnedFile);
+
             QForkCapturedModule captured;
             captured.descriptor = descriptors[i];
+            captured.descriptor.path = canonicalPath;
             captured.nameOffset = 0;
             captured.pathOffset = 0;
             captured.firstRange = static_cast<uint32_t>(totalRanges);
-            if (!InspectQForkModuleImage(pinned,
-                    captured.descriptor.path.c_str(),
+            if (!InspectQForkModuleImage(pinned, pinnedFile,
                     captured.descriptor.name.c_str(), captured.image))
                 throw runtime_error("Could not validate QFork module image");
             if (!QForkCheckedAdd(totalRanges,
@@ -1084,6 +1316,7 @@ static void PrepareQForkModuleSnapshot()
         g_hQForkModuleSnapshotMap = readOnlyMap;
         readOnlyMap = NULL;
         g_QForkPinnedModules.swap(pinnedModules);
+        g_QForkPinnedModuleFiles.swap(pinnedModuleFiles);
         g_pQForkControl->globalData.moduleSnapshotMap =
             g_hQForkModuleSnapshotMap;
         g_pQForkControl->globalData.moduleSnapshotSize = cursor;
@@ -1098,6 +1331,7 @@ static void PrepareQForkModuleSnapshot()
         if (view != NULL) UnmapViewOfFile(view);
         if (readOnlyMap != NULL) CloseHandle(readOnlyMap);
         if (writableMap != NULL) CloseHandle(writableMap);
+        ReleasePinnedQForkModuleFiles(pinnedModuleFiles);
         ReleasePinnedQForkModules(pinnedModules);
         throw;
     }
@@ -1253,6 +1487,28 @@ static bool RestoreQForkModuleImage(const byte *snapshot, size_t snapshotSize,
                                                        record.nameOffset);
     const wchar_t *path = reinterpret_cast<const wchar_t *>(snapshot +
                                                              record.pathOffset);
+
+    QForkModuleFileIdentity recordedIdentity;
+    recordedIdentity.volumeSerialNumber = record.volumeSerialNumber;
+    recordedIdentity.fileIndexHigh = record.fileIndexHigh;
+    recordedIdentity.fileIndexLow = record.fileIndexLow;
+    recordedIdentity.fileSize = record.fileSize;
+    recordedIdentity.lastWriteTime = record.lastWriteTime;
+
+    wstring canonicalPath;
+    HANDLE childModuleFile = OpenQForkModuleFile(path, canonicalPath, name);
+    if (childModuleFile == NULL) return false;
+    SmartHandle pinnedFile(childModuleFile);
+    QForkModuleFileIdentity childFileIdentity;
+    if (canonicalPath != path ||
+        !GetQForkModuleFileIdentity(childModuleFile, childFileIdentity, name) ||
+        !QForkModuleFileIdentityEqual(childFileIdentity, recordedIdentity))
+    {
+        serverLog(LL_WARNING,
+            "QFork module restore: locked image changed for %s", name);
+        return false;
+    }
+
     HMODULE childBase = LoadLibraryExW(path, NULL,
                                       LOAD_WITH_ALTERED_SEARCH_PATH);
     if (childBase == NULL) {
@@ -1269,13 +1525,8 @@ static bool RestoreQForkModuleImage(const byte *snapshot, size_t snapshotSize,
     }
 
     QForkModuleImageInfo image;
-    if (!InspectQForkModuleImage(childBase, path, name, image)) return false;
-    QForkModuleFileIdentity recordedIdentity;
-    recordedIdentity.volumeSerialNumber = record.volumeSerialNumber;
-    recordedIdentity.fileIndexHigh = record.fileIndexHigh;
-    recordedIdentity.fileIndexLow = record.fileIndexLow;
-    recordedIdentity.fileSize = record.fileSize;
-    recordedIdentity.lastWriteTime = record.lastWriteTime;
+    if (!InspectQForkModuleImage(childBase, childModuleFile, name, image))
+        return false;
     if (image.imageSize != record.imageSize ||
         image.sizeOfHeaders != record.sizeOfHeaders ||
         image.timeDateStamp != record.timeDateStamp ||
