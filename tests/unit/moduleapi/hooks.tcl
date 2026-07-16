@@ -43,11 +43,14 @@ tags "modules" {
         test {Test module aofrw hook} {
             r debug populate 1000 foo 10000 ;# 10mb worth of data
             r config set rdbcompression no ;# rdb progress is only checked once in 2mb
+            assert_equal [r hooks.timer_arm] OK
+            set loglines [count_log_lines 0]
             r BGREWRITEAOF
             waitForBgrewriteaof r
-            assert_equal [string match {*module-event-persistence-aof-start*} [exec tail -20 < [srv 0 stdout]]] 1
-            assert_equal [string match {*module-event-persistence-end*} [exec tail -20 < [srv 0 stdout]]] 1
-            assert_equal [string match {*module-event-qfork-timer-api-ok*} [exec tail -20 < [srv 0 stdout]]] 1
+            assert_equal [r hooks.timer_clear] 1
+            verify_log_message 0 "*module-event-persistence-aof-start*" $loglines
+            verify_log_message 0 "*module-event-persistence-end*" $loglines
+            verify_log_message 0 "*module-event-qfork-timer-info-ok*" $loglines
         }
 
         test {Test module aof load and rdb/aof progress hooks} {

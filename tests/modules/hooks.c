@@ -39,6 +39,8 @@
  * store them in the key-space since that would mess up rdb loading (duplicates)
  * and be lost of flushdb. */
 RedisModuleDict *event_log = NULL;
+RedisModuleTimerID persistence_timer = 0;
+int persistence_timer_active = 0;
 
 typedef struct EventElement {
     long count;
@@ -185,6 +187,44 @@ void persistenceTimerCallback(RedisModuleCtx *ctx, void *data)
 {
     REDISMODULE_NOT_USED(ctx);
     REDISMODULE_NOT_USED(data);
+    persistence_timer_active = 0;
+}
+
+int cmdTimerArm(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+    REDISMODULE_NOT_USED(argv);
+    if (argc != 1) {
+        RedisModule_WrongArity(ctx);
+        return REDISMODULE_OK;
+    }
+    if (persistence_timer_active) {
+        RedisModule_ReplyWithError(ctx, "ERR timer already active");
+        return REDISMODULE_OK;
+    }
+
+    persistence_timer = RedisModule_CreateTimer(
+        ctx, 600000, persistenceTimerCallback, NULL);
+    persistence_timer_active = 1;
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
+    return REDISMODULE_OK;
+}
+
+int cmdTimerClear(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+    REDISMODULE_NOT_USED(argv);
+    if (argc != 1) {
+        RedisModule_WrongArity(ctx);
+        return REDISMODULE_OK;
+    }
+
+    int stopped = 0;
+    if (persistence_timer_active) {
+        stopped = RedisModule_StopTimer(ctx, persistence_timer, NULL) ==
+                  REDISMODULE_OK;
+        persistence_timer_active = 0;
+    }
+    RedisModule_ReplyWithLongLong(ctx, stopped);
+    return REDISMODULE_OK;
 }
 
 void persistenceCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, void *data)
@@ -202,13 +242,13 @@ void persistenceCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, 
     }
     /* modifying the keyspace from the fork child is not an option, using log instead */
     RedisModule_Log(ctx, "warning", "module-event-%s", keyname);
-    if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_AOF_START) {
-        RedisModuleTimerID timer = RedisModule_CreateTimer(
-            ctx, 60000, persistenceTimerCallback, NULL);
+    if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_AOF_START &&
+        persistence_timer_active)
+    {
         uint64_t remaining = 0;
-        if (RedisModule_GetTimerInfo(ctx, timer, &remaining, NULL) == REDISMODULE_OK &&
-            RedisModule_StopTimer(ctx, timer, NULL) == REDISMODULE_OK)
-            RedisModule_Log(ctx, "warning", "module-event-qfork-timer-api-ok");
+        if (RedisModule_GetTimerInfo(ctx, persistence_timer, &remaining, NULL) ==
+                REDISMODULE_OK && remaining > 0)
+            RedisModule_Log(ctx, "warning", "module-event-qfork-timer-info-ok");
     }
     if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_RDB_START)
         LogNumericEvent(ctx, keyname, 0);
@@ -336,11 +376,19 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
         return REDISMODULE_ERR;
     if (RedisModule_CreateCommand(ctx,"hooks.clear", cmdEventsClear,"",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
+    if (RedisModule_CreateCommand(ctx,"hooks.timer_arm", cmdTimerArm,"",0,0,0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+    if (RedisModule_CreateCommand(ctx,"hooks.timer_clear", cmdTimerClear,"",0,0,0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
 
     return REDISMODULE_OK;
 }
 
 int RedisModule_OnUnload(RedisModuleCtx *ctx) {
+    if (persistence_timer_active) {
+        RedisModule_StopTimer(ctx, persistence_timer, NULL);
+        persistence_timer_active = 0;
+    }
     clearEvents(ctx);
     RedisModule_FreeDict(ctx, event_log);
     event_log = NULL;
