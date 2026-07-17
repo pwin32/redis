@@ -39,6 +39,36 @@ if {$::tcl_platform(platform) eq "windows"} {
             }
         }
     }
+
+    tags {regression qfork aof network slow external:skip tls:skip} {
+        test {Windows QFork mapped heap survives concurrent AOF allocations} {
+            for {set attempt 1} {$attempt <= 20} {incr attempt} {
+                start_server {overrides {
+                    persistence-available yes
+                    save ""
+                    appendonly yes
+                    appendfsync everysec
+                    auto-aof-rewrite-percentage 0
+                    jemalloc-bg-thread yes
+                }} {
+                    r config resetstat
+                    set cmd [list $::redis_benchmark_path \
+                        -h [srv host] -p [srv port] -q \
+                        -c 50 -P 16 -n 100000 \
+                        -r 100000 -d 512 -t set]
+                    if {[catch {exec {*}$cmd 2>@1} output]} {
+                        fail "attempt $attempt: redis-benchmark failed: [lindex [split $output \n] 0]"
+                    }
+                    assert_equal PONG [r ping]
+                    assert_match \
+                        {calls=100000,*,rejected_calls=0,failed_calls=0} \
+                        [cmdrstat set r]
+                    assert {![log_file_matches [srv stdout] \
+                        "*PhysicalMapMemory:*VirtualFree failed*"]}
+                }
+            }
+        }
+    }
 }
 
 start_server {tags {"regression"}} {

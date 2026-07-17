@@ -428,6 +428,8 @@ void debugCommand(client *c) {
 "    Return hash table statistics of the specified Redis database.",
 "HTSTATS-KEY <key>",
 "    Like HTSTATS but for the hash table stored at <key>'s value.",
+"FLUSHLOAD",
+"    Flush all keys from memory and reload the current RDB.",
 "LOADAOF",
 "    Flush the AOF buffers on disk and reload the AOF in memory.",
 "LUA-ALWAYS-REPLICATE-COMMANDS <0|1>",
@@ -565,6 +567,18 @@ NULL
             return;
         }
         serverLog(LL_WARNING,"DB reloaded by DEBUG RELOAD");
+        addReply(c,shared.ok);
+    } else if (!strcasecmp(c->argv[1]->ptr,"flushload")) {
+        emptyDb(-1,EMPTYDB_NO_FLAGS,NULL);
+        protectClient(c);
+        int ret = rdbLoad(server.rdb_filename,NULL,RDBFLAGS_NONE);
+        unprotectClient(c);
+        if (ret != C_OK) {
+            addReplyError(c,"Error trying to load the RDB dump");
+            return;
+        }
+        server.dirty = 0; /* Prevent AOF / replication */
+        serverLog(LL_WARNING,"DB loaded by DEBUG FLUSHLOAD");
         addReply(c,shared.ok);
     } else if (!strcasecmp(c->argv[1]->ptr,"loadaof")) {
         if (server.aof_state != AOF_OFF) flushAppendOnlyFile(1);
