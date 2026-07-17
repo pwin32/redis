@@ -527,29 +527,28 @@ DWORD WINAPI ServiceCtrlHandler(DWORD dwControl, DWORD dwEventType, LPVOID lpEve
 
         case SERVICE_CONTROL_STOP:
         {
-            DWORD start = GetTickCount();
-            while (GetTickCount() - start > cPreshutdownInterval) {
-                if (WaitForSingleObject(g_ServiceStoppedEvent, cPreshutdownInterval / 10) == WAIT_OBJECT_0) {
-                    break;
-                }
-
-                g_ServiceStatus.dwControlsAccepted = 0;
-                g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
-                g_ServiceStatus.dwWin32ExitCode = 0;
-                g_ServiceStatus.dwCheckPoint = 4;
-
-                if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-                    throw std::system_error(GetLastError(), system_category(), "SetServiceStatus failed");
-                }
-            }
-
+            /* Redis polls g_ServiceStopEvent from its event loop. Report the
+             * pending state here and let ServiceMain publish SERVICE_STOPPED
+             * only after the worker thread has actually exited. */
             g_ServiceStatus.dwControlsAccepted = 0;
-            g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+            g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
             g_ServiceStatus.dwWin32ExitCode = 0;
-            g_ServiceStatus.dwCheckPoint = 4;
+            g_ServiceStatus.dwCheckPoint = 1;
+            g_ServiceStatus.dwWaitHint = cPreshutdownInterval;
 
             if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-                throw std::system_error(GetLastError(), system_category(), "SetServiceStatus failed");
+                return GetLastError();
+            }
+
+            if (SetEvent(g_ServiceStopEvent) == FALSE) {
+                DWORD error = GetLastError();
+                g_ServiceStatus.dwControlsAccepted =
+                    SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN;
+                g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+                g_ServiceStatus.dwCheckPoint = 0;
+                g_ServiceStatus.dwWaitHint = 0;
+                SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+                return error;
             }
             break;
         }
@@ -616,7 +615,8 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
     g_ServiceStatus.dwControlsAccepted = 0;
     g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
     g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 3;
+    g_ServiceStatus.dwCheckPoint = 0;
+    g_ServiceStatus.dwWaitHint = 0;
 
     if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
         throw std::system_error(GetLastError(), system_category(), "SetServiceStatus failed");
