@@ -198,10 +198,41 @@ namespace ReleasePackagingTool
 		/// <param name="prepareNewVersion">New version</param>
 		private void PrepareNewVersion(string prepareNewVersion)
 		{
+			var versionParts = prepareNewVersion.Split('.');
+			byte majorVersion;
+			byte minorVersion;
+			byte patchVersion;
+			if (versionParts.Length != 3
+				|| !byte.TryParse(versionParts[0], out majorVersion)
+				|| !byte.TryParse(versionParts[1], out minorVersion)
+				|| !byte.TryParse(versionParts[2], out patchVersion))
+			{
+				throw new ArgumentException(
+					"Redis version must contain three byte-sized numeric components.",
+					"prepareNewVersion");
+			}
+
+			var normalizedVersion = String.Format(
+				"{0}.{1}.{2}", majorVersion, minorVersion, patchVersion);
+			if (!String.Equals(
+				prepareNewVersion, normalizedVersion, StringComparison.Ordinal))
+			{
+				throw new ArgumentException(
+					"Redis version must use canonical major.minor.patch form.",
+					"prepareNewVersion");
+			}
+
+			prepareNewVersion = normalizedVersion;
+			int packedVersion =
+				(majorVersion << 16) | (minorVersion << 8) | patchVersion;
 			Console.WriteLine("Preparing new version: " + prepareNewVersion);
 
 			//update src/version.h
-			File.WriteAllText(GetTargetPath(@"src\version.h"), $"#define REDIS_VERSION \"{prepareNewVersion}\"\r\n", System.Text.Encoding.ASCII);
+			File.WriteAllText(
+				GetTargetPath(@"src\version.h"),
+				$"#define REDIS_VERSION \"{prepareNewVersion}\"\r\n" +
+				$"#define REDIS_VERSION_NUM 0x{packedVersion:x8}\r\n",
+				System.Text.Encoding.ASCII);
 
 			//update msvs/RedisForWindows.rc
 			var rcFilePath = GetTargetPath(@"msvs\RedisForWindows.rc");
