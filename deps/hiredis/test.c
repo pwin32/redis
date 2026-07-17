@@ -755,11 +755,20 @@ static void test_resp3_push_handler(redisContext *c) {
     old = redisSetPushCallback(c, push_handler);
     test("We can set a custom RESP3 PUSH handler: ");
     reply = redisCommand(c, "SET key:0 val:0");
+    /* Depending on Redis version, the invalidation may be delivered after the
+     * command reply, so use a following command to drain it through the PUSH
+     * callback before checking the counter. */
+    assert(reply != NULL);
+    freeReplyObject(reply);
+    reply = redisCommand(c, "PING");
     test_cond(reply != NULL && reply->type == REDIS_REPLY_STATUS && pc.str == 1);
     freeReplyObject(reply);
 
     test("We properly handle a NIL invalidation payload: ");
     reply = redisCommand(c, "FLUSHDB");
+    assert(reply != NULL);
+    freeReplyObject(reply);
+    reply = redisCommand(c, "PING");
     test_cond(reply != NULL && reply->type == REDIS_REPLY_STATUS && pc.nil == 1);
     freeReplyObject(reply);
 
@@ -770,6 +779,12 @@ static void test_resp3_push_handler(redisContext *c) {
     assert((reply = redisCommand(c, "GET key:0")) != NULL);
     freeReplyObject(reply);
     assert((reply = redisCommand(c, "SET key:0 invalid")) != NULL);
+    /* The status may precede the invalidation. If so, send PING so the pending
+     * PUSH becomes the next in-band reply and leaves PING's status queued. */
+    if (reply->type == REDIS_REPLY_STATUS) {
+        freeReplyObject(reply);
+        reply = redisCommand(c, "PING");
+    }
     test_cond(reply->type == REDIS_REPLY_PUSH);
     freeReplyObject(reply);
 

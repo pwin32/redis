@@ -1081,12 +1081,24 @@ static int redisHandledPushReply(redisContext *c, void *reply) {
     return 0;
 }
 
+/* Get the next reply while dispatching any RESP3 PUSH messages that were
+ * already buffered before the current blocking command was flushed. Keep this
+ * separate from redisGetReplyFromReader() so its public behavior is unchanged. */
+static int redisNextInBandReplyFromReader(redisContext *c, void **reply) {
+    do {
+        if (redisGetReplyFromReader(c, reply) == REDIS_ERR)
+            return REDIS_ERR;
+    } while (redisHandledPushReply(c, *reply));
+
+    return REDIS_OK;
+}
+
 int redisGetReply(redisContext *c, void **reply) {
     int wdone = 0;
     void *aux = NULL;
 
     /* Try to read pending replies */
-    if (redisGetReplyFromReader(c,&aux) == REDIS_ERR)
+    if (redisNextInBandReplyFromReader(c,&aux) == REDIS_ERR)
         return REDIS_ERR;
 
     /* For the blocking context, flush output buffer and read reply */
@@ -1102,12 +1114,8 @@ int redisGetReply(redisContext *c, void **reply) {
             if (redisBufferRead(c) == REDIS_ERR)
                 return REDIS_ERR;
 
-            /* We loop here in case the user has specified a RESP3
-             * PUSH handler (e.g. for client tracking). */
-            do {
-                if (redisGetReplyFromReader(c,&aux) == REDIS_ERR)
-                    return REDIS_ERR;
-            } while (redisHandledPushReply(c, aux));
+            if (redisNextInBandReplyFromReader(c,&aux) == REDIS_ERR)
+                return REDIS_ERR;
         } while (aux == NULL);
     }
 
