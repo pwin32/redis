@@ -182,7 +182,7 @@ void mp_encode_bytes(lua_State *L, mp_buf *buf, const unsigned char *s, size_t l
         hdrlen = 1;
     } else if (len <= 0xff) {
         hdr[0] = 0xd9;
-        hdr[1] = (unsigned char) len;                                           /* WIN_PORT_FIX: (unsigned char) cast */
+        hdr[1] = len;
         hdrlen = 2;
     } else if (len <= 0xffff) {
         hdr[0] = 0xda;
@@ -191,10 +191,10 @@ void mp_encode_bytes(lua_State *L, mp_buf *buf, const unsigned char *s, size_t l
         hdrlen = 3;
     } else {
         hdr[0] = 0xdb;
-        hdr[1] = (unsigned char)((len&0xff000000)>>24);
-        hdr[2] = (unsigned char)((len&0xff0000)>>16);
-        hdr[3] = (unsigned char)((len&0xff00)>>8);
-        hdr[4] = (unsigned char)(len&0xff);
+        hdr[1] = (len&0xff000000)>>24;
+        hdr[2] = (len&0xff0000)>>16;
+        hdr[3] = (len&0xff00)>>8;
+        hdr[4] = len&0xff;
         hdrlen = 5;
     }
     mp_buf_append(L,buf,hdr,hdrlen);
@@ -437,6 +437,7 @@ int table_is_an_array(lua_State *L) {
 
     stacktop = lua_gettop(L);
 
+    luaL_checkstack(L, 2, "in function table_is_an_array");
     lua_pushnil(L);
     while(lua_next(L,-2)) {
         /* Stack: ... key value */

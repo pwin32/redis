@@ -14,9 +14,10 @@ test "Cluster is writable" {
     cluster_write_test 0
 }
 
-# Keep automatic failover disabled until all three masters are down. Killing
-# processes sequentially is slow enough on Windows for an election to start.
-set replica_ids {5 6 7}
+# For this test, disable replica failover until
+# all of the primaries are confirmed killed. Otherwise
+# there might be enough time to elect a replica.
+set replica_ids { 5 6 7 }
 foreach id $replica_ids {
     R $id config set cluster-replica-no-failover yes
 }

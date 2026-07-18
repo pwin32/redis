@@ -23,7 +23,8 @@ Release/
 x64/
 misc/*
 src/release.h
-appendonly.aof
+appendonly.aof*
+appendonlydir
 SHORT_TERM_TODO
 release.h
 src/transfer.sh
@@ -35,6 +36,8 @@ deps/lua/src/lua
 deps/lua/src/luac
 deps/lua/src/liblua.a
 deps/jemalloc-5.2.1/configure~
+deps/hdr_histogram/libhdrhistogram.a
+deps/fpconv/libfpconv.a
 tests/tls/*
 .make-*
 .prerequisites

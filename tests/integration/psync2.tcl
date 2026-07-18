@@ -5,22 +5,7 @@ proc show_cluster_status {} {
         # time info. Logs are in the following form:
         #
         # 11296:M 25 May 2020 17:37:14.652 # Server initialized
-        #
-        # The Windows/MinGW redis-server uses a different prefix shape:
-        #
-        # [9360] 14 Jul 15:59:16.006 # Server initialized
-        #
-        # i.e. the pid is bracketed, there is no ":<role>" char, and the
-        # year field is omitted. Use a matching regexp on Windows so the
-        # per-instance log arrays actually get populated (otherwise the
-        # POSIX regexp matches zero lines and log($j) stays unset).
-        # (detection idiom matches the pause_process/windows_control_process
-        # branch in tests/support/util.tcl)
-        if {$::tcl_platform(platform) eq "windows"} {
-            set log_regexp {^\[[0-9]+\] [0-9]+ [A-z]+ ([0-9:.]+) .*}
-        } else {
-            set log_regexp {^[0-9]+:[A-Z] [0-9]+ [A-z]+ [0-9]+ ([0-9:.]+) .*}
-        }
+        set log_regexp {^[0-9]+:[A-Z] [0-9]+ [A-z]+ [0-9]+ ([0-9:.]+) .*}
         set repl_regexp {(master|repl|sync|backlog|meaningful|offset)}
 
         puts "Master ID is $master_id"
@@ -39,16 +24,8 @@ proc show_cluster_status {} {
         # First: load the lines as lists for each instance.
         array set log {}
         for {set j 0} {$j < 5} {incr j} {
-            # Ensure every element exists even if no line matches, so the
-            # later "llength $log($j)" is always safe (Windows logs use a
-            # different prefix shape and may otherwise match nothing).
-            set log($j) {}
             set fd [open $R_log($j)]
             while {[gets $fd l] >= 0} {
-                # Windows redis-server writes CRLF line endings; drop a
-                # trailing CR so the trailing ".*" and later comparisons
-                # are not thrown off.
-                set l [string trimright $l "\r"]
                 if {[regexp $log_regexp $l] &&
                     [regexp -nocase $repl_regexp $l]} {
                     lappend log($j) $l
@@ -93,7 +70,7 @@ proc show_cluster_status {} {
     }
 }
 
-start_server {tags {"psync2"}} {
+start_server {tags {"psync2 external:skip"}} {
 start_server {} {
 start_server {} {
 start_server {} {
@@ -123,14 +100,15 @@ start_server {} {
         set R($j) [srv [expr 0-$j] client]
         set R_host($j) [srv [expr 0-$j] host]
         set R_port($j) [srv [expr 0-$j] port]
+        set R_id_from_port($R_port($j)) $j ;# To get a replica index by port
         set R_log($j) [srv [expr 0-$j] stdout]
         if {$debug_msg} {puts "Log file: [srv [expr 0-$j] stdout]"}
     }
 
-    set cycle 1
+    set cycle 0
     while {([clock seconds]-$start_time) < $duration} {
-        test "PSYNC2: --- CYCLE $cycle ---" {}
         incr cycle
+        test "PSYNC2: --- CYCLE $cycle ---" {}
 
         # Create a random replication layout.
         # Start with switching master (this simulates a failover).
@@ -140,13 +118,45 @@ start_server {} {
         set used [list $master_id]
         test "PSYNC2: \[NEW LAYOUT\] Set #$master_id as master" {
             $R($master_id) slaveof no one
-            $R($master_id) config set repl-ping-replica-period 1 ;# increse the chance that random ping will cause issues
+            $R($master_id) config set repl-ping-replica-period 1 ;# increase the chance that random ping will cause issues
             if {$counter_value == 0} {
                 $R($master_id) set x $counter_value
             }
         }
 
-        # 2) Attach all the slaves to a random instance
+        # Build a lookup with the root master of each replica (head of the chain).
+        array set root_master {}
+        for {set j 0} {$j < 5} {incr j} {
+            set r $j
+            while {1} {
+                set r_master_port [status $R($r) master_port]
+                if {$r_master_port == ""} {
+                    set root_master($j) $r
+                    break
+                }
+                set r_master_id $R_id_from_port($r_master_port)
+                set r $r_master_id
+            }
+        }
+
+        # Wait for the newly detached master-replica chain (new master and existing replicas that were
+        # already connected to it, to get updated on the new replication id.
+        # This is needed to avoid a race that can result in a full sync when a replica that already
+        # got an updated repl id, tries to psync from one that's not yet aware of it.
+        wait_for_condition 50 1000 {
+            ([status $R(0) master_replid] == [status $R($root_master(0)) master_replid]) &&
+            ([status $R(1) master_replid] == [status $R($root_master(1)) master_replid]) &&
+            ([status $R(2) master_replid] == [status $R($root_master(2)) master_replid]) &&
+            ([status $R(3) master_replid] == [status $R($root_master(3)) master_replid]) &&
+            ([status $R(4) master_replid] == [status $R($root_master(4)) master_replid])
+        } else {
+            show_cluster_status
+            fail "Replica did not inherit the new replid."
+        }
+
+        # Build a lookup with the direct connection master of each replica.
+        # First loop that uses random to decide who replicates from who.
+        array set slave_to_master {}
         while {[llength $used] != 5} {
             while 1 {
                 set slave_id [randomInt 5]
@@ -154,13 +164,52 @@ start_server {} {
             }
             set rand [randomInt [llength $used]]
             set mid [lindex $used $rand]
-            set master_host $R_host($mid)
-            set master_port $R_port($mid)
-
-            test "PSYNC2: Set #$slave_id to replicate from #$mid" {
-                $R($slave_id) slaveof $master_host $master_port
-            }
+            set slave_to_master($slave_id) $mid
             lappend used $slave_id
+        }
+
+        # 2) Attach all the slaves to a random instance
+        # Second loop that does the actual SLAVEOF command and make sure execute it in the right order.
+        while {[array size slave_to_master] > 0} {
+            foreach slave_id [array names slave_to_master] {
+                set mid $slave_to_master($slave_id)
+
+                # We only attach the replica to a random instance that already in the old/new chain.
+                if {$root_master($mid) == $root_master($master_id)} {
+                    # Find a replica that can be attached to the new chain already attached to the new master.
+                    # My new master is in the new chain.
+                } elseif {$root_master($mid) == $root_master($slave_id)} {
+                    # My new master and I are in the old chain.
+                } else {
+                    # In cycle 1, we do not care about the order.
+                    if {$cycle != 1} {
+                        # skipping this replica for now to avoid attaching in a bad order
+                        # this is done to avoid an unexpected full sync, when we take a
+                        # replica that already reconnected to the new chain and got a new replid
+                        # and is then set to connect to a master that's still not aware of that new replid
+                        continue
+                    }
+                }
+
+                set master_host $R_host($master_id)
+                set master_port $R_port($master_id)
+
+                test "PSYNC2: Set #$slave_id to replicate from #$mid" {
+                    $R($slave_id) slaveof $master_host $master_port
+                }
+
+                # Wait for replica to be connected before we proceed.
+                wait_for_condition 50 1000 {
+                    [status $R($slave_id) master_link_status] == "up"
+                } else {
+                    show_cluster_status
+                    fail "Replica not reconnecting."
+                }
+
+                set root_master($slave_id) $root_master($mid)
+                unset slave_to_master($slave_id)
+                break
+            }
         }
 
         # Wait for replicas to sync. so next loop won't get -LOADING error
@@ -306,13 +355,8 @@ start_server {} {
         set sync_partial [status $R($master_id) sync_partial_ok]
         set sync_partial_err [status $R($master_id) sync_partial_err]
         catch {
-            # POSIX kill_server sends SIGTERM, so Redis saves the current RDB
-            # before restart. The Windows helper uses taskkill /F and cannot
-            # run that shutdown path; save explicitly so this test exercises
-            # the same current RDB AUX replication metadata.
-            if {$::tcl_platform(platform) eq "windows"} {
-                $R($slave_id) save
-            }
+            # Make sure the server saves an RDB on shutdown
+            $R($slave_id) config set save "900 1"
             $R($slave_id) config rewrite
             restart_server [expr {0-$slave_id}] true false
             set R($slave_id) [srv [expr {0-$slave_id}] client]
@@ -331,73 +375,6 @@ start_server {} {
         }
         set new_sync_count [status $R($master_id) sync_full]
         assert {$sync_count == $new_sync_count}
-    }
-
-    test "PSYNC2: Replica RDB restart with EVALSHA in backlog issue #4483" {
-        # Pick a random slave
-        set slave_id [expr {($master_id+1)%5}]
-        set sync_count [status $R($master_id) sync_full]
-
-        # Make sure to replicate the first EVAL while the salve is online
-        # so that it's part of the scripts the master believes it's safe
-        # to propagate as EVALSHA.
-        $R($master_id) EVAL {return redis.call("incr","__mycounter")} 0
-        $R($master_id) EVALSHA e6e0b547500efcec21eddb619ac3724081afee89 0
-
-        # Wait for the two to sync
-        wait_for_condition 50 1000 {
-            [$R($master_id) debug digest] == [$R($slave_id) debug digest]
-        } else {
-            show_cluster_status
-            fail "Replica not reconnecting"
-        }
-
-        # Prevent the slave from receiving master updates, and at
-        # the same time send a new script several times to the
-        # master, so that we'll end with EVALSHA into the backlog.
-        $R($slave_id) slaveof 127.0.0.1 0
-
-        $R($master_id) EVALSHA e6e0b547500efcec21eddb619ac3724081afee89 0
-        $R($master_id) EVALSHA e6e0b547500efcec21eddb619ac3724081afee89 0
-        $R($master_id) EVALSHA e6e0b547500efcec21eddb619ac3724081afee89 0
-
-        catch {
-            $R($slave_id) config rewrite
-            restart_server [expr {0-$slave_id}] true false
-            set R($slave_id) [srv [expr {0-$slave_id}] client]
-        }
-
-        # Reconfigure the slave correctly again, when it's back online.
-        set retry 50
-        while {$retry} {
-            if {[catch {
-                $R($slave_id) slaveof $master_host $master_port
-            }]} {
-                after 1000
-            } else {
-                break
-            }
-            incr retry -1
-        }
-
-        # The master should be back at 4 slaves eventually
-        wait_for_condition 50 1000 {
-            [status $R($master_id) connected_slaves] == 4
-        } else {
-            show_cluster_status
-            fail "Replica not reconnecting"
-        }
-        set new_sync_count [status $R($master_id) sync_full]
-        assert {$sync_count == $new_sync_count}
-
-        # However if the slave started with the full state of the
-        # scripting engine, we should now have the same digest.
-        wait_for_condition 50 1000 {
-            [$R($master_id) debug digest] == [$R($slave_id) debug digest]
-        } else {
-            show_cluster_status
-            fail "Debug digest mismatch between master and replica in post-restart handshake"
-        }
     }
 
     if {$no_exit} {

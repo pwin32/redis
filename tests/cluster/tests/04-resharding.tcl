@@ -84,7 +84,7 @@ test "Cluster consistency during live resharding" {
             flush stdout
             set target [dict get [get_myself [randomInt 5]] id]
             set tribpid [lindex [exec \
-                $::redis_cli_path --cluster reshard \
+                ../../../src/redis-cli --cluster reshard \
                 127.0.0.1:[get_instance_attrib redis 0 port] \
                 --cluster-from all \
                 --cluster-to $target \
@@ -137,10 +137,9 @@ test "Verify $numkeys keys for consistency with logical content" {
     }
 }
 
-test "Crash and restart all the instances" {
+test "Terminate and restart all the instances" {
     foreach_redis_id id {
-        # Stop AOF so an initial rewrite does not overlap termination. The
-        # unchanged config file enables AOF and loads it again on restart.
+        # Stop AOF so that an initial AOFRW won't prevent the instance from terminating
         R $id config set appendonly no
         kill_instance redis $id
         restart_instance redis $id
@@ -151,7 +150,7 @@ test "Cluster should eventually be up again" {
     assert_cluster_state ok
 }
 
-test "Verify $numkeys keys after the crash & restart" {
+test "Verify $numkeys keys after the restart" {
     # Check that the Redis Cluster content matches our logical content.
     foreach {key value} [array get content] {
         if {[$cluster lrange $key 0 -1] ne $value} {
@@ -190,6 +189,7 @@ test "Verify slaves consistency" {
 }
 
 test "Dump sanitization was skipped for migrations" {
+    set verified_masters 0
     foreach_redis_id id {
         assert {[RI $id dump_payload_sanitizations] == 0}
     }

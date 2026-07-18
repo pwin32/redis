@@ -34,11 +34,6 @@
  * either the BSD or the GPL.
  */
 
-#ifdef _WIN32
-#include "Win32_Interop/Win32_Portability.h"
-#include "Win32_Interop/win32_types.h"
-#endif
-
 #include "lzfP.h"
 
 #define HSIZE (1 << (HLOG))
@@ -85,11 +80,21 @@
 # define inline                     inline
 #else
 # define expect(expr,value)         (expr)
-POSIX_ONLY(# define inline                     static)
+# define inline                     static
 #endif
 
 #define expect_false(expr) expect ((expr) != 0, 0)
 #define expect_true(expr)  expect ((expr) != 0, 1)
+
+#if defined(__has_attribute)
+# if __has_attribute(no_sanitize)
+#  define NO_SANITIZE(sanitizer) __attribute__((no_sanitize(sanitizer)))
+# endif
+#endif
+
+#if !defined(NO_SANITIZE)
+# define NO_SANITIZE(sanitizer)
+#endif
 
 /*
  * compressed format
@@ -99,10 +104,10 @@ POSIX_ONLY(# define inline                     static)
  * 111ooooo LLLLLLLL oooooooo ; backref L+8 octets, o+1=1..4096 offset
  *
  */
-
-unsigned int
-lzf_compress (const void *const in_data, unsigned int in_len,
-	      void *out_data, unsigned int out_len
+NO_SANITIZE("alignment")
+size_t
+lzf_compress (const void *const in_data, size_t in_len,
+	      void *out_data, size_t out_len
 #if LZF_STATE_ARG
               , LZF_STATE htab
 #endif
@@ -124,10 +129,10 @@ lzf_compress (const void *const in_data, unsigned int in_len,
    * and fails to support both assumptions is windows 64 bit, we make a
    * special workaround for it.
    */
-#if defined (WIN32) && defined (_M_X64) && !defined(__MINGW32__)
+#if defined (WIN32) && defined (_M_X64)
   unsigned _int64 off; /* workaround for missing POSIX compliance */
 #else
-  PORT_ULONG off;
+  size_t off;
 #endif
   unsigned int hval;
   int lit;
@@ -148,7 +153,8 @@ lzf_compress (const void *const in_data, unsigned int in_len,
 
       hval = NEXT (hval, ip);
       hslot = htab + IDX (hval);
-      ref = *hslot + LZF_HSLOT_BIAS; *hslot = ip - LZF_HSLOT_BIAS;
+      ref = *hslot ? (*hslot + LZF_HSLOT_BIAS) : NULL; /* avoid applying zero offset to null pointer */
+      *hslot = ip - LZF_HSLOT_BIAS;
 
       if (1
 #if INIT_HTAB
@@ -166,7 +172,7 @@ lzf_compress (const void *const in_data, unsigned int in_len,
         {
           /* match found at *ref++ */
           unsigned int len = 2;
-          unsigned int maxlen = (unsigned int)(in_end - ip - len);              WIN_PORT_FIX /* cast (unsigned int) */
+          size_t maxlen = in_end - ip - len;
           maxlen = maxlen > MAX_REF ? MAX_REF : maxlen;
 
           if (expect_false (op + 3 + 1 >= out_end)) /* first a faster conservative test */
@@ -213,15 +219,15 @@ lzf_compress (const void *const in_data, unsigned int in_len,
 
           if (len < 7)
             {
-              *op++ = (u8)((off >> 8) + (len << 5));                            WIN_PORT_FIX /* cast (u8) */
+              *op++ = (off >> 8) + (len << 5);
             }
           else
             {
-              *op++ = (u8)((off >> 8) + (  7 << 5));                            WIN_PORT_FIX /* cast (u8) */
+              *op++ = (off >> 8) + (  7 << 5);
               *op++ = len - 7;
             }
 
-          *op++ = (u8)(off);                                                    WIN_PORT_FIX /* cast (u8) */
+          *op++ = off;
 
           lit = 0; op++; /* start run */
 
@@ -291,5 +297,6 @@ lzf_compress (const void *const in_data, unsigned int in_len,
   op [- lit - 1] = lit - 1; /* end run */
   op -= !lit; /* undo run if length is zero */
 
-  return (unsigned int)(op - (u8 *)out_data);                                   WIN_PORT_FIX /* cast (unsigned int) */
+  return op - (u8 *)out_data;
 }
+

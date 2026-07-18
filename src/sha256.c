@@ -29,7 +29,7 @@
 #define SIG1(x) (ROTRIGHT(x,17) ^ ROTRIGHT(x,19) ^ ((x) >> 10))
 
 /**************************** VARIABLES *****************************/
-static const SHA256_WORD k[64] = {
+static const WORD k[64] = {
 	0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
 	0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
 	0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
@@ -43,13 +43,13 @@ static const SHA256_WORD k[64] = {
 /*********************** FUNCTION DEFINITIONS ***********************/
 void sha256_transform(SHA256_CTX *ctx, const BYTE data[])
 {
-	SHA256_WORD a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
+	WORD a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
 
     for (i = 0, j = 0; i < 16; ++i, j += 4) {
-        m[i] = ((SHA256_WORD) data[j + 0] << 24) |
-               ((SHA256_WORD) data[j + 1] << 16) |
-               ((SHA256_WORD) data[j + 2] << 8) |
-               ((SHA256_WORD) data[j + 3]);
+        m[i] = ((WORD) data[j + 0] << 24) |
+               ((WORD) data[j + 1] << 16) |
+               ((WORD) data[j + 2] << 8) |
+               ((WORD) data[j + 3]);
     }
 
 	for ( ; i < 64; ++i)
@@ -103,7 +103,7 @@ void sha256_init(SHA256_CTX *ctx)
 
 void sha256_update(SHA256_CTX *ctx, const BYTE data[], size_t len)
 {
-	SHA256_WORD i;
+	WORD i;
 
 	for (i = 0; i < len; ++i) {
 		ctx->data[ctx->datalen] = data[i];
@@ -118,7 +118,7 @@ void sha256_update(SHA256_CTX *ctx, const BYTE data[], size_t len)
 
 void sha256_final(SHA256_CTX *ctx, BYTE hash[])
 {
-	SHA256_WORD i;
+	WORD i;
 
 	i = ctx->datalen;
 
