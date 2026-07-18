@@ -35,7 +35,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <assert.h>
 
 #ifdef __linux__
@@ -51,7 +53,9 @@ void zlibc_free(void *ptr) {
 }
 
 #include <string.h>
+#ifndef _WIN32
 #include <pthread.h>
+#endif
 #include "zmalloc.h"
 #include "atomicvar.h"
 
@@ -92,6 +96,12 @@ void zlibc_free(void *ptr) {
 #define update_zmalloc_stat_free(__n) atomicDecr(used_memory,(__n))
 
 static redisAtomic size_t used_memory = 0;
+
+#ifdef _WIN32
+void zmalloc_set_used_memory(size_t memory) {
+    atomicSet(used_memory,memory);
+}
+#endif
 
 static void zmalloc_default_oom(size_t size) {
     fprintf(stderr, "zmalloc: Out of memory trying to allocate %zu bytes\n",

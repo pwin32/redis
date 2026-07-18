@@ -166,21 +166,10 @@ struct redisSsl;
 #define REDIS_OPT_PREFER_IPV6 0x40       /* Prefer IPv6 in DNS lookups. */
 #define REDIS_OPT_PREFER_IP_UNSPEC (REDIS_OPT_PREFER_IPV4 | REDIS_OPT_PREFER_IPV6)
 
-/* In Unix systems a file descriptor is a regular signed int, with -1
- * representing an invalid descriptor. In Windows it is a SOCKET
- * (32- or 64-bit unsigned integer depending on the architecture), where
- * all bits set (~0) is INVALID_SOCKET.  */
-#ifndef _WIN32
+/* This Windows port uses synthetic FDAPI descriptors on every platform path
+ * in the embedded Hiredis build, so the descriptor ABI remains a signed int. */
 typedef int redisFD;
 #define REDIS_INVALID_FD -1
-#else
-#ifdef _WIN64
-typedef unsigned long long redisFD; /* SOCKET = 64-bit UINT_PTR */
-#else
-typedef unsigned long redisFD;      /* SOCKET = 32-bit UINT_PTR */
-#endif
-#define REDIS_INVALID_FD ((redisFD)(~0)) /* INVALID_SOCKET */
-#endif
 
 typedef struct {
     /*

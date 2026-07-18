@@ -25,6 +25,7 @@
 #include "win32_Interop/win32fixes.h"
 #include "adlist.h"
 #include "win32_Interop/win32_wsiocp.h"
+#include "win32_Interop/Win32_RedisLog.h"
 
 #define MAX_COMPLETE_PER_POLL   100
 #define MAX_SOCKET_LOOKUP       65535
@@ -140,17 +141,8 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
         if ((sockstate->masks & CONNECT_PENDING) == 0) {
             // If no write active, then need to queue write ready
             if (sockstate->wreqs == 0) {
-                asendreq *areq = (asendreq *) CallocMemoryNoCOW(sizeof(asendreq));
-                if (PostQueuedCompletionStatus(state->iocp,
-                                               0,
-                                               fd,
-                                               &areq->ov) == 0) {
-                    errno = GetLastError();
-                    FreeMemoryNoCOW(areq);
+                if (WSIOCP_QueueWriteReady(fd) != 0)
                     return -1;
-                }
-                sockstate->wreqs++;
-                listAddNodeTail(&sockstate->wreqlist, areq);
             }
         }
     }
@@ -282,8 +274,14 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                         }
                     }
                     if (matched == 0 && sockstate->unknownComplete == 0) {
+                        /* A late completion can legitimately arrive after a
+                         * descriptor has been closed and reused.  Never close
+                         * the current occupant of the synthetic descriptor;
+                         * mark it for diagnostics and let its owner decide. */
                         sockstate->unknownComplete = 1;
-                        close(rfd);
+                        serverLog(LL_WARNING,
+                                  "IOCP completion did not match fd=%d; ignoring late completion",
+                                  rfd);
                     }
                 }
             } else {

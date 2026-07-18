@@ -17,6 +17,7 @@ proc fill_up_os_socket_send_buffer_for_repl {idx} {
     }
 }
 
+if {$::tcl_platform(platform) ne "windows"} {
 foreach how {sigterm shutdown} {
     test "Shutting down master waits for replica to catch up ($how)" {
         start_server {overrides {save ""}} {
@@ -83,7 +84,9 @@ foreach how {sigterm shutdown} {
         }
     } {} {repl external:skip}
 }
+}
 
+if {$::tcl_platform(platform) ne "windows"} {
 test {Shutting down master waits for replica timeout} {
     start_server {overrides {save ""}} {
         start_server {overrides {save ""}} {
@@ -132,6 +135,7 @@ test {Shutting down master waits for replica timeout} {
         }
     }
 } {} {repl external:skip}
+}
 
 test "Shutting down master waits for replica then fails" {
     start_server {overrides {save ""}} {

@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/keyspecs.so]
+set testmodule [redis_test_module keyspecs]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

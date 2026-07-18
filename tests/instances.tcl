@@ -48,18 +48,20 @@ if {[catch {cd tmp}]} {
 # the provided configuration file. Returns the PID of the process.
 proc exec_instance {type dirname cfgfile} {
     if {$type eq "redis"} {
-        set prgname redis-server
+        set prg $::redis_server_path
+        set args [list $cfgfile]
     } elseif {$type eq "sentinel"} {
-        set prgname redis-sentinel
+        set prg $::redis_server_path
+        set args [list $cfgfile --sentinel]
     } else {
         error "Unknown instance type."
     }
 
     set errfile [file join $dirname err.txt]
     if {$::valgrind} {
-        set pid [exec valgrind --track-origins=yes --suppressions=../../../src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full ../../../src/${prgname} $cfgfile 2>> $errfile &]
+        set pid [exec valgrind --track-origins=yes --suppressions=../../../src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full $prg {*}$args 2>> $errfile &]
     } else {
-        set pid [exec ../../../src/${prgname} $cfgfile 2>> $errfile &]
+        set pid [exec $prg {*}$args 2>> $errfile &]
     }
     return $pid
 }
@@ -87,7 +89,7 @@ proc spawn_instance {type base_port count {conf {}} {base_conf_file ""}} {
 
         if {$::tls} {
             if {$::tls_module} {
-                puts $cfg [format "loadmodule %s/../../../src/redis-tls.so" [pwd]]
+                puts $cfg [format "loadmodule %s" [file join $::redis_test_root src redis-tls.so]]
             }
 
             puts $cfg "tls-port $port"
@@ -210,18 +212,19 @@ proc log_crashes {} {
 }
 
 proc is_alive pid {
-    if {[catch {exec ps -p $pid} err]} {
-        return 0
-    } else {
-        return 1
-    }
+    return [process_is_alive $pid]
 }
 
 proc stop_instance pid {
-    # Node might have been stopped in the test
-    # Send SIGCONT before SIGTERM, otherwise shutdown may be slow with ASAN.
-    catch {exec kill -SIGCONT $pid}
-    catch {exec kill $pid}
+    if {$::tcl_platform(platform) eq "windows"} {
+        # taskkill is deliberately scoped to this exact PID.  The helper
+        # validates that the process belongs to this test tree before acting.
+        catch {kill_proc2 $pid}
+    } else {
+        # Node might have been stopped in the test.
+        catch {exec kill -SIGCONT $pid}
+        catch {exec kill $pid}
+    }
     if {$::valgrind} {
         set max_wait 120000
     } else {
@@ -231,11 +234,11 @@ proc stop_instance pid {
         incr wait 10
 
         if {$wait == $max_wait} {
-            puts [colorstr red "Forcing process $pid to crash..."]
-            catch {exec kill -SEGV $pid}
+            puts [colorstr red "Forcing process $pid to exit..."]
+            catch {kill_proc2 $pid}
         } elseif {$wait >= $max_wait * 2} {
             puts [colorstr red "Forcing process $pid to exit..."]
-            catch {exec kill -KILL $pid}
+            catch {kill_proc2 $pid}
         } elseif {$wait % 1000 == 0} {
             puts "Waiting for process $pid to exit..."
         }

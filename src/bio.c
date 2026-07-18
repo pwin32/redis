@@ -62,6 +62,9 @@
 
 #include "server.h"
 #include "bio.h"
+#ifdef _WIN32
+#include "Win32_Interop/Win32_ThreadControl.h"
+#endif
 
 static char* bio_worker_title[] = {
     "bio_close_file",
@@ -140,7 +143,7 @@ void bioInit(void) {
      * function accepts in order to pass the job ID the thread is
      * responsible for. */
     for (j = 0; j < BIO_WORKER_NUM; j++) {
-        void *arg = (void*)(unsigned long) j;
+        void *arg = (void*)(PORT_ULONG) j;
         if (pthread_create(&thread,&attr,bioProcessBackgroundJobs,arg) != 0) {
             serverLog(LL_WARNING, "Fatal: Can't initialize Background Jobs. Error message: %s", strerror(errno));
             exit(1);
@@ -204,7 +207,7 @@ void bioCreateFsyncJob(int fd, long long offset, int need_reclaim_cache) {
 
 void *bioProcessBackgroundJobs(void *arg) {
     bio_job *job;
-    unsigned long worker = (unsigned long) arg;
+    PORT_ULONG worker = (PORT_ULONG) arg;
     sigset_t sigset;
 
     /* Check that the worker is within the right interval. */
@@ -230,7 +233,20 @@ void *bioProcessBackgroundJobs(void *arg) {
 
         /* The loop always starts with the lock hold. */
         if (listLength(bio_jobs[worker]) == 0) {
+#ifdef _WIN32
+            /* QFork must not remap heap pages while a BIO worker can still
+             * enter an allocator call.  Count idle workers as safe before
+             * waiting, then leave safe mode only after the suspension gate is
+             * released.  The Windows condition-variable shim returns with
+             * the mutex held, hence the explicit unlock/relock pair. */
+            WorkerThread_EnterSafeMode();
             pthread_cond_wait(&bio_newjob_cond[worker], &bio_mutex[worker]);
+            pthread_mutex_unlock(&bio_mutex[worker]);
+            WorkerThread_ExitSafeMode();
+            pthread_mutex_lock(&bio_mutex[worker]);
+#else
+            pthread_cond_wait(&bio_newjob_cond[worker], &bio_mutex[worker]);
+#endif
             continue;
         }
         /* Get the job from the queue. */
@@ -326,6 +342,7 @@ void bioDrainWorker(int job_type) {
  * Currently Redis does this only on crash (for instance on SIGSEGV) in order
  * to perform a fast memory check without other threads messing with memory. */
 void bioKillThreads(void) {
+#ifndef _WIN32
     int err;
     unsigned long j;
 
@@ -342,4 +359,9 @@ void bioKillThreads(void) {
             }
         }
     }
+#else
+    /* The Windows pthread shim has no safe cancellation primitive.  This is
+     * only used from fatal-crash diagnostics, where forcing the shim threads
+     * down would risk corrupting QFork and allocator state. */
+#endif
 }

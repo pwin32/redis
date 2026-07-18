@@ -1,6 +1,6 @@
-set testmodule [file normalize tests/modules/blockedclient.so]
-set testmodule2 [file normalize tests/modules/postnotifications.so]
-set testmodule3 [file normalize tests/modules/blockonkeys.so]
+set testmodule [redis_test_module blockedclient]
+set testmodule2 [redis_test_module postnotifications]
+set testmodule3 [redis_test_module blockonkeys]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

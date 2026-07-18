@@ -28,6 +28,13 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/win32_types.h"
+#include "Win32_Interop/Win32_EventLog.h"
+#include "Win32_Interop/Win32_Error.h"
+#include <direct.h>
+#endif
+
 #include "server.h"
 #include "cluster.h"
 #include "connection.h"
@@ -35,11 +42,15 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <glob.h>
+#endif
 #include <string.h>
 #include <locale.h>
 #include <ctype.h>
+#ifndef _WIN32
 #include <arpa/inet.h>
+#endif
 
 /*-----------------------------------------------------------------------------
  * Config file name-value maps.
@@ -63,6 +74,7 @@ configEnum maxmemory_policy_enum[] = {
     {NULL, 0}
 };
 
+#ifndef _WIN32
 configEnum syslog_facility_enum[] = {
     {"user",    LOG_USER},
     {"local0",  LOG_LOCAL0},
@@ -75,6 +87,7 @@ configEnum syslog_facility_enum[] = {
     {"local7",  LOG_LOCAL7},
     {NULL, 0}
 };
+#endif
 
 configEnum loglevel_enum[] = {
     {"debug", LL_DEBUG},
@@ -592,6 +605,29 @@ void loadServerConfigFromString(char *config) {
                 }
                 queueSentinelConfig(argv+1,argc-1,linenum,lines[i]);
             }
+#ifdef _WIN32
+        } else if (!strcasecmp(argv[0], "service-name") && argc == 2) {
+            /* The outer Windows service bootstrap owns the service name.  It
+             * is intentionally accepted here so the same config can be used
+             * for console and SCM launches without leaking service metadata
+             * into Redis' runtime configuration. */
+        } else if (!strcasecmp(argv[0], "persistence-available") && argc == 2) {
+            if (!strcasecmp(argv[1], "no")) {
+                /* The QFork bootstrap uses this mode for diagnostics and
+                 * smoke tests.  Remove commands whose implementation would
+                 * require persistence before server startup completes. */
+                const char *disabled[] = {"bgsave", "bgrewriteaof", "replconf", "psync", "sync"};
+                for (size_t j = 0; j < sizeof(disabled)/sizeof(disabled[0]); j++) {
+                    sds name = sdsnew(disabled[j]);
+                    int retval = dictDelete(server.commands, name);
+                    serverAssert(retval == DICT_OK || retval == DICT_ERR);
+                    sdsfree(name);
+                }
+            } else if (strcasecmp(argv[1], "yes")) {
+                err = "persistence-available must be yes or no";
+                goto loaderr;
+            }
+#endif
         } else {
             err = "Bad directive or wrong number of arguments"; goto loaderr;
         }
@@ -607,9 +643,13 @@ void loadServerConfigFromString(char *config) {
         logfp = fopen(server.logfile,"a");
         if (logfp == NULL) {
             err = sdscatprintf(sdsempty(),
-                               "Can't open the log file: %s", strerror(errno));
+                               "Can't open the log file: %s",
+                               IF_WIN32(wsa_strerror(errno), strerror(errno)));
             goto loaderr;
         }
+#ifdef _WIN32
+        setLogFile(server.logfile);
+#endif
         fclose(logfp);
     }
 
@@ -635,6 +675,15 @@ void loadServerConfigFromString(char *config) {
 
 loaderr:
     if (argv) sdsfreesplitres(argv,argc);
+#ifdef _WIN32
+    serverLog(LL_WARNING, "\n*** FATAL CONFIG FILE ERROR (Redis %s) ***\n",
+        REDIS_VERSION);
+    if (i < totlines) {
+        serverLog(LL_WARNING, "Reading the configuration file, at line %d\n", linenum);
+        serverLog(LL_WARNING, ">>> '%s'\n", lines[i]);
+    }
+    serverLog(LL_WARNING, "%s\n", err);
+#else
     fprintf(stderr, "\n*** FATAL CONFIG FILE ERROR (Redis %s) ***\n",
         REDIS_VERSION);
     if (i < totlines) {
@@ -642,6 +691,7 @@ loaderr:
         fprintf(stderr, ">>> '%s'\n", lines[i]);
     }
     fprintf(stderr, "%s\n", err);
+#endif
     exit(1);
 }
 
@@ -657,7 +707,9 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
     sds config = sdsempty();
     char buf[CONFIG_READ_LEN+1];
     FILE *fp;
+#ifndef _WIN32
     glob_t globbuf;
+#endif
 
     /* Load the file content */
     if (filename) {
@@ -676,6 +728,20 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
          *                       config file, as if the current entry was never encountered.
          *                       This will allow for empty conf.d directories to be included. */
 
+#ifdef _WIN32
+        /* The native Windows package has no POSIX glob implementation.  Keep
+         * config/include paths literal and let the normal fopen error identify
+         * an invalid path. */
+        if ((fp = fopen(filename, "r")) == NULL) {
+            serverLog(LL_WARNING,
+                      "Fatal error, can't open config file '%s': %s",
+                      filename, IF_WIN32(wsa_strerror(errno), strerror(errno)));
+            exit(1);
+        }
+        while (fgets(buf, CONFIG_READ_LEN+1, fp) != NULL)
+            config = sdscat(config, buf);
+        fclose(fp);
+#else
         if (strchr(filename, '*') || strchr(filename, '?') || strchr(filename, '[')) {
             /* A wildcard character detected in filename, so let us use glob */
             if (glob(filename, 0, NULL, &globbuf) == 0) {
@@ -707,6 +773,7 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
                 config = sdscat(config,buf);
             fclose(fp);
         }
+#endif
     }
 
     /* Append content from stdin */
@@ -1098,7 +1165,7 @@ void rewriteConfigAddLineNumberToOption(struct rewriteConfigState *state, sds op
         l = listCreate();
         dictAdd(state->option_to_line,sdsdup(option),l);
     }
-    listAddNodeTail(l,(void*)(long)linenum);
+    listAddNodeTail(l,(void*)(intptr_t)linenum);
 }
 
 /* Add the specified option to the set of processed options.
@@ -1244,7 +1311,7 @@ int rewriteConfigRewriteLine(struct rewriteConfigState *state, const char *optio
 
     if (l) {
         listNode *ln = listFirst(l);
-        int linenum = (long) ln->value;
+        int linenum = (int)(intptr_t)ln->value;
 
         /* There are still lines in the old configuration file we can reuse
          * for this option. Replace the line with the new one. */
@@ -1639,7 +1706,7 @@ void rewriteConfigRemoveOrphaned(struct rewriteConfigState *state) {
 
         while(listLength(l)) {
             listNode *ln = listFirst(l);
-            int linenum = (long) ln->value;
+            int linenum = (int)(intptr_t)ln->value;
 
             sdsfree(state->lines[linenum]);
             state->lines[linenum] = sdsempty();
@@ -1692,7 +1759,9 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
         return retval;
     }
 
-#if defined(_GNU_SOURCE) && !defined(__HAIKU__)
+#ifdef _WIN32
+    fd = FDAPI_mkstemp(tmp_conffile);
+#elif defined(_GNU_SOURCE) && !defined(__HAIKU__)
     fd = mkostemp(tmp_conffile, O_CLOEXEC);
 #else
     /* There's a theoretical chance here to leak the FD if a module thread forks & execv in the middle */
@@ -1714,6 +1783,23 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
          offset+=written_bytes;
     }
 
+#ifdef _WIN32
+    if (fsync(fd))
+        serverLog(LL_WARNING, "Could not sync tmp config file to disk (%s)", strerror(errno));
+    else {
+        /* The Windows replacement rename cannot replace an open file. */
+        int close_ret = close(fd);
+        fd = -1;
+        if (close_ret == -1)
+            serverLog(LL_WARNING, "Could not close tmp config file (%s)", strerror(errno));
+        else if (rename(tmp_conffile, configfile) == -1)
+            serverLog(LL_WARNING, "Could not rename tmp config file (%s)", strerror(errno));
+        else {
+            retval = 0;
+            serverLog(LL_DEBUG, "Rewritten config file (%s) successfully", configfile);
+        }
+    }
+#else
     if (fsync(fd))
         serverLog(LL_WARNING, "Could not sync tmp config file to disk (%s)", strerror(errno));
     else if (fchmod(fd, 0644 & ~server.umask) == -1)
@@ -1726,10 +1812,11 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
         retval = 0;
         serverLog(LL_DEBUG, "Rewritten config file (%s) successfully", configfile);
     }
+#endif
 
 cleanup:
     old_errno = errno;
-    close(fd);
+    if (fd != -1) close(fd);
     if (retval) unlink(tmp_conffile);
     errno = old_errno;
     return retval;
@@ -1882,6 +1969,13 @@ static int stringConfigSet(standardConfig *config, sds *argv, int argc, const ch
     if (new != prev && (new == NULL || prev == NULL || strcmp(prev, new))) {
         *config->data.string.config = new != NULL ? zstrdup(new) : NULL;
         zfree(prev);
+#ifdef _WIN32
+        /* The outer bootstrap selects Event Log versus file/console output
+         * before Redis parses its config.  Keep the native logger synchronized
+         * when a config-file `logfile` value is applied as well. */
+        if (!strcasecmp(config->name, "logfile"))
+            setLogFile(*config->data.string.config ? *config->data.string.config : "");
+#endif
         return 1;
     }
     return (config->flags & VOLATILE_CONFIG) ? 1 : 2;
@@ -2470,6 +2564,16 @@ static int updateHZ(const char **err) {
     return 1;
 }
 
+#ifdef _WIN32
+/* Keep the native Event Log/console logger's threshold synchronized with the
+ * core setting while the startup config is being applied. */
+static int updateLogLevel(const char **err) {
+    UNUSED(err);
+    setLogVerbosityLevel(server.verbosity);
+    return 1;
+}
+#endif
+
 static int updatePort(const char **err) {
     connListener *listener = listenerByType(CONN_TYPE_SOCKET);
 
@@ -2709,7 +2813,7 @@ static int setConfigDirOption(standardConfig *config, sds *argv, int argc, const
         return 0;
     }
     if (chdir(argv[0]) == -1) {
-        *err = strerror(errno);
+        *err = IF_WIN32(wsa_strerror(errno), strerror(errno));
         return 0;
     }
     return 1;
@@ -3150,9 +3254,17 @@ standardConfig static_configs[] = {
 
     /* Enum Configs */
     createEnumConfig("supervised", NULL, IMMUTABLE_CONFIG, supervised_mode_enum, server.supervised_mode, SUPERVISED_NONE, NULL, NULL),
+#ifndef _WIN32
     createEnumConfig("syslog-facility", NULL, IMMUTABLE_CONFIG, syslog_facility_enum, server.syslog_facility, LOG_LOCAL0, NULL, NULL),
+#endif
     createEnumConfig("repl-diskless-load", NULL, DEBUG_CONFIG | MODIFIABLE_CONFIG | DENY_LOADING_CONFIG, repl_diskless_load_enum, server.repl_diskless_load, REPL_DISKLESS_LOAD_DISABLED, NULL, NULL),
-    createEnumConfig("loglevel", NULL, MODIFIABLE_CONFIG, loglevel_enum, server.verbosity, LL_NOTICE, NULL, NULL),
+    createEnumConfig("loglevel", NULL, MODIFIABLE_CONFIG, loglevel_enum, server.verbosity, LL_NOTICE, NULL,
+#ifdef _WIN32
+        updateLogLevel
+#else
+        NULL
+#endif
+    ),
     createEnumConfig("maxmemory-policy", NULL, MODIFIABLE_CONFIG, maxmemory_policy_enum, server.maxmemory_policy, MAXMEMORY_NO_EVICTION, NULL, NULL),
     createEnumConfig("appendfsync", NULL, MODIFIABLE_CONFIG, aof_fsync_enum, server.aof_fsync, AOF_FSYNC_EVERYSEC, NULL, updateAppendFsync),
     createEnumConfig("oom-score-adj", NULL, MODIFIABLE_CONFIG, oom_score_adj_enum, server.oom_score_adj, OOM_SCORE_ADJ_NO, NULL, updateOOMScoreAdj),

@@ -44,7 +44,7 @@ long long redisPopcount(void *s, long count) {
     static const unsigned char bitsinbyte[256] = {0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,4,5,5,6,5,6,6,7,5,6,6,7,6,7,7,8};
 
     /* Count initial bytes not aligned to 32 bit. */
-    while((unsigned long)p & 3 && count) {
+    while((uintptr_t)p & 3 && count) {
         bits += bitsinbyte[*p++];
         count--;
     }
@@ -119,7 +119,7 @@ long long redisBitpos(void *s, unsigned long count, int bit) {
     skipval = bit ? 0 : UCHAR_MAX;
     c = (unsigned char*) s;
     found = 0;
-    while((unsigned long)c & (sizeof(*l)-1) && count) {
+    while((uintptr_t)c & (sizeof(*l)-1) && count) {
         if (*c != skipval) {
             found = 1;
             break;
@@ -518,7 +518,7 @@ unsigned char *getObjectReadOnlyString(robj *o, long *len, char *llbuf) {
      * array if our string was integer encoded. */
     if (o && o->encoding == OBJ_ENCODING_INT) {
         p = (unsigned char*) llbuf;
-        if (len) *len = ll2string(llbuf,LONG_STR_SIZE,(long)o->ptr);
+        if (len) *len = ll2string(llbuf,LONG_STR_SIZE,(long long)(intptr_t)o->ptr);
     } else if (o) {
         p = (unsigned char*) o->ptr;
         if (len) *len = sdslen(o->ptr);
@@ -595,7 +595,7 @@ void getbitCommand(client *c) {
         if (byte < sdslen(o->ptr))
             bitval = ((uint8_t*)o->ptr)[byte] & (1 << bit);
     } else {
-        if (byte < (size_t)ll2string(llbuf,sizeof(llbuf),(long)o->ptr))
+        if (byte < (size_t)ll2string(llbuf,sizeof(llbuf),(long long)(intptr_t)o->ptr))
             bitval = llbuf[byte] & (1 << bit);
     }
 

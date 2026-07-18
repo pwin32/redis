@@ -31,6 +31,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "win32_hiredis.h"
+#endif
 #include "fmacros.h"
 #include <string.h>
 #include <stdlib.h>
@@ -732,7 +735,7 @@ void redisFree(redisContext *c) {
         return;
 
     if (c->funcs && c->funcs->close) {
-        c->funcs->close(c);
+        (c->funcs->close)(c);
     }
 
     hi_sdsfree(c->obuf);
@@ -771,7 +774,7 @@ int redisReconnect(redisContext *c) {
     }
 
     if (c->funcs && c->funcs->close) {
-        c->funcs->close(c);
+        (c->funcs->close)(c);
     }
 
     hi_sdsfree(c->obuf);

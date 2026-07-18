@@ -38,7 +38,7 @@ proc process_is_running {pid} {
     # PS should return with an error if PID is non existing,
     # and catch will return non-zero. We want to return non-zero if
     # the PID exists, so we invert the return value with expr not operator.
-    expr {![catch {exec ps -p $pid}]}
+    process_is_alive $pid
 }
 
 # Our resharding test performs the following actions:
@@ -84,7 +84,7 @@ test "Cluster consistency during live resharding" {
             flush stdout
             set target [dict get [get_myself [randomInt 5]] id]
             set tribpid [lindex [exec \
-                ../../../src/redis-cli --cluster reshard \
+                $::redis_cli_path --cluster reshard \
                 127.0.0.1:[get_instance_attrib redis 0 port] \
                 --cluster-from all \
                 --cluster-to $target \

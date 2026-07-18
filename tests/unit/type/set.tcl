@@ -1053,7 +1053,7 @@ foreach type {single multiple single_multiple} {
 
         # 4) Kill RDB child process to restart rehashing.
         set pid1 [get_child_pid 0]
-        catch {exec kill -9 $pid1}
+        catch {kill_proc2 $pid1}
         waitForBgsave r
 
         # 5) Let the set hash to start rehashing
@@ -1072,7 +1072,7 @@ foreach type {single multiple single_multiple} {
         }
 
         set pid1 [get_child_pid 0]
-        catch {exec kill -9 $pid1}
+        catch {kill_proc2 $pid1}
         waitForBgsave r
 
         # 7) Check that eventually, SRANDMEMBER returns all elements.

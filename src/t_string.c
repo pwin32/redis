@@ -514,7 +514,7 @@ void getrangeCommand(client *c) {
 
     if (o->encoding == OBJ_ENCODING_INT) {
         str = llbuf;
-        strlen = ll2string(llbuf,sizeof(llbuf),(long)o->ptr);
+        strlen = ll2string(llbuf,sizeof(llbuf),(long long)(intptr_t)o->ptr);
     } else {
         str = o->ptr;
         strlen = sdslen(str);
@@ -616,10 +616,10 @@ void incrDecrCommand(client *c, long long incr) {
 
     if (o && o->refcount == 1 && o->encoding == OBJ_ENCODING_INT &&
         (value < 0 || value >= OBJ_SHARED_INTEGERS) &&
-        value >= LONG_MIN && value <= LONG_MAX)
+        value >= INTPTR_MIN && value <= INTPTR_MAX)
     {
         new = o;
-        o->ptr = (void*)((long)value);
+        o->ptr = (void*)(intptr_t)value;
     } else {
         new = createStringObjectFromLongLongForValue(value);
         if (o) {
@@ -948,4 +948,3 @@ cleanup:
     if (objb) decrRefCount(objb);
     return;
 }
-

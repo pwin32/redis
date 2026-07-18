@@ -210,7 +210,7 @@ test {client freed during loading} {
         assert_equal [s loading] 1
 
         # no need to keep waiting for loading to complete
-        exec kill [srv 0 pid]
+        kill_proc2 [srv 0 pid]
     }
 }
 
@@ -378,7 +378,7 @@ start_server {} {
         r set x x
         r bgsave
         set pid1 [get_child_pid 0]
-        catch {exec kill -9 $pid1}
+        catch {kill_proc2 $pid1}
         waitForBgsave r
 
         # make sure a read command succeeds

@@ -48,6 +48,12 @@
 #if defined(__APPLE__) && !defined(MAC_OS_10_6_DETECTED)
 #define redis_fstat fstat64
 #define redis_stat stat64
+#elif defined(_WIN32)
+/* FDAPI exposes the 64-bit stat shape used by the Windows descriptor layer.
+ * Keep the Redis call sites expressed as redis_fstat/redis_stat so they do
+ * not accidentally bind to the CRT's native descriptor table. */
+#define redis_fstat fdapi_fstat64
+#define redis_stat __stat64
 #else
 #define redis_fstat fstat
 #define redis_stat stat

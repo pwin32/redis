@@ -831,7 +831,7 @@ static void connTLSClose(connection *conn_) {
         conn->pending_list_node = NULL;
     }
 
-    connectionTypeTcp()->close(conn_);
+    (connectionTypeTcp()->close)(conn_);
 }
 
 static int connTLSAccept(connection *_conn, ConnectionCallbackFunc accept_handler) {

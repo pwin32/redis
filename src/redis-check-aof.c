@@ -60,6 +60,57 @@ static off_t epos;
 static long long line = 1;
 static time_t to_timestamp = 0;
 
+#ifdef _WIN32
+typedef PORT_LONG aof_check_long;
+#else
+typedef long aof_check_long;
+#endif
+
+static int aofFileStat(FILE *fp, struct redis_stat *sb) {
+#ifdef _WIN32
+    return _fstat64(_fileno(fp),sb);
+#else
+    return redis_fstat(fileno(fp),sb);
+#endif
+}
+
+static int aofFileTruncate(FILE *fp, off_t length) {
+#ifdef _WIN32
+    errno_t err = _chsize_s(_fileno(fp),(__int64)length);
+    if (err != 0) {
+        errno = err;
+        return -1;
+    }
+    return 0;
+#else
+    return ftruncate(fileno(fp),length);
+#endif
+}
+
+static char *aofDirname(char *path) {
+#ifdef _WIN32
+    char *slash = strrchr(path,'/');
+    char *backslash = strrchr(path,'\\');
+    char *separator = slash;
+
+    if (backslash != NULL &&
+        (separator == NULL || backslash > separator))
+        separator = backslash;
+
+    if (separator == NULL) return ".";
+    if (separator == path ||
+        (separator == path+2 && path[1] == ':'))
+    {
+        separator[1] = '\0';
+    } else {
+        *separator = '\0';
+    }
+    return path;
+#else
+    return dirname(path);
+#endif
+}
+
 int consumeNewline(char *buf) {
     if (strncmp(buf,"\r\n",2) != 0) {
         ERROR("Expected \\r\\n, got: %02x%02x",buf[0],buf[1]);
@@ -69,7 +120,7 @@ int consumeNewline(char *buf) {
     return 1;
 }
 
-int readLong(FILE *fp, char prefix, long *target) {
+int readLong(FILE *fp, char prefix, aof_check_long *target) {
     char buf[128], *eptr;
     epos = ftello(fp);
     if (fgets(buf,sizeof(buf),fp) == NULL) {
@@ -79,36 +130,50 @@ int readLong(FILE *fp, char prefix, long *target) {
         ERROR("Expected prefix '%c', got: '%c'",prefix,buf[0]);
         return 0;
     }
+#ifdef _WIN32
+    *target = (aof_check_long)strtoll(buf+1,&eptr,10);
+#else
     *target = strtol(buf+1,&eptr,10);
+#endif
     return consumeNewline(eptr);
 }
 
-int readBytes(FILE *fp, char *target, long length) {
-    long real;
+int readBytes(FILE *fp, char *target, aof_check_long length) {
+    aof_check_long real;
     epos = ftello(fp);
-    real = fread(target,1,length,fp);
+    real = (aof_check_long)fread(target,1,(size_t)length,fp);
     if (real != length) {
+#ifdef _WIN32
+        ERROR("Expected to read %lld bytes, got %lld bytes",
+              (long long)length,(long long)real);
+#else
         ERROR("Expected to read %ld bytes, got %ld bytes",length,real);
+#endif
         return 0;
     }
     return 1;
 }
 
 int readString(FILE *fp, char** target) {
-    long len;
+    aof_check_long len;
     *target = NULL;
     if (!readLong(fp,'$',&len)) {
         return 0;
     }
 
     if (len < 0 || len > LONG_MAX - 2) {
+#ifdef _WIN32
+        ERROR("Expected to read string of %lld bytes, which is not in the suitable range",
+              (long long)len);
+#else
         ERROR("Expected to read string of %ld bytes, which is not in the suitable range",len);
+#endif
         return 0;
     }
 
     /* Increase length to also consume \r\n */
     len += 2;
-    *target = (char*)zmalloc(len);
+    *target = (char*)zmalloc((size_t)len);
     if (!readBytes(fp,*target,len)) {
         zfree(*target);
         *target = NULL;
@@ -123,7 +188,7 @@ int readString(FILE *fp, char** target) {
     return 1;
 }
 
-int readArgc(FILE *fp, long *target) {
+int readArgc(FILE *fp, aof_check_long *target) {
     return readLong(fp,'*',target);
 }
 
@@ -135,7 +200,7 @@ int readArgc(FILE *fp, long *target) {
  * whether the AOF file contains unclosed transactions.
  **/
 int processRESP(FILE *fp, char *filename, int *out_multi) {
-    long argc;
+    aof_check_long argc;
     char *str;
 
     if (!readArgc(fp, &argc)) return 0;
@@ -184,28 +249,32 @@ int processAnnotations(FILE *fp, char *filename, int last_file) {
     if (to_timestamp && strncmp(buf, "#TS:", 4) == 0) {
         char *endptr;
         errno = 0;
+#ifdef _WIN32
+        time_t ts = (time_t)strtoll(buf+4,&endptr,10);
+#else
         time_t ts = strtol(buf+4, &endptr, 10);
+#endif
         if (errno != 0 || *endptr != '\r') {
             printf("Invalid timestamp annotation\n");
             exit(1);
         }
         if (ts <= to_timestamp) return 1;
         if (epos == 0) {
-            printf("AOF %s has nothing before timestamp %ld, "
-                    "aborting...\n", filename, to_timestamp);
+            printf("AOF %s has nothing before timestamp %lld, "
+                    "aborting...\n", filename, (long long)to_timestamp);
             exit(1);
         }
         if (!last_file) {
-            printf("Failed to truncate AOF %s to timestamp %ld to offset %ld because it is not the last file.\n",
-                filename, to_timestamp, (long int)epos);
+            printf("Failed to truncate AOF %s to timestamp %lld to offset %lld because it is not the last file.\n",
+                filename, (long long)to_timestamp, (long long)epos);
             printf("If you insist, please delete all files after this file according to the manifest "
                 "file and delete the corresponding records in manifest file manually. Then re-run redis-check-aof.\n");
             exit(1);
         }
         /* Truncate remaining AOF if exceeding 'to_timestamp' */
-        if (ftruncate(fileno(fp), epos) == -1) {
-            printf("Failed to truncate AOF %s to timestamp %ld\n",
-                    filename, to_timestamp);
+        if (aofFileTruncate(fp,epos) == -1) {
+            printf("Failed to truncate AOF %s to timestamp %lld\n",
+                    filename, (long long)to_timestamp);
             exit(1);
         } else {
             return 0;
@@ -224,14 +293,14 @@ int checkSingleAof(char *aof_filename, char *aof_filepath, int last_file, int fi
     int multi = 0;
     char buf[2];
 
-    FILE *fp = fopen(aof_filepath, "r+");
+    FILE *fp = fopen(aof_filepath,IF_WIN32("r+b","r+"));
     if (fp == NULL) {
         printf("Cannot open file %s: %s, aborting...\n", aof_filepath, strerror(errno));
         exit(1);
     }
 
     struct redis_stat sb;
-    if (redis_fstat(fileno(fp),&sb) == -1) {
+    if (aofFileStat(fp,&sb) == -1) {
         printf("Cannot stat file: %s, aborting...\n", aof_filename);
         fclose(fp);
         exit(1);
@@ -292,7 +361,8 @@ int checkSingleAof(char *aof_filename, char *aof_filepath, int last_file, int fi
 
     /* In truncate-to-timestamp mode, just exit if there is nothing to truncate. */
     if (diff == 0 && to_timestamp) {
-        printf("Truncate nothing in AOF %s to timestamp %ld\n", aof_filename, to_timestamp);
+        printf("Truncate nothing in AOF %s to timestamp %lld\n",
+               aof_filename, (long long)to_timestamp);
         fclose(fp);
         return AOF_CHECK_OK;
     }
@@ -314,7 +384,7 @@ int checkSingleAof(char *aof_filename, char *aof_filepath, int last_file, int fi
                 printf("Aborting...\n");
                 exit(1);
             }
-            if (ftruncate(fileno(fp), pos) == -1) {
+            if (aofFileTruncate(fp,pos) == -1) {
                 printf("Failed to truncate AOF %s\n", aof_filename);
                 exit(1);
             } else {
@@ -335,14 +405,14 @@ int checkSingleAof(char *aof_filename, char *aof_filepath, int last_file, int fi
  * 2. The file is a BASE AOF in Multi Part AOF
  * */
 int fileIsRDB(char *filepath) {
-    FILE *fp = fopen(filepath, "r");
+    FILE *fp = fopen(filepath,IF_WIN32("rb","r"));
     if (fp == NULL) {
         printf("Cannot open file %s: %s\n", filepath, strerror(errno));
         exit(1);
     }
 
     struct redis_stat sb;
-    if (redis_fstat(fileno(fp), &sb) == -1) {
+    if (aofFileStat(fp,&sb) == -1) {
         printf("Cannot stat file: %s\n", filepath);
         fclose(fp);
         exit(1);
@@ -379,7 +449,7 @@ int fileIsManifest(char *filepath) {
     }
 
     struct redis_stat sb;
-    if (redis_fstat(fileno(fp), &sb) == -1) {
+    if (aofFileStat(fp,&sb) == -1) {
         printf("Cannot stat file: %s\n", filepath);
         fclose(fp);
         exit(1);
@@ -443,8 +513,8 @@ void printAofStyle(int ret, char *aofFileName, char *aofType) {
     } else if (ret == AOF_CHECK_EMPTY) {
         printf("%s %s is empty\n", aofType, aofFileName);
     } else if (ret == AOF_CHECK_TIMESTAMP_TRUNCATED) {
-        printf("Successfully truncated AOF %s to timestamp %ld\n",
-            aofFileName, to_timestamp);
+        printf("Successfully truncated AOF %s to timestamp %lld\n",
+            aofFileName, (long long)to_timestamp);
     } else if (ret == AOF_CHECK_TRUNCATED) {
         printf("Successfully truncated AOF %s\n", aofFileName);
     }
@@ -519,6 +589,13 @@ int redis_check_aof_main(int argc, char **argv) {
     char *dirpath;
     int fix = 0;
 
+#ifdef _WIN32
+    _fmode = _O_BINARY;
+    setmode(_fileno(stdin),_O_BINARY);
+    setmode(_fileno(stdout),_O_BINARY);
+    setmode(_fileno(stderr),_O_BINARY);
+#endif
+
     if (argc < 2) {
         goto invalid_args;
     } else if (argc == 2) {
@@ -534,7 +611,11 @@ int redis_check_aof_main(int argc, char **argv) {
         if (!strcmp(argv[1], "--truncate-to-timestamp")) {
             char *endptr;
             errno = 0;
+#ifdef _WIN32
+            to_timestamp = (time_t)strtoll(argv[2],&endptr,10);
+#else
             to_timestamp = strtol(argv[2], &endptr, 10);
+#endif
             if (errno != 0 || *endptr != '\0') {
                 printf("Invalid timestamp, aborting...\n");
                 exit(1);
@@ -555,7 +636,7 @@ int redis_check_aof_main(int argc, char **argv) {
 
     /* In the glibc implementation dirname may modify their argument. */
     memcpy(temp_filepath, filepath, strlen(filepath) + 1);
-    dirpath = dirname(temp_filepath);
+    dirpath = aofDirname(temp_filepath);
 
     /* Select the corresponding verification method according to the input file type. */
     input_file_type type = getInputFileType(filepath);

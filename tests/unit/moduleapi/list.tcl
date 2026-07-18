@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/list.so]
+set testmodule [redis_test_module list]
 
 # The following arguments can be passed to args:
 #   i -- the number of inserts

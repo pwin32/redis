@@ -1,3 +1,11 @@
+if {![info exists ::test_null_device]} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        set ::test_null_device "NUL"
+    } else {
+        set ::test_null_device "/dev/null"
+    }
+}
+
 proc randstring {min max {type binary}} {
     set len [expr {$min+int(rand()*($max-$min+1))}]
     set output {}
@@ -160,7 +168,7 @@ proc count_message_lines {file pattern} {
     set res 0
     # exec fails when grep exists with status other than 0 (when the pattern wasn't found)
     catch {
-        set res [string trim [exec grep $pattern $file 2> /dev/null | wc -l]]
+        set res [string trim [exec grep $pattern $file 2> $::test_null_device | wc -l]]
     }
     return $res
 }
@@ -560,7 +568,7 @@ proc start_write_load {host port seconds} {
 
 # Stop a process generating write load executed with start_write_load.
 proc stop_write_load {handle} {
-    catch {exec /bin/kill -9 $handle}
+    catch {kill_proc2 $handle}
 }
 
 proc wait_load_handlers_disconnected {{level 0}} {
@@ -596,7 +604,7 @@ proc start_bg_complex_data {host port db ops} {
 
 # Stop a process generating write load executed with start_bg_complex_data.
 proc stop_bg_complex_data {handle} {
-    catch {exec /bin/kill -9 $handle}
+    catch {kill_proc2 $handle}
 }
 
 # Write num keys with the given key prefix and value size (in bytes). If idx is
@@ -624,7 +632,10 @@ proc populate {num {prefix key:} {size 3} {idx 0} {prints false}} {
 
 proc get_child_pid {idx} {
     set pid [srv $idx pid]
-    if {[file exists "/usr/bin/pgrep"]} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        set script "\$children = @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = $pid'); if (\$children.Count -eq 0) { exit 1 }; Write-Output ([int]\$children[0].ProcessId)"
+        return [string trim [exec powershell.exe -NoProfile -NonInteractive -Command $script]]
+    } elseif {[file exists "/usr/bin/pgrep"]} {
         set fd [open "|pgrep -P $pid" "r"]
         set child_pid [string trim [lindex [split [read $fd] \n] 0]]
     } else {
@@ -637,7 +648,10 @@ proc get_child_pid {idx} {
 }
 
 proc process_is_alive pid {
-    if {[catch {exec ps -p $pid -f} err]} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        set script "if (Get-Process -Id $pid -ErrorAction SilentlyContinue) { exit 0 }; exit 1"
+        return [expr {![catch {exec powershell.exe -NoProfile -NonInteractive -Command $script}]}]
+    } elseif {[catch {exec ps -p $pid -f} err]} {
         return 0
     } else {
         if {[string match "*<defunct>*" $err]} { return 0 }
@@ -645,18 +659,48 @@ proc process_is_alive pid {
     }
 }
 
-proc pause_process pid {
-    exec kill -SIGSTOP $pid
-    wait_for_condition 50 100 {
-        [string match {*T*} [lindex [exec ps j $pid] 16]]
-    } else {
-        puts [exec ps j $pid]
-        fail "process didn't stop"
+proc get_qfork_child_pid {idx} {
+    if {$::tcl_platform(platform) eq "windows"} {
+        set parent_pid [srv $idx pid]
+        set child_pid [string trim [windows_control_process FindQForkChild $parent_pid]]
+        if {![string is integer -strict $child_pid] || $child_pid <= 0} {
+            error "Invalid QFork child PID: $child_pid"
+        }
+        return $child_pid
     }
+    return [get_child_pid $idx]
 }
 
-proc resume_process pid {
-    exec kill -SIGCONT $pid
+if {$::tcl_platform(platform) eq "windows"} {
+    proc windows_control_process {action pid} {
+        set script [file normalize tests/support/windows_process_control.ps1]
+        set executable [file normalize $::redis_server_path]
+        exec powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+            -File $script -Action $action -TargetProcessId $pid \
+            -ExpectedExecutable $executable
+    }
+
+    proc pause_process pid {
+        windows_control_process Suspend $pid
+    }
+
+    proc resume_process pid {
+        windows_control_process Resume $pid
+    }
+} else {
+    proc pause_process pid {
+        exec kill -SIGSTOP $pid
+        wait_for_condition 50 100 {
+            [string match {*T*} [lindex [exec ps j $pid] 16]]
+        } else {
+            puts [exec ps j $pid]
+            fail "process didn't stop"
+        }
+    }
+
+    proc resume_process pid {
+        exec kill -SIGCONT $pid
+    }
 }
 
 proc cmdrstat {cmd r} {
@@ -1114,4 +1158,3 @@ proc format_command {args} {
     }
     set _ $cmd
 }
-

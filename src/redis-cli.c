@@ -28,24 +28,55 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32_types.h"
+#include "Win32_Interop/Win32_Time.h"
+#include "Win32_Interop/win32fixes.h"
+#ifdef usleep
+#undef usleep
+#define REDIS_CLI_RESTORE_USLEEP 1
+#endif
+#include "Win32_Interop/Win32_PThread.h"
+#include "Win32_Interop/Win32_Error.h"
+#endif
+
 #include "fmacros.h"
 #include "version.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <signal.h>
 #include <unistd.h>
+#endif
 #include <time.h>
 #include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/time.h>
+#endif
 #include <assert.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
+
+#ifdef _WIN32
+#ifndef STDIN_FILENO
+#define STDIN_FILENO (_fileno(stdin))
+#endif
+#include "Win32_Interop/Win32_Signal_Process.h"
+#include <windows.h>
+#include <conio.h>
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+#define strtoull _strtoui64
+#endif
 
 #include <hiredis.h>
 #ifdef USE_OPENSSL
@@ -66,6 +97,14 @@
 #include "mt19937-64.h"
 
 #include "cli_commands.h"
+
+#ifdef _WIN32
+#include "Win32_Interop/Win32_ANSI.h"
+#ifdef REDIS_CLI_RESTORE_USLEEP
+#define usleep(x) ((x) == 1 ? Sleep(0) : Sleep((int)((x)/1000)))
+#undef REDIS_CLI_RESTORE_USLEEP
+#endif
+#endif
 
 #define UNUSED(V) ((void) V)
 
@@ -174,8 +213,10 @@ int spectrum_palette_mono[] = {0,233,234,235,237,239,241,243,245,247,249,251,253
 int *spectrum_palette;
 int spectrum_palette_size;
 
+#ifndef _WIN32
 static int orig_termios_saved = 0;
 static struct termios orig_termios; /* To restore terminal at exit.*/
+#endif
 
 /* Dict Helpers */
 static uint64_t dictSdsHash(const void *key);
@@ -304,6 +345,9 @@ static void cliPushHandler(void *, void *);
 uint16_t crc16(const char *buf, int len);
 
 static long long ustime(void) {
+#ifdef _WIN32
+    return (long long)GetHighResRelativeTime(1000000);
+#else
     struct timeval tv;
     long long ust;
 
@@ -311,10 +355,15 @@ static long long ustime(void) {
     ust = ((long long)tv.tv_sec)*1000000;
     ust += tv.tv_usec;
     return ust;
+#endif
 }
 
 static long long mstime(void) {
+#ifdef _WIN32
+    return (long long)GetHighResRelativeTime(1000);
+#else
     return ustime()/1000;
+#endif
 }
 
 static void cliRefreshPrompt(void) {
@@ -361,7 +410,12 @@ static sds getDotfilePath(char *envoverride, char *dotfilename) {
     /* Check the env for a dotfile override. */
     path = getenv(envoverride);
     if (path != NULL && *path != '\0') {
-        if (!strcmp("/dev/null", path)) {
+        if (!strcmp("/dev/null", path)
+#ifdef _WIN32
+            || !strcasecmp("NUL", path)
+            || !strcasecmp("\\\\.\\NUL", path)
+#endif
+        ) {
             return NULL;
         }
 
@@ -369,6 +423,9 @@ static sds getDotfilePath(char *envoverride, char *dotfilename) {
         dotPath = sdsnew(path);
     } else {
         char *home = getenv("HOME");
+#ifdef _WIN32
+        if (home == NULL || *home == '\0') home = getenv("USERPROFILE");
+#endif
         if (home != NULL && *home != '\0') {
             /* If no override is set use $HOME/<dotfilename>. */
             dotPath = sdscatprintf(sdsempty(), "%s/%s", home, dotfilename);
@@ -1544,12 +1601,15 @@ static void freeHintsCallback(void *ptr) {
 
 /* Restore terminal if we've changed it. */
 void cliRestoreTTY(void) {
+#ifndef _WIN32
     if (orig_termios_saved)
         tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+#endif
 }
 
 /* Put the terminal in "press any key" mode */
 static void cliPressAnyKeyTTY(void) {
+#ifndef _WIN32
     if (!isatty(STDIN_FILENO)) return;
     if (!orig_termios_saved) {
         if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) return;
@@ -1559,7 +1619,19 @@ static void cliPressAnyKeyTTY(void) {
     struct termios mode = orig_termios;
     mode.c_lflag &= ~(ECHO | ICANON); /* echoing off, canonical off */
     tcsetattr(STDIN_FILENO, TCSANOW, &mode);
+#endif
 }
+
+#ifdef _WIN32
+/* Winsock select() cannot wait on a console or pipe handle. Poll the native
+ * standard-input handle between bounded socket waits instead. */
+static int cliStdinReady(void) {
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    if (input == NULL || input == INVALID_HANDLE_VALUE) return 0;
+    if (GetFileType(input) == FILE_TYPE_CHAR) return _kbhit();
+    return WaitForSingleObject(input,0) == WAIT_OBJECT_0;
+}
+#endif
 
 /*------------------------------------------------------------------------------
  * Networking / parsing
@@ -2351,16 +2423,26 @@ static void cliWaitForMessagesOrStdin(void) {
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(context->fd, &readfds);
+#ifndef _WIN32
         FD_SET(STDIN_FILENO, &readfds);
         tv.tv_sec = 5;
         tv.tv_usec = 0;
+#else
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;
+#endif
         if (show_info) {
             if (use_color) printf("\033[1;90m"); /* Bold, bright color. */
             printf("Reading messages... (press Ctrl-C to quit or any key to type command)\r");
             if (use_color) printf("\033[0m"); /* Reset color. */
             fflush(stdout);
         }
+#ifdef _WIN32
+        int socket_ready = select(context->fd + 1, &readfds, NULL, NULL, &tv) > 0;
+        int stdin_ready = cliStdinReady();
+#else
         select(context->fd + 1, &readfds, NULL, NULL, &tv);
+#endif
         if (show_info) {
             printf("\033[K"); /* Erase current line */
             fflush(stdout);
@@ -2374,14 +2456,26 @@ static void cliWaitForMessagesOrStdin(void) {
                 exit(1);
             }
             break;
-        } else if (FD_ISSET(context->fd, &readfds)) {
+        } else if (
+#ifdef _WIN32
+                   socket_ready
+#else
+                   FD_ISSET(context->fd, &readfds)
+#endif
+        ) {
             /* Message from Redis */
             if (cliReadReply(0) != REDIS_OK) {
                 cliPrintContextError();
                 exit(1);
             }
             fflush(stdout);
-        } else if (FD_ISSET(STDIN_FILENO, &readfds)) {
+        } else if (
+#ifdef _WIN32
+                   stdin_ready
+#else
+                   FD_ISSET(STDIN_FILENO, &readfds)
+#endif
+        ) {
             /* Any key pressed */
             break;
         }
@@ -2900,6 +2994,9 @@ static int parseOptions(int argc, char **argv) {
         } else if (!strcmp(argv[i],"-v") || !strcmp(argv[i], "--version")) {
             sds version = cliVersion();
             printf("redis-cli %s\n", version);
+#ifdef _WIN32
+            fflush(stdout);
+#endif
             sdsfree(version);
             exit(0);
         } else if (!strcmp(argv[i],"-2")) {
@@ -3981,10 +4078,25 @@ static clusterManagerNode *clusterManagerNewNode(char *ip, int port, int bus_por
 static sds clusterManagerGetNodeRDBFilename(clusterManagerNode *node) {
     assert(config.cluster_manager_command.backup_dir);
     sds filename = sdsnew(config.cluster_manager_command.backup_dir);
-    if (filename[sdslen(filename) - 1] != '/')
+    if (filename[sdslen(filename) - 1] != '/'
+#ifdef _WIN32
+        && filename[sdslen(filename) - 1] != '\\'
+#endif
+    )
         filename = sdscat(filename, "/");
-    filename = sdscatprintf(filename, "redis-node-%s-%d-%s.rdb", node->ip,
+
+#ifdef _WIN32
+    sds safe_ip = sdsnew(node->ip);
+    safe_ip = sdsmapchars(safe_ip,"<>:\"/\\|?*","_________",9);
+    const char *filename_ip = safe_ip;
+#else
+    const char *filename_ip = node->ip;
+#endif
+    filename = sdscatprintf(filename, "redis-node-%s-%d-%s.rdb", filename_ip,
                             node->port, node->name);
+#ifdef _WIN32
+    sdsfree(safe_ip);
+#endif
     return filename;
 }
 
@@ -8069,7 +8181,11 @@ static int clusterManagerCommandBackup(int argc, char **argv) {
     }
     json = sdscat(json, "\n]");
     sds jsonpath = sdsnew(config.cluster_manager_command.backup_dir);
-    if (jsonpath[sdslen(jsonpath) - 1] != '/')
+    if (jsonpath[sdslen(jsonpath) - 1] != '/'
+#ifdef _WIN32
+        && jsonpath[sdslen(jsonpath) - 1] != '\\'
+#endif
+    )
         jsonpath = sdscat(jsonpath, "/");
     jsonpath = sdscat(jsonpath, "nodes.json");
     fflush(stdout);
@@ -8608,8 +8724,12 @@ static void getRDB(clusterManagerNode *node) {
     /* Write to file. */
     if (write_to_stdout) {
         fd = STDOUT_FILENO;
+#ifdef _WIN32
+        setmode(fd, _O_BINARY);
+#endif
     } else {
-        fd = open(filename, O_CREAT|O_WRONLY, 0644);
+        fd = open(filename,
+            O_CREAT|O_WRONLY|O_TRUNC WIN32_ONLY(|_O_BINARY), 0644);
         if (fd == -1) {
             fprintf(stderr, "Error opening '%s': %s\n", filename,
                 strerror(errno));
@@ -8683,6 +8803,10 @@ static void pipeMode(void) {
     int done = 0;
     char magic[20]; /* Special reply we recognize. */
     time_t last_read_time = time(NULL);
+
+#ifdef _WIN32
+    setmode(STDIN_FILENO, _O_BINARY);
+#endif
 
     srand(time(NULL));
 

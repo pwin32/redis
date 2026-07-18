@@ -27,7 +27,17 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32fixes.h"
+#include "Win32_Interop/Win32_FDAPI.h"
+#include "Win32_Interop/Win32_ThreadControl.h"
+#include "Win32_Interop/Win32_QFork.h"
+#include "Win32_Interop/win32_types.h"
+#include "Win32_Interop/Win32_Time.h"
+#include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/win32_wsiocp2.h"
+#endif
 
 #include "server.h"
 #include "cluster.h"
@@ -36,10 +46,14 @@
 #include "connection.h"
 
 #include <memory.h>
+#ifndef _WIN32
 #include <sys/time.h>
 #include <unistd.h>
+#endif
 #include <fcntl.h>
+#ifndef _WIN32
 #include <sys/socket.h>
+#endif
 #include <sys/stat.h>
 
 void replicationDiscardCachedMaster(void);
@@ -48,6 +62,32 @@ void replicationSendAck(void);
 int replicaPutOnline(client *slave);
 void replicaStartCommandStream(client *slave);
 int cancelReplicationHandshake(int reconnect);
+
+#ifdef _WIN32
+/* An RDB-only client must observe an orderly FIN after all queued RDB bytes.
+ * Keep the connection alive after the send-side half-close and discard any
+ * peer input until the peer acknowledges completion by closing its side. */
+static void rdbOnlyReplicaDrain(connection *conn) {
+    client *slave = connGetPrivateData(conn);
+    char buf[PROTO_IOBUF_LEN];
+    int nread = connRead(conn,buf,sizeof(buf));
+
+    if (nread > 0) {
+        atomicIncr(server.stat_net_input_bytes, nread);
+        return; /* Let the event loop run and rearm the one-shot IOCP read. */
+    }
+
+    if (nread == -1 && connGetState(conn) == CONN_STATE_CONNECTED)
+        return; /* EAGAIN: the IOCP socket layer will rearm the read. */
+
+    if (nread == -1) {
+        serverLog(LL_VERBOSE,
+            "Error draining RDB-only replica %s after transfer: %s",
+            replicationGetSlaveName(slave), connGetLastError(conn));
+    }
+    freeClientAsync(slave);
+}
+#endif
 
 /* We take a global flag to remember if this instance generated an RDB
  * because of replication, so that we can remove the RDB file in case
@@ -95,7 +135,13 @@ char *replicationGetSlaveName(client *c) {
  * the foreground unlink() will only remove the fs name, and deleting the
  * file's storage space will only happen once the last reference is lost. */
 int bg_unlink(const char *filename) {
-    int fd = open(filename,O_RDONLY|O_NONBLOCK);
+#ifdef _WIN32
+    /* The POSIX open-then-unlink technique below is invalid with Windows CRT
+     * sharing semantics: our own read handle prevents unlink(). QFork and AOF
+     * callers wait for their writer before cleanup, so delete synchronously. */
+    return unlink(filename);
+#else
+    int fd = open(filename,O_RDONLY|O_NONBLOCK,0);
     if (fd == -1) {
         /* Can't open the file? Fall back to unlinking in the main thread. */
         return unlink(filename);
@@ -114,6 +160,7 @@ int bg_unlink(const char *filename) {
         bioCreateCloseJob(fd, 0, 0);
         return 0; /* Success. */
     }
+#endif
 }
 
 /* ---------------------------------- MASTER -------------------------------- */
@@ -244,7 +291,7 @@ void feedReplicationBufferWithObject(robj *o) {
     size_t len;
 
     if (o->encoding == OBJ_ENCODING_INT) {
-        len = ll2string(llstr,sizeof(llstr),(long)o->ptr);
+        len = ll2string(llstr,sizeof(llstr),(long long)(intptr_t)o->ptr);
         p = llstr;
     } else {
         len = sdslen(o->ptr);
@@ -598,7 +645,8 @@ void replicationFeedMonitors(client *c, list *monitors, int dictid, robj **argv,
 
     for (j = 0; j < argc; j++) {
         if (argv[j]->encoding == OBJ_ENCODING_INT) {
-            cmdrepr = sdscatprintf(cmdrepr, "\"%ld\"", (long)argv[j]->ptr);
+            cmdrepr = sdscatprintf(cmdrepr, "\"%lld\"",
+                                   (long long)(intptr_t)argv[j]->ptr);
         } else {
             cmdrepr = sdscatrepr(cmdrepr,(char*)argv[j]->ptr,
                         sdslen(argv[j]->ptr));
@@ -1190,9 +1238,10 @@ void replconfCommand(client *c) {
             if (sdslen(addr) < NET_HOST_STR_LEN) {
                 if (c->slave_addr) sdsfree(c->slave_addr);
                 c->slave_addr = sdsdup(addr);
-            } else {
-                addReplyErrorFormat(c,"REPLCONF ip-address provided by "
-                    "replica instance is too long: %zd bytes", sdslen(addr));
+        } else {
+            addReplyErrorFormat(c,"REPLCONF ip-address provided by "
+                    "replica instance is too long: %llu bytes",
+                    (unsigned long long)sdslen(addr));
                 return;
             }
         } else if (!strcasecmp(c->argv[j]->ptr,"capa")) {
@@ -1291,15 +1340,41 @@ void replconfCommand(client *c) {
  * 2) Update the count of "good replicas".
  * 3) Trigger the module event.
  *
- * the return value indicates that the replica should be disconnected.
+ * The return value tells the caller whether to start the command stream.
+ * A zero return means this function took ownership of the RDB-only client's
+ * disconnect lifecycle, so callers must stop processing it without freeing it.
  * */
 int replicaPutOnline(client *slave) {
     if (slave->flags & CLIENT_REPL_RDBONLY) {
         slave->replstate = SLAVE_STATE_RDB_TRANSMITTED;
-        /* The client asked for RDB only so we should close it ASAP */
+        slave->repl_ack_time = server.unixtime;
+        slave->repl_start_cmd_stream_on_ack = 0;
+        connSetWriteHandler(slave->conn,NULL);
+
         serverLog(LL_NOTICE,
-                  "RDB transfer completed, rdb only replica (%s) should be disconnected asap",
+                  "RDB transfer completed for RDB-only replica %s",
                   replicationGetSlaveName(slave));
+
+#ifdef _WIN32
+        /* closesocket() may discard overlapped sends that connWrite() already
+         * accepted. For a plain TCP connection, replace the command reader
+         * with a drain handler, half-close only the send side, and keep the
+         * client alive until its peer closes or repl-timeout expires. */
+        if (!strcmp(connGetType(slave->conn),CONN_TYPE_SOCKET) &&
+            connSetReadHandler(slave->conn,rdbOnlyReplicaDrain) == C_OK &&
+            FDAPI_shutdown(slave->conn->fd,SD_SEND) == 0)
+        {
+            return 0;
+        }
+
+        serverLog(LL_WARNING,
+            "Unable to start graceful RDB-only replica shutdown for %s: %s",
+            replicationGetSlaveName(slave), strerror(errno));
+#endif
+        /* POSIX retains the upstream close-as-soon-as-possible behavior.
+         * This is also the safe fallback for unsupported connection types or
+         * a failed Windows half-close. */
+        freeClientAsync(slave);
         return 0;
     }
     slave->replstate = SLAVE_STATE_ONLINE;
@@ -1368,13 +1443,18 @@ void removeRDBUsedToSyncReplicas(void) {
             }
         }
         if (delrdb) {
-            struct stat sb;
-            if (lstat(server.rdb_filename,&sb) != -1) {
-                RDBGeneratedByReplication = 0;
+            struct redis_stat sb;
+            if (redis_stat(server.rdb_filename,&sb) != -1) {
                 serverLog(LL_NOTICE,
                     "Removing the RDB file used to feed replicas "
                     "in a persistence-less instance");
-                bg_unlink(server.rdb_filename);
+                if (bg_unlink(server.rdb_filename) == 0 || errno == ENOENT) {
+                    RDBGeneratedByReplication = 0;
+                } else {
+                    serverLog(LL_WARNING,
+                        "Unable to remove replication RDB %s: %s; will retry",
+                        server.rdb_filename, strerror(errno));
+                }
             }
         }
     }
@@ -1383,6 +1463,13 @@ void removeRDBUsedToSyncReplicas(void) {
 /* Close the repldbfd and reclaim the page cache if the client hold
  * the last reference to replication DB */
 void closeRepldbfd(client *myself) {
+#ifdef _WIN32
+    /* Page-cache reclaim is not implemented on MinGW, and a deferred CRT
+     * handle prevents later delete/replace operations on this RDB. */
+    close(myself->repldbfd);
+    myself->repldbfd = -1;
+    return;
+#else
     listNode *ln;
     listIter li;
     int reclaim = 1;
@@ -1401,6 +1488,7 @@ void closeRepldbfd(client *myself) {
         close(myself->repldbfd);
     }
     myself->repldbfd = -1;
+#endif
 }
 
 void sendBulkToSlave(connection *conn) {
@@ -1454,7 +1542,6 @@ void sendBulkToSlave(connection *conn) {
         closeRepldbfd(slave);
         connSetWriteHandler(slave->conn,NULL);
         if (!replicaPutOnline(slave)) {
-            freeClient(slave);
             return;
         }
         replicaStartCommandStream(slave);
@@ -1517,8 +1604,19 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
     while (1) {
         server.rdb_pipe_bufflen = read(fd, server.rdb_pipe_buff, PROTO_IOBUF_LEN);
         if (server.rdb_pipe_bufflen < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+#ifdef _WIN32
+                if (WSIOCP_QueueNextRead(fd) != 0) {
+                    serverLog(LL_WARNING,
+                        "Diskless rdb transfer, failed to rearm pipe read: %s",
+                        wsa_strerror(errno));
+                } else {
+                    return;
+                }
+#else
                 return;
+#endif
+            }
             serverLog(LL_WARNING,"Diskless rdb transfer, read error sending DB to replicas: %s", strerror(errno));
             for (i=0; i < server.rdb_pipe_numconns; i++) {
                 connection *conn = server.rdb_pipe_conns[i];
@@ -1590,6 +1688,10 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
         if (stillAlive == 0) {
             serverLog(LL_WARNING,"Diskless rdb transfer, last replica dropped, killing fork child.");
             killRDBChild();
+#ifdef _WIN32
+            /* QFork cleanup is synchronous and invalidates rdb_pipe_read. */
+            return;
+#endif
         }
         /*  Remove the pipe read handler if at least one write handler was set. */
         if (server.rdb_pipe_numconns_writing || stillAlive == 0) {
@@ -1660,12 +1762,11 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
                  * the RDB transfer with the start of the other replication
                  * data. */
                 if (!replicaPutOnline(slave)) {
-                    freeClientAsync(slave);
                     continue;
                 }
                 slave->repl_start_cmd_stream_on_ack = 1;
             } else {
-                if ((slave->repldbfd = open(server.rdb_filename,O_RDONLY)) == -1 ||
+                if ((slave->repldbfd = open(server.rdb_filename,O_RDONLY,0)) == -1 ||
                     redis_fstat(slave->repldbfd,&buf) == -1) {
                     freeClientAsync(slave);
                     serverLog(LL_WARNING,"SYNC failed. Can't open/stat DB after BGSAVE: %s", strerror(errno));
@@ -2209,8 +2310,15 @@ void readSyncBulkPayload(connection *conn) {
             return;
         }
 
+        /* Windows cannot rename the transfer file while its descriptor is open. */
+#ifdef _WIN32
+        close(server.repl_transfer_fd);
+        server.repl_transfer_fd = -1;
+        int old_rdb_fd = -1;
+#else
         /* Rename rdb like renaming rewrite aof asynchronously. */
-        int old_rdb_fd = open(server.rdb_filename,O_RDONLY|O_NONBLOCK);
+        int old_rdb_fd = open(server.rdb_filename,O_RDONLY|O_NONBLOCK,0);
+#endif
         if (rename(server.repl_transfer_tmpfile,server.rdb_filename) == -1) {
             serverLog(LL_WARNING,
                 "Failed trying to rename the temp DB into %s in "
@@ -2258,7 +2366,7 @@ void readSyncBulkPayload(connection *conn) {
         }
 
         zfree(server.repl_transfer_tmpfile);
-        close(server.repl_transfer_fd);
+        if (server.repl_transfer_fd != -1) close(server.repl_transfer_fd);
         server.repl_transfer_fd = -1;
         server.repl_transfer_tmpfile = NULL;
     }
@@ -2298,6 +2406,12 @@ void readSyncBulkPayload(connection *conn) {
      * will trigger an AOF rewrite, and when done will start appending
      * to the new file. */
     if (server.aof_enabled) restartAOFAfterSYNC();
+
+    /* A sub-replica may have requested a full synchronization while this
+     * instance was receiving its own full sync. Start that deferred snapshot
+     * only after the new dataset and replication history are authoritative,
+     * and after AOF restart has claimed a child if it needs one. */
+    replicationStartPendingFork();
     return;
 
 error:
@@ -2891,6 +3005,7 @@ void syncWithMaster(connection *conn) {
         }
         server.repl_transfer_tmpfile = zstrdup(tmpfile);
         server.repl_transfer_fd = dfd;
+        dfd = -1; /* Ownership moved to server.repl_transfer_fd. */
     }
 
     /* Setup the non blocking download of the bulk file. */
@@ -2919,12 +3034,15 @@ error:
     if (dfd != -1) close(dfd);
     connClose(conn);
     server.repl_transfer_s = NULL;
-    if (server.repl_transfer_fd != -1)
+    if (server.repl_transfer_fd != -1) {
         close(server.repl_transfer_fd);
-    if (server.repl_transfer_tmpfile)
+        server.repl_transfer_fd = -1;
+    }
+    if (server.repl_transfer_tmpfile) {
+        bg_unlink(server.repl_transfer_tmpfile);
         zfree(server.repl_transfer_tmpfile);
+    }
     server.repl_transfer_tmpfile = NULL;
-    server.repl_transfer_fd = -1;
     server.repl_state = REPL_STATE_CONNECT;
     return;
 
@@ -2967,13 +3085,14 @@ void undoConnectWithMaster(void) {
 void replicationAbortSyncTransfer(void) {
     serverAssert(server.repl_state == REPL_STATE_TRANSFER);
     undoConnectWithMaster();
-    if (server.repl_transfer_fd!=-1) {
+    if (server.repl_transfer_fd != -1)
         close(server.repl_transfer_fd);
+    if (server.repl_transfer_tmpfile) {
         bg_unlink(server.repl_transfer_tmpfile);
         zfree(server.repl_transfer_tmpfile);
         server.repl_transfer_tmpfile = NULL;
-        server.repl_transfer_fd = -1;
     }
+    server.repl_transfer_fd = -1;
 }
 
 /* This function aborts a non blocking replication attempt if there is one
@@ -3830,6 +3949,18 @@ void replicationCron(void) {
         while((ln = listNext(&li))) {
             client *slave = ln->value;
 
+            if (slave->replstate == SLAVE_STATE_RDB_TRANSMITTED) {
+                if (!(slave->flags & CLIENT_CLOSE_ASAP) &&
+                    (server.unixtime - slave->repl_ack_time) > server.repl_timeout)
+                {
+                    serverLog(LL_WARNING,
+                        "Disconnecting RDB-only replica that did not close after transfer: %s",
+                        replicationGetSlaveName(slave));
+                    freeClient(slave);
+                }
+                continue;
+            }
+
             if (slave->replstate == SLAVE_STATE_ONLINE) {
                 if (slave->flags & CLIENT_PRE_PSYNC)
                     continue;
@@ -3915,6 +4046,12 @@ void replicationCron(void) {
 }
 
 int shouldStartChildReplication(int *mincapa_out, int *req_out) {
+    /* Starting a snapshot while receiving and loading our own full sync can
+     * expose an incomplete dataset to sub-replicas. Keep their requests
+     * pending until readSyncBulkPayload completes successfully. */
+    if (server.masterhost && server.repl_state == REPL_STATE_TRANSFER)
+        return 0;
+
     /* We should start a BGSAVE good for replication if we have slaves in
      * WAIT_BGSAVE_START state.
      *

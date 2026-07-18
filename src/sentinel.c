@@ -28,6 +28,13 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32fixes.h"
+#include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/win32_wsiocp2.h"
+#endif
+
 #include "server.h"
 #include "hiredis.h"
 #if USE_OPENSSL == 1 /* BUILD_YES */
@@ -37,12 +44,16 @@
 #include "async.h"
 
 #include <ctype.h>
+#ifndef _WIN32
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#endif
 #include <fcntl.h>
 
+#ifndef _WIN32
 extern char **environ;
+#endif
 
 #if USE_OPENSSL == 1 /* BUILD_YES */
 extern SSL_CTX *redis_tls_ctx;
@@ -286,6 +297,9 @@ typedef struct sentinelScriptJob {
                                execution at any time. If the script is not
                                running and it's not 0, it means: do not run
                                before the specified time. */
+#ifdef _WIN32
+    HANDLE hScriptProcess;  /* Handle of the process executing the script. */
+#endif
     pid_t pid;              /* Script execution pid. */
 } sentinelScriptJob;
 
@@ -306,6 +320,10 @@ static void redisAeReadEvent(aeEventLoop *el, int fd, void *privdata, int mask) 
 
     redisAeEvents *e = (redisAeEvents*)privdata;
     redisAsyncHandleRead(e->context);
+#ifdef _WIN32
+    if (e->reading && e->fd != -1)
+        WSIOCP_QueueNextRead(e->fd);
+#endif
 }
 
 static void redisAeWriteEvent(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -313,6 +331,10 @@ static void redisAeWriteEvent(aeEventLoop *el, int fd, void *privdata, int mask)
 
     redisAeEvents *e = (redisAeEvents*)privdata;
     redisAsyncHandleWrite(e->context);
+#ifdef _WIN32
+    if (e->writing && e->fd != -1)
+        WSIOCP_QueueWriteReady(e->fd);
+#endif
 }
 
 static void redisAeAddRead(void *privdata) {
@@ -745,6 +767,12 @@ void sentinelGenerateInitialMonitorEvents(void) {
 void sentinelReleaseScriptJob(sentinelScriptJob *sj) {
     int j = 0;
 
+#ifdef _WIN32
+    if (sj->hScriptProcess != INVALID_HANDLE_VALUE) {
+        CloseHandle(sj->hScriptProcess);
+        sj->hScriptProcess = INVALID_HANDLE_VALUE;
+    }
+#endif
     while(sj->argv[j]) sdsfree(sj->argv[j++]);
     zfree(sj->argv);
     zfree(sj);
@@ -772,6 +800,9 @@ void sentinelScheduleScriptExecution(char *path, ...) {
     sj->retry_num = 0;
     sj->argv = zmalloc(sizeof(char*)*(argc+1));
     sj->start_time = 0;
+#ifdef _WIN32
+    sj->hScriptProcess = INVALID_HANDLE_VALUE;
+#endif
     sj->pid = 0;
     memcpy(sj->argv,argv,sizeof(char*)*(argc+1));
 
@@ -799,6 +830,7 @@ void sentinelScheduleScriptExecution(char *path, ...) {
 
 /* Lookup a script in the scripts queue via pid, and returns the list node
  * (so that we can easily remove it from the queue if needed). */
+#ifndef _WIN32
 listNode *sentinelGetScriptListNodeByPid(pid_t pid) {
     listNode *ln;
     listIter li;
@@ -812,6 +844,43 @@ listNode *sentinelGetScriptListNodeByPid(pid_t pid) {
     }
     return NULL;
 }
+#endif
+
+#ifdef _WIN32
+/* CreateProcess receives a single mutable command line. Quote every argument
+ * according to the Microsoft C runtime parsing rules so paths, spaces, quotes,
+ * and trailing backslashes round-trip exactly to the child. */
+static sds sentinelWin32AppendQuotedArgument(sds cmd, const char *arg) {
+    size_t backslashes = 0;
+    cmd = sdscatlen(cmd,"\"",1);
+
+    for (const char *p = arg; ; p++) {
+        if (*p == '\\') {
+            backslashes++;
+            continue;
+        }
+
+        if (*p == '"') {
+            for (size_t i = 0; i < backslashes * 2 + 1; i++)
+                cmd = sdscatlen(cmd,"\\",1);
+            cmd = sdscatlen(cmd,"\"",1);
+            backslashes = 0;
+            continue;
+        }
+
+        if (*p == '\0') {
+            for (size_t i = 0; i < backslashes * 2; i++)
+                cmd = sdscatlen(cmd,"\\",1);
+            return sdscatlen(cmd,"\"",1);
+        }
+
+        for (size_t i = 0; i < backslashes; i++)
+            cmd = sdscatlen(cmd,"\\",1);
+        backslashes = 0;
+        cmd = sdscatlen(cmd,p,1);
+    }
+}
+#endif
 
 /* Run pending scripts if we are not already at max number of running
  * scripts. */
@@ -827,7 +896,9 @@ void sentinelRunPendingScripts(void) {
            (ln = listNext(&li)) != NULL)
     {
         sentinelScriptJob *sj = ln->value;
+#ifndef _WIN32
         pid_t pid;
+#endif
 
         /* Skip if already running. */
         if (sj->flags & SENTINEL_SCRIPT_RUNNING) continue;
@@ -838,6 +909,41 @@ void sentinelRunPendingScripts(void) {
         sj->flags |= SENTINEL_SCRIPT_RUNNING;
         sj->start_time = mstime();
         sj->retry_num++;
+
+#ifdef _WIN32
+        sds command_line = sdsempty();
+        for (int j = 0; sj->argv[j] != NULL; j++) {
+            if (j != 0) command_line = sdscatlen(command_line," ",1);
+            command_line = sentinelWin32AppendQuotedArgument(command_line,
+                                                              sj->argv[j]);
+        }
+
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        ZeroMemory(&si,sizeof(si));
+        ZeroMemory(&pi,sizeof(pi));
+        si.cb = sizeof(si);
+
+        BOOL created = CreateProcessA(sj->argv[0], command_line,
+                                      NULL, NULL, FALSE, 0,
+                                      NULL, NULL, &si, &pi);
+        sdsfree(command_line);
+
+        if (created) {
+            sj->hScriptProcess = pi.hProcess;
+            sj->pid = (pid_t)pi.dwProcessId;
+            CloseHandle(pi.hThread);
+            sentinel.running_scripts++;
+            sentinelEvent(LL_DEBUG,"+script-child",NULL,"%lld",
+                          (long long)sj->pid);
+        } else {
+            sentinelEvent(LL_WARNING,"-script-error",NULL,
+                          "%s %d %d", sj->argv[0], 99, 0);
+            sj->flags &= ~SENTINEL_SCRIPT_RUNNING;
+            sj->pid = 0;
+            sj->hScriptProcess = INVALID_HANDLE_VALUE;
+        }
+#else
         pid = fork();
 
         if (pid == -1) {
@@ -859,6 +965,7 @@ void sentinelRunPendingScripts(void) {
             sj->pid = pid;
             sentinelEvent(LL_DEBUG,"+script-child",NULL,"%ld",(long)pid);
         }
+#endif
     }
 }
 
@@ -881,6 +988,57 @@ mstime_t sentinelScriptRetryDelay(int retry_num) {
  * a signal, or returned exit code "1", it is scheduled to run again if
  * the max number of retries did not already elapsed. */
 void sentinelCollectTerminatedScripts(void) {
+#ifdef _WIN32
+    listNode *ln;
+    listIter li;
+
+    listRewind(sentinel.scripts_queue,&li);
+    while ((ln = listNext(&li)) != NULL) {
+        sentinelScriptJob *sj = ln->value;
+        if (!(sj->flags & SENTINEL_SCRIPT_RUNNING) ||
+            sj->hScriptProcess == INVALID_HANDLE_VALUE)
+            continue;
+
+        DWORD wait_result = WaitForSingleObject(sj->hScriptProcess,0);
+        if (wait_result == WAIT_TIMEOUT) continue;
+        if (wait_result == WAIT_FAILED) {
+            serverLog(LL_WARNING,
+                      "WaitForSingleObject() failed for Sentinel script pid %lld: %lu",
+                      (long long)sj->pid, (unsigned long)GetLastError());
+            continue;
+        }
+
+        DWORD exitcode = 2;
+        if (!GetExitCodeProcess(sj->hScriptProcess,&exitcode)) {
+            serverLog(LL_WARNING,
+                      "GetExitCodeProcess() failed for Sentinel script pid %lld: %lu",
+                      (long long)sj->pid, (unsigned long)GetLastError());
+        }
+        sentinelEvent(LL_DEBUG,"-script-child",NULL,"%lld %lu %d",
+                      (long long)sj->pid, (unsigned long)exitcode, 0);
+
+        CloseHandle(sj->hScriptProcess);
+        sj->hScriptProcess = INVALID_HANDLE_VALUE;
+        sentinel.running_scripts--;
+
+        if (exitcode == 1 &&
+            sj->retry_num != SENTINEL_SCRIPT_MAX_RETRY)
+        {
+            sj->flags &= ~SENTINEL_SCRIPT_RUNNING;
+            sj->pid = 0;
+            sj->start_time = mstime() +
+                             sentinelScriptRetryDelay(sj->retry_num);
+        } else {
+            if (exitcode != 0) {
+                sentinelEvent(LL_WARNING,"-script-error",NULL,
+                              "%s %d %lu", sj->argv[0], 0,
+                              (unsigned long)exitcode);
+            }
+            listDelNode(sentinel.scripts_queue,ln);
+            sentinelReleaseScriptJob(sj);
+        }
+    }
+#else
     int statloc;
     pid_t pid;
 
@@ -923,6 +1081,7 @@ void sentinelCollectTerminatedScripts(void) {
         }
         sentinel.running_scripts--;
     }
+#endif
 }
 
 /* Kill scripts in timeout, they'll be collected by the
@@ -939,9 +1098,14 @@ void sentinelKillTimedoutScripts(void) {
         if (sj->flags & SENTINEL_SCRIPT_RUNNING &&
             (now - sj->start_time) > sentinel_script_max_runtime)
         {
-            sentinelEvent(LL_WARNING,"-script-timeout",NULL,"%s %ld",
-                sj->argv[0], (long)sj->pid);
+            sentinelEvent(LL_WARNING,"-script-timeout",NULL,"%s %lld",
+                sj->argv[0], (long long)sj->pid);
+#ifdef _WIN32
+            if (sj->hScriptProcess != INVALID_HANDLE_VALUE)
+                TerminateProcess(sj->hScriptProcess,1);
+#else
             kill(sj->pid,SIGKILL);
+#endif
         }
     }
 }
@@ -4287,17 +4451,17 @@ void sentinelInfoCommand(client *c) {
             info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
             "# Sentinel\r\n"
-            "sentinel_masters:%lu\r\n"
+            "sentinel_masters:%llu\r\n"
             "sentinel_tilt:%d\r\n"
             "sentinel_tilt_since_seconds:%jd\r\n"
             "sentinel_running_scripts:%d\r\n"
-            "sentinel_scripts_queue_length:%ld\r\n"
+            "sentinel_scripts_queue_length:%llu\r\n"
             "sentinel_simulate_failure_flags:%lu\r\n",
-            dictSize(sentinel.masters),
+            (unsigned long long)dictSize(sentinel.masters),
             sentinel.tilt,
             sentinel.tilt ? (intmax_t)((mstime()-sentinel.tilt_start_time)/1000) : -1,
             sentinel.running_scripts,
-            listLength(sentinel.scripts_queue),
+            (unsigned long long)listLength(sentinel.scripts_queue),
             sentinel.simfailure_flags);
 
         di = dictGetIterator(sentinel.masters);

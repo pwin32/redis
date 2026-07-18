@@ -1644,14 +1644,14 @@ void lpRepr(unsigned char *lp) {
         unsigned long back_len = lpEncodeBacklen(NULL, encoded_size);
         printf(
             "{\n"
-                "\taddr: 0x%08lx,\n"
+                "\taddr: %p,\n"
                 "\tindex: %2d,\n"
                 "\toffset: %1lu,\n"
                 "\thdr+entrylen+backlen: %2lu,\n"
                 "\thdrlen: %3u,\n"
                 "\tbacklen: %2lu,\n"
                 "\tpayload: %1u\n",
-            (long unsigned)p,
+            (void*)p,
             index,
             (unsigned long) (p-lp),
             encoded_size + back_len,

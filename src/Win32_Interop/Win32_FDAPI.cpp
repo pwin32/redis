@@ -49,7 +49,6 @@ fdapi_connect connect = NULL;
 fdapi_fcntl fcntl = NULL;
 fdapi_fstat fdapi_fstat64 = NULL;
 fdapi_fsync fsync = NULL;
-fdapi_ftruncate ftruncate = NULL;
 fdapi_freeaddrinfo freeaddrinfo = NULL;
 fdapi_getaddrinfo getaddrinfo = NULL;
 fdapi_getpeername getpeername = NULL;
@@ -72,6 +71,7 @@ fdapi_select select = NULL;
 fdapi_setsockopt setsockopt = NULL;
 fdapi_socket socket = NULL;
 fdapi_write write = NULL;
+fdapi_writev writev = NULL;
 }
 
 auto f_WSACleanup = dllfunctor_stdcall<int>("ws2_32.dll", "WSACleanup");
@@ -946,6 +946,43 @@ ssize_t FDAPI_write(int rfd, const void *buf, size_t count) {
     return -1;
 }
 
+/* POSIX writev(2) equivalent for Redis reply batching.  Use native Winsock
+ * scatter/gather I/O so a short write retains the same semantics as Unix. */
+ssize_t FDAPI_writev(int rfd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt < 0 || iovcnt > IOV_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    try {
+        SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
+        if (socket == INVALID_SOCKET) {
+            errno = EBADF;
+            return -1;
+        }
+
+        WSABUF buffers[IOV_MAX];
+        for (int i = 0; i < iovcnt; i++) {
+            if (iov[i].iov_len > (size_t)UINT_MAX) {
+                errno = EMSGSIZE;
+                return -1;
+            }
+            buffers[i].buf = (CHAR *)iov[i].iov_base;
+            buffers[i].len = (ULONG)iov[i].iov_len;
+        }
+
+        DWORD sent = 0;
+        if (f_WSASend(socket, buffers, (DWORD)iovcnt, &sent, 0, NULL, NULL) == SOCKET_ERROR) {
+            set_errno_from_wsa_error();
+            return -1;
+        }
+        return (ssize_t)sent;
+    } CATCH_AND_REPORT();
+
+    errno = EBADF;
+    return -1;
+}
+
 int FDAPI_fsync(int rfd) {
     try {
         int crt_fd = RFDMap::getInstance().lookupCrtFD(rfd);
@@ -1340,7 +1377,6 @@ private:
         fdapi_fstat64 = (fdapi_fstat) FDAPI_fstat64;
         freeaddrinfo = FDAPI_freeaddrinfo;
         fsync = FDAPI_fsync;
-        ftruncate = FDAPI_ftruncate;
         getaddrinfo = FDAPI_getaddrinfo;
         getsockopt = FDAPI_getsockopt;
         getpeername = FDAPI_getpeername;
@@ -1362,6 +1398,7 @@ private:
         setsockopt = FDAPI_setsockopt;
         socket = FDAPI_socket;
         write = FDAPI_write;
+        writev = FDAPI_writev;
     }
 
     ~Win32_FDSockMap() {

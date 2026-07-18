@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/eventloop.so]
+set testmodule [redis_test_module eventloop]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

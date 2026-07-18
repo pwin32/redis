@@ -34,7 +34,21 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include "Win32_Interop/win32_types.h"
+#ifndef IOV_MAX
+#define IOV_MAX 16
+#endif
+#ifndef REDIS_WIN32_IOVEC_DEFINED
+#define REDIS_WIN32_IOVEC_DEFINED
+struct iovec {
+    void *iov_base;
+    size_t iov_len;
+};
+#endif
+#else
 #include <sys/uio.h>
+#endif
 
 #include "ae.h"
 
@@ -248,7 +262,9 @@ static inline void connShutdown(connection *conn) {
 }
 
 static inline void connClose(connection *conn) {
-    conn->type->close(conn);
+    /* Parenthesize the member call so the Windows FDAPI close(fd) macro does
+     * not rewrite the ConnectionType::close field. */
+    (conn->type->close)(conn);
 }
 
 /* Returns the last error encountered by the connection, as a string.  If no error,

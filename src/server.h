@@ -30,6 +30,28 @@
 #ifndef __REDIS_H
 #define __REDIS_H
 
+#ifdef _WIN32
+/* Keep the Windows portability layer ahead of the CRT/POSIX compatibility
+ * headers below.  FDAPI deliberately replaces the Winsock/CRT entry points
+ * used by Redis with synthetic descriptors, while the QFork and service
+ * layers provide the process/thread and logging contracts expected by the
+ * core. */
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32fixes.h"
+#ifdef usleep
+/* win32fixes.h provides the native Sleep-backed implementation, but its
+ * function-like macro must not be active while later Redis/MinGW headers
+ * declare the CRT usleep prototype.  It is restored after all includes below. */
+#undef usleep
+#define REDIS_WIN32_RESTORE_USLEEP 1
+#endif
+#include "Win32_Interop/Win32_FDAPI.h"
+#include "Win32_Interop/win32_wsiocp2.h"
+#include "Win32_Interop/Win32_Signal_Process.h"
+#include "Win32_Interop/Win32_RedisLog.h"
+#include "Win32_Interop/Win32_Time.h"
+#endif
+
 #include "fmacros.h"
 #include "config.h"
 #include "solarisfixes.h"
@@ -40,17 +62,27 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <time.h>
 #include <limits.h>
+#ifdef _WIN32
+/* Win32_FDAPI supplies the descriptor-compatible definitions used by Redis;
+ * do not pull the POSIX unistd declarations into the same translation unit. */
+#else
 #include <unistd.h>
+#endif
 #include <errno.h>
+#ifndef _WIN32
 #include <inttypes.h>
 #include <pthread.h>
 #include <syslog.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#else
+#include "Win32_Interop/Win32_PThread.h"
+#endif
 #include <lua.h>
 #include <signal.h>
 
@@ -62,8 +94,13 @@
 #define static_assert(expr, lit) extern char __static_assert_failure[(expr) ? 1:-1]
 #endif
 
+#ifdef _WIN32
+typedef PORT_LONGLONG mstime_t; /* millisecond time type. */
+typedef PORT_LONGLONG ustime_t; /* microsecond time type. */
+#else
 typedef long long mstime_t; /* millisecond time type. */
 typedef long long ustime_t; /* microsecond time type. */
+#endif
 
 #include "ae.h"      /* Event driven programming library */
 #include "sds.h"     /* Dynamic safe strings */
@@ -822,6 +859,10 @@ struct RedisModule {
     struct moduleLoadQueueEntry *loadmod; /* Module load arguments for config rewrite. */
     int num_commands_with_acl_categories; /* Number of commands in this module included in acl categories */
     int onload;     /* Flag to identify if the call is being made from Onload (0 or 1) */
+#ifdef _WIN32
+    wchar_t *qfork_path;         /* Absolute DLL path for the QFork child. */
+    uint64_t qfork_load_seq;     /* Preserve module loader order in QFork. */
+#endif
 };
 typedef struct RedisModule RedisModule;
 
@@ -2851,6 +2892,12 @@ sds writeCommandsGetDiskErrorMessage(int);
 
 /* RDB persistence */
 #include "rdb.h"
+#ifdef _WIN32
+#ifdef REDIS_WIN32_RESTORE_USLEEP
+#define usleep(x) ((x) == 1 ? Sleep(0) : Sleep((int)((x)/1000)))
+#undef REDIS_WIN32_RESTORE_USLEEP
+#endif
+#endif
 void killRDBChild(void);
 int bg_unlink(const char *filename);
 
@@ -3022,6 +3069,12 @@ int processPendingCommandAndInputBuffer(client *c);
 int processCommandAndResetClient(client *c);
 void setupSignalHandlers(void);
 void removeSignalHandlers(void);
+#ifdef _WIN32
+/* Called by the IOCP event loop after the SCM stop event is observed.  The
+ * request is consumed by serverCron/whileBlockedCron so shutdown follows the
+ * normal Redis 7.2 prepare/finish path instead of stopping aeMain directly. */
+void serviceStopRequested(void);
+#endif
 int createSocketAcceptHandler(connListener *sfd, aeFileProc *accept_handler);
 connListener *listenerByType(const char *typename);
 int changeListener(connListener *listener);
@@ -3052,7 +3105,10 @@ void replyToClientsBlockedOnShutdown(void);
 int abortShutdown(void);
 void afterCommand(client *c);
 int mustObeyClient(client *c);
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+void _serverLog(int level, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
+#elif defined(__GNUC__)
 void _serverLog(int level, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 #else
@@ -3709,7 +3765,9 @@ void _serverPanic(const char *file, int line, const char *msg, ...)
 void _serverPanic(const char *file, int line, const char *msg, ...);
 #endif
 void serverLogObjectDebugInfo(const robj *o);
+#ifndef _WIN32
 void sigsegvHandler(int sig, siginfo_t *info, void *secret);
+#endif
 const char *getSafeInfoString(const char *s, size_t len, char **tmp);
 dict *genInfoSectionDict(robj **argv, int argc, char **defaults, int *out_all, int *out_everything);
 void releaseInfoSectionDict(dict *sec);
@@ -3718,7 +3776,7 @@ sds genModulesInfoString(sds info);
 void applyWatchdogPeriod(void);
 void watchdogScheduleSignal(int period);
 void serverLogHexDump(int level, char *descr, void *value, size_t len);
-int memtest_preserving_test(unsigned long *m, size_t bytes, int passes);
+int memtest_preserving_test(void *m, size_t bytes, int passes);
 void mixDigest(unsigned char *digest, const void *ptr, size_t len);
 void xorDigest(unsigned char *digest, const void *ptr, size_t len);
 sds catSubCommandFullname(const char *parent_name, const char *sub_name);

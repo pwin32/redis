@@ -1510,10 +1510,10 @@ unsigned long ACLGetCommandID(sds cmdname) {
     void *id = raxFind(commandId,(unsigned char*)lowername,sdslen(lowername));
     if (id != raxNotFound) {
         sdsfree(lowername);
-        return (unsigned long)id;
+        return (unsigned long)(uintptr_t)id;
     }
     raxInsert(commandId,(unsigned char*)lowername,strlen(lowername),
-              (void*)nextid,NULL);
+              (void*)(uintptr_t)nextid,NULL);
     sdsfree(lowername);
     unsigned long thisid = nextid;
     nextid++;

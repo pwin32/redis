@@ -2,6 +2,41 @@ set ::global_overrides {}
 set ::tags {}
 set ::valgrind_errors {}
 
+# Resolve all test executables and modules through the runner-provided paths.
+# The MinGW build keeps its native PE files under build/mingw64, while the
+# upstream harness assumes src/*.  Keeping this indirection here means tests
+# can retain upstream command content without accidentally launching the
+# unrelated installed Redis service or loading source-tree modules.
+set ::redis_test_root [file normalize [file join [file dirname [info script]] ../..]]
+
+proc redis_test_binary {envvar relative_path} {
+    if {[info exists ::env($envvar)] && [string length $::env($envvar)] > 0} {
+        return [file normalize $::env($envvar)]
+    }
+
+    set path [file normalize [file join $::redis_test_root {*}$relative_path]]
+    if {$::tcl_platform(platform) eq "windows" && [file extension $path] eq {}} {
+        append path ".exe"
+    }
+    return $path
+}
+
+proc redis_test_module {name} {
+    if {[info exists ::env(REDIS_TEST_MODULE_DIR)] &&
+        [string length $::env(REDIS_TEST_MODULE_DIR)] > 0} {
+        set module_dir $::env(REDIS_TEST_MODULE_DIR)
+    } else {
+        set module_dir [file join $::redis_test_root tests modules]
+    }
+    return [file normalize [file join $module_dir "$name.so"]]
+}
+
+set ::redis_server_path [redis_test_binary REDIS_SERVER {src redis-server}]
+set ::redis_cli_path [redis_test_binary REDIS_CLI {src redis-cli}]
+set ::redis_benchmark_path [redis_test_binary REDIS_BENCHMARK {src redis-benchmark}]
+set ::redis_check_aof_path [redis_test_binary REDIS_CHECK_AOF {src redis-check-aof}]
+set ::redis_check_rdb_path [redis_test_binary REDIS_CHECK_RDB {src redis-check-rdb}]
+
 proc start_server_error {config_file error} {
     set err {}
     append err "Can't start the Redis server\n"
@@ -91,10 +126,7 @@ proc kill_server config {
 
     # kill server and wait for the process to be totally exited
     send_data_packet $::test_server_fd server-killing $pid
-    # Node might have been stopped in the test
-    # Send SIGCONT before SIGTERM, otherwise shutdown may be slow with ASAN.
-    catch {exec kill -SIGCONT $pid}
-    catch {exec kill $pid}
+    kill_proc $config
     if {$::valgrind} {
         set max_wait 120000
     } else {
@@ -105,10 +137,10 @@ proc kill_server config {
 
         if {$wait == $max_wait} {
             puts "Forcing process $pid to crash..."
-            catch {exec kill -SEGV $pid}
+            catch {kill_proc2 $pid}
         } elseif {$wait >= $max_wait * 2} {
             puts "Forcing process $pid to exit..."
-            catch {exec kill -KILL $pid}
+            catch {kill_proc2 $pid}
         } elseif {$wait % 1000 == 0} {
             puts "Waiting for process $pid to exit..."
         }
@@ -126,13 +158,118 @@ proc kill_server config {
     send_data_packet $::test_server_fd server-killed $pid
 }
 
-proc is_alive config {
-    set pid [dict get $config pid]
-    if {[catch {exec kill -0 $pid} err]} {
+# Return the executable and command line for one exact Windows PID.  The
+# caller still validates the path before any terminate/suspend operation.
+proc windows_process_details {pid} {
+    set script "\$p = Get-CimInstance Win32_Process -Filter 'ProcessId = $pid'; if (\$null -eq \$p) { exit 1 }; Write-Output \$p.ExecutablePath; Write-Output \$p.CommandLine"
+    return [exec powershell.exe -NoProfile -NonInteractive -Command $script]
+}
+
+proc windows_process_matches {pid {config {}}} {
+    if {[catch {set details [windows_process_details $pid]}]} {
         return 0
-    } else {
-        return 1
     }
+    set lines [split [string trim $details] "\r\n"]
+    set actual [string trim [lindex $lines 0]]
+    if {$actual eq {}} { return 0 }
+
+    set expected [file nativename [file normalize $::redis_server_path]]
+    set actual [file nativename [file normalize $actual]]
+    if {![string equal -nocase $actual $expected]} {
+        return 0
+    }
+
+    # If a server config is available, require its basename in the command
+    # line as an additional guard against PID reuse or an installed service.
+    if {$config ne {} && [dict exists $config config_file]} {
+        set config_name [file tail [dict get $config config_file]]
+        set commandline [join [lrange $lines 1 end] "\n"]
+        if {[string first $config_name $commandline] < 0} {
+            return 0
+        }
+    }
+    return 1
+}
+
+proc windows_is_alive config {
+    return [windows_process_matches [dict get $config pid] $config]
+}
+
+proc windows_kill_proc config {
+    set pid [dict get $config pid]
+    if {![windows_is_alive $config]} { return }
+
+    # Match POSIX SIGTERM by asking Redis to execute its normal shutdown path.
+    # If the server is blocked or already stopped, kill_proc2 performs an
+    # exact-PID tree termination after the caller's bounded wait.
+    set shutdown_client {}
+    set shutdown_sent 0
+    catch {
+        set shutdown_client [redis [dict get $config host] \
+                                   [dict get $config port] 1 $::tls]
+        set server_config [dict get $config config]
+        if {[dict exists $server_config requirepass]} {
+            $shutdown_client auth [dict get $server_config requirepass]
+        }
+        $shutdown_client shutdown
+        set shutdown_sent 1
+    }
+    if {$shutdown_client ne {}} { catch {$shutdown_client close} }
+
+    if {!$shutdown_sent} {
+        catch {windows_kill_proc2 $pid}
+    }
+}
+
+proc windows_process_owned {pid} {
+    if {[catch {set details [windows_process_details $pid]}]} { return 0 }
+    set lines [split [string trim $details] "\r\n"]
+    set actual [file nativename [file normalize [string trim [lindex $lines 0]]]]
+    set allowed {}
+    foreach var {redis_server_path redis_cli_path redis_benchmark_path redis_check_aof_path redis_check_rdb_path} {
+        if {[info exists ::$var]} {
+            lappend allowed [file nativename [file normalize [set ::$var]]]
+        }
+    }
+    if {[info exists ::tcl_platform(platform)]} {
+        lappend allowed [file nativename [file normalize [info nameofexecutable]]]
+    }
+    foreach path $allowed {
+        if {[string equal -nocase $actual $path]} { return 1 }
+    }
+    set commandline [join [lrange $lines 1 end] "\n"]
+    return [expr {[string first [file nativename $::redis_test_root] $commandline] >= 0}]
+}
+
+proc windows_kill_proc2 pid {
+    if {![windows_process_owned $pid]} { return }
+    catch {exec taskkill.exe /F /T /PID $pid}
+}
+
+proc windows_kill_proc2_checked pid {
+    if {![windows_process_owned $pid]} {
+        error "Refusing to terminate unexpected Windows process PID $pid"
+    }
+    exec taskkill.exe /F /T /PID $pid 2>@1
+}
+
+if {$::tcl_platform(platform) eq "windows"} {
+    proc is_alive config { return [windows_is_alive $config] }
+    proc kill_proc config { windows_kill_proc $config }
+    proc kill_proc2 pid { windows_kill_proc2 $pid }
+    proc kill_proc2_checked pid { windows_kill_proc2_checked $pid }
+} else {
+    proc is_alive config {
+        set pid [dict get $config pid]
+        return [expr {![catch {exec kill -0 $pid}]}]
+    }
+    proc kill_proc config {
+        set pid [dict get $config pid]
+        catch {exec kill -SIGCONT $pid}
+        catch {exec kill $pid}
+    }
+    proc kill_proc2 pid { catch {exec /bin/kill -9 $pid} }
+    proc kill_proc2_checked pid { exec /bin/kill -9 $pid }
 }
 
 proc ping_server {host port} {
@@ -273,7 +410,7 @@ proc create_server_config_file {filename config config_lines} {
 }
 
 proc spawn_server {config_file stdout stderr args} {
-    set cmd [list src/redis-server $config_file]
+    set cmd [list $::redis_server_path $config_file]
     set args {*}$args
     if {[llength $args] > 0} {
         lappend cmd {*}$args
@@ -281,13 +418,17 @@ proc spawn_server {config_file stdout stderr args} {
 
     if {$::valgrind} {
         set pid [exec valgrind --track-origins=yes --trace-children=yes --suppressions=[pwd]/src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full {*}$cmd >> $stdout 2>> $stderr &]
-    } elseif ($::stack_logging) {
+    } elseif {$::stack_logging && $::tcl_platform(platform) ne "windows"} {
         set pid [exec /usr/bin/env MallocStackLogging=1 MallocLogFile=/tmp/malloc_log.txt {*}$cmd >> $stdout 2>> $stderr &]
     } else {
         # ASAN_OPTIONS environment variable is for address sanitizer. If a test
         # tries to allocate huge memory area and expects allocator to return
         # NULL, address sanitizer throws an error without this setting.
-        set pid [exec /usr/bin/env ASAN_OPTIONS=allocator_may_return_null=1 {*}$cmd >> $stdout 2>> $stderr &]
+        if {$::tcl_platform(platform) eq "windows"} {
+            set pid [exec {*}$cmd >> $stdout 2>> $stderr &]
+        } else {
+            set pid [exec /usr/bin/env ASAN_OPTIONS=allocator_may_return_null=1 {*}$cmd >> $stdout 2>> $stderr &]
+        }
     }
 
     if {$::wait_server} {
@@ -506,8 +647,11 @@ proc start_server {options {code undefined}} {
         dict set config port $port
     }
 
-    set unixsocket [file normalize [format "%s/%s" [dict get $config "dir"] "socket"]]
-    dict set config "unixsocket" $unixsocket
+    set unixsocket {}
+    if {$::tcl_platform(platform) ne "windows"} {
+        set unixsocket [file normalize [format "%s/%s" [dict get $config "dir"] "socket"]]
+        dict set config "unixsocket" $unixsocket
+    }
 
     # apply overrides from global space and arguments
     foreach {directive arguments} [concat $::global_overrides $overrides] {

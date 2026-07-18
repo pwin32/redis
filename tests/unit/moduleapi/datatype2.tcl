@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/datatype2.so]
+set testmodule [redis_test_module datatype2]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

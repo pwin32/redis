@@ -33,7 +33,7 @@
 #include "pqsort.h" /* Partial qsort for SORT+LIMIT */
 #include <math.h> /* isnan() */
 
-zskiplistNode* zslGetElementByRank(zskiplist *zsl, PORT_ULONG rank);
+zskiplistNode* zslGetElementByRank(zskiplist *zsl, unsigned long rank);
 
 redisSortOperation *createSortOperation(int type, robj *pattern) {
     redisSortOperation *so = zmalloc(sizeof(*so));
@@ -190,7 +190,7 @@ void sortCommandGeneric(client *c, int readonly) {
     list *operations;
     unsigned int outputlen = 0;
     int desc = 0, alpha = 0;
-    PORT_LONG limit_start = 0, limit_count = -1, start, end;
+    long long limit_start = 0, limit_count = -1, start, end;
     int j, dontsort = 0, vectorlen;
     int getop = 0; /* GET operation counter */
     int int_conversion_error = 0;
@@ -216,9 +216,9 @@ void sortCommandGeneric(client *c, int readonly) {
         } else if (!strcasecmp(c->argv[j]->ptr,"alpha")) {
             alpha = 1;
         } else if (!strcasecmp(c->argv[j]->ptr,"limit") && leftargs >= 2) {
-            if ((getLongFromObjectOrReply(c, c->argv[j+1], &limit_start, NULL)
+            if ((getLongLongFromObjectOrReply(c, c->argv[j+1], &limit_start, NULL)
                  != C_OK) ||
-                (getLongFromObjectOrReply(c, c->argv[j+2], &limit_count, NULL)
+                (getLongLongFromObjectOrReply(c, c->argv[j+2], &limit_count, NULL)
                  != C_OK))
             {
                 syntax_error++;
@@ -330,8 +330,8 @@ void sortCommandGeneric(client *c, int readonly) {
 
     /* Perform LIMIT start,count sanity checking.
      * And avoid integer overflow by limiting inputs to object sizes. */
-    start = min(max(limit_start, 0), vectorlen);
-    limit_count = min(max(limit_count, -1), vectorlen);
+    start = min(max(limit_start, 0LL), vectorlen);
+    limit_count = min(max(limit_count, -1LL), vectorlen);
     end = (limit_count < 0) ? vectorlen-1 : start+limit_count-1;
     if (start >= vectorlen) {
         start = vectorlen-1;
@@ -371,7 +371,7 @@ void sortCommandGeneric(client *c, int readonly) {
             listTypeIterator *li;
             listTypeEntry entry;
             li = listTypeInitIterator(sortval,
-                    desc ? (PORT_LONG)(listTypeLength(sortval) - start - 1) : start,
+                    desc ? (long)(listTypeLength(sortval) - start - 1) : (long)start,
                     desc ? LIST_HEAD : LIST_TAIL);
 
             while(j < vectorlen && listTypeNext(li,&entry)) {
@@ -421,7 +421,7 @@ void sortCommandGeneric(client *c, int readonly) {
 
         /* Check if starting point is trivial, before doing log(N) lookup. */
         if (desc) {
-            PORT_LONG zsetlen = (PORT_LONG) dictSize(((zset*)sortval->ptr)->dict); WIN_PORT_FIX /* cast (PORT_LONG) */
+            unsigned long zsetlen = (unsigned long)dictSize(((zset*)sortval->ptr)->dict);
 
             ln = zsl->tail;
             if (start > 0)
@@ -492,7 +492,7 @@ void sortCommandGeneric(client *c, int readonly) {
                     /* Don't need to decode the object if it's
                      * integer-encoded (the only encoding supported) so
                      * far. We can just cast it */
-                    vector[j].u.score = (PORT_LONG)byval->ptr;
+                    vector[j].u.score = (long long)(intptr_t)byval->ptr;
                 } else {
                     serverAssertWithInfo(c,sortval,1 != 1);
                 }

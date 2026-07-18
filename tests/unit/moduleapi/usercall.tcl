@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/usercall.so]
+set testmodule [redis_test_module usercall]
 
 set test_script_set "#!lua
 redis.call('set','x',1)

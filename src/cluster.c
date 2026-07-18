@@ -28,18 +28,31 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32fixes.h"
+#include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/win32_wsiocp2.h"
+#endif
+
 #include "server.h"
 #include "cluster.h"
 #include "endianconv.h"
 #include "connection.h"
 
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#endif
 #include <fcntl.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/file.h>
+#endif
 #include <math.h>
 #include <ctype.h>
 
@@ -361,8 +374,8 @@ static clusterMsg *getMessageFromSendBlock(clusterMsgSendBlock *msgblock) {
  * sake of locking if it does not already exist), C_ERR is returned.
  * If the configuration was loaded from the file, C_OK is returned. */
 int clusterLoadConfig(char *filename) {
-    FILE *fp = fopen(filename,"r");
-    struct stat sb;
+    FILE *fp = fopen(filename,IF_WIN32("rb","r"));
+    struct IF_WIN32(_stat64,stat) sb;
     char *line;
     int maxline, j;
 
@@ -814,7 +827,11 @@ int clusterLockConfig(char *filename) {
     /* To lock it, we need to open the file in a way it is created if
      * it does not exist, otherwise there is a race condition with other
      * processes. */
-    int fd = open(filename,O_WRONLY|O_CREAT|O_CLOEXEC,0644);
+    int open_flags = O_WRONLY|O_CREAT;
+#ifndef _WIN32
+    open_flags |= O_CLOEXEC;
+#endif
+    int fd = open(filename,open_flags,0644);
     if (fd == -1) {
         serverLog(LL_WARNING,
             "Can't open %s in order to acquire a lock: %s",
@@ -822,16 +839,30 @@ int clusterLockConfig(char *filename) {
         return C_ERR;
     }
 
+#ifndef _WIN32
     if (flock(fd,LOCK_EX|LOCK_NB) == -1) {
         if (errno == EWOULDBLOCK) {
+#else
+    HANDLE hFile = (HANDLE)FDAPI_get_osfhandle(fd);
+    OVERLAPPED overlapped = {0};
+    if (!LockFileEx(hFile, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                    0, MAXDWORD, MAXDWORD, &overlapped)) {
+        DWORD lockerr = GetLastError();
+        if (lockerr == ERROR_LOCK_VIOLATION) {
+#endif
             serverLog(LL_WARNING,
                  "Sorry, the cluster configuration file %s is already used "
                  "by a different Redis Cluster node. Please make sure that "
                  "different nodes use different cluster configuration "
                  "files.", filename);
         } else {
+#ifdef _WIN32
+            serverLog(LL_WARNING,
+                "Impossible to lock %s: %s", filename, wsa_strerror((int)lockerr));
+#else
             serverLog(LL_WARNING,
                 "Impossible to lock %s: %s", filename, strerror(errno));
+#endif
         }
         close(fd);
         return C_ERR;

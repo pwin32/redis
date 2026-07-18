@@ -2,8 +2,12 @@
 #ifndef HIREDIS_POLL_H
 #define HIREDIS_POLL_H
 
-#include "../async.h"
+#ifdef _WIN32
+#include "../win32_hiredis.h"
+#else
 #include "../sockcompat.h"
+#endif
+#include "../async.h"
 #include <string.h> // for memset
 #include <errno.h>
 

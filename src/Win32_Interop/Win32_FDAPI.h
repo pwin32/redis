@@ -76,6 +76,19 @@ typedef unsigned long nfds_t;
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#ifndef IOV_MAX
+/* Winsock's WSABUF count is a DWORD, but Redis only needs a small bounded
+ * vector for reply batching. */
+#define IOV_MAX 16
+#endif
+
+#ifndef REDIS_WIN32_IOVEC_DEFINED
+#define REDIS_WIN32_IOVEC_DEFINED
+struct iovec {
+    void *iov_base;
+    size_t iov_len;
+};
+#endif
 
 // Including a version of this file modified to eliminate prototype
 // definitions not removed by INCL_WINSOCK_API_PROTOTYPES
@@ -193,6 +206,7 @@ typedef int (*fdapi_getsockopt)(int sockfd, int level, int optname, void *optval
 typedef int (*fdapi_connect)(int sockfd, const struct sockaddr *addr, size_t addrlen);
 typedef ssize_t (*fdapi_read)(int fd, void *buf, size_t count);
 typedef ssize_t (*fdapi_write)(int fd, const void *buf, size_t count);
+typedef ssize_t (*fdapi_writev)(int fd, const struct iovec *iov, int iovcnt);
 typedef int (*fdapi_fsync)(int fd);
 typedef int (*fdapi_listen)(int sockfd, int backlog);
 typedef int (*fdapi_ftruncate)(int fd, PORT_LONGLONG length);
@@ -237,7 +251,6 @@ extern fdapi_fcntl          fcntl;
 extern fdapi_fstat          fdapi_fstat64;
 extern fdapi_freeaddrinfo   freeaddrinfo;
 extern fdapi_fsync          fsync;
-extern fdapi_ftruncate      ftruncate;
 extern fdapi_getaddrinfo    getaddrinfo;
 extern fdapi_getsockopt     getsockopt;
 extern fdapi_getpeername    getpeername;
@@ -259,6 +272,7 @@ extern fdapi_select         select;
 extern fdapi_setsockopt     setsockopt;
 extern fdapi_socket         socket;
 extern fdapi_write          write;
+extern fdapi_writev         writev;
 
 // Other FD based APIs
 void    FDAPI_SaveSocketAddrStorage(int rfd, SOCKADDR_STORAGE* socketAddrStorage);
@@ -279,6 +293,12 @@ BOOL    FDAPI_CloseDuplicatedSocket(int rfd);
 int     FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFOW lpProtocolInfo);
 int     FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFOW lpProtocolInfo, GROUP g, DWORD dwFlags);
 int     FDAPI_WSAGetLastError(void);
+ssize_t FDAPI_writev(int rfd, const struct iovec *iov, int iovcnt);
+int     FDAPI_ftruncate(int rfd, PORT_LONGLONG length);
+
+/* Keep MinGW's later <unistd.h> declaration compatible while routing Redis
+ * callers through the synthetic descriptor layer. */
+#define ftruncate FDAPI_ftruncate
 
 intptr_t FDAPI_get_osfhandle(int fd);
 int      FDAPI_open_osfhandle(intptr_t osfhandle, int flags);

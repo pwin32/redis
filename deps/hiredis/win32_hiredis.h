@@ -20,31 +20,14 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef WIN32_INTEROP_WSIOCP2_H
-#define WIN32_INTEROP_WSIOCP2_H
+#ifndef WIN32_HIREDIS_H
+#define WIN32_HIREDIS_H
 
-#include <WinSock2.h>   // For SOCKADDR_STORAGE
-#ifdef __MINGW32__
-#include_next <ws2tcpip.h>   // For socklen_t
-#else
-#include "WS2tcpip.h"   // For socklen_t
-#endif
+#include "../../src/Win32_Interop/Win32_Portability.h"
+#include "../../src/Win32_Interop/Win32_types_hiredis.h"
+#include "../../src/Win32_Interop/Win32_Error.h"
+#include "../../src/Win32_Interop/Win32_FDAPI.h"
 
-/* need callback on write complete. WSIOCP_Request is used to pass parameters */
-typedef struct WSIOCP_Request {
-    void *client;
-    void *data;
-    char *buf;
-    int len;
-} WSIOCP_Request;
-
-int WSIOCP_QueueNextRead(int rfd);
-int WSIOCP_QueueWriteReady(int rfd);
-int WSIOCP_QueueAccept(int rfd);
-int WSIOCP_SocketSend(int rfd, char *buf, int len, void *eventLoop, void *client, void *data, void *proc);
-int WSIOCP_Listen(int rfd, int backlog);
-int WSIOCP_Accept(int rfd, struct sockaddr *sa, socklen_t *len);
-int WSIOCP_SocketConnect(int rfd, const SOCKADDR_STORAGE *ss);
-int WSIOCP_SocketConnectBind(int rfd, const SOCKADDR_STORAGE *ss, const char* source_addr);
+#include "hiredis.h"
 
 #endif

@@ -27,13 +27,22 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32fixes.h"
+#include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/win32_wsiocp2.h"
+#endif
+
 #include "server.h"
 #include "atomicvar.h"
 #include "cluster.h"
 #include "script.h"
 #include "fpconv_dtoa.h"
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/uio.h>
+#endif
 #include <math.h>
 #include <ctype.h>
 
@@ -442,7 +451,7 @@ void addReply(client *c, robj *obj) {
          * using our optimized function, and attach the resulting string
          * to the output buffer. */
         char buf[32];
-        size_t len = ll2string(buf,sizeof(buf),(long)obj->ptr);
+        size_t len = ll2string(buf,sizeof(buf),(long long)(intptr_t)obj->ptr);
         _addReplyToBufferOrList(c,buf,len);
     } else {
         serverPanic("Wrong obj->encoding in addReply()");
@@ -1742,10 +1751,15 @@ void freeClientAsync(client *c) {
         listAddNodeTail(server.clients_to_close,c);
         return;
     }
+#ifdef _WIN32
+    /* I/O threads are rejected during Windows configuration validation. */
+    serverPanic("I/O-threaded async client free is unsupported on Windows");
+#else
     static pthread_mutex_t async_free_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&async_free_queue_mutex);
     listAddNodeTail(server.clients_to_close,c);
     pthread_mutex_unlock(&async_free_queue_mutex);
+#endif
 }
 
 /* Log errors for invalid use and free the client in async way.
@@ -4203,7 +4217,7 @@ static inline void setIOPendingCount(int i, unsigned long count) {
 void *IOThreadMain(void *myid) {
     /* The ID is the thread number (from 0 to server.io_threads_num-1), and is
      * used by the thread to just manipulate a single sub-array of clients. */
-    long id = (unsigned long)myid;
+    long id = (long)(intptr_t)myid;
     char thdname[16];
 
     snprintf(thdname, sizeof(thdname), "io_thd_%ld", id);
@@ -4274,7 +4288,7 @@ void initThreadedIO(void) {
         pthread_mutex_init(&io_threads_mutex[i],NULL);
         setIOPendingCount(i, 0);
         pthread_mutex_lock(&io_threads_mutex[i]); /* Thread will be stopped. */
-        if (pthread_create(&tid,NULL,IOThreadMain,(void*)(long)i) != 0) {
+        if (pthread_create(&tid,NULL,IOThreadMain,(void*)(intptr_t)i) != 0) {
             serverLog(LL_WARNING,"Fatal: Can't initialize IO thread.");
             exit(1);
         }
@@ -4283,6 +4297,7 @@ void initThreadedIO(void) {
 }
 
 void killIOThreads(void) {
+#ifndef _WIN32
     int err, j;
     for (j = 0; j < server.io_threads_num; j++) {
         if (io_threads[j] == pthread_self()) continue;
@@ -4297,6 +4312,9 @@ void killIOThreads(void) {
             }
         }
     }
+#else
+    serverAssert(server.io_threads_num == 1);
+#endif
 }
 
 void startThreadedIO(void) {

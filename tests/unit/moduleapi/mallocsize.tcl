@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/mallocsize.so]
+set testmodule [redis_test_module mallocsize]
 
 
 start_server {tags {"modules"}} {

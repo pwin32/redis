@@ -21,13 +21,23 @@ proc rediscli {host port {opts {}}} {
 
 # Returns command line for executing redis-cli with a unix socket address
 proc rediscli_unixsocket {unixsocket {opts {}}} {
-    return [list src/redis-cli -s $unixsocket {*}$opts]
+    if {$::tcl_platform(platform) eq "windows"} {
+        error "Unix-domain sockets are not supported by the Windows port"
+    }
+    return [list $::redis_cli_path -s $unixsocket {*}$opts]
 }
 
 # Run redis-cli with specified args on the server of specified level.
 # Returns output broken down into individual lines.
 proc rediscli_exec {level args} {
-    set cmd [rediscli_unixsocket [srv $level unixsocket] $args]
+    if {$::tcl_platform(platform) eq "windows"} {
+        # Keep the command-level coverage while using the supported TCP
+        # listener.  The Windows port intentionally does not expose Unix
+        # sockets, so there is no socket pathname to pass to redis-cli.
+        set cmd [rediscli [srv $level host] [srv $level port] $args]
+    } else {
+        set cmd [rediscli_unixsocket [srv $level unixsocket] $args]
+    }
     set fd [open "|$cmd" "r"]
     set ret [lrange [split [read $fd] "\n"] 0 end-1]
     close $fd

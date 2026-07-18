@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/postnotifications.so]
+set testmodule [redis_test_module postnotifications]
 
 tags "modules" {
     start_server {} {
@@ -172,7 +172,7 @@ tags "modules" {
     }
 }
 
-set testmodule2 [file normalize tests/modules/keyspace_events.so]
+set testmodule2 [redis_test_module keyspace_events]
 
 tags "modules" {
     start_server {} {

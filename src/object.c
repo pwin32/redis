@@ -152,10 +152,10 @@ robj *createStringObjectFromLongLongWithOptions(long long value, int flag) {
     if (value >= 0 && value < OBJ_SHARED_INTEGERS && flag == LL2STROBJ_AUTO) {
         o = shared.integers[value];
     } else {
-        if ((value >= LONG_MIN && value <= LONG_MAX) && flag != LL2STROBJ_NO_INT_ENC) {
+        if ((value >= INTPTR_MIN && value <= INTPTR_MAX) && flag != LL2STROBJ_NO_INT_ENC) {
             o = createObject(OBJ_STRING, NULL);
             o->encoding = OBJ_ENCODING_INT;
-            o->ptr = (void*)((long)value);
+            o->ptr = (void*)(intptr_t)value;
         } else {
             char buf[LONG_STR_SIZE];
             int len = ll2string(buf, sizeof(buf), value);
@@ -606,7 +606,7 @@ int isSdsRepresentableAsLongLong(sds s, long long *llval) {
 int isObjectRepresentableAsLongLong(robj *o, long long *llval) {
     serverAssertWithInfo(NULL,o,o->type == OBJ_STRING);
     if (o->encoding == OBJ_ENCODING_INT) {
-        if (llval) *llval = (long) o->ptr;
+        if (llval) *llval = (long long)(intptr_t)o->ptr;
         return C_OK;
     } else {
         return isSdsRepresentableAsLongLong(o->ptr,llval);
@@ -633,7 +633,7 @@ void trimStringObjectIfNeeded(robj *o, int trim_small_values) {
 
 /* Try to encode a string object in order to save space */
 robj *tryObjectEncodingEx(robj *o, int try_trim) {
-    long value;
+    long long value;
     sds s = o->ptr;
     size_t len;
 
@@ -657,7 +657,7 @@ robj *tryObjectEncodingEx(robj *o, int try_trim) {
      * Note that we are sure that a string larger than 20 chars is not
      * representable as a 32 nor 64 bit integer. */
     len = sdslen(s);
-    if (len <= 20 && string2l(s,len,&value)) {
+    if (len <= 20 && string2ll(s,len,&value)) {
         /* This object is encodable as a long. Try to use a shared object.
          * Note that we avoid using shared integers when maxmemory is used
          * because every object needs to have a private LRU field for the LRU
@@ -673,7 +673,7 @@ robj *tryObjectEncodingEx(robj *o, int try_trim) {
             if (o->encoding == OBJ_ENCODING_RAW) {
                 sdsfree(o->ptr);
                 o->encoding = OBJ_ENCODING_INT;
-                o->ptr = (void*) value;
+                o->ptr = (void*)(intptr_t)value;
                 return o;
             } else if (o->encoding == OBJ_ENCODING_EMBSTR) {
                 decrRefCount(o);
@@ -720,7 +720,7 @@ robj *getDecodedObject(robj *o) {
     if (o->type == OBJ_STRING && o->encoding == OBJ_ENCODING_INT) {
         char buf[32];
 
-        ll2string(buf,32,(long)o->ptr);
+        ll2string(buf,32,(long long)(intptr_t)o->ptr);
         dec = createStringObject(buf,strlen(buf));
         return dec;
     } else {
@@ -749,14 +749,14 @@ int compareStringObjectsWithFlags(const robj *a, const robj *b, int flags) {
         astr = a->ptr;
         alen = sdslen(astr);
     } else {
-        alen = ll2string(bufa,sizeof(bufa),(long) a->ptr);
+        alen = ll2string(bufa,sizeof(bufa),(long long)(intptr_t)a->ptr);
         astr = bufa;
     }
     if (sdsEncodedObject(b)) {
         bstr = b->ptr;
         blen = sdslen(bstr);
     } else {
-        blen = ll2string(bufb,sizeof(bufb),(long) b->ptr);
+        blen = ll2string(bufb,sizeof(bufb),(long long)(intptr_t)b->ptr);
         bstr = bufb;
     }
     if (flags & REDIS_COMPARE_COLL) {
@@ -801,7 +801,7 @@ size_t stringObjectLen(robj *o) {
     if (sdsEncodedObject(o)) {
         return sdslen(o->ptr);
     } else {
-        return sdigits10((long)o->ptr);
+        return sdigits10((int64_t)(intptr_t)o->ptr);
     }
 }
 
@@ -816,7 +816,7 @@ int getDoubleFromObject(const robj *o, double *target) {
             if (!string2d(o->ptr, sdslen(o->ptr), &value))
                 return C_ERR;
         } else if (o->encoding == OBJ_ENCODING_INT) {
-            value = (long)o->ptr;
+            value = (long long)(intptr_t)o->ptr;
         } else {
             serverPanic("Unknown string encoding");
         }
@@ -850,7 +850,7 @@ int getLongDoubleFromObject(robj *o, long double *target) {
             if (!string2ld(o->ptr, sdslen(o->ptr), &value))
                 return C_ERR;
         } else if (o->encoding == OBJ_ENCODING_INT) {
-            value = (long)o->ptr;
+            value = (long long)(intptr_t)o->ptr;
         } else {
             serverPanic("Unknown string encoding");
         }
@@ -883,7 +883,7 @@ int getLongLongFromObject(robj *o, long long *target) {
         if (sdsEncodedObject(o)) {
             if (string2ll(o->ptr,sdslen(o->ptr),&value) == 0) return C_ERR;
         } else if (o->encoding == OBJ_ENCODING_INT) {
-            value = (long)o->ptr;
+            value = (long long)(intptr_t)o->ptr;
         } else {
             serverPanic("Unknown string encoding");
         }

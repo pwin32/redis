@@ -45,6 +45,9 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <libgen.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 #include "util.h"
 #include "sha256.h"
@@ -879,7 +882,7 @@ void getRandomBytes(unsigned char *p, size_t len) {
                 struct timeval tv;
                 gettimeofday(&tv,NULL);
                 pid_t pid = getpid();
-                seed[j] = tv.tv_sec ^ tv.tv_usec ^ pid ^ (long)fp;
+                seed[j] = tv.tv_sec ^ tv.tv_usec ^ pid ^ (uintptr_t)fp;
             }
         } else {
             seed_initialized = 1;
@@ -1024,7 +1027,12 @@ int dirExists(char *dname) {
 }
 
 int dirCreateIfMissing(char *dname) {
-    if (mkdir(dname, 0755) != 0) {
+#ifdef _WIN32
+    int mkdir_result = _mkdir(dname);
+#else
+    int mkdir_result = mkdir(dname, 0755);
+#endif
+    if (mkdir_result != 0) {
         if (errno != EEXIST) {
             return -1;
         } else if (!dirExists(dname)) {
@@ -1050,6 +1058,12 @@ int dirRemove(char *dname) {
 
         snprintf(full_path, sizeof(full_path), "%s/%s", dname, entry->d_name);
 
+#ifdef _WIN32
+        if (stat(full_path, &stat_entry) == -1) {
+            closedir(dir);
+            return -1;
+        }
+#else
         int fd = open(full_path, O_RDONLY|O_NONBLOCK);
         if (fd == -1) {
             closedir(dir);
@@ -1062,6 +1076,7 @@ int dirRemove(char *dname) {
             return -1;
         }
         close(fd);
+#endif
 
         if (S_ISDIR(stat_entry.st_mode) != 0) {
             if (dirRemove(full_path) == -1) {
@@ -1098,6 +1113,13 @@ sds makePath(char *path, char *filename) {
  * 4. rename the temp file to the appropriate name
  * 5. fsync() the containing directory */
 int fsyncFileDir(const char *filename) {
+#ifdef _WIN32
+    /* Windows cannot fsync a directory through the CRT.  The Windows rename
+     * wrapper uses MoveFileEx(MOVEFILE_WRITE_THROUGH), which provides the
+     * durability barrier for the manifest/RDB replacement itself. */
+    UNUSED(filename);
+    return 0;
+#else
 #ifdef _AIX
     /* AIX is unable to fsync a directory */
     return 0;
@@ -1135,6 +1157,7 @@ int fsyncFileDir(const char *filename) {
     
     close(dir_fd);
     return 0;
+#endif
 }
 
  /* free OS pages backed by file */
@@ -1433,5 +1456,3 @@ int utilTest(int argc, char **argv, int flags) {
     return 0;
 }
 #endif
-
-

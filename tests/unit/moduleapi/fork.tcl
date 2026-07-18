@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/fork.so]
+set testmodule [redis_test_module fork]
 
 proc count_log_message {pattern} {
     set status [catch {exec grep -c $pattern < [srv 0 stdout]} result]

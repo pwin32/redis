@@ -843,17 +843,17 @@ tags {"external:skip"} {
             # Let AOFRW fail three times
             r bgrewriteaof
             set pid1 [get_child_pid 0]
-            catch {exec kill -9 $pid1}
+            catch {kill_proc2 $pid1}
             waitForBgrewriteaof r
 
             r bgrewriteaof
             set pid2 [get_child_pid 0]
-            catch {exec kill -9 $pid2}
+            catch {kill_proc2 $pid2}
             waitForBgrewriteaof r
 
             r bgrewriteaof
             set pid3 [get_child_pid 0]
-            catch {exec kill -9 $pid3}
+            catch {kill_proc2 $pid3}
             waitForBgrewriteaof r
 
             assert_equal 0 [check_file_exist $dir "temp-rewriteaof-bg-$pid1.aof"]
@@ -884,7 +884,7 @@ tags {"external:skip"} {
             assert {$d1 eq $d2}
 
             r config set rdb-key-save-delay 0
-            catch {exec kill -9 [get_child_pid 0]}
+            catch {kill_proc2 [get_child_pid 0]}
             wait_for_condition 1000 10 {
                 [s rdb_bgsave_in_progress] eq 0
             } else {
@@ -1064,7 +1064,7 @@ tags {"external:skip"} {
             set total_forks [s total_forks]
             assert_equal [s rdb_bgsave_in_progress] 1
             r config set rdb-key-save-delay 0
-            catch {exec kill -9 [get_child_pid 0]}
+            catch {kill_proc2 [get_child_pid 0]}
             wait_for_condition 1000 10 {
                 [s rdb_bgsave_in_progress] eq 0
             } else {
@@ -1106,15 +1106,15 @@ tags {"external:skip"} {
 
             # Let AOFRW fail 3 times, this will trigger AOFRW limit
             r bgrewriteaof
-            catch {exec kill -9 [get_child_pid 0]}
+            catch {kill_proc2 [get_child_pid 0]}
             waitForBgrewriteaof r
 
             r bgrewriteaof
-            catch {exec kill -9 [get_child_pid 0]}
+            catch {kill_proc2 [get_child_pid 0]}
             waitForBgrewriteaof r
 
             r bgrewriteaof
-            catch {exec kill -9 [get_child_pid 0]}
+            catch {kill_proc2 [get_child_pid 0]}
             waitForBgrewriteaof r
 
             assert_aof_manifest_content $aof_manifest_file {
@@ -1148,7 +1148,7 @@ tags {"external:skip"} {
             # Turn off auto rewrite
             r config set auto-aof-rewrite-percentage 0
             r config set rdb-key-save-delay 0
-            catch {exec kill -9 [get_child_pid 0]}
+            catch {kill_proc2 [get_child_pid 0]}
             wait_for_condition 1000 10 {
                 [s aof_rewrite_in_progress] eq 0
             } else {
@@ -1204,7 +1204,7 @@ tags {"external:skip"} {
                 # Let AOFRW fail
                 assert_equal 1 [s aof_rewrite_in_progress]
                 set pid1 [get_child_pid 0]
-                catch {exec kill -9 $pid1}
+                catch {kill_proc2 $pid1}
  
                 # Wait for AOFRW to exit and delete temp incr aof
                 wait_for_condition 1000 100 {
@@ -1228,7 +1228,7 @@ tags {"external:skip"} {
                 # Do a successful AOFRW
                 set total_forks [s total_forks]
                 r config set rdb-key-save-delay 0
-                catch {exec kill -9 [get_child_pid 0]}
+                catch {kill_proc2 [get_child_pid 0]}
 
                 # Make sure the next AOFRW has started
                 wait_for_condition 1000 10 {
@@ -1277,7 +1277,7 @@ tags {"external:skip"} {
                 # Let AOFRW fail
                 assert_equal 1 [s aof_rewrite_in_progress]
                 set pid1 [get_child_pid 0]
-                catch {exec kill -9 $pid1}
+                catch {kill_proc2 $pid1}
 
                 # Wait for AOFRW to exit and delete temp incr aof
                 wait_for_condition 1000 100 {
@@ -1302,7 +1302,7 @@ tags {"external:skip"} {
                 # Do a successful AOFRW
                 set total_forks [s total_forks]
                 r config set rdb-key-save-delay 0
-                catch {exec kill -9 [get_child_pid 0]}
+                catch {kill_proc2 [get_child_pid 0]}
 
                 wait_for_condition 1000 10 {
                     [s total_forks] == [expr $total_forks + 1]

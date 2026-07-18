@@ -1,5 +1,5 @@
-set testmodule [file normalize tests/modules/moduleconfigs.so]
-set testmoduletwo [file normalize tests/modules/moduleconfigstwo.so]
+set testmodule [redis_test_module moduleconfigs]
+set testmoduletwo [redis_test_module moduleconfigstwo]
 
 start_server {tags {"modules"}} {
     r module load $testmodule
@@ -221,15 +221,15 @@ start_server {tags {"modules"}} {
     }
     test {startup moduleconfigs} {
         # No loadmodule directive
-        catch {exec src/redis-server --moduleconfigs.string "hello"} err
+        catch {exec $::redis_server_path --moduleconfigs.string "hello"} err
         assert_match {*Module Configuration detected without loadmodule directive or no ApplyConfig call: aborting*} $err
 
         # Bad config value
-        catch {exec src/redis-server --loadmodule "$testmodule" --moduleconfigs.string "rejectisfreed"} err
+        catch {exec $::redis_server_path --loadmodule "$testmodule" --moduleconfigs.string "rejectisfreed"} err
         assert_match {*Issue during loading of configuration moduleconfigs.string : Cannot set string to 'rejectisfreed'*} $err
 
         # missing LoadConfigs call
-        catch {exec src/redis-server --loadmodule "$testmodule" noload --moduleconfigs.string "hello"} err
+        catch {exec $::redis_server_path --loadmodule "$testmodule" noload --moduleconfigs.string "hello"} err
         assert_match {*Module Configurations were not set, likely a missing LoadConfigs call. Unloading the module.*} $err
 
         # successful
@@ -244,4 +244,3 @@ start_server {tags {"modules"}} {
         }
     }
 }
-

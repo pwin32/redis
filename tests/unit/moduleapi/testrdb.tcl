@@ -4,7 +4,7 @@
 # 1 << 1 - call aux callback before key space
 # 1 << 2 - call aux callback after key space
 # 1 << 3 - do not save data on aux callback
-set testmodule [file normalize tests/modules/testrdb.so]
+set testmodule [redis_test_module testrdb]
 
 tags "modules" {
     test {modules are able to persist types} {

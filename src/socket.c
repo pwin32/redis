@@ -30,6 +30,12 @@
 #include "server.h"
 #include "connhelpers.h"
 
+#ifdef _WIN32
+#include "Win32_Interop/win32fixes.h"
+#include "Win32_Interop/win32_wsiocp2.h"
+#include "Win32_Interop/Win32_Error.h"
+#endif
+
 /* The connections module provides a lean abstraction of network connections
  * to avoid direct socket and async event management across the Redis code base.
  *
@@ -129,7 +135,11 @@ static int connSocketConnect(connection *conn, const char *addr, int port, const
 static void connSocketShutdown(connection *conn) {
     if (conn->fd == -1) return;
 
+#ifdef _WIN32
+    FDAPI_shutdown(conn->fd, SD_BOTH);
+#else
     shutdown(conn->fd, SHUT_RDWR);
+#endif
 }
 
 /* Close the connection and free resources. */
@@ -153,7 +163,7 @@ static void connSocketClose(connection *conn) {
 
 static int connSocketWrite(connection *conn, const void *data, size_t data_len) {
     int ret = write(conn->fd, data, data_len);
-    if (ret < 0 && errno != EAGAIN) {
+    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         conn->last_errno = errno;
 
         /* Don't overwrite the state of a connection that is not already
@@ -168,7 +178,7 @@ static int connSocketWrite(connection *conn, const void *data, size_t data_len) 
 
 static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcnt) {
     int ret = writev(conn->fd, iov, iovcnt);
-    if (ret < 0 && errno != EAGAIN) {
+    if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         conn->last_errno = errno;
 
         /* Don't overwrite the state of a connection that is not already
@@ -185,7 +195,7 @@ static int connSocketRead(connection *conn, void *buf, size_t buf_len) {
     int ret = read(conn->fd, buf, buf_len);
     if (!ret) {
         conn->state = CONN_STATE_CLOSED;
-    } else if (ret < 0 && errno != EAGAIN) {
+    } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         conn->last_errno = errno;
 
         /* Don't overwrite the state of a connection that is not already
@@ -296,15 +306,41 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
     /* Handle normal I/O flows */
     if (!invert && call_read) {
         if (!callHandler(conn, conn->read_handler)) return;
+#ifdef _WIN32
+        /* IOCP read readiness is one-shot.  Re-arm only after the handler has
+         * returned and only if the connection is still live and subscribed. */
+        if (conn->fd != -1 && conn->read_handler &&
+            conn->state != CONN_STATE_CLOSED && conn->state != CONN_STATE_ERROR) {
+            if (WSIOCP_QueueNextRead(conn->fd) != 0) {
+                conn->last_errno = errno;
+                conn->state = CONN_STATE_ERROR;
+            }
+        }
+#endif
     }
     /* Fire the writable event. */
     if (call_write) {
         if (!callHandler(conn, conn->write_handler)) return;
+#ifdef _WIN32
+        if (conn->fd != -1 && conn->write_handler &&
+            conn->state != CONN_STATE_CLOSED && conn->state != CONN_STATE_ERROR) {
+            WSIOCP_QueueWriteReady(conn->fd);
+        }
+#endif
     }
     /* If we have to invert the call, fire the readable event now
      * after the writable one. */
     if (invert && call_read) {
         if (!callHandler(conn, conn->read_handler)) return;
+#ifdef _WIN32
+        if (conn->fd != -1 && conn->read_handler &&
+            conn->state != CONN_STATE_CLOSED && conn->state != CONN_STATE_ERROR) {
+            if (WSIOCP_QueueNextRead(conn->fd) != 0) {
+                conn->last_errno = errno;
+                conn->state = CONN_STATE_ERROR;
+            }
+        }
+#endif
     }
 }
 
@@ -359,9 +395,14 @@ static int connSocketBlockingConnect(connection *conn, const char *addr, int por
         return C_ERR;
     }
 
-    if ((aeWait(fd, AE_WRITABLE, timeout) & AE_WRITABLE) == 0) {
+    int waitmask = aeWait(fd, AE_WRITABLE, timeout);
+    int connect_error = anetGetError(fd);
+    if ((waitmask & AE_WRITABLE) == 0 || connect_error != 0) {
         conn->state = CONN_STATE_ERROR;
-        conn->last_errno = ETIMEDOUT;
+        conn->last_errno = connect_error ? connect_error : ETIMEDOUT;
+        close(fd);
+        conn->fd = -1;
+        return C_ERR;
     }
 
     conn->fd = fd;

@@ -63,7 +63,12 @@
  * The following should be ordered by performances, descending. */
 #ifdef _WIN32
 #include "ae_wsiocp.c"
+#ifndef NO_QFORKIMPL
 #include "Win32_Interop/Win32_Service.h"
+/* Implemented by server.c.  Keeping the declaration local avoids pulling the
+ * full server state header into the event-loop library. */
+extern void serviceStopRequested(void);
+#endif
 #else
 #ifdef HAVE_EVPORT
 #include "ae_evport.c"
@@ -379,9 +384,12 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 {
     int processed = 0, numevents;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(NO_QFORKIMPL)
     if (ServiceStopIssued() == TRUE) {
-        aeStop(eventLoop);
+        /* SCM callbacks only set an event.  Ask Redis' main thread to run the
+         * ordinary deferred shutdown path; stopping aeMain here would skip
+         * AOF/RDB cleanup and make ServiceMain report STOPPED too early. */
+        serviceStopRequested();
     }
 #endif
 

@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/subcommands.so]
+set testmodule [redis_test_module subcommands]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

@@ -56,7 +56,7 @@ void lolwutCommand(client *c) {
     char verstr[64];
 
     if (c->argc >= 3 && !strcasecmp(c->argv[1]->ptr,"version")) {
-        PORT_LONG ver;
+        long ver;
         if (getLongFromObjectOrReply(c,c->argv[2],&ver,NULL) != C_OK) return;
         snprintf(verstr,sizeof(verstr),"%u.0.0",(unsigned int)ver);
         v = verstr;

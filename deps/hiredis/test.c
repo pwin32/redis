@@ -1,5 +1,10 @@
+#ifdef _WIN32
+#include "win32_hiredis.h"
+#endif
 #include "fmacros.h"
+#ifndef _WIN32
 #include "sockcompat.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,7 +83,7 @@ static int tests = 0, fails = 0, skips = 0;
 
 static void millisleep(int ms)
 {
-#ifdef _MSC_VER
+#ifdef _WIN32
     Sleep(ms);
 #else
     usleep(ms*1000);

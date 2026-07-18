@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/rdbloadsave.so]
+set testmodule [redis_test_module rdbloadsave]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

@@ -27,6 +27,14 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/Win32_FDAPI.h"
+#include "Win32_Interop/Win32_ThreadControl.h"
+#include "Win32_Interop/Win32_QFork.h"
+#include "Win32_Interop/Win32_Error.h"
+#endif
+
 #include "server.h"
 #include "monotonic.h"
 #include "cluster.h"
@@ -41,25 +49,35 @@
 
 #include <time.h>
 #include <signal.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 #include <errno.h>
 #include <assert.h>
 #include <ctype.h>
 #include <stdarg.h>
+#ifndef _WIN32
 #include <arpa/inet.h>
+#endif
 #include <sys/stat.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <sys/file.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/uio.h>
 #include <sys/un.h>
+#endif
 #include <limits.h>
 #include <float.h>
 #include <math.h>
+#ifndef _WIN32
 #include <sys/utsname.h>
+#endif
 #include <locale.h>
+#ifndef _WIN32
 #include <sys/socket.h>
+#endif
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -78,6 +96,12 @@ struct sharedObjectsStruct shared;
  * at runtime to avoid strange compiler optimizations. */
 
 double R_Zero, R_PosInf, R_NegInf, R_Nan;
+
+#ifdef _WIN32
+/* Crash reporting is installed by the native stack-trace layer rather than
+ * POSIX sigaction handlers. */
+void bugReportStart(void);
+#endif
 
 /*================================= Globals ================================= */
 
@@ -100,6 +124,8 @@ const char *replstateToString(int replstate);
 /* We use a private localtime implementation which is fork-safe. The logging
  * function of Redis may be called from other threads. */
 void nolocks_localtime(struct tm *tmp, time_t t, time_t tz, int dst);
+
+#ifndef _WIN32 /* Implemented by Win32_RedisLog.c on Windows. */
 
 /* Low level logging. To use only for very big messages, otherwise
  * serverLog() is to prefer. */
@@ -187,6 +213,8 @@ void serverLogFromHandler(int level, const char *msg) {
 err:
     if (!log_to_stdout) close(fd);
 }
+
+#endif
 
 /* Return the UNIX time in microseconds */
 long long ustime(void) {
@@ -372,7 +400,7 @@ uint64_t dictEncObjHash(const void *key) {
         char buf[32];
         int len;
 
-        len = ll2string(buf,32,(long)o->ptr);
+        len = ll2string(buf,32,(long long)(intptr_t)o->ptr);
         return dictGenHashFunction((unsigned char*)buf, len);
     } else {
         serverPanic("Unknown string encoding");
@@ -1113,7 +1141,11 @@ static inline void updateCachedTimeWithUs(int update_daylight_info, const long l
     if (update_daylight_info) {
         struct tm tm;
         time_t ut = server.unixtime;
+#ifdef _WIN32
+        localtime_s(&tm,&ut);
+#else
         localtime_r(&ut,&tm);
+#endif
         server.daylight_active = tm.tm_isdst;
     }
 }
@@ -1154,6 +1186,40 @@ void exitExecutionUnit(void) {
 }
 
 void checkChildrenDone(void) {
+#ifdef _WIN32
+    /* QFork children are fresh Windows processes, not waitpid()-visible fork
+     * children.  Collection must also wait until every allocator-capable
+     * worker has entered safe mode before EndForkOperation rejoins the COW
+     * heap mappings. */
+    if (!hasActiveChildProcess()) return;
+
+    OperationStatus status = GetForkOperationStatus();
+    if (status != osCOMPLETE && status != osFAILED) return;
+
+    RequestSuspension();
+    if (!SuspensionCompleted()) return;
+
+    int exitcode = 1;
+    int bysignal = status == osFAILED;
+    EndForkOperation(&exitcode);
+    ResumeFromSuspension();
+
+    if (server.child_type == CHILD_TYPE_RDB) {
+        backgroundSaveDoneHandler(exitcode, bysignal);
+    } else if (server.child_type == CHILD_TYPE_AOF) {
+        backgroundRewriteDoneHandler(exitcode, bysignal);
+    } else if (server.child_type == CHILD_TYPE_MODULE) {
+        ModuleForkDoneHandler(exitcode, bysignal);
+    } else {
+        serverPanic("Unknown child type %d for child pid %lld",
+                    server.child_type, (long long)server.child_pid);
+    }
+    if (!bysignal && exitcode == 0) receiveChildInfo();
+    resetChildState();
+
+    /* Start any persistence fork that was queued behind this one. */
+    replicationStartPendingFork();
+#else
     int statloc = 0;
     pid_t pid;
 
@@ -1202,6 +1268,7 @@ void checkChildrenDone(void) {
         /* start any pending forks immediately. */
         replicationStartPendingFork();
     }
+#endif
 }
 
 /* Called from serverCron and cronUpdateMemoryStats to update cached memory metrics. */
@@ -1364,9 +1431,9 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     if (!server.sentinel_mode) {
         run_with_period(5000) {
             serverLog(LL_DEBUG,
-                "%lu clients connected (%lu replicas), %zu bytes in use",
-                listLength(server.clients)-listLength(server.slaves),
-                listLength(server.slaves),
+                "%llu clients connected (%llu replicas), %zu bytes in use",
+                (unsigned long long)(listLength(server.clients)-listLength(server.slaves)),
+                (unsigned long long)listLength(server.slaves),
                 zmalloc_used_memory());
         }
     }
@@ -1966,7 +2033,7 @@ void createSharedObjects(void) {
 
     for (j = 0; j < OBJ_SHARED_INTEGERS; j++) {
         shared.integers[j] =
-            makeObjectShared(createObject(OBJ_STRING,(void*)(long)j));
+            makeObjectShared(createObject(OBJ_STRING,(void*)(intptr_t)j));
         initObjectLRUOrLFU(shared.integers[j]);
         shared.integers[j]->encoding = OBJ_ENCODING_INT;
     }
@@ -2025,7 +2092,7 @@ void initServerConfig(void) {
     server.timezone = getTimeZone(); /* Initialized by tzset(). */
     server.configfile = NULL;
     server.executable = NULL;
-    server.arch_bits = (sizeof(long) == 8) ? 64 : 32;
+    server.arch_bits = (sizeof(void*) == 8) ? 64 : 32;
     server.bindaddr_count = CONFIG_DEFAULT_BINDADDR_COUNT;
     for (j = 0; j < CONFIG_DEFAULT_BINDADDR_COUNT; j++)
         server.bindaddr[j] = zstrdup(default_bindaddr[j]);
@@ -2063,7 +2130,13 @@ void initServerConfig(void) {
     server.cluster_module_flags = CLUSTER_MODULE_FLAG_NONE;
     server.migrate_cached_sockets = dictCreate(&migrateCacheDictType);
     server.next_client_id = 1; /* Client IDs, start from 1 .*/
+#ifdef _WIN32
+    SYSTEM_INFO system_info;
+    GetSystemInfo(&system_info);
+    server.page_size = system_info.dwPageSize;
+#else
     server.page_size = sysconf(_SC_PAGESIZE);
+#endif
     server.pause_cron = 0;
 
     server.latency_tracking_info_percentiles_len = 3;
@@ -2181,14 +2254,23 @@ int restartServer(int flags, mstime_t delay) {
     for (j = 3; j < (int)server.maxclients + 1024; j++) {
         /* Test the descriptor validity before closing it, otherwise
          * Valgrind issues a warning on close(). */
+#ifdef _WIN32
+        if (fcntl(j,F_GETFL,0) != -1) close(j);
+#else
         if (fcntl(j,F_GETFD) != -1) close(j);
+#endif
     }
 
     /* Execute the server with the original command line. */
     if (delay) usleep(delay*1000);
     zfree(server.exec_argv[0]);
     server.exec_argv[0] = zstrdup(server.executable);
+#ifdef _WIN32
+    _execve(server.executable,(const char * const *)server.exec_argv,
+            (const char * const *)environ);
+#else
     execve(server.executable,server.exec_argv,environ);
+#endif
 
     /* If an error occurred here, there is nothing we can do, but exit. */
     _exit(1);
@@ -2276,6 +2358,7 @@ int setOOMScoreAdj(int process_class) {
  * max number of clients, the function will do the reverse setting
  * server.maxclients to the value that we can actually handle. */
 void adjustOpenFilesLimit(void) {
+#ifndef _WIN32
     rlim_t maxfiles = server.maxclients+CONFIG_MIN_RESERVED_FDS;
     struct rlimit limit;
 
@@ -2351,6 +2434,7 @@ void adjustOpenFilesLimit(void) {
             }
         }
     }
+#endif
 }
 
 /* Check that server.tcp_backlog can be actually enforced in Linux according
@@ -2554,22 +2638,45 @@ void resetServerStats(void) {
  * can work reliably (default cancelability type is PTHREAD_CANCEL_DEFERRED).
  * Needed for pthread_cancel used by the fast memory test used by the crash report. */
 void makeThreadKillable(void) {
+#ifndef _WIN32
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+#endif
 }
 
 void initServer(void) {
     int j;
+#ifdef _WIN32
+    HMODULE lib;
+#endif
 
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
     setupSignalHandlers();
     makeThreadKillable();
 
+#ifdef _WIN32
+    /* Redis writes binary RDB/AOF and protocol data on Windows.  The native
+     * logger also owns Event Log routing, so do not open POSIX syslog here. */
+    _fmode = _O_BINARY;
+    setmode(_fileno(stdin), _O_BINARY);
+    setmode(_fileno(stdout), _O_BINARY);
+    setmode(_fileno(stderr), _O_BINARY);
+    setlocale(LC_ALL, "C");
+    setLogVerbosityLevel(server.verbosity);
+    setLogFile(server.logfile ? server.logfile : "");
+
+    /* MinGW headers do not consistently declare RtlGenRandom.  Resolve it
+     * once after the core config is initialized, matching the 6.2 bootstrap. */
+    lib = LoadLibraryA("advapi32.dll");
+    if (lib != NULL)
+        RtlGenRandom = (RtlGenRandomFunc)GetProcAddress(lib, "SystemFunction036");
+#else
     if (server.syslog_enabled) {
         openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,
             server.syslog_facility);
     }
+#endif
 
     /* Initialization after setting defaults from the config system. */
     server.aof_state = server.aof_enabled ? AOF_ON : AOF_OFF;
@@ -4451,12 +4558,12 @@ int finishShutdown(void) {
     /* Close the listening sockets. Apparently this allows faster restarts. */
     closeListeningSockets(1);
 
-#if !defined(__sun)
+#if !defined(__sun) && !defined(_WIN32)
     /* Unlock the cluster config file before shutdown */
     if (server.cluster_enabled && server.cluster_config_file_lock_fd != -1) {
         flock(server.cluster_config_file_lock_fd, LOCK_UN|LOCK_NB);
     }
-#endif /* __sun */
+#endif /* !__sun && !_WIN32 */
 
 
     serverLog(LL_WARNING,"%s is now ready to exit, bye bye...",
@@ -5473,8 +5580,10 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
 
     /* Server */
     if (all_sections || (dictFind(section_dict,"server") != NULL)) {
+#ifndef _WIN32
         static int call_uname = 1;
         static struct utsname name;
+#endif
         char *mode;
         char *supervised;
 
@@ -5492,11 +5601,13 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
 
         if (sections++) info = sdscat(info,"\r\n");
 
+#ifndef _WIN32
         if (call_uname) {
             /* Uname can be slow and is always the same output. Cache it. */
             uname(&name);
             call_uname = 0;
         }
+#endif
 
         info = sdscatfmt(info,
             "# Server\r\n"
@@ -5529,7 +5640,11 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             strtol(redisGitDirty(),NULL,10) > 0,
             redisBuildIdString(),
             mode,
+#ifdef _WIN32
+            "Windows", "", "",
+#else
             name.sysname, name.release, name.machine,
+#endif
             server.arch_bits,
             monotonicInfoString(),
             aeGetApiName(),
@@ -5573,7 +5688,7 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
             "# Clients\r\n"
-            "connected_clients:%lu\r\n"
+            "connected_clients:%llu\r\n"
             "cluster_connections:%lu\r\n"
             "maxclients:%u\r\n"
             "client_recent_max_input_buffer:%zu\r\n"
@@ -5583,7 +5698,7 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "clients_in_timeout_table:%llu\r\n"
             "total_blocking_keys:%lu\r\n"
             "total_blocking_keys_on_nokey:%lu\r\n",
-            listLength(server.clients)-listLength(server.slaves),
+            (unsigned long long)(listLength(server.clients)-listLength(server.slaves)),
             getClusterConnectionsCount(),
             server.maxclients,
             maxin, maxout,
@@ -6079,8 +6194,8 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
         }
 
         info = sdscatprintf(info,
-            "connected_slaves:%lu\r\n",
-            listLength(server.slaves));
+            "connected_slaves:%llu\r\n",
+            (unsigned long long)listLength(server.slaves));
 
         /* If min-slaves-to-write is active, write the number of slaves
          * currently considered 'good'. */
@@ -6371,6 +6486,9 @@ void createPidFile(void) {
 }
 
 void daemonize(void) {
+#ifdef _WIN32
+    serverLog(LL_WARNING, "Windows does not support daemonize. Start Redis as service");
+#else
     int fd;
 
     if (fork() != 0) exit(0); /* parent exits */
@@ -6385,6 +6503,7 @@ void daemonize(void) {
         dup2(fd, STDERR_FILENO);
         if (fd > STDERR_FILENO) close(fd);
     }
+#endif
 }
 
 void version(void) {
@@ -6393,7 +6512,7 @@ void version(void) {
         redisGitSHA1(),
         atoi(redisGitDirty()) > 0,
         ZMALLOC_LIB,
-        sizeof(long) == 4 ? 32 : 64,
+        sizeof(void*) == 4 ? 32 : 64,
         (unsigned long long) redisBuildId());
     exit(0);
 }
@@ -6446,7 +6565,7 @@ void redisAsciiArt(void) {
             REDIS_VERSION,
             redisGitSHA1(),
             strtol(redisGitDirty(),NULL,10) > 0,
-            (sizeof(long) == 8) ? "64" : "32",
+            (sizeof(void*) == 8) ? "64" : "32",
             mode, server.port ? server.port : server.tls_port,
             (long) getpid()
         );
@@ -6523,6 +6642,21 @@ static void sigShutdownHandler(int sig) {
     server.last_sig_received = sig;
 }
 
+#ifdef _WIN32
+/* SCM callbacks run on a control thread and must not tear down Redis state or
+ * stop the event loop directly.  Convert the notification into the same
+ * deferred request used by SIGTERM; serverCron (or whileBlockedCron during
+ * loading) performs the actual prepare/finish sequence on the main thread. */
+void serviceStopRequested(void) {
+    if (!server.shutdown_asap) {
+        serverLog(LL_NOTICE,
+            "Received Windows service stop request, scheduling shutdown...");
+    }
+    server.last_sig_received = SIGTERM;
+    server.shutdown_asap = 1;
+}
+#endif
+
 void setupSignalHandlers(void) {
     struct sigaction act;
 
@@ -6534,6 +6668,7 @@ void setupSignalHandlers(void) {
     sigaction(SIGTERM, &act, NULL);
     sigaction(SIGINT, &act, NULL);
 
+#ifndef _WIN32
     sigemptyset(&act.sa_mask);
     act.sa_flags = SA_NODEFER | SA_RESETHAND | SA_SIGINFO;
     act.sa_sigaction = sigsegvHandler;
@@ -6544,10 +6679,15 @@ void setupSignalHandlers(void) {
         sigaction(SIGILL, &act, NULL);
         sigaction(SIGABRT, &act, NULL);
     }
+#endif
     return;
 }
 
 void removeSignalHandlers(void) {
+#ifdef _WIN32
+    /* Win32_StackTrace installs the process exception filter. */
+    return;
+#else
     struct sigaction act;
     sigemptyset(&act.sa_mask);
     act.sa_flags = SA_NODEFER | SA_RESETHAND;
@@ -6557,6 +6697,7 @@ void removeSignalHandlers(void) {
     sigaction(SIGFPE, &act, NULL);
     sigaction(SIGILL, &act, NULL);
     sigaction(SIGABRT, &act, NULL);
+#endif
 }
 
 /* This is the signal handler for children process. It is currently useful
@@ -6596,6 +6737,39 @@ void closeChildUnusedResourceAfterFork(void) {
     server.pidfile = NULL;
 }
 
+/* Complete the parent-side bookkeeping shared by fork() and the Windows
+ * QFork entry points in the persistence subsystems.  QFork callers launch a
+ * fresh process themselves and then hand its process id to this function. */
+void redisForkChildStarted(pid_t childpid, int purpose, long long start) {
+    if (childpid == -1) return;
+
+    server.stat_total_forks++;
+    server.stat_fork_time = ustime()-start;
+    if (server.stat_fork_time <= 0)
+        server.stat_fork_time = IF_WIN32(100000,1);
+    server.stat_fork_rate = (double) zmalloc_used_memory() * 1000000 /
+                            server.stat_fork_time / (1024*1024*1024);
+    latencyAddSampleIfNeeded("fork",server.stat_fork_time/1000);
+
+    /* The child_pid and child_type fields only track mutually exclusive
+     * persistence/module children.  LDB keeps its own child registry. */
+    if (isMutuallyExclusiveChildType(purpose)) {
+        server.child_pid = childpid;
+        server.child_type = purpose;
+        server.stat_current_cow_peak = 0;
+        server.stat_current_cow_bytes = 0;
+        server.stat_current_cow_updated = 0;
+        server.stat_current_save_keys_processed = 0;
+        server.stat_module_progress = 0;
+        server.stat_current_save_keys_total = dbTotalServerKeyCount();
+    }
+
+    updateDictResizePolicy();
+    moduleFireServerEvent(REDISMODULE_EVENT_FORK_CHILD,
+                          REDISMODULE_SUBEVENT_FORK_CHILD_BORN,
+                          NULL);
+}
+
 /* purpose is one of CHILD_TYPE_ types */
 int redisFork(int purpose) {
     if (isMutuallyExclusiveChildType(purpose)) {
@@ -6607,6 +6781,15 @@ int redisFork(int purpose) {
         openChildInfoPipe();
     }
 
+#ifdef _WIN32
+    /* RDB, diskless RDB and AOF use their operation-specific QFork launchers.
+     * Windows deliberately has no general-purpose fork for module/debugger
+     * children, so fail closed instead of starting a partially snapshotted
+     * process. */
+    errno = ENOSYS;
+    if (isMutuallyExclusiveChildType(purpose)) closeChildInfoPipe();
+    return -1;
+#else
     int childpid;
     long long start = ustime();
     if ((childpid = fork()) == 0) {
@@ -6636,35 +6819,10 @@ int redisFork(int purpose) {
             return -1;
         }
 
-        server.stat_total_forks++;
-        server.stat_fork_time = ustime()-start;
-        server.stat_fork_rate = (double) zmalloc_used_memory() * 1000000 / server.stat_fork_time / (1024*1024*1024); /* GB per second. */
-        latencyAddSampleIfNeeded("fork",server.stat_fork_time/1000);
-
-        /* The child_pid and child_type are only for mutually exclusive children.
-         * other child types should handle and store their pid's in dedicated variables.
-         *
-         * Today, we allows CHILD_TYPE_LDB to run in parallel with the other fork types:
-         * - it isn't used for production, so it will not make the server be less efficient
-         * - used for debugging, and we don't want to block it from running while other
-         *   forks are running (like RDB and AOF) */
-        if (isMutuallyExclusiveChildType(purpose)) {
-            server.child_pid = childpid;
-            server.child_type = purpose;
-            server.stat_current_cow_peak = 0;
-            server.stat_current_cow_bytes = 0;
-            server.stat_current_cow_updated = 0;
-            server.stat_current_save_keys_processed = 0;
-            server.stat_module_progress = 0;
-            server.stat_current_save_keys_total = dbTotalServerKeyCount();
-        }
-
-        updateDictResizePolicy();
-        moduleFireServerEvent(REDISMODULE_EVENT_FORK_CHILD,
-                              REDISMODULE_SUBEVENT_FORK_CHILD_BORN,
-                              NULL);
+        redisForkChildStarted(childpid,purpose,start);
     }
     return childpid;
+#endif
 }
 
 void sendChildCowInfo(childInfoType info_type, char *pname) {
@@ -6842,10 +7000,10 @@ void loadDataFromDisk(void) {
 }
 
 void redisOutOfMemoryHandler(size_t allocation_size) {
-    serverLog(LL_WARNING,"Out Of Memory allocating %zu bytes!",
-        allocation_size);
-    serverPanic("Redis aborting for OUT OF MEMORY. Allocating %zu bytes!",
-        allocation_size);
+    serverLog(LL_WARNING,"Out Of Memory allocating %llu bytes!",
+        (unsigned long long)allocation_size);
+    serverPanic("Redis aborting for OUT OF MEMORY. Allocating %llu bytes!",
+        (unsigned long long)allocation_size);
 }
 
 /* Callback for sdstemplate on proc-title-template. See redis.conf for
@@ -6939,6 +7097,9 @@ int redisCommunicateSystemd(const char *sd_notify_msg) {
 
 /* Attempt to set up upstart supervision. Returns 1 if successful. */
 static int redisSupervisedUpstart(void) {
+#ifdef _WIN32
+    return 0;
+#else
     const char *upstart_job = getenv("UPSTART_JOB");
 
     if (!upstart_job) {
@@ -6951,6 +7112,7 @@ static int redisSupervisedUpstart(void) {
     raise(SIGSTOP);
     unsetenv("UPSTART_JOB");
     return 1;
+#endif
 }
 
 /* Attempt to set up systemd supervision. Returns 1 if successful. */
@@ -6969,6 +7131,12 @@ static int redisSupervisedSystemd(void) {
 }
 
 int redisIsSupervised(int mode) {
+#ifdef _WIN32
+    /* SCM owns service supervision on Windows; systemd/upstart semantics do
+     * not apply even if stale environment variables are present. */
+    UNUSED(mode);
+    return 0;
+#else
     int ret = 0;
 
     if (mode == SUPERVISED_AUTODETECT) {
@@ -6996,6 +7164,7 @@ int redisIsSupervised(int mode) {
         server.supervised_mode = mode;
 
     return ret;
+#endif
 }
 
 int iAmMaster(void) {
@@ -7261,6 +7430,29 @@ int main(int argc, char **argv) {
     }
     if (server.sentinel_mode) sentinelCheckConfigFile();
 
+#ifdef _WIN32
+    /* The first Redis 7.2 Windows port remains deliberately single-threaded
+     * for client I/O.  Reject unsupported modes before initServer() creates
+     * BIO/event-loop state so a bad config cannot leave worker threads behind. */
+    if (server.io_threads_num != 1 || server.io_threads_do_reads) {
+        serverLog(LL_WARNING,
+            "Fatal: server I/O threads are not supported on Windows; "
+            "use io-threads 1 and io-threads-do-reads no.");
+        exit(1);
+    }
+    if (server.unixsocket != NULL) {
+        serverLog(LL_WARNING,
+            "Fatal: Unix domain sockets are not supported on Windows; "
+            "use a TCP listener.");
+        exit(1);
+    }
+    if (server.tls_port || server.tls_replication || server.tls_cluster) {
+        serverLog(LL_WARNING,
+            "Fatal: TLS is not available in the standard Windows package.");
+        exit(1);
+    }
+#endif
+
     /* Do system checks */
 #ifdef __linux__
     linuxMemoryWarnings();
@@ -7296,7 +7488,7 @@ int main(int argc, char **argv) {
     serverLog(LL_NOTICE,
         "Redis version=%s, bits=%d, commit=%s, modified=%d, pid=%d, just started",
             REDIS_VERSION,
-            (sizeof(long) == 8) ? 64 : 32,
+            (sizeof(void*) == 8) ? 64 : 32,
             redisGitSHA1(),
             strtol(redisGitDirty(),NULL,10) > 0,
             (int)getpid());

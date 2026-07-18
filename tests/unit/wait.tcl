@@ -161,7 +161,7 @@ tags {"wait aof network external:skip"} {
 
             # reset save_delay and kill RDB child
             r config set rdb-key-save-delay 0
-            catch {exec kill -9 [get_child_pid 0]}
+            catch {kill_proc2 [get_child_pid 0]}
 
             # wait for AOF (will unblock after AOFRW finishes)
             assert_equal [r waitaof 1 0 10000] {1 0}

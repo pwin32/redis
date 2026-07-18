@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/publish.so]
+set testmodule [redis_test_module publish]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

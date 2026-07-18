@@ -5,9 +5,9 @@ source tests/support/cli.tcl
 # cluster creation is complicated with TLS, and the current tests don't really need that coverage
 tags {tls:skip external:skip cluster modules} {
 
-set testmodule_nokey [file normalize tests/modules/blockonbackground.so]
-set testmodule_blockedclient [file normalize tests/modules/blockedclient.so]
-set testmodule [file normalize tests/modules/blockonkeys.so]
+set testmodule_nokey [redis_test_module blockonbackground]
+set testmodule_blockedclient [redis_test_module blockedclient]
+set testmodule [redis_test_module blockonkeys]
 
 set modules [list loadmodule $testmodule loadmodule $testmodule_nokey loadmodule $testmodule_blockedclient]
 start_cluster 3 0 [list config_lines $modules] {
@@ -43,7 +43,7 @@ start_cluster 3 0 [list config_lines $modules] {
 
 
     test "Perform a Resharding" {
-        exec src/redis-cli --cluster-yes --cluster reshard 127.0.0.1:[srv -2 port] \
+        exec $::redis_cli_path --cluster-yes --cluster reshard 127.0.0.1:[srv -2 port] \
                            --cluster-to [$node1 cluster myid] \
                            --cluster-from [$node3 cluster myid] \
                            --cluster-slots 1
@@ -69,9 +69,9 @@ start_cluster 3 0 [list config_lines $modules] {
 
     test "Wait for cluster to be stable" {
         wait_for_condition 1000 50 {
-            [catch {exec src/redis-cli --cluster check 127.0.0.1:[srv 0 port]}] == 0 &&
-            [catch {exec src/redis-cli --cluster check 127.0.0.1:[srv -1 port]}] == 0 &&
-            [catch {exec src/redis-cli --cluster check 127.0.0.1:[srv -2 port]}] == 0 &&
+            [catch {exec $::redis_cli_path --cluster check 127.0.0.1:[srv 0 port]}] == 0 &&
+            [catch {exec $::redis_cli_path --cluster check 127.0.0.1:[srv -1 port]}] == 0 &&
+            [catch {exec $::redis_cli_path --cluster check 127.0.0.1:[srv -2 port]}] == 0 &&
             [CI 0 cluster_state] eq {ok} &&
             [CI 1 cluster_state] eq {ok} &&
             [CI 2 cluster_state] eq {ok}
@@ -163,7 +163,7 @@ start_cluster 3 0 [list config_lines $modules] {
     $node2_rd close
 }
 
-set modules [list loadmodule [file normalize tests/modules/keyspace_events.so]]
+        set modules [list loadmodule [redis_test_module keyspace_events]]
 start_cluster 2 2 [list config_lines $modules] {
 
     set master1 [srv 0 client]
@@ -207,7 +207,7 @@ start_cluster 2 2 [list config_lines $modules] {
 
 }
 
-set testmodule [file normalize tests/modules/basics.so]
+set testmodule [redis_test_module basics]
 set modules [list loadmodule $testmodule]
 start_cluster 3 0 [list config_lines $modules] {
     set node1 [srv 0 client]

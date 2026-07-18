@@ -57,13 +57,26 @@ extern "C" {
      * module DLL images have been restored. */
     typedef struct redisModuleForkData {
         LPVOID modules;
+        LPVOID authCallbacks;
+        LPVOID unblockedClients;
+        LPVOID tempClients;
+        size_t tempClientCap;
+        size_t tempClientCount;
+        size_t tempClientMinCount;
         LPVOID keyspaceSubscribers;
+        LPVOID postExecUnitJobs;
         LPVOID commandFilters;
         LPVOID eventListeners;
-        LPVOID freeContextClient;
+        LPVOID eventLoopOneShots;
         LPVOID timers;
         long long aeTimer;
-        unsigned long long modulesInHooks;
+        LPVOID clusterReceivers[UINT8_MAX];
+        /* Redis Functions roots also live in process-static storage rather
+         * than redisServer.  Their objects and Lua engine state are in the
+         * mapped heap, so reconnect these roots in the fresh QFork child. */
+        LPVOID functionsEngines;
+        LPVOID functionsLibCtx;
+        size_t functionsEngineCacheMemory;
     } RedisModuleForkData;
 
     /* Validate that a native module image can be restored safely enough for
@@ -75,16 +88,17 @@ extern "C" {
 
     // For parent process use only
     pid_t BeginForkOperation_Rdb(
+        int req,
         char* fileName,
+        const void *rdbSaveInfo,
+        size_t rdbSaveInfoSize,
+        int rdbFlags,
         LPVOID redisData,
         int sizeOfRedisData,
         uint8_t *dictHashSeed,
         LPVOID modules);
 
     pid_t BeginForkOperation_Aof(
-        int aof_pipe_write_ack_to_parent,
-        int aof_pipe_read_ack_from_parent,
-        int aof_pipe_read_data_from_parent,
         char* fileName,
         LPVOID redisData,
         int sizeOfRedisData,
@@ -92,6 +106,9 @@ extern "C" {
         LPVOID modules);
 
     pid_t BeginForkOperation_Socket(
+        int req,
+        const void *rdbSaveInfo,
+        size_t rdbSaveInfoSize,
         int rdb_pipe_write_fd,
         int safe_to_exit_pipe_fd,
         LPVOID redisData,

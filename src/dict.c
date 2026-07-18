@@ -33,6 +33,12 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/Win32_Time.h"
+#include "Win32_Interop/win32fixes.h"
+#endif
+
 #include "fmacros.h"
 
 #include <stdio.h>
@@ -41,7 +47,9 @@
 #include <string.h>
 #include <stdarg.h>
 #include <limits.h>
+#ifndef _WIN32
 #include <sys/time.h>
+#endif
 
 #include "dict.h"
 #include "zmalloc.h"
@@ -873,10 +881,10 @@ unsigned long long dictFingerprint(dict *d) {
     unsigned long long integers[6], hash = 0;
     int j;
 
-    integers[0] = (long) d->ht_table[0];
+    integers[0] = (uintptr_t)d->ht_table[0];
     integers[1] = d->ht_size_exp[0];
     integers[2] = d->ht_used[0];
-    integers[3] = (long) d->ht_table[1];
+    integers[3] = (uintptr_t)d->ht_table[1];
     integers[4] = d->ht_size_exp[1];
     integers[5] = d->ht_used[1];
 

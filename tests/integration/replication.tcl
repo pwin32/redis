@@ -903,11 +903,11 @@ start_server {tags {"repl external:skip"} overrides {save ""}} {
 
                     # disconnect replicas depending on the current test
                     if {$all_drop == "all" || $all_drop == "fast"} {
-                        exec kill [srv 0 pid]
+                        kill_proc2 [srv 0 pid]
                         set replicas_alive [lreplace $replicas_alive 1 1]
                     }
                     if {$all_drop == "all" || $all_drop == "slow"} {
-                        exec kill [srv -1 pid]
+                        kill_proc2 [srv -1 pid]
                         set replicas_alive [lreplace $replicas_alive 0 0]
                     }
                     if {$all_drop == "timeout"} {
@@ -1026,7 +1026,7 @@ test "diskless replication child being killed is collected" {
 
             # simulate the OOM killer or anyone else kills the child
             set fork_child_pid [get_child_pid -1]
-            exec kill -9 $fork_child_pid
+            kill_proc2_checked $fork_child_pid
 
             # wait for the parent to notice the child have exited
             wait_for_condition 50 100 {
@@ -1067,7 +1067,7 @@ foreach mdl {yes no} {
                 set fork_child_pid [get_child_pid -1]
 
                 # simulate the OOM killer or anyone else kills the parent
-                exec kill -9 $master_pid
+                kill_proc2 $master_pid
 
                 # wait for the child to notice the parent died have exited
                 wait_for_condition 500 10 {

@@ -27,6 +27,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/win32_types.h"
+#include "Win32_Interop/Win32_Error.h"
+#endif
+
 #include "server.h"
 #include "lzf.h"    /* LZF compression library */
 #include "zipmap.h"
@@ -40,10 +45,19 @@
 #include <math.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#ifdef _WIN32
+#include <stdio.h>
+#include "Win32_Interop/Win32_QFork.h"
+#include <direct.h>
+#define MAXPATHLEN 1024
+extern void redisForkChildStarted(pid_t childpid, int purpose, long long start);
+extern void *moduleGetForkData(void);
+#else
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>
+#endif
 #include <sys/stat.h>
 #include <sys/param.h>
 
@@ -495,7 +509,7 @@ ssize_t rdbSaveStringObject(rio *rdb, robj *obj) {
     /* Avoid to decode the object, then encode it again, if the
      * object is already integer encoded. */
     if (obj->encoding == OBJ_ENCODING_INT) {
-        return rdbSaveLongLongAsStringObject(rdb,(long)obj->ptr);
+        return rdbSaveLongLongAsStringObject(rdb,(long long)(intptr_t)obj->ptr);
     } else {
         serverAssertWithInfo(NULL,obj,sdsEncodedObject(obj));
         return rdbSaveRawString(rdb,obj->ptr,sdslen(obj->ptr));
@@ -1297,7 +1311,7 @@ werr:
     return -1;
 }
 
-ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter) {
+ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, size_t *key_counter) {
     dictIterator *di;
     dictEntry *de;
     ssize_t written = 0;
@@ -1376,7 +1390,7 @@ werr:
 int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
     char magic[10];
     uint64_t cksum;
-    long key_counter = 0;
+    size_t key_counter = 0;
     int j;
 
     if (server.rdb_checksum)
@@ -1449,7 +1463,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
     int saved_errno;
     char *err_op;    /* For a detailed log */
 
-    FILE *fp = fopen(filename,"w");
+    FILE *fp = fopen(filename,IF_WIN32("wb","w"));
     if (!fp) {
         saved_errno = errno;
         char *str_err = strerror(errno);
@@ -1519,6 +1533,7 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
 
     startSaving(RDBFLAGS_NONE);
     snprintf(tmpfile,256,"temp-%d.rdb", (int) getpid());
+    WIN32_ONLY(tmpfile[sizeof(tmpfile) - 1] = '\0';)
 
     if (rdbSaveInternal(req,tmpfile,rsi,rdbflags) != C_OK) {
         stopSaving(0);
@@ -1565,6 +1580,15 @@ int rdbSaveBackground(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
     server.dirty_before_bgsave = server.dirty;
     server.lastbgsave_try = time(NULL);
 
+#ifdef _WIN32
+    openChildInfoPipe();
+    long long start = ustime();
+    childpid = BeginForkOperation_Rdb(req, filename, rsi,
+                                      rsi ? sizeof(*rsi) : 0, rdbflags,
+                                      &server, sizeof(server),
+                                      dictGetHashFunctionSeed(), moduleGetForkData());
+    redisForkChildStarted(childpid,CHILD_TYPE_RDB,start);
+#else
     if ((childpid = redisFork(CHILD_TYPE_RDB)) == 0) {
         int retval;
 
@@ -1576,20 +1600,23 @@ int rdbSaveBackground(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
             sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
         }
         exitFromChild((retval == C_OK) ? 0 : 1);
-    } else {
-        /* Parent */
-        if (childpid == -1) {
-            server.lastbgsave_status = C_ERR;
-            serverLog(LL_WARNING,"Can't save in background: fork: %s",
-                strerror(errno));
-            return C_ERR;
-        }
-        serverLog(LL_NOTICE,"Background saving started by pid %ld",(long) childpid);
-        server.rdb_save_time_start = time(NULL);
-        server.rdb_child_type = RDB_CHILD_TYPE_DISK;
-        return C_OK;
     }
-    return C_OK; /* unreached */
+#endif
+
+    /* Parent */
+    if (childpid == -1) {
+#ifdef _WIN32
+        closeChildInfoPipe();
+#endif
+        server.lastbgsave_status = C_ERR;
+        serverLog(LL_WARNING,"Can't save in background: fork: %s",
+            IF_WIN32(wsa_strerror(errno),strerror(errno)));
+        return C_ERR;
+    }
+    serverLog(LL_NOTICE,"Background saving started by pid %ld",(long) childpid);
+    server.rdb_save_time_start = time(NULL);
+    server.rdb_child_type = RDB_CHILD_TYPE_DISK;
+    return C_OK;
 }
 
 /* Note that we may call this function in signal handle 'sigShutdownHandler',
@@ -1609,7 +1636,7 @@ void rdbRemoveTempFile(pid_t childpid, int from_signal) {
     if (from_signal) {
         /* bg_unlink is not async-signal-safe, but in this case we don't really
          * need to close the fd, it'll be released when the process exists. */
-        int fd = open(tmpfile, O_RDONLY|O_NONBLOCK);
+        int fd = open(tmpfile, O_RDONLY|O_NONBLOCK|IF_WIN32(O_BINARY,0), 0);
         UNUSED(fd);
         unlink(tmpfile);
     } else {
@@ -1665,7 +1692,7 @@ static int _ziplistPairsEntryConvertAndValidate(unsigned char *p, unsigned int h
     long long vll;
 
     struct {
-        long count;
+        size_t count;
         dict *fields;
         unsigned char **lp;
     } *data = userdata;
@@ -1705,7 +1732,7 @@ static int _ziplistPairsEntryConvertAndValidate(unsigned char *p, unsigned int h
 int ziplistPairsConvertAndValidateIntegrity(unsigned char *zl, size_t size, unsigned char **lp) {
     /* Keep track of the field names to locate duplicate ones */
     struct {
-        long count;
+        size_t count;
         dict *fields; /* Initialisation at the first callback. */
         unsigned char **lp;
     } data = {0, NULL, lp};
@@ -1763,7 +1790,7 @@ static int _listZiplistEntryConvertAndValidate(unsigned char *p, unsigned int he
 static int _lpEntryValidation(unsigned char *p, unsigned int head_count, void *userdata) {
     struct {
         int pairs;
-        long count;
+        size_t count;
         dict *fields;
     } *data = userdata;
 
@@ -1804,7 +1831,7 @@ int lpValidateIntegrityAndDups(unsigned char *lp, size_t size, int deep, int pai
     /* Keep track of the field names to locate duplicate ones */
     struct {
         int pairs;
-        long count;
+        size_t count;
         dict *fields; /* Initialisation at the first callback. */
     } data = {pairs, 0, NULL};
 
@@ -3377,10 +3404,9 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     FILE *fp;
     rio rdb;
     int retval;
-    struct stat sb;
-    int rdb_fd;
+    struct redis_stat sb;
 
-    fp = fopen(filename, "r");
+    fp = fopen(filename, IF_WIN32("rb","r"));
     if (fp == NULL) {
         if (errno == ENOENT) return RDB_NOT_EXIST;
 
@@ -3388,7 +3414,7 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
         return RDB_FAILED;
     }
 
-    if (fstat(fileno(fp), &sb) == -1)
+    if (redis_fstat(fileno(fp), &sb) == -1)
         sb.st_size = 0;
 
     startLoadingFile(sb.st_size, filename, rdbflags);
@@ -3398,12 +3424,14 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
 
     fclose(fp);
     stopLoading(retval==C_OK);
+#ifndef _WIN32
     /* Reclaim the cache backed by rdb */
     if (retval == C_OK && !(rdbflags & RDBFLAGS_KEEP_CACHE)) {
         /* TODO: maybe we could combine the fopen and open into one in the future */
-        rdb_fd = open(filename, O_RDONLY);
+        int rdb_fd = open(filename, O_RDONLY, 0);
         if (rdb_fd > 0) bioCreateCloseJob(rdb_fd, 0, 1);
     }
+#endif
     return (retval==C_OK) ? RDB_OK : RDB_FAILED;
 }
 
@@ -3490,6 +3518,12 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
  * the child did not exit for an error, but because we wanted), and performs
  * the cleanup needed. */
 void killRDBChild(void) {
+#ifdef _WIN32
+    AbortForkOperation();
+    backgroundSaveDoneHandler(1, SIGUSR1);
+    resetChildState();
+    replicationStartPendingFork();
+#else
     kill(server.child_pid, SIGUSR1);
     /* Because we are not using here waitpid (like we have in killAppendOnlyChild
      * and TerminateModuleForkChild), all the cleanup operations is done by
@@ -3497,6 +3531,7 @@ void killRDBChild(void) {
      * This includes:
      * - resetChildState
      * - rdbRemoveTempFile */
+#endif
 }
 
 /* Spawn an RDB child that writes the RDB to the sockets of the slaves
@@ -3526,6 +3561,7 @@ int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
     if (anetPipe(pipefds, 0, 0) == -1) {
         close(rdb_pipe_write);
         close(server.rdb_pipe_read);
+        server.rdb_pipe_read = -1;
         return C_ERR;
     }
     safe_to_exit_pipe = pipefds[0]; /* read end */
@@ -3549,6 +3585,18 @@ int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
     }
 
     /* Create the child process. */
+#ifdef _WIN32
+    long long start = ustime();
+    childpid = BeginForkOperation_Socket(req, rsi,
+                                         rsi ? sizeof(*rsi) : 0,
+                                         rdb_pipe_write,
+                                         safe_to_exit_pipe,
+                                         &server,
+                                         sizeof(server),
+                                         dictGetHashFunctionSeed(),
+                                         moduleGetForkData());
+    redisForkChildStarted(childpid, CHILD_TYPE_RDB, start);
+#else
     if ((childpid = redisFork(CHILD_TYPE_RDB)) == 0) {
         /* Child */
         int retval, dummy;
@@ -3580,42 +3628,45 @@ int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
         dummy = read(safe_to_exit_pipe, pipefds, 1);
         UNUSED(dummy);
         exitFromChild((retval == C_OK) ? 0 : 1);
-    } else {
-        /* Parent */
-        if (childpid == -1) {
-            serverLog(LL_WARNING,"Can't save in background: fork: %s",
-                strerror(errno));
+    }
+#endif
 
-            /* Undo the state change. The caller will perform cleanup on
-             * all the slaves in BGSAVE_START state, but an early call to
-             * replicationSetupSlaveForFullResync() turned it into BGSAVE_END */
-            listRewind(server.slaves,&li);
-            while((ln = listNext(&li))) {
-                client *slave = ln->value;
-                if (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_END) {
-                    slave->replstate = SLAVE_STATE_WAIT_BGSAVE_START;
-                }
-            }
-            close(rdb_pipe_write);
-            close(server.rdb_pipe_read);
-            zfree(server.rdb_pipe_conns);
-            server.rdb_pipe_conns = NULL;
-            server.rdb_pipe_numconns = 0;
-            server.rdb_pipe_numconns_writing = 0;
-        } else {
-            serverLog(LL_NOTICE,"Background RDB transfer started by pid %ld",
-                (long) childpid);
-            server.rdb_save_time_start = time(NULL);
-            server.rdb_child_type = RDB_CHILD_TYPE_SOCKET;
-            close(rdb_pipe_write); /* close write in parent so that it can detect the close on the child. */
-            if (aeCreateFileEvent(server.el, server.rdb_pipe_read, AE_READABLE, rdbPipeReadHandler,NULL) == AE_ERR) {
-                serverPanic("Unrecoverable error creating server.rdb_pipe_read file event.");
+    /* Parent */
+    close(safe_to_exit_pipe);
+    if (childpid == -1) {
+        serverLog(LL_WARNING,"Can't save in background: fork: %s",
+            IF_WIN32(wsa_strerror(errno),strerror(errno)));
+
+        /* Undo the state change. The caller will perform cleanup on
+         * all the slaves in BGSAVE_START state, but an early call to
+         * replicationSetupSlaveForFullResync() turned it into BGSAVE_END */
+        listRewind(server.slaves,&li);
+        while((ln = listNext(&li))) {
+            client *slave = ln->value;
+            if (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_END) {
+                slave->replstate = SLAVE_STATE_WAIT_BGSAVE_START;
             }
         }
-        close(safe_to_exit_pipe);
-        return (childpid == -1) ? C_ERR : C_OK;
+        close(rdb_pipe_write);
+        close(server.rdb_pipe_read);
+        close(server.rdb_child_exit_pipe);
+        server.rdb_child_exit_pipe = -1;
+        server.rdb_pipe_read = -1;
+        zfree(server.rdb_pipe_conns);
+        server.rdb_pipe_conns = NULL;
+        server.rdb_pipe_numconns = 0;
+        server.rdb_pipe_numconns_writing = 0;
+    } else {
+        serverLog(LL_NOTICE,"Background RDB transfer started by pid %ld",
+            (long) childpid);
+        server.rdb_save_time_start = time(NULL);
+        server.rdb_child_type = RDB_CHILD_TYPE_SOCKET;
+        close(rdb_pipe_write); /* close write in parent so that it can detect the close on the child. */
+        if (aeCreateFileEvent(server.el, server.rdb_pipe_read, AE_READABLE, rdbPipeReadHandler,NULL) == AE_ERR) {
+            serverPanic("Unrecoverable error creating server.rdb_pipe_read file event.");
+        }
     }
-    return C_OK; /* Unreached. */
+    return (childpid == -1) ? C_ERR : C_OK;
 }
 
 void saveCommand(client *c) {

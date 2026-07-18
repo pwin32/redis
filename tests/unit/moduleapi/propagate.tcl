@@ -1,6 +1,6 @@
-set testmodule [file normalize tests/modules/propagate.so]
-set miscmodule [file normalize tests/modules/misc.so]
-set keyspace_events [file normalize tests/modules/keyspace_events.so]
+set testmodule [redis_test_module propagate]
+set miscmodule [redis_test_module misc]
+set keyspace_events [redis_test_module keyspace_events]
 
 tags "modules" {
     test {Modules can propagate in async and threaded contexts} {

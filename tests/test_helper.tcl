@@ -14,6 +14,7 @@ source tests/support/test.tcl
 source tests/support/util.tcl
 
 set ::all_tests {
+    windows/regression
     unit/printver
     unit/dump
     unit/auth
@@ -488,14 +489,14 @@ proc show_clients_state {} {
 
 proc kill_clients {} {
     foreach p $::clients_pids {
-        catch {exec kill $p}
+        catch {kill_proc2 $p}
     }
 }
 
 proc force_kill_all_servers {} {
     foreach p $::active_servers {
         puts "Killing still running Redis server $p"
-        catch {exec kill -9 $p}
+        catch {kill_proc2 $p}
     }
 }
 

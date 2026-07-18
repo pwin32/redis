@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/aclcheck.so]
+set testmodule [redis_test_module aclcheck]
 
 start_server {tags {"modules acl"}} {
     r module load $testmodule

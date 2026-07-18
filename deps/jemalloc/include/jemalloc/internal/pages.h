@@ -116,4 +116,21 @@ void pages_set_thp_state (void *ptr, size_t size);
 void pages_mark_guards(void *head, void *tail);
 void pages_unmark_guards(void *head, void *tail);
 
+#ifdef USE_WIN32_EXTERNAL_HEAP_ALLOC
+/*
+ * Redis QFork replaces jemalloc's normal VirtualAlloc/VirtualFree page
+ * ownership with a fixed-address heap map.  Keep these declarations next to
+ * the page interface so the 5.3 implementation can use the same narrow hook
+ * surface as the Windows 6.2 port.
+ *
+ * HPA is deliberately unavailable on _WIN32 in jemalloc 5.3.  The external
+ * hook set also has no page-protection operation; san_guard_* must therefore
+ * remain disabled for this allocator configuration (pages.c fails closed if a
+ * guarded allocation is requested).
+ */
+extern LPVOID AllocHeapBlock(LPVOID addr, size_t size, BOOL zero);
+extern BOOL FreeHeapBlock(LPVOID addr, size_t size);
+extern BOOL PurgePages(LPVOID addr, size_t length);
+#endif
+
 #endif /* JEMALLOC_INTERNAL_PAGES_EXTERNS_H */

@@ -1301,6 +1301,19 @@ REDISMODULE_API const RedisModuleString * (*RedisModule_GetKeyNameFromDefragCtx)
 REDISMODULE_API int (*RedisModule_EventLoopAdd)(int fd, int mask, RedisModuleEventLoopFunc func, void *user_data) REDISMODULE_ATTR;
 REDISMODULE_API int (*RedisModule_EventLoopDel)(int fd, int mask) REDISMODULE_ATTR;
 REDISMODULE_API int (*RedisModule_EventLoopAddOneShot)(RedisModuleEventLoopOneShotFunc func, void *user_data) REDISMODULE_ATTR;
+#ifdef _WIN32
+/* Redis for Windows public extension. These functions operate on this fork's
+ * process-wide synthetic descriptors, not native Winsock SOCKETs or CRT file
+ * descriptors. RedisModule_Win32Pipe returns a nonblocking descriptor pair
+ * suitable for RedisModule_EventLoopAdd. Read and Write perform one transfer
+ * of at most INT_MAX bytes, so modules must handle partial transfers. These
+ * entry points are Windows-fork-specific and are not provided by upstream
+ * Redis. */
+REDISMODULE_API int (*RedisModule_Win32Pipe)(int fds[2]) REDISMODULE_ATTR;
+REDISMODULE_API long long (*RedisModule_Win32Read)(int fd, void *buf, size_t count) REDISMODULE_ATTR;
+REDISMODULE_API long long (*RedisModule_Win32Write)(int fd, const void *buf, size_t count) REDISMODULE_ATTR;
+REDISMODULE_API int (*RedisModule_Win32Close)(int fd) REDISMODULE_ATTR;
+#endif
 REDISMODULE_API int (*RedisModule_RegisterBoolConfig)(RedisModuleCtx *ctx, const char *name, int default_val, unsigned int flags, RedisModuleConfigGetBoolFunc getfn, RedisModuleConfigSetBoolFunc setfn, RedisModuleConfigApplyFunc applyfn, void *privdata) REDISMODULE_ATTR;
 REDISMODULE_API int (*RedisModule_RegisterNumericConfig)(RedisModuleCtx *ctx, const char *name, long long default_val, unsigned int flags, long long min, long long max, RedisModuleConfigGetNumericFunc getfn, RedisModuleConfigSetNumericFunc setfn, RedisModuleConfigApplyFunc applyfn, void *privdata) REDISMODULE_ATTR;
 REDISMODULE_API int (*RedisModule_RegisterStringConfig)(RedisModuleCtx *ctx, const char *name, const char *default_val, unsigned int flags, RedisModuleConfigGetStringFunc getfn, RedisModuleConfigSetStringFunc setfn, RedisModuleConfigApplyFunc applyfn, void *privdata) REDISMODULE_ATTR;
@@ -1317,7 +1330,7 @@ REDISMODULE_API int (*RedisModule_RdbSave)(RedisModuleCtx *ctx, RedisModuleRdbSt
 static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int apiver) REDISMODULE_ATTR_UNUSED;
 static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int apiver) {
     void *getapifuncptr = ((void**)ctx)[0];
-    RedisModule_GetApi = (int (*)(const char *, void *)) (unsigned long)getapifuncptr;
+    RedisModule_GetApi = (int (*)(const char *, void *))(uintptr_t)getapifuncptr;
     REDISMODULE_GET_API(Alloc);
     REDISMODULE_GET_API(TryAlloc);
     REDISMODULE_GET_API(Calloc);
@@ -1662,6 +1675,12 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(EventLoopAdd);
     REDISMODULE_GET_API(EventLoopDel);
     REDISMODULE_GET_API(EventLoopAddOneShot);
+#ifdef _WIN32
+    REDISMODULE_GET_API(Win32Pipe);
+    REDISMODULE_GET_API(Win32Read);
+    REDISMODULE_GET_API(Win32Write);
+    REDISMODULE_GET_API(Win32Close);
+#endif
     REDISMODULE_GET_API(RegisterBoolConfig);
     REDISMODULE_GET_API(RegisterNumericConfig);
     REDISMODULE_GET_API(RegisterStringConfig);

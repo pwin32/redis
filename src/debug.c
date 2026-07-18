@@ -37,12 +37,16 @@
 #include "fpconv_dtoa.h"
 #include "cluster.h"
 
-#include <arpa/inet.h>
 #include <signal.h>
+#ifndef _WIN32
+#include <arpa/inet.h>
 #include <dlfcn.h>
+#endif
 #include <fcntl.h>
+#ifndef _WIN32
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 
 #ifdef HAVE_BACKTRACE
 #include <execinfo.h>
@@ -65,7 +69,20 @@ typedef ucontext_t sigcontext_t;
 
 /* Globals */
 static int bug_report_start = 0; /* True if bug report header was already logged. */
+#ifdef _WIN32
+static pthread_mutex_t bug_report_start_mutex;
+static INIT_ONCE bug_report_start_mutex_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK initBugReportStartMutex(PINIT_ONCE once, PVOID param, PVOID *context) {
+    UNUSED(once);
+    UNUSED(param);
+    UNUSED(context);
+    (void)pthread_mutex_init(&bug_report_start_mutex,NULL);
+    return TRUE;
+}
+#else
 static pthread_mutex_t bug_report_start_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /* Forward declarations */
 void bugReportStart(void);
@@ -87,7 +104,11 @@ void xorDigest(unsigned char *digest, const void *ptr, size_t len) {
     int j;
 
     SHA1Init(&ctx);
+#ifdef _WIN32
+    SHA1Update(&ctx,ptr,(uint32_t)len);
+#else
     SHA1Update(&ctx,ptr,len);
+#endif
     SHA1Final(hash,&ctx);
 
     for (j = 0; j < 20; j++)
@@ -387,6 +408,22 @@ void mallctl_string(client *c, robj **argv, int argc) {
 }
 #endif
 
+#ifdef _WIN32
+/* Redis assumes LP64 for several DEBUG command counters. Keep their parsing
+ * 64-bit on Windows without changing the public object conversion API here. */
+static int getPositiveDebugLongFromObjectOrReply(client *c, robj *o, PORT_LONG *target) {
+    long long value;
+
+    if (getLongLongFromObjectOrReply(c,o,&value,NULL) != C_OK) return C_ERR;
+    if (value < 0) {
+        addReplyError(c,"value is out of range, must be positive");
+        return C_ERR;
+    }
+    *target = (PORT_LONG)value;
+    return C_OK;
+}
+#endif
+
 void debugCommand(client *c) {
     if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"help")) {
         const char *help[] = {
@@ -417,6 +454,10 @@ void debugCommand(client *c) {
 "    Return hash table statistics of the specified Redis database.",
 "HTSTATS-KEY <key> [full]",
 "    Like HTSTATS but for the hash table stored at <key>'s value.",
+#ifdef _WIN32
+"FLUSHLOAD",
+"    Flush all keys from memory and reload the current RDB.",
+#endif
 "LOADAOF",
 "    Flush the AOF buffers on disk and reload the AOF in memory.",
 "REPLICATE <string>",
@@ -499,11 +540,15 @@ NULL
         };
         addReplyHelp(c, help);
     } else if (!strcasecmp(c->argv[1]->ptr,"segfault")) {
+#ifdef _WIN32
+        *((volatile char*)(uintptr_t)-1) = 'x';
+#else
         /* Compiler gives warnings about writing to a random address
          * e.g "*((char*)-1) = 'x';". As a workaround, we map a read-only area
          * and try to write there to trigger segmentation fault. */
         char* p = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE | MAP_ANON, -1, 0);
         *p = 'x';
+#endif
     } else if (!strcasecmp(c->argv[1]->ptr,"panic")) {
         serverPanic("DEBUG PANIC called at Unix time %lld", (long long)time(NULL));
     } else if (!strcasecmp(c->argv[1]->ptr,"restart") ||
@@ -578,6 +623,20 @@ NULL
         }
         serverLog(LL_NOTICE,"DB reloaded by DEBUG RELOAD");
         addReply(c,shared.ok);
+#ifdef _WIN32
+    } else if (!strcasecmp(c->argv[1]->ptr,"flushload") && c->argc == 2) {
+        emptyData(-1,EMPTYDB_NO_FLAGS,NULL);
+        protectClient(c);
+        int ret = rdbLoad(server.rdb_filename,NULL,RDBFLAGS_NONE);
+        unprotectClient(c);
+        if (ret != RDB_OK) {
+            addReplyError(c,"Error trying to load the RDB dump, check server logs.");
+            return;
+        }
+        server.dirty = 0; /* Prevent AOF / replication. */
+        serverLog(LL_NOTICE,"DB loaded by DEBUG FLUSHLOAD");
+        addReply(c,shared.ok);
+#endif
     } else if (!strcasecmp(c->argv[1]->ptr,"loadaof")) {
         if (server.aof_state != AOF_OFF) flushAppendOnlyFile(1);
         emptyData(-1,EMPTYDB_NO_FLAGS,NULL);
@@ -636,21 +695,38 @@ NULL
             nextra += used;
             remaining -= used;
             /* Add total uncompressed size */
+#ifdef _WIN32
+            PORT_ULONG sz = 0;
+#else
             unsigned long sz = 0;
+#endif
             for (quicklistNode *node = ql->head; node; node = node->next) {
                 sz += node->sz;
             }
+#ifdef _WIN32
+            used = snprintf(nextra, remaining, " ql_uncompressed_size:%llu",
+                            (unsigned long long)sz);
+#else
             used = snprintf(nextra, remaining, " ql_uncompressed_size:%lu", sz);
+#endif
             nextra += used;
             remaining -= used;
         }
 
         addReplyStatusFormat(c,
             "Value at:%p refcount:%d "
+#ifdef _WIN32
+            "encoding:%s serializedlength:%llu "
+#else
             "encoding:%s serializedlength:%zu "
+#endif
             "lru:%d lru_seconds_idle:%llu%s",
             (void*)val, val->refcount,
+#ifdef _WIN32
+            strenc, (unsigned long long)rdbSavedObjectLen(val, c->argv[2], c->db->id),
+#else
             strenc, rdbSavedObjectLen(val, c->argv[2], c->db->id),
+#endif
             val->lru, estimateObjectIdleTime(val)/1000, extra);
     } else if (!strcasecmp(c->argv[1]->ptr,"sdslen") && c->argc == 3) {
         dictEntry *de;
@@ -706,36 +782,77 @@ NULL
         }
     } else if (!strcasecmp(c->argv[1]->ptr,"populate") &&
                c->argc >= 3 && c->argc <= 5) {
+#ifdef _WIN32
+        PORT_LONG keys, j;
+#else
         long keys, j;
+#endif
         robj *key, *val;
         char buf[128];
 
+#ifdef _WIN32
+        if (getPositiveDebugLongFromObjectOrReply(c,c->argv[2],&keys) != C_OK)
+            return;
+        if ((PORT_ULONG)keys > ULONG_MAX) {
+            addReplyError(c,"value is out of range for the Windows dictionary implementation");
+            return;
+        }
+#else
         if (getPositiveLongFromObjectOrReply(c, c->argv[2], &keys, NULL) != C_OK)
             return;
+#endif
 
-        if (dictTryExpand(c->db->dict, keys) != DICT_OK) {
+#ifdef _WIN32
+        if (dictTryExpand(c->db->dict,(unsigned long)keys) != DICT_OK) {
+#else
+        if (dictTryExpand(c->db->dict,keys) != DICT_OK) {
+#endif
             addReplyError(c, "OOM in dictTryExpand");
             return;
         }
+#ifdef _WIN32
+        PORT_LONG valsize = 0;
+        if (c->argc == 5 &&
+            getPositiveDebugLongFromObjectOrReply(c,c->argv[4],&valsize) != C_OK)
+            return;
+#else
         long valsize = 0;
         if ( c->argc == 5 && getPositiveLongFromObjectOrReply(c, c->argv[4], &valsize, NULL) != C_OK ) 
             return;
+#endif
 
         for (j = 0; j < keys; j++) {
+#ifdef _WIN32
+            snprintf(buf,sizeof(buf),"%s:%lld",
+                (c->argc == 3) ? "key" : (char*)c->argv[3]->ptr,
+                (long long)j);
+#else
             snprintf(buf,sizeof(buf),"%s:%lu",
                 (c->argc == 3) ? "key" : (char*)c->argv[3]->ptr, j);
+#endif
             key = createStringObject(buf,strlen(buf));
             if (lookupKeyWrite(c->db,key) != NULL) {
                 decrRefCount(key);
                 continue;
             }
+#ifdef _WIN32
+            snprintf(buf,sizeof(buf),"value:%lld",(long long)j);
+#else
             snprintf(buf,sizeof(buf),"value:%lu",j);
+#endif
             if (valsize==0)
                 val = createStringObject(buf,strlen(buf));
             else {
+#ifdef _WIN32
+                size_t buflen = strlen(buf);
+                size_t value_len = (size_t)valsize;
+                val = createStringObject(NULL,value_len);
+                memcpy(val->ptr,buf,value_len <= buflen ? value_len : buflen);
+#else
                 int buflen = strlen(buf);
                 val = createStringObject(NULL,valsize);
                 memcpy(val->ptr, buf, valsize<=buflen? valsize: buflen);
+#endif
             }
             dbAdd(c->db,key,val);
             signalModifiedKey(c,c->db,key);
@@ -832,12 +949,17 @@ NULL
         }
     } else if (!strcasecmp(c->argv[1]->ptr,"sleep") && c->argc == 3) {
         double dtime = strtod(c->argv[2]->ptr,NULL);
+#ifdef _WIN32
+        long long utime = (long long)(dtime*1000000);
+        if (utime > 0) usleep(utime);
+#else
         long long utime = dtime*1000000;
         struct timespec tv;
 
         tv.tv_sec = utime / 1000000;
         tv.tv_nsec = (utime % 1000000) * 1000;
         nanosleep(&tv, NULL);
+#endif
         addReply(c,shared.ok);
     } else if (!strcasecmp(c->argv[1]->ptr,"set-active-expire") &&
                c->argc == 3)
@@ -980,9 +1102,15 @@ NULL
                 bucket_info = sdscatprintf(bucket_info, "+            : ");
             else
                 bucket_info = sdscatprintf(bucket_info, " - %10zu: ", ((size_t)1<<(j+CLIENT_MEM_USAGE_BUCKET_MIN_LOG))-1);
+#ifdef _WIN32
+            bucket_info = sdscatprintf(bucket_info, "tot-mem: %10llu, clients: %llu\n",
+                (unsigned long long)server.client_mem_usage_buckets[j].mem_usage_sum,
+                (unsigned long long)server.client_mem_usage_buckets[j].clients->len);
+#else
             bucket_info = sdscatprintf(bucket_info, "tot-mem: %10zu, clients: %lu\n",
                 server.client_mem_usage_buckets[j].mem_usage_sum,
                 server.client_mem_usage_buckets[j].clients->len);
+#endif
         }
         addReplyVerbatim(c,bucket_info,sdslen(bucket_info),"txt");
         sdsfree(bucket_info);
@@ -1103,9 +1231,14 @@ void serverLogObjectDebugInfo(const robj *o) {
      * iterate on all the items in the list (and possibly crash again).
      * For some cases it may be ok to crash here again, but these could cause
      * invalid memory access which will bother valgrind and also possibly cause
-     * random memory portion to be "leaked" into the logfile. */
+    * random memory portion to be "leaked" into the logfile. */
     if (o->type == OBJ_STRING && sdsEncodedObject(o)) {
+#ifdef _WIN32
+        serverLog(LL_WARNING,"Object raw string len: %llu",
+                  (unsigned long long)sdslen(o->ptr));
+#else
         serverLog(LL_WARNING,"Object raw string len: %zu", sdslen(o->ptr));
+#endif
         if (sdslen(o->ptr) < 4096) {
             sds repr = sdscatrepr(sdsempty(),o->ptr,sdslen(o->ptr));
             serverLog(LL_WARNING,"Object raw string content: %s", repr);
@@ -1148,8 +1281,15 @@ void _serverPanic(const char *file, int line, const char *msg, ...) {
 
     bugReportStart();
     serverLog(LL_WARNING,"------------------------------------------------");
+#ifdef _WIN32
+    serverLog(LL_WARNING,"Fatal Error: %s #%s:%d",fmtmsg,file,line);
+    /* Preserve the upstream marker for tests that identify a controlled panic
+     * while also using the native Windows fatal-error wording. */
+    serverLog(LL_WARNING,"Guru Meditation: %s #%s:%d",fmtmsg,file,line);
+#else
     serverLog(LL_WARNING,"!!! Software Failure. Press left mouse button to continue");
     serverLog(LL_WARNING,"Guru Meditation: %s #%s:%d",fmtmsg,file,line);
+#endif
 
     if (server.crashlog_enabled) {
 #ifdef HAVE_BACKTRACE
@@ -1164,6 +1304,10 @@ void _serverPanic(const char *file, int line, const char *msg, ...) {
 }
 
 void bugReportStart(void) {
+#ifdef _WIN32
+    InitOnceExecuteOnce(&bug_report_start_mutex_once,
+                        initBugReportStartMutex,NULL,NULL);
+#endif
     pthread_mutex_lock(&bug_report_start_mutex);
     if (bug_report_start == 0) {
         serverLogRaw(LL_WARNING|LL_RAW,
@@ -2016,6 +2160,7 @@ int memtest_test_linux_anonymous_maps(void) {
 }
 #endif /* HAVE_PROC_MAPS */
 
+#ifndef _WIN32
 static void killMainThread(void) {
     int err;
     if (pthread_self() != server.main_thread_id && pthread_cancel(server.main_thread_id) == 0) {
@@ -2026,6 +2171,10 @@ static void killMainThread(void) {
         }
     }
 }
+#else
+static void killMainThread(void) {
+}
+#endif
 
 /* Kill the running threads (other than current) in an unclean way. This function
  * should be used only when it's critical to stop the threads for some reason.
@@ -2054,6 +2203,7 @@ void doFastMemoryTest(void) {
 #endif /* HAVE_PROC_MAPS */
 }
 
+#ifndef _WIN32
 /* Scans the (assumed) x86 code starting at addr, for a max of `len`
  * bytes, searching for E8 (callq) opcodes, and dumping the symbols
  * and the call offset if they appear to be valid. */
@@ -2170,6 +2320,7 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
 
     bugReportEnd(1, sig);
 }
+#endif
 
 void printCrashReport(void) {
     /* Log INFO and CLIENT LIST */
@@ -2191,7 +2342,9 @@ void printCrashReport(void) {
 }
 
 void bugReportEnd(int killViaSignal, int sig) {
+#ifndef _WIN32
     struct sigaction act;
+#endif
 
     serverLogRaw(LL_WARNING|LL_RAW,
 "\n=== REDIS BUG REPORT END. Make sure to include from START to END. ===\n\n"
@@ -2215,6 +2368,10 @@ void bugReportEnd(int killViaSignal, int sig) {
         abort();
     }
 
+#ifdef _WIN32
+    UNUSED(sig);
+    abort();
+#else
     /* Make sure we exit with the right signal at the end. So for instance
      * the core will be dumped if enabled. */
     sigemptyset (&act.sa_mask);
@@ -2222,6 +2379,7 @@ void bugReportEnd(int killViaSignal, int sig) {
     act.sa_handler = SIG_DFL;
     sigaction (sig, &act, NULL);
     kill(getpid(),sig);
+#endif
 }
 
 /* ==================== Logging functions for debugging ===================== */
@@ -2231,7 +2389,12 @@ void serverLogHexDump(int level, char *descr, void *value, size_t len) {
     unsigned char *v = value;
     char charset[] = "0123456789abcdef";
 
+#ifdef _WIN32
+    serverLog(level,"%s (hexdump of %llu bytes):",
+              descr,(unsigned long long)len);
+#else
     serverLog(level,"%s (hexdump of %zu bytes):", descr, len);
+#endif
     b = buf;
     while(len) {
         b[0] = charset[(*v)>>4];
@@ -2249,6 +2412,16 @@ void serverLogHexDump(int level, char *descr, void *value, size_t len) {
 }
 
 /* =========================== Software Watchdog ============================ */
+#ifdef _WIN32
+/* Windows crash diagnostics are provided by Win32_StackTrace. Redis' POSIX
+ * SIGALRM/setitimer watchdog has no equivalent in this portability layer. */
+void watchdogScheduleSignal(int period) {
+    UNUSED(period);
+}
+
+void applyWatchdogPeriod(void) {
+}
+#else
 #include <sys/time.h>
 
 void watchdogSignalHandler(int sig, siginfo_t *info, void *secret) {
@@ -2311,6 +2484,7 @@ void applyWatchdogPeriod(void) {
         watchdogScheduleSignal(server.watchdog_period); /* Adjust the current timer. */
     }
 }
+#endif
 
 /* Positive input is sleep time in microseconds. Negative input is fractions
  * of microseconds, i.e. -10 means 100 nanoseconds. */
@@ -2318,5 +2492,26 @@ void debugDelay(int usec) {
     /* Since even the shortest sleep results in context switch and system call,
      * the way we achieve short sleeps is by statistically sleeping less often. */
     if (usec < 0) usec = (rand() % -usec) == 0 ? 1: 0;
-    if (usec) usleep(usec);
+    if (!usec) return;
+#ifdef _WIN32
+    /* QFork children cannot safely depend on the parent's cached monotonic
+     * clock state. Query QPC directly for sub-millisecond persistence delays. */
+    LARGE_INTEGER frequency, start, now;
+    if (!QueryPerformanceFrequency(&frequency) ||
+        frequency.QuadPart <= 0 ||
+        !QueryPerformanceCounter(&start))
+    {
+        return;
+    }
+    unsigned long long target_ticks =
+        ((unsigned long long)frequency.QuadPart * (unsigned int)usec +
+         999999ULL) / 1000000ULL;
+    while (QueryPerformanceCounter(&now)) {
+        if (now.QuadPart < start.QuadPart) return;
+        if ((unsigned long long)(now.QuadPart - start.QuadPart) >= target_ticks)
+            return;
+    }
+#else
+    usleep(usec);
+#endif
 }

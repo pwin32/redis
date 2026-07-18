@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/infotest.so]
+set testmodule [redis_test_module infotest]
 
 test {modules config rewrite} {
 

@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/auth.so]
+set testmodule [redis_test_module auth]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

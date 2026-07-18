@@ -28,6 +28,11 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32fixes.h"
+#endif
+
 #include "fmacros.h"
 #include "cli_common.h"
 #include <stdio.h>
@@ -37,7 +42,9 @@
 #include <hiredis.h>
 #include <sdscompat.h> /* Use hiredis' sds compat header that maps sds calls to their hi_ variants */
 #include <sds.h> /* use sds.h from hiredis, so that only one set of sds functions will be present in the binary */
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <string.h>
 #include <ctype.h>
 #ifdef USE_OPENSSL
@@ -205,6 +212,9 @@ int cliSecureInit(void)
 sds readArgFromStdin(void) {
     char buf[1024];
     sds arg = sdsempty();
+#ifdef _WIN32
+    setmode(_fileno(stdin),_O_BINARY);
+#endif
 
     while(1) {
         int nread = read(fileno(stdin),buf,1024);

@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/cmdintrospection.so]
+set testmodule [redis_test_module cmdintrospection]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

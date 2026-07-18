@@ -117,7 +117,7 @@ static void connUnixShutdown(connection *conn) {
 }
 
 static void connUnixClose(connection *conn) {
-    connectionTypeTcp()->close(conn);
+    (connectionTypeTcp()->close)(conn);
 }
 
 static int connUnixAccept(connection *conn, ConnectionCallbackFunc accept_handler) {

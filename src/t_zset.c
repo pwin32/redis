@@ -528,7 +528,7 @@ static int zslParseRange(robj *min, robj *max, zrangespec *spec) {
      * ZRANGEBYSCORE zset (1.5 (2.5 will match min < x < max
      * ZRANGEBYSCORE zset 1.5 2.5 will instead match min <= x <= max */
     if (min->encoding == OBJ_ENCODING_INT) {
-        spec->min = (long)min->ptr;
+        spec->min = (long long)(intptr_t)min->ptr;
     } else {
         if (((char*)min->ptr)[0] == '(') {
             spec->min = strtod((char*)min->ptr+1,&eptr);
@@ -540,7 +540,7 @@ static int zslParseRange(robj *min, robj *max, zrangespec *spec) {
         }
     }
     if (max->encoding == OBJ_ENCODING_INT) {
-        spec->max = (long)max->ptr;
+        spec->max = (long long)(intptr_t)max->ptr;
     } else {
         if (((char*)max->ptr)[0] == '(') {
             spec->max = strtod((char*)max->ptr+1,&eptr);

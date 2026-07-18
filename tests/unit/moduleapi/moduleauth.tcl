@@ -1,6 +1,6 @@
-set testmodule [file normalize tests/modules/auth.so]
-set testmoduletwo [file normalize tests/modules/moduleauthtwo.so]
-set miscmodule [file normalize tests/modules/misc.so]
+set testmodule [redis_test_module auth]
+set testmoduletwo [redis_test_module moduleauthtwo]
+set miscmodule [redis_test_module misc]
 
 proc cmdstat {cmd} {
     return [cmdrstat $cmd r]

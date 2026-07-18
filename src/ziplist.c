@@ -1448,7 +1448,7 @@ void ziplistRepr(unsigned char *zl) {
         assert(zipEntrySafe(zl, zlbytes, p, &entry, 1));
         printf(
             "{\n"
-                "\taddr 0x%08lx,\n"
+                "\taddr %p,\n"
                 "\tindex %2d,\n"
                 "\toffset %5lu,\n"
                 "\thdr+entry len: %5u,\n"
@@ -1456,7 +1456,7 @@ void ziplistRepr(unsigned char *zl) {
                 "\tprevrawlen: %5u,\n"
                 "\tprevrawlensize: %2u,\n"
                 "\tpayload %5u\n",
-            (long unsigned)p,
+            (void*)p,
             index,
             (unsigned long) (p-zl),
             entry.headersize+entry.len,

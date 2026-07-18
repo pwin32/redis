@@ -168,7 +168,7 @@ void listTypePush(robj *subject, robj *value, int where) {
         int pos = (where == LIST_HEAD) ? QUICKLIST_HEAD : QUICKLIST_TAIL;
         if (value->encoding == OBJ_ENCODING_INT) {
             char buf[32];
-            ll2string(buf, 32, (long)value->ptr);
+            ll2string(buf, 32, (long long)(intptr_t)value->ptr);
             quicklistPush(subject->ptr, buf, strlen(buf), pos);
         } else {
             quicklistPush(subject->ptr, value->ptr, sdslen(value->ptr), pos);
@@ -176,8 +176,8 @@ void listTypePush(robj *subject, robj *value, int where) {
     } else if (subject->encoding == OBJ_ENCODING_LISTPACK) {
         if (value->encoding == OBJ_ENCODING_INT) {
             subject->ptr = (where == LIST_HEAD) ?
-                lpPrependInteger(subject->ptr, (long)value->ptr) :
-                lpAppendInteger(subject->ptr, (long)value->ptr);
+                lpPrependInteger(subject->ptr, (long long)(intptr_t)value->ptr) :
+                lpAppendInteger(subject->ptr, (long long)(intptr_t)value->ptr);
         } else {
             subject->ptr = (where == LIST_HEAD) ?
                 lpPrepend(subject->ptr, value->ptr, sdslen(value->ptr)) :

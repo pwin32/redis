@@ -57,12 +57,20 @@
 #include "rdb.h"
 #include "monotonic.h"
 #include "script.h"
+#include "functions.h"
 #include "call_reply.h"
 #include "hdr_histogram.h"
+#ifndef _WIN32
 #include <dlfcn.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
+#else
+#include "Win32_Interop/dlfcn.h"
+#include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/Win32_QFork.h"
+#endif
+#include <sys/stat.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <string.h>
 
 /* --------------------------------------------------------------------------
@@ -293,7 +301,11 @@ typedef struct RedisModuleBlockedClient {
  * multiple auth callbacks. */
 static list *moduleAuthCallbacks;
 
+#ifndef _WIN32
 static pthread_mutex_t moduleUnblockedClientsMutex = PTHREAD_MUTEX_INITIALIZER;
+#else
+static pthread_mutex_t moduleUnblockedClientsMutex;
+#endif
 static list *moduleUnblockedClients;
 
 /* Pool for temporary client objects. Creating and destroying a client object is
@@ -308,7 +320,11 @@ static size_t moduleTempClientMinCount = 0; /* Min client count in pool since
 
 /* We need a mutex that is unlocked / relocked in beforeSleep() in order to
  * allow thread safe contexts to execute commands at a safe moment. */
+#ifndef _WIN32
 static pthread_mutex_t moduleGIL = PTHREAD_MUTEX_INITIALIZER;
+#else
+static pthread_mutex_t moduleGIL;
+#endif
 
 /* Function pointer type for keyspace event notification subscriptions from modules. */
 typedef int (*RedisModuleNotificationFunc) (RedisModuleCtx *ctx, int type, const char *event, RedisModuleString *key);
@@ -877,7 +893,7 @@ void moduleCallCommandUnblockedHandler(client *c) {
  * (only the main thread uses propagatePendingCommands) */
 void moduleCreateContext(RedisModuleCtx *out_ctx, RedisModule *module, int ctx_flags) {
     memset(out_ctx, 0 ,sizeof(RedisModuleCtx));
-    out_ctx->getapifuncptr = (void*)(unsigned long)&RM_GetApi;
+    out_ctx->getapifuncptr = (void*)(uintptr_t)&RM_GetApi;
     out_ctx->module = module;
     out_ctx->flags = ctx_flags;
     if (ctx_flags & REDISMODULE_CTX_TEMP_CLIENT)
@@ -2255,6 +2271,10 @@ void RM_SetModuleAttribs(RedisModuleCtx *ctx, const char *name, int ver, int api
     module->loadmod = NULL;
     module->num_commands_with_acl_categories = 0;
     module->onload = 1;
+#ifdef _WIN32
+    module->qfork_path = NULL;
+    module->qfork_load_seq = 0;
+#endif
     ctx->module = module;
 }
 
@@ -2392,7 +2412,7 @@ void RM_Yield(RedisModuleCtx *ctx, int flags, const char *busy_reply) {
                     /* Release the GIL, yielding CPU to give the main thread an opportunity to start
                      * event processing, and then acquire the GIL again until the main thread releases it. */
                     moduleReleaseGIL();
-                    sched_yield();
+                    IF_WIN32(Sleep(0),sched_yield());
                     moduleAcquireGIL();
                 }
             } else {
@@ -2900,7 +2920,7 @@ RedisModuleString *moduleAssertUnsharedString(RedisModuleString *str) {
         str->encoding = OBJ_ENCODING_RAW;
     } else if (str->encoding == OBJ_ENCODING_INT) {
         /* Convert the string from integer to raw encoding. */
-        str->ptr = sdsfromlonglong((long)str->ptr);
+        str->ptr = sdsfromlonglong((long long)(intptr_t)str->ptr);
         str->encoding = OBJ_ENCODING_RAW;
     }
     return str;
@@ -9255,7 +9275,155 @@ typedef struct EventLoopOneShot {
 } EventLoopOneShot;
 
 list *moduleEventLoopOneShots;
+#ifndef _WIN32
 static pthread_mutex_t moduleEventLoopMutex = PTHREAD_MUTEX_INITIALIZER;
+#else
+static pthread_mutex_t moduleEventLoopMutex;
+#endif
+
+#ifdef _WIN32
+static uint64_t moduleQForkLoadSequence = 0;
+static int moduleQForkChildReady = 0;
+
+/* QFork maps the Redis heap into a fresh process, but module and Functions
+ * roots live in process-static storage.  Copy the roots by value so the child
+ * reconnects to the immutable mapped-heap snapshot before invoking any
+ * persistence callback. */
+void *moduleGetForkData(void) {
+    static RedisModuleForkData data;
+    memset(&data, 0, sizeof(data));
+    data.modules = modules;
+    data.authCallbacks = moduleAuthCallbacks;
+    data.unblockedClients = moduleUnblockedClients;
+    data.tempClients = moduleTempClients;
+    data.tempClientCap = moduleTempClientCap;
+    data.tempClientCount = moduleTempClientCount;
+    data.tempClientMinCount = moduleTempClientMinCount;
+    data.keyspaceSubscribers = moduleKeyspaceSubscribers;
+    data.postExecUnitJobs = modulePostExecUnitJobs;
+    data.commandFilters = moduleCommandFilters;
+    data.eventListeners = RedisModule_EventListeners;
+    data.eventLoopOneShots = moduleEventLoopOneShots;
+    data.timers = Timers;
+    data.aeTimer = aeTimer;
+    memcpy(data.clusterReceivers, clusterReceivers,
+           sizeof(data.clusterReceivers));
+    data.functionsEngines = functionsGetEnginesForQFork();
+    data.functionsLibCtx = functionsLibCtxGetCurrent();
+    data.functionsEngineCacheMemory =
+        functionsGetEngineCacheMemoryForQFork();
+    return &data;
+}
+
+void moduleSetForkData(void *fork_data) {
+    RedisModuleForkData *data = fork_data;
+    modules = data->modules;
+    moduleAuthCallbacks = data->authCallbacks;
+    moduleUnblockedClients = data->unblockedClients;
+    moduleTempClients = data->tempClients;
+    moduleTempClientCap = data->tempClientCap;
+    moduleTempClientCount = data->tempClientCount;
+    moduleTempClientMinCount = data->tempClientMinCount;
+    moduleKeyspaceSubscribers = data->keyspaceSubscribers;
+    modulePostExecUnitJobs = data->postExecUnitJobs;
+    moduleCommandFilters = data->commandFilters;
+    RedisModule_EventListeners = data->eventListeners;
+    moduleEventLoopOneShots = data->eventLoopOneShots;
+    Timers = data->timers;
+    aeTimer = data->aeTimer;
+    memcpy(clusterReceivers, data->clusterReceivers,
+           sizeof(clusterReceivers));
+    functionsSetQForkState(data->functionsEngines, data->functionsLibCtx,
+                           data->functionsEngineCacheMemory);
+
+    /* These synchronization objects are process-local and cannot be copied
+     * from the parent process. */
+    pthread_mutex_init(&moduleUnblockedClientsMutex, NULL);
+    pthread_mutex_init(&moduleGIL, NULL);
+    pthread_mutex_init(&moduleEventLoopMutex, NULL);
+}
+
+void moduleSetQForkChildReady(int ready) {
+    moduleQForkChildReady = ready;
+}
+
+static int moduleQForkValidateCallback(RedisModule *module,
+                                       uintptr_t callback,
+                                       const char *callback_kind)
+{
+    if (callback == 0) return C_OK;
+
+    MEMORY_BASIC_INFORMATION info;
+    if (VirtualQuery((const void *)callback, &info, sizeof(info)) == 0 ||
+        info.AllocationBase != module->handle)
+    {
+        serverLog(LL_WARNING,
+            "Module %s cannot participate in Windows QFork persistence: "
+            "%s callback %p is outside its primary DLL image",
+            module->name, callback_kind, (void *)callback);
+        return C_ERR;
+    }
+    return C_OK;
+}
+
+static int moduleQForkValidatePersistenceCallbacks(RedisModule *module) {
+    listIter li;
+    listNode *ln;
+
+    listRewind(module->types, &li);
+    while ((ln = listNext(&li)) != NULL) {
+        moduleType *mt = listNodeValue(ln);
+        if (moduleQForkValidateCallback(module, (uintptr_t)mt->rdb_save,
+                                        "RDB save") == C_ERR ||
+            moduleQForkValidateCallback(module, (uintptr_t)mt->aof_rewrite,
+                                        "AOF rewrite") == C_ERR ||
+            moduleQForkValidateCallback(module, (uintptr_t)mt->aux_save,
+                                        "RDB AUX save") == C_ERR ||
+            moduleQForkValidateCallback(module, (uintptr_t)mt->aux_save2,
+                                        "RDB AUX save2") == C_ERR)
+            return C_ERR;
+    }
+
+    if (RedisModule_EventListeners != NULL) {
+        listRewind(RedisModule_EventListeners, &li);
+        while ((ln = listNext(&li)) != NULL) {
+            RedisModuleEventListener *listener = listNodeValue(ln);
+            if (listener->module == module &&
+                listener->event.id == REDISMODULE_EVENT_PERSISTENCE &&
+                moduleQForkValidateCallback(module,
+                    (uintptr_t)listener->callback,
+                    "persistence event") == C_ERR)
+                return C_ERR;
+        }
+    }
+
+    return C_OK;
+}
+
+int moduleForEachForkModule(
+    int (*callback)(const char *name, void *handle, const wchar_t *path,
+                    uint64_t sequence, void *privdata),
+    void *privdata)
+{
+    if (modules == NULL || dictSize(modules) == 0) return C_OK;
+
+    dictIterator *di = dictGetIterator(modules);
+    dictEntry *de;
+    while ((de = dictNext(di)) != NULL) {
+        RedisModule *module = dictGetVal(de);
+        if (moduleQForkValidatePersistenceCallbacks(module) == C_ERR ||
+            module->qfork_path == NULL ||
+            callback(module->name, module->handle, module->qfork_path,
+                     module->qfork_load_seq, privdata) == C_ERR)
+        {
+            dictReleaseIterator(di);
+            return C_ERR;
+        }
+    }
+    dictReleaseIterator(di);
+    return C_OK;
+}
+#endif
 
 static int eventLoopToAeMask(int mask) {
     int aeMask = 0;
@@ -9275,17 +9443,112 @@ static int eventLoopFromAeMask(int ae_mask) {
     return mask;
 }
 
+/* aeDeleteFileEvent() intentionally leaves clientData untouched. Clear it
+ * when the last module event is removed so a later idempotent EventLoopDel or
+ * descriptor reuse cannot observe a dangling EventLoopData pointer. */
+static void eventLoopFreeDataIfUnused(struct aeEventLoop *ae, int fd,
+                                      EventLoopData *data)
+{
+    if (data != NULL && aeGetFileEvents(ae, fd) == AE_NONE) {
+        if (aeGetFileClientData(ae, fd) == data)
+            ae->events[fd].clientData = NULL;
+        zfree(data);
+    }
+}
+
+#ifdef _WIN32
+/* IOCP readiness is one-shot. If rearming fails, remove that direction from
+ * the public module event loop instead of leaving a registered event that can
+ * never fire again. Keep the shared EventLoopData while the other direction
+ * remains registered. */
+static void eventLoopRemoveFailedRearm(struct aeEventLoop *ae, int fd,
+                                       int ae_mask, const char *operation)
+{
+    int rearm_errno = errno;
+    EventLoopData *data = aeGetFileClientData(ae, fd);
+
+    aeDeleteFileEvent(ae, fd, ae_mask);
+    if (data != NULL) {
+        if (ae_mask & AE_READABLE) data->rFunc = NULL;
+        if (ae_mask & AE_WRITABLE) data->wFunc = NULL;
+        eventLoopFreeDataIfUnused(ae, fd, data);
+    }
+
+    serverLog(LL_WARNING,
+        "Error rearming module event-loop descriptor %d for %s; "
+        "the event was removed: %s",
+        fd, operation, wsa_strerror(rearm_errno));
+    errno = rearm_errno;
+}
+#endif
+
 static void eventLoopCbReadable(struct aeEventLoop *ae, int fd, void *user_data, int ae_mask) {
-    UNUSED(ae);
     EventLoopData *data = user_data;
     data->rFunc(fd, data->user_data, eventLoopFromAeMask(ae_mask));
+#ifdef _WIN32
+    /* IOCP readiness notifications are one-shot. The module callback may
+     * delete the event (and free data), so only inspect the event loop state
+     * after it returns and re-arm descriptors that are still registered. */
+    if (aeGetFileEvents(ae, fd) & AE_READABLE) {
+        if (WSIOCP_QueueNextRead(fd) != 0) {
+            eventLoopRemoveFailedRearm(ae, fd, AE_READABLE, "reading");
+        }
+    }
+#else
+    UNUSED(ae);
+#endif
 }
 
 static void eventLoopCbWritable(struct aeEventLoop *ae, int fd, void *user_data, int ae_mask) {
-    UNUSED(ae);
     EventLoopData *data = user_data;
     data->wFunc(fd, data->user_data, eventLoopFromAeMask(ae_mask));
+#ifdef _WIN32
+    if (aeGetFileEvents(ae, fd) & AE_WRITABLE) {
+        if (WSIOCP_QueueWriteReady(fd) != 0) {
+            eventLoopRemoveFailedRearm(ae, fd, AE_WRITABLE, "writing");
+        }
+    }
+#else
+    UNUSED(ae);
+#endif
 }
+
+#ifdef _WIN32
+/* Redis for Windows public module I/O extension. Windows modules cannot link
+ * a private copy of Win32_FDAPI: its synthetic descriptor map belongs to the
+ * server process. These APIs keep descriptor creation and I/O in that map so
+ * the returned descriptors can be used with RedisModule_EventLoopAdd(). They
+ * are Windows-fork APIs, not part of the upstream Redis Modules API.
+ *
+ * Winsock accepts an int byte count. Preserve nonblocking read/write semantics
+ * by issuing one bounded chunk per call; callers already have to handle
+ * partial transfers and can call again for the remainder. */
+static size_t moduleWin32IOChunk(size_t count) {
+    return count > (size_t)INT_MAX ? (size_t)INT_MAX : count;
+}
+
+int RM_Win32Pipe(int fds[2]) {
+    if (fds == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* anetPipe's Windows socket-pair handles are non-inheritable, so the
+     * POSIX-only O_CLOEXEC flag is implicit here. */
+    return anetPipe(fds, O_NONBLOCK, O_NONBLOCK);
+}
+
+long long RM_Win32Read(int fd, void *buf, size_t count) {
+    return (long long)read(fd, buf, moduleWin32IOChunk(count));
+}
+
+long long RM_Win32Write(int fd, const void *buf, size_t count) {
+    return (long long)write(fd, buf, moduleWin32IOChunk(count));
+}
+
+int RM_Win32Close(int fd) {
+    return close(fd);
+}
+#endif
 
 /* Add a pipe / socket event to the event loop.
  *
@@ -9334,9 +9597,15 @@ int RM_EventLoopAdd(int fd, int mask, RedisModuleEventLoopFunc func, void *user_
      * EventLoopData object and passing it to ae, later, we'll extract
      * 'callback' and 'user_data' from that.
      */
-    EventLoopData *data = aeGetFileClientData(server.el, fd);
-    if (!data)
+    int oldAeMask = aeGetFileEvents(server.el, fd);
+    EventLoopData *data;
+    if (oldAeMask == AE_NONE) {
+        /* clientData is unspecified when no event is registered. */
+        server.el->events[fd].clientData = NULL;
         data = zcalloc(sizeof(*data));
+    } else {
+        data = aeGetFileClientData(server.el, fd);
+    }
 
     aeFileProc *aeProc;
     if (mask & REDISMODULE_EVENTLOOP_READABLE)
@@ -9347,8 +9616,7 @@ int RM_EventLoopAdd(int fd, int mask, RedisModuleEventLoopFunc func, void *user_
     int aeMask = eventLoopToAeMask(mask);
 
     if (aeCreateFileEvent(server.el, fd, aeMask, aeProc, data) != AE_OK) {
-        if (aeGetFileEvents(server.el, fd) == AE_NONE)
-            zfree(data);
+        if (oldAeMask == AE_NONE) zfree(data);
         return REDISMODULE_ERR;
     }
 
@@ -9388,12 +9656,18 @@ int RM_EventLoopDel(int fd, int mask) {
         return REDISMODULE_ERR;
     }
 
+    int aeMask = eventLoopToAeMask(mask);
+    int registeredAeMask = aeGetFileEvents(server.el, fd);
+    if ((registeredAeMask & aeMask) == AE_NONE) {
+        errno = 0;
+        return REDISMODULE_OK;
+    }
+
     /* After deleting the event, if fd does not have any registered event
      * anymore, we can free the EventLoopData object. */
     EventLoopData *data = aeGetFileClientData(server.el, fd);
-    aeDeleteFileEvent(server.el, fd, eventLoopToAeMask(mask));
-    if (aeGetFileEvents(server.el, fd) == AE_NONE)
-        zfree(data);
+    aeDeleteFileEvent(server.el, fd, aeMask);
+    eventLoopFreeDataIfUnused(server.el, fd, data);
 
     errno = 0;
     return REDISMODULE_OK;
@@ -11162,6 +11436,12 @@ int RM_ScanKey(RedisModuleKey *key, RedisModuleScanCursor *cursor, RedisModuleSc
  * of the child, and the child process will get 0.
  */
 int RM_Fork(RedisModuleForkDoneHandler cb, void *user_data) {
+#ifdef _WIN32
+    UNUSED(cb);
+    UNUSED(user_data);
+    errno = ENOSYS;
+    return -1;
+#else
     pid_t childpid;
 
     if ((childpid = redisFork(CHILD_TYPE_MODULE)) == 0) {
@@ -11176,6 +11456,7 @@ int RM_Fork(RedisModuleForkDoneHandler cb, void *user_data) {
         serverLog(LL_VERBOSE, "Module fork started pid: %ld ", (long) childpid);
     }
     return childpid;
+#endif
 }
 
 /* The module is advised to call this function from the fork child once in a while,
@@ -11199,6 +11480,11 @@ int RM_ExitFromChild(int retcode) {
  * pid matches, and returns C_OK. Otherwise if there is no active module
  * child or the pid does not match, return C_ERR without doing anything. */
 int TerminateModuleForkChild(int child_pid, int wait) {
+#ifdef _WIN32
+    UNUSED(child_pid);
+    UNUSED(wait);
+    return C_ERR;
+#else
     /* Module child should be active and pid should match. */
     if (server.child_type != CHILD_TYPE_MODULE ||
         server.child_pid != child_pid) return C_ERR;
@@ -11215,6 +11501,7 @@ int TerminateModuleForkChild(int child_pid, int wait) {
     moduleForkInfo.done_handler = NULL;
     moduleForkInfo.done_handler_user_data = NULL;
     return C_OK;
+#endif
 }
 
 /* Can be used to kill the forked child process from the parent process.
@@ -11659,6 +11946,12 @@ typedef struct KeyInfo {
  * 'eid' and 'subid' are just the main event ID and the sub event associated
  * with the event, depending on what exactly happened. */
 void moduleFireServerEvent(uint64_t eid, int subid, void *data) {
+#ifdef _WIN32
+    /* QFork children start as fresh processes. Do not enter copied module
+     * callbacks until their DLL images and private roots are restored. */
+    if (server.in_fork_child != CHILD_TYPE_NONE && !moduleQForkChildReady)
+        return;
+#endif
     /* Fast path to return ASAP if there is nothing to do, avoiding to
      * setup the iterator and so forth: we want this call to be extremely
      * cheap if there are no registered modules. */
@@ -11873,7 +12166,7 @@ int moduleRegisterApi(const char *funcname, void *funcptr) {
 }
 
 #define REGISTER_API(name) \
-    moduleRegisterApi("RedisModule_" #name, (void *)(unsigned long)RM_ ## name)
+    moduleRegisterApi("RedisModule_" #name, (void *)(uintptr_t)RM_ ## name)
 
 /* Global initialization at Redis startup. */
 void moduleRegisterCoreAPI(void);
@@ -11897,6 +12190,11 @@ dictType sdsKeyValueHashDictType = {
 };
 
 void moduleInitModulesSystem(void) {
+#ifdef _WIN32
+    pthread_mutex_init(&moduleUnblockedClientsMutex, NULL);
+    pthread_mutex_init(&moduleGIL, NULL);
+    pthread_mutex_init(&moduleEventLoopMutex, NULL);
+#endif
     moduleUnblockedClients = listCreate();
     server.loadmodule_queue = listCreate();
     server.module_configs_queue = dictCreate(&sdsKeyValueHashDictType);
@@ -11919,9 +12217,12 @@ void moduleInitModulesSystem(void) {
      * and we do not want to block not in the read nor in the write half.
      * Enable close-on-exec flag on pipes in case of the fork-exec system calls in
      * sentinels or redis servers. */
-    if (anetPipe(server.module_pipe, O_CLOEXEC|O_NONBLOCK, O_CLOEXEC|O_NONBLOCK) == -1) {
+    if (IF_WIN32(FDAPI_pipe_for_modules(server.module_pipe),
+                 anetPipe(server.module_pipe, O_CLOEXEC|O_NONBLOCK,
+                          O_CLOEXEC|O_NONBLOCK)) == -1) {
         serverLog(LL_WARNING,
-            "Can't create the pipe for module threads: %s", strerror(errno));
+            "Can't create the pipe for module threads: %s",
+            IF_WIN32(wsa_strerror(errno),strerror(errno)));
         exit(1);
     }
 
@@ -12031,6 +12332,9 @@ void moduleFreeModuleStructure(struct RedisModule *module) {
     listRelease(module->module_configs);
     sdsfree(module->name);
     moduleLoadQueueEntryFree(module->loadmod);
+#ifdef _WIN32
+    zfree(module->qfork_path);
+#endif
     zfree(module);
 }
 
@@ -12181,12 +12485,34 @@ void moduleUnregisterCleanup(RedisModule *module) {
     moduleUnregisterAuthCBs(module);
 }
 
+#ifdef _WIN32
+static wchar_t *moduleGetQForkPath(void *handle) {
+    DWORD capacity = MAX_PATH;
+    while (capacity <= 32768) {
+        wchar_t *path = zmalloc(sizeof(wchar_t) * capacity);
+        DWORD length = GetModuleFileNameW((HMODULE)handle, path, capacity);
+        if (length == 0) {
+            zfree(path);
+            return NULL;
+        }
+        if (length < capacity) {
+            path[length] = L'\0';
+            return path;
+        }
+        zfree(path);
+        capacity *= 2;
+    }
+    return NULL;
+}
+#endif
+
 /* Load a module and initialize it. On success C_OK is returned, otherwise
  * C_ERR is returned. */
 int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loadex) {
     int (*onload)(void *, void **, int);
     void *handle;
 
+#ifndef _WIN32
     struct stat st;
     if (stat(path, &st) == 0) {
         /* This check is best effort */
@@ -12195,14 +12521,33 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
             return C_ERR;
         }
     }
+#endif
 
     handle = dlopen(path,RTLD_NOW|RTLD_LOCAL);
     if (handle == NULL) {
         serverLog(LL_WARNING, "Module %s failed to load: %s", path, dlerror());
         return C_ERR;
     }
-    onload = (int (*)(void *, void **, int))(unsigned long) dlsym(handle,"RedisModule_OnLoad");
+#ifdef _WIN32
+    wchar_t *qfork_path = moduleGetQForkPath(handle);
+    if (qfork_path == NULL) {
+        dlclose(handle);
+        serverLog(LL_WARNING,
+            "Module %s loaded but its absolute DLL path could not be resolved",
+            path);
+        return C_ERR;
+    }
+    if (!QForkValidateModuleImage(handle, qfork_path, path)) {
+        zfree(qfork_path);
+        dlclose(handle);
+        return C_ERR;
+    }
+#endif
+    onload = (int (*)(void *, void **, int))(uintptr_t)dlsym(handle,"RedisModule_OnLoad");
     if (onload == NULL) {
+#ifdef _WIN32
+        zfree(qfork_path);
+#endif
         dlclose(handle);
         serverLog(LL_WARNING,
             "Module %s does not export RedisModule_OnLoad() "
@@ -12219,6 +12564,9 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
             moduleFreeModuleStructure(ctx.module);
         }
         moduleFreeContext(&ctx);
+#ifdef _WIN32
+        zfree(qfork_path);
+#endif
         dlclose(handle);
         return C_ERR;
     }
@@ -12227,6 +12575,10 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
     dictAdd(modules,ctx.module->name,ctx.module);
     ctx.module->blocked_clients = 0;
     ctx.module->handle = handle;
+#ifdef _WIN32
+    ctx.module->qfork_path = qfork_path;
+    ctx.module->qfork_load_seq = ++moduleQForkLoadSequence;
+#endif
     ctx.module->loadmod = zmalloc(sizeof(struct moduleLoadQueueEntry));
     ctx.module->loadmod->path = sdsnew(path);
     ctx.module->loadmod->argv = module_argc ? zmalloc(sizeof(robj*)*module_argc) : NULL;
@@ -12302,7 +12654,7 @@ int moduleUnload(sds name, const char **errmsg, int forced_unload) {
 
     /* Give module a chance to clean up. */
     int (*onunload)(void *);
-    onunload = (int (*)(void *))(unsigned long) dlsym(module->handle, "RedisModule_OnUnload");
+    onunload = (int (*)(void *))(uintptr_t)dlsym(module->handle, "RedisModule_OnUnload");
     if (onunload) {
         RedisModuleCtx ctx;
         moduleCreateContext(&ctx, module, REDISMODULE_CTX_TEMP_CLIENT);
@@ -12344,12 +12696,23 @@ int moduleUnload(sds name, const char **errmsg, int forced_unload) {
 
 void modulePipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
     UNUSED(el);
-    UNUSED(fd);
     UNUSED(mask);
     UNUSED(privdata);
 
     char buf[128];
+#ifdef _WIN32
+    ssize_t nread = read(fd, buf, sizeof(buf));
+    if (nread < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        serverLog(LL_WARNING,
+            "Error reading the module wake socket: %s", wsa_strerror(errno));
+    }
+    if (WSIOCP_QueueNextRead(fd) != 0) {
+        serverLog(LL_WARNING,
+            "Error rearming the module wake socket: %s", wsa_strerror(errno));
+    }
+#else
     while (read(fd, buf, sizeof(buf)) == sizeof(buf));
+#endif
 
     /* Handle event loop events if pipe was written from event loop API */
     eventLoopHandleOneShotEvents();
@@ -13808,10 +14171,12 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(CommandFilterArgReplace);
     REGISTER_API(CommandFilterArgDelete);
     REGISTER_API(CommandFilterGetClientId);
+#ifndef _WIN32
     REGISTER_API(Fork);
     REGISTER_API(SendChildHeartbeat);
     REGISTER_API(ExitFromChild);
     REGISTER_API(KillForkChild);
+#endif
     REGISTER_API(RegisterInfoFunc);
     REGISTER_API(InfoAddSection);
     REGISTER_API(InfoBeginDictField);
@@ -13888,6 +14253,12 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(EventLoopAdd);
     REGISTER_API(EventLoopDel);
     REGISTER_API(EventLoopAddOneShot);
+#ifdef _WIN32
+    REGISTER_API(Win32Pipe);
+    REGISTER_API(Win32Read);
+    REGISTER_API(Win32Write);
+    REGISTER_API(Win32Close);
+#endif
     REGISTER_API(Yield);
     REGISTER_API(RegisterBoolConfig);
     REGISTER_API(RegisterNumericConfig);

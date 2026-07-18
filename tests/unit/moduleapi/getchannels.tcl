@@ -1,4 +1,4 @@
-set testmodule [file normalize tests/modules/getchannels.so]
+set testmodule [redis_test_module getchannels]
 
 start_server {tags {"modules"}} {
     r module load $testmodule

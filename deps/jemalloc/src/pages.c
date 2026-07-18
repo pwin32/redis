@@ -124,8 +124,12 @@ os_pages_map(void *addr, size_t size, size_t alignment, bool *commit) {
 	 * If VirtualAlloc can't allocate at the given address when one is
 	 * given, it fails and returns NULL.
 	 */
+	#ifdef USE_WIN32_EXTERNAL_HEAP_ALLOC
+	ret = AllocHeapBlock(addr, size, TRUE);
+	#else
 	ret = VirtualAlloc(addr, size, MEM_RESERVE | (*commit ? MEM_COMMIT : 0),
 	    PAGE_READWRITE);
+	#endif
 #else
 	/*
 	 * We don't use MAP_FIXED here, because it can cause the *replacement*
@@ -200,7 +204,11 @@ os_pages_unmap(void *addr, size_t size) {
 	assert(ALIGNMENT_CEILING(size, os_page) == size);
 
 #ifdef _WIN32
+	#ifdef USE_WIN32_EXTERNAL_HEAP_ALLOC
+	if (FreeHeapBlock(addr, size) == 0)
+	#else
 	if (VirtualFree(addr, 0, MEM_RELEASE) == 0)
+	#endif
 #else
 	if (munmap(addr, size) == -1)
 #endif
@@ -210,7 +218,11 @@ os_pages_unmap(void *addr, size_t size) {
 		buferror(get_errno(), buf, sizeof(buf));
 		malloc_printf("<jemalloc>: Error in "
 #ifdef _WIN32
+		#ifdef USE_WIN32_EXTERNAL_HEAP_ALLOC
+		    "FreeHeapBlock"
+		#else
 		    "VirtualFree"
+		#endif
 #else
 		    "munmap"
 #endif
@@ -321,8 +333,13 @@ os_pages_commit(void *addr, size_t size, bool commit) {
 	assert(PAGE_CEILING(size) == size);
 
 #ifdef _WIN32
+	#ifdef USE_WIN32_EXTERNAL_HEAP_ALLOC
+	return (commit ? (addr != AllocHeapBlock(addr, size, TRUE))
+	    : (!FreeHeapBlock(addr, size)));
+	#else
 	return (commit ? (addr != VirtualAlloc(addr, size, MEM_COMMIT,
 	    PAGE_READWRITE)) : (!VirtualFree(addr, size, MEM_DECOMMIT)));
+	#endif
 #else
 	{
 		int prot = commit ? PAGES_PROT_COMMIT : PAGES_PROT_DECOMMIT;
@@ -368,7 +385,16 @@ pages_mark_guards(void *head, void *tail) {
 	assert(head != NULL || tail != NULL);
 	assert(head == NULL || tail == NULL ||
 	    (uintptr_t)head < (uintptr_t)tail);
-#ifdef JEMALLOC_HAVE_MPROTECT
+	#if defined(USE_WIN32_EXTERNAL_HEAP_ALLOC)
+	/*
+	 * FreeHeapBlock() releases logical QFork ownership; it is not a page
+	 * protection operation.  Until the Windows interop layer exposes a locked
+	 * VirtualProtect hook, guarded allocations are unsupported on this path.
+	 */
+	malloc_write("<jemalloc>: guarded allocations are unsupported with the "
+	    "QFork external heap\n");
+	abort();
+	#elif defined(JEMALLOC_HAVE_MPROTECT)
 	if (head != NULL) {
 		mprotect(head, PAGE, PROT_NONE);
 	}
@@ -391,7 +417,12 @@ pages_unmark_guards(void *head, void *tail) {
 	assert(head != NULL || tail != NULL);
 	assert(head == NULL || tail == NULL ||
 	    (uintptr_t)head < (uintptr_t)tail);
-#ifdef JEMALLOC_HAVE_MPROTECT
+	#if defined(USE_WIN32_EXTERNAL_HEAP_ALLOC)
+	/* See pages_mark_guards(): this must never call FreeHeapBlock(). */
+	malloc_write("<jemalloc>: guarded allocations are unsupported with the "
+	    "QFork external heap\n");
+	abort();
+	#elif defined(JEMALLOC_HAVE_MPROTECT)
 	bool head_and_tail = (head != NULL) && (tail != NULL);
 	size_t range = head_and_tail ?
 	    (uintptr_t)tail - (uintptr_t)head + PAGE :
@@ -440,7 +471,11 @@ pages_purge_lazy(void *addr, size_t size) {
 	}
 
 #ifdef _WIN32
+	#ifdef USE_WIN32_EXTERNAL_HEAP_ALLOC
+	(void)PurgePages(addr, size);
+	#else
 	VirtualAlloc(addr, size, MEM_RESET, PAGE_READWRITE);
+	#endif
 	return false;
 #elif defined(JEMALLOC_PURGE_MADVISE_FREE)
 	return (madvise(addr, size,

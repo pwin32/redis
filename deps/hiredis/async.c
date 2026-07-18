@@ -29,6 +29,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "win32_hiredis.h"
+#endif
 #include "fmacros.h"
 #include "alloc.h"
 #include <stdlib.h>

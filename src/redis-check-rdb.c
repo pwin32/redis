@@ -33,7 +33,9 @@
 
 #include <stdarg.h>
 #include <sys/time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <sys/stat.h>
 
 void createSharedObjects(void);
@@ -44,9 +46,15 @@ struct {
     rio *rio;
     robj *key;                      /* Current key we are reading. */
     int key_type;                   /* Current key type if != -1. */
+#ifdef _WIN32
+    PORT_ULONG keys;                /* Number of keys processed. */
+    PORT_ULONG expires;             /* Number of keys with an expire. */
+    PORT_ULONG already_expired;     /* Number of keys already expired. */
+#else
     unsigned long keys;             /* Number of keys processed. */
     unsigned long expires;          /* Number of keys with an expire. */
     unsigned long already_expired;  /* Number of keys already expired. */
+#endif
     int doing;                      /* The state while reading the RDB. */
     int error_set;                  /* True if error is populated. */
     char error[1024];
@@ -105,9 +113,15 @@ char *rdb_type_string[] = {
 
 /* Show a few stats collected into 'rdbstate' */
 void rdbShowGenericInfo(void) {
+#ifdef _WIN32
+    printf("[info] %llu keys read\n", (unsigned long long)rdbstate.keys);
+    printf("[info] %llu expires\n", (unsigned long long)rdbstate.expires);
+    printf("[info] %llu already expired\n", (unsigned long long)rdbstate.already_expired);
+#else
     printf("[info] %lu keys read\n", rdbstate.keys);
     printf("[info] %lu expires\n", rdbstate.expires);
     printf("[info] %lu already expired\n", rdbstate.already_expired);
+#endif
 }
 
 /* Called on RDB errors. Provides details about the RDB and the offset
@@ -163,6 +177,7 @@ void rdbCheckSetError(const char *fmt, ...) {
     rdbstate.error_set = 1;
 }
 
+#ifndef _WIN32
 /* During RDB check we setup a special signal handler for memory violations
  * and similar conditions, so that we can log the offending part of the RDB
  * if the crash is due to broken content. */
@@ -187,6 +202,7 @@ void rdbCheckSetupSignals(void) {
     sigaction(SIGILL, &act, NULL);
     sigaction(SIGABRT, &act, NULL);
 }
+#endif
 
 /* Check the specified RDB file. Return 0 if the RDB looks sane, otherwise
  * 1 is returned.
@@ -199,12 +215,20 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     char buf[1024];
     long long expiretime, now = mstime();
     static rio rdb; /* Pointed by global struct riostate. */
+#ifdef _WIN32
+    struct __stat64 sb;
+#else
     struct stat sb;
+#endif
 
     int closefile = (fp == NULL);
-    if (fp == NULL && (fp = fopen(rdbfilename,"r")) == NULL) return 1;
+    if (fp == NULL && (fp = fopen(rdbfilename,IF_WIN32("rb","r"))) == NULL) return 1;
 
+#ifdef _WIN32
+    if (_fstat64(_fileno(fp),&sb) == -1)
+#else
     if (fstat(fileno(fp), &sb) == -1)
+#endif
         sb.st_size = 0;
 
     startLoadingFile(sb.st_size, rdbfilename, RDBFLAGS_NONE);
@@ -438,7 +462,9 @@ int redis_check_rdb_main(int argc, char **argv, FILE *fp) {
     server.sanitize_dump_payload = SANITIZE_DUMP_YES;
     rdbCheckMode = 1;
     rdbCheckInfo("Checking RDB file %s", argv[1]);
+#ifndef _WIN32
     rdbCheckSetupSignals();
+#endif
     int retval = redis_check_rdb(argv[1],fp);
     if (retval == 0) {
         rdbCheckInfo("\\o/ RDB looks OK! \\o/");

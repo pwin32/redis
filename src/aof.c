@@ -27,6 +27,12 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/win32_types.h"
+#include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/Win32_QFork.h"
+#endif
+
 #include "server.h"
 #include "bio.h"
 #include "rio.h"
@@ -36,10 +42,46 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <sys/param.h>
+#endif
+
+#ifdef _WIN32
+extern void redisForkChildStarted(pid_t childpid, int purpose, long long start);
+extern void *moduleGetForkData(void);
+#include <direct.h>
+#define MAXPATHLEN 1024
+
+/* Redis 7.2 keeps the temporary INCR AOF open while atomically renaming it
+ * into the manifest namespace.  A normal CRT open on Windows does not share
+ * delete access, so MoveFileEx cannot provide the POSIX rename-while-open
+ * semantics this handoff relies on.  Keep this narrowly scoped to the
+ * temporary INCR file rather than changing the sharing policy of every Redis
+ * file descriptor. */
+static int openWin32AofFileForRename(const char *path) {
+    HANDLE handle = CreateFileA(path,
+                                GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL,
+                                CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL,
+                                NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        set_errno_from_last_error();
+        return -1;
+    }
+
+    int fd = FDAPI_open_osfhandle((intptr_t)handle, O_WRONLY | O_BINARY);
+    if (fd == -1) {
+        CloseHandle(handle);
+        return -1;
+    }
+    return fd;
+}
+#endif
 
 void freeClientArgv(client *c);
 off_t getAppendOnlyFileSize(sds filename, int *status);
@@ -569,6 +611,20 @@ int writeAofManifestFile(sds buf) {
         goto cleanup;
     }
 
+#ifdef _WIN32
+    /* Unlike POSIX, the ordinary Windows CRT descriptor does not permit the
+     * manifest file to be renamed while it is open.  No more writes are
+     * needed after the fsync, so close it before the atomic replacement. */
+    if (close(fd) == -1) {
+        fd = -1;
+        serverLog(LL_WARNING, "Fail to close the temp AOF manifest file %s: %s.",
+            tmp_am_name, strerror(errno));
+        ret = C_ERR;
+        goto cleanup;
+    }
+    fd = -1;
+#endif
+
     if (rename(tmp_am_filepath, am_filepath) != 0) {
         serverLog(LL_WARNING,
             "Error trying to rename the temporary AOF manifest file %s into %s: %s",
@@ -675,6 +731,17 @@ int aofDelHistoryFiles(void) {
         return C_OK;
     }
 
+#ifdef _WIN32
+    /* Rotating to a new INCR file queues the old descriptor for fsync/close
+     * on the shared AOF BIO worker.  Windows cannot unlink that history file
+     * until the ordinary CRT handle is closed, so complete the handoff before
+     * attempting garbage collection.  The worker queue is ordered and shared
+     * by BIO_AOF_FSYNC and BIO_CLOSE_AOF, so this drains both kinds of jobs. */
+    bioDrainWorker(BIO_CLOSE_AOF);
+#endif
+
+    int ret = C_OK;
+    int manifest_changed = 0;
     listNode *ln;
     listIter li;
 
@@ -684,13 +751,24 @@ int aofDelHistoryFiles(void) {
         serverAssert(ai->file_type == AOF_FILE_TYPE_HIST);
         serverLog(LL_NOTICE, "Removing the history file %s in the background", ai->file_name);
         sds aof_filepath = makePath(server.aof_dirname, ai->file_name);
-        bg_unlink(aof_filepath);
+        if (bg_unlink(aof_filepath) == 0 || errno == ENOENT) {
+            listDelNode(server.aof_manifest->history_aof_list, ln);
+            manifest_changed = 1;
+        } else {
+            serverLog(LL_WARNING,
+                "Unable to remove the history AOF file %s: %s",
+                ai->file_name, strerror(errno));
+            ret = C_ERR;
+        }
         sdsfree(aof_filepath);
-        listDelNode(server.aof_manifest->history_aof_list, ln);
     }
 
-    server.aof_manifest->dirty = 1;
-    return persistAofManifest(server.aof_manifest);
+    if (manifest_changed) {
+        server.aof_manifest->dirty = 1;
+        if (persistAofManifest(server.aof_manifest) == C_ERR)
+            ret = C_ERR;
+    }
+    return ret;
 }
 
 /* Used to clean up temp INCR AOF when AOFRW fails. */
@@ -808,7 +886,14 @@ int openNewIncrAofForAppend(void) {
         new_aof_name = sdsdup(getNewIncrAofName(temp_am));
     }
     sds new_aof_filepath = makePath(server.aof_dirname, new_aof_name);
-    newfd = open(new_aof_filepath, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+#ifdef _WIN32
+    if (server.aof_state == AOF_WAIT_REWRITE) {
+        newfd = openWin32AofFileForRename(new_aof_filepath);
+    } else
+#endif
+    {
+        newfd = open(new_aof_filepath, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    }
     sdsfree(new_aof_filepath);
     if (newfd == -1) {
         serverLog(LL_WARNING, "Can't open the append-only file %s: %s",
@@ -934,15 +1019,21 @@ void aof_background_fsync_and_close(int fd) {
 
 /* Kills an AOFRW child process if exists */
 void killAppendOnlyChild(void) {
+#ifndef _WIN32
     int statloc;
+#endif
     /* No AOFRW child? return. */
     if (server.child_type != CHILD_TYPE_AOF) return;
     /* Kill AOFRW child, wait for child exit. */
     serverLog(LL_NOTICE,"Killing running AOF rewrite child: %ld",
         (long) server.child_pid);
+#ifdef _WIN32
+    AbortForkOperation();
+#else
     if (kill(server.child_pid,SIGUSR1) != -1) {
         while(waitpid(-1, &statloc, 0) != server.child_pid);
     }
+#endif
     aofRemoveTempFile(server.child_pid);
     resetChildState();
     server.aof_rewrite_time_start = -1;
@@ -1405,7 +1496,7 @@ int loadSingleAppendOnlyFile(char *filename) {
     int ret = AOF_OK;
 
     sds aof_filepath = makePath(server.aof_dirname, filename);
-    FILE *fp = fopen(aof_filepath, "r");
+    FILE *fp = fopen(aof_filepath, IF_WIN32("rb","r"));
     if (fp == NULL) {
         int en = errno;
         if (redis_stat(aof_filepath, &sb) == 0 || errno != ENOENT) {
@@ -1783,7 +1874,7 @@ int rioWriteBulkObject(rio *r, robj *obj) {
     /* Avoid using getDecodedObject to help copy-on-write (we are often
      * in a child process when this function is called). */
     if (obj->encoding == OBJ_ENCODING_INT) {
-        return rioWriteBulkLongLong(r,(long)obj->ptr);
+        return rioWriteBulkLongLong(r,(long long)(intptr_t)obj->ptr);
     } else if (sdsEncodedObject(obj)) {
         return rioWriteBulkString(r,obj->ptr,sdslen(obj->ptr));
     } else {
@@ -2352,7 +2443,10 @@ int rewriteAppendOnlyFile(char *filename) {
     /* Note that we have to use a different temp name here compared to the
      * one used by rewriteAppendOnlyFileBackground() function. */
     snprintf(tmpfile,256,"temp-rewriteaof-%d.aof", (int) getpid());
-    fp = fopen(tmpfile,"w");
+    /* QFork children are fresh Windows processes and do not inherit the
+     * parent's CRT _fmode.  Make the mode explicit so RDB preamble bytes and
+     * RESP newlines are never translated through text mode. */
+    fp = fopen(tmpfile,IF_WIN32("wb","w"));
     if (!fp) {
         serverLog(LL_WARNING, "Opening the temp file for AOF rewrite in rewriteAppendOnlyFile(): %s", strerror(errno));
         return C_ERR;
@@ -2461,6 +2555,20 @@ int rewriteAppendOnlyFileBackground(void) {
 
     server.stat_aof_rewrites++;
 
+#ifdef _WIN32
+    /* Redis 7.2 rotates the parent to a fresh INCR file before taking the
+     * snapshot.  Unlike the 6.2 rewrite protocol, the QFork child therefore
+     * needs no diff/ack pipes: it writes only the new immutable BASE file. */
+    char tmpfile[256];
+    snprintf(tmpfile, sizeof(tmpfile), "temp-rewriteaof-bg-%d.aof",
+             (int)getpid());
+    openChildInfoPipe();
+    long long start = ustime();
+    childpid = BeginForkOperation_Aof(tmpfile, &server, sizeof(server),
+                                      dictGetHashFunctionSeed(),
+                                      moduleGetForkData());
+    redisForkChildStarted(childpid, CHILD_TYPE_AOF, start);
+#else
     if ((childpid = redisFork(CHILD_TYPE_AOF)) == 0) {
         char tmpfile[256];
 
@@ -2476,22 +2584,25 @@ int rewriteAppendOnlyFileBackground(void) {
         } else {
             exitFromChild(1);
         }
-    } else {
-        /* Parent */
-        if (childpid == -1) {
-            server.aof_lastbgrewrite_status = C_ERR;
-            serverLog(LL_WARNING,
-                "Can't rewrite append only file in background: fork: %s",
-                strerror(errno));
-            return C_ERR;
-        }
-        serverLog(LL_NOTICE,
-            "Background append only file rewriting started by pid %ld",(long) childpid);
-        server.aof_rewrite_scheduled = 0;
-        server.aof_rewrite_time_start = time(NULL);
-        return C_OK;
     }
-    return C_OK; /* unreached */
+#endif
+
+    /* Parent */
+    if (childpid == -1) {
+#ifdef _WIN32
+        closeChildInfoPipe();
+#endif
+        server.aof_lastbgrewrite_status = C_ERR;
+        serverLog(LL_WARNING,
+            "Can't rewrite append only file in background: fork: %s",
+            IF_WIN32(wsa_strerror(errno),strerror(errno)));
+        return C_ERR;
+    }
+    serverLog(LL_NOTICE,
+        "Background append only file rewriting started by pid %ld",(long) childpid);
+    server.aof_rewrite_scheduled = 0;
+    server.aof_rewrite_time_start = time(NULL);
+    return C_OK;
 }
 
 void bgrewriteaofCommand(client *c) {
@@ -2516,6 +2627,15 @@ void aofRemoveTempFile(pid_t childpid) {
 
     snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) childpid);
     bg_unlink(tmpfile);
+
+#ifdef _WIN32
+    /* QFork's fresh child is launched inside BeginForkOperation, so the
+     * parent-PID filename is the stable handoff known before child creation. */
+    if (childpid != getpid()) {
+        snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) getpid());
+        bg_unlink(tmpfile);
+    }
+#endif
 
     snprintf(tmpfile,256,"temp-rewriteaof-%d.aof", (int) childpid);
     bg_unlink(tmpfile);
@@ -2594,7 +2714,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
             "Background AOF rewrite terminated with success");
 
         snprintf(tmpfile, 256, "temp-rewriteaof-bg-%d.aof",
-            (int)server.child_pid);
+            (int)IF_WIN32(getpid(),server.child_pid));
 
         serverAssert(server.aof_manifest != NULL);
 

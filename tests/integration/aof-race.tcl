@@ -8,7 +8,8 @@ tags {"aof external:skip"} {
     # was subsequently appended to the new AOF, resulting in duplicate commands.
     start_server_aof [list dir $server_path] {
         set client [redis [dict get $srv host] [dict get $srv port] 0 $::tls]
-        set bench [open "|src/redis-benchmark -q -s [dict get $srv unixsocket] -c 20 -n 20000 incr foo" "r+"]
+        set bench_cmd [list | $::redis_benchmark_path -q -h [dict get $srv host] -p [dict get $srv port] -c 20 -n 20000 incr foo]
+        set bench [open $bench_cmd "r+"]
 
         wait_for_condition 100 1 {
             [$client get foo] > 0

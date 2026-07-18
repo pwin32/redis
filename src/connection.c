@@ -61,8 +61,10 @@ int connTypeInitialize(void) {
     /* currently socket connection type is necessary  */
     serverAssert(RedisRegisterConnectionTypeSocket() == C_OK);
 
-    /* currently unix socket connection type is necessary  */
+#ifndef _WIN32
+    /* Unix sockets are not available in the Windows portability layer. */
     serverAssert(RedisRegisterConnectionTypeUnix() == C_OK);
+#endif
 
     /* may fail if without BUILD_TLS=yes */
     RedisRegisterConnectionTypeTLS();

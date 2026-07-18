@@ -454,7 +454,7 @@ start_server {overrides {save {900 1}} tags {"modules"}} {
         r set x x
         r bgsave
         set pid1 [get_child_pid 0]
-        catch {exec kill -9 $pid1}
+        catch {kill_proc2 $pid1}
         waitForBgsave r
 
         # make sure a read command succeeds

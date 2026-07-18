@@ -28,20 +28,34 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Portability.h"
+#include "Win32_Interop/win32fixes.h"
+#ifdef usleep
+#undef usleep
+#define REDIS_BENCHMARK_RESTORE_USLEEP 1
+#endif
+#include "Win32_Interop/win32_wsiocp2.h"
+#include "Win32_Interop/Win32_Signal_Process.h"
+#include "Win32_Interop/Win32_Time.h"
+#include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/Win32_PThread.h"
+#endif
+
 #include "fmacros.h"
 #include "version.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
+POSIX_ONLY(#include <unistd.h>)
 #include <errno.h>
 #include <time.h>
-#include <sys/time.h>
+POSIX_ONLY(#include <sys/time.h>)
 #include <signal.h>
 #include <assert.h>
 #include <math.h>
-#include <pthread.h>
+POSIX_ONLY(#include <pthread.h>)
 
 #include <sdscompat.h> /* Use hiredis' sds compat header that maps sds calls to their hi_ variants */
 #include <sds.h> /* Use hiredis sds. */
@@ -60,6 +74,11 @@
 #include "hdr_histogram.h"
 #include "cli_common.h"
 #include "mt19937-64.h"
+
+#ifdef REDIS_BENCHMARK_RESTORE_USLEEP
+#define usleep(x) ((x) == 1 ? Sleep(0) : Sleep((int)((x)/1000)))
+#undef REDIS_BENCHMARK_RESTORE_USLEEP
+#endif
 
 #define UNUSED(V) ((void) V)
 #define RANDPTR_INITIAL_SIZE 8
@@ -225,6 +244,9 @@ static int dictSdsKeyCompare(dict *d, const void *key1, const void *key2);
 
 /* Implementation */
 static long long ustime(void) {
+#ifdef _WIN32
+    return (long long)GetHighResRelativeTime(1000000);
+#else
     struct timeval tv;
     long long ust;
 
@@ -232,10 +254,15 @@ static long long ustime(void) {
     ust = ((long long)tv.tv_sec)*1000000;
     ust += tv.tv_usec;
     return ust;
+#endif
 }
 
 static long long mstime(void) {
+#ifdef _WIN32
+    return (long long)GetHighResRelativeTime(1000);
+#else
     return ustime()/1000;
+#endif
 }
 
 static uint64_t dictSdsHash(const void *key) {
@@ -480,6 +507,9 @@ static void clientDone(client c) {
 static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     client c = privdata;
     void *reply = NULL;
+#ifdef _WIN32
+    char buf[1024*16];
+#endif
     UNUSED(el);
     UNUSED(fd);
     UNUSED(mask);
@@ -489,11 +519,39 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
      * is not part of the latency, so calculate it only once, here. */
     if (c->latency < 0) c->latency = ustime()-(c->start);
 
+#ifdef _WIN32
+    ssize_t nread = read(c->context->fd,buf,sizeof(buf));
+    if (nread == -1) {
+        if (errno == ENOENT || errno == EAGAIN || errno == WSAEWOULDBLOCK) {
+            errno = EAGAIN;
+            if (WSIOCP_QueueNextRead((int)c->context->fd) == -1) {
+                fprintf(stderr,"Error rearming socket read: %s\n",wsa_strerror(errno));
+                exit(1);
+            }
+            return;
+        }
+        fprintf(stderr,"Error reading from the server: %s\n",wsa_strerror(errno));
+        exit(1);
+    }
+    if (nread == 0) {
+        fprintf(stderr,"Error: Server closed the connection\n");
+        exit(1);
+    }
+    if (redisReaderFeed(c->context->reader,buf,(size_t)nread) != REDIS_OK) {
+        fprintf(stderr,"Error: %s\n",c->context->reader->errstr);
+        exit(1);
+    }
+    if (WSIOCP_QueueNextRead((int)c->context->fd) == -1) {
+        fprintf(stderr,"Error rearming socket read: %s\n",wsa_strerror(errno));
+        exit(1);
+    }
+#else
     if (redisBufferRead(c->context) != REDIS_OK) {
         fprintf(stderr,"Error: %s\n",c->context->errstr);
         exit(1);
-    } else {
-        while(c->pending) {
+    }
+#endif
+    while(c->pending) {
             if (redisGetReply(c->context,&reply) != REDIS_OK) {
                 fprintf(stderr,"Error: %s\n",c->context->errstr);
                 exit(1);
@@ -586,9 +644,30 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
             } else {
                 break;
             }
-        }
     }
 }
+
+#ifdef _WIN32
+static void writeHandlerDone(aeEventLoop *el, int fd, void *privdata, int nwritten) {
+    WSIOCP_Request *req = privdata;
+    client c = req->client;
+    size_t obuf_len = sdslen(c->obuf);
+
+    if (c->written > obuf_len || nwritten <= 0 ||
+        (size_t)nwritten > obuf_len-c->written)
+    {
+        freeClient(c);
+        return;
+    }
+    c->written += (size_t)nwritten;
+    if (obuf_len == c->written) {
+        aeDeleteFileEvent(el,fd,AE_WRITABLE);
+        aeCreateFileEvent(el,fd,AE_READABLE,readHandler,c);
+    } else if (WSIOCP_QueueWriteReady(fd) == -1) {
+        freeClient(c);
+    }
+}
+#endif
 
 static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     client c = privdata;
@@ -602,6 +681,11 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         int requests_issued = 0;
         atomicGetIncr(config.requests_issued, requests_issued, config.pipeline);
         if (requests_issued >= config.requests) {
+#ifdef _WIN32
+            /* IOCP write readiness is one-shot, so an exhausted client must
+             * not remain registered waiting for a completion that cannot come. */
+            freeClient(c);
+#endif
             return;
         }
 
@@ -616,6 +700,29 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     const ssize_t writeLen = buflen-c->written;
     if (writeLen > 0) {
         void *ptr = c->obuf+c->written;
+#ifdef _WIN32
+        int send_len = writeLen > INT_MAX ? INT_MAX : (int)writeLen;
+        int result = WSIOCP_SocketSend(c->context->fd,
+                                       ptr,
+                                       send_len,
+                                       el,
+                                       c,
+                                       NULL,
+                                       writeHandlerDone);
+        if (result == SOCKET_ERROR && errno != WSA_IO_PENDING) {
+            if (errno != EPIPE)
+                fprintf(stderr,"Writing to socket: %s\n",wsa_strerror(errno));
+            freeClient(c);
+        } else if (result >= 0) {
+            c->written += (size_t)result;
+            if (c->written == sdslen(c->obuf)) {
+                aeDeleteFileEvent(el,c->context->fd,AE_WRITABLE);
+                aeCreateFileEvent(el,c->context->fd,AE_READABLE,readHandler,c);
+            } else if (WSIOCP_QueueWriteReady(c->context->fd) == -1) {
+                freeClient(c);
+            }
+        }
+#else
         while(1) {
             /* Optimistically try to write before checking if the file descriptor
              * is actually writable. At worst we get EAGAIN. */
@@ -636,6 +743,7 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                 return;
             }
         }
+#endif
     }
 }
 
@@ -684,9 +792,20 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
             port = node->port;
             c->cluster_node = node;
         }
+#ifdef _WIN32
+        /* Finish Winsock connect before IOCP attachment. Otherwise the first
+         * overlapped send can race ConnectEx completion. */
+        c->context = redisConnect(ip,port);
+#else
         c->context = redisConnectNonBlock(ip,port);
+#endif
     } else {
+#ifdef _WIN32
+        fprintf(stderr,"Unix domain sockets are not supported on Windows.\n");
+        exit(1);
+#else
         c->context = redisConnectUnixNonBlock(config.hostsocket);
+#endif
     }
     if (c->context->err) {
         fprintf(stderr,"Could not connect to Redis at ");
@@ -754,7 +873,7 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
         c->prefix_pending++;
     }
 
-    c->prefixlen = sdslen(c->obuf);
+    c->prefixlen = (int)sdslen(c->obuf);
     /* Append the request itself. */
     if (from) {
         c->obuf = sdscatlen(c->obuf,
@@ -842,6 +961,10 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
     else
         /* In idle mode, clients still need to register readHandler for catching errors */
         aeCreateFileEvent(el,c->context->fd,AE_READABLE,readHandler,c);
+#ifdef _WIN32
+    /* IOCP attachment switches the socket to nonblocking operation. */
+    c->context->flags &= ~REDIS_BLOCK;
+#endif
 
     listAddNodeTail(config.clients,c);
     atomicIncr(config.liveclients, 1);
@@ -1425,6 +1548,9 @@ int parseOptions(int argc, char **argv) {
         } else if (!strcmp(argv[i],"-v") || !strcmp(argv[i], "--version")) {
             sds version = benchmarkVersion();
             printf("redis-benchmark %s\n", version);
+#ifdef _WIN32
+            fflush(stdout);
+#endif
             sdsfree(version);
             exit(0);
         } else if (!strcmp(argv[i],"-n")) {
@@ -1684,7 +1810,8 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
     atomicGet(config.requests_finished, requests_finished);
     atomicGet(config.previous_requests_finished, previous_requests_finished);
 
-    if (liveclients == 0 && requests_finished != config.requests) {
+    /* A pipeline may validly finish more requests than the requested count. */
+    if (liveclients == 0 && requests_finished < config.requests) {
         fprintf(stderr,"All clients disconnected... aborting.\n");
         exit(1);
     }
@@ -1720,7 +1847,7 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
  * switch, or if all the tests are selected (no -t passed by user). */
 int test_is_selected(const char *name) {
     char buf[256];
-    int l = strlen(name);
+    int l = (int)strlen(name);
 
     if (config.tests == NULL) return 1;
     buf[0] = ',';
@@ -1840,8 +1967,8 @@ int main(int argc, char **argv) {
         }
     }
     if (config.num_threads > 0) {
-        pthread_mutex_init(&(config.liveclients_mutex), NULL);
-        pthread_mutex_init(&(config.is_updating_slots_mutex), NULL);
+        (void)pthread_mutex_init(&(config.liveclients_mutex), NULL);
+        (void)pthread_mutex_init(&(config.is_updating_slots_mutex), NULL);
     }
 
     if (config.keepalive == 0) {

@@ -212,7 +212,7 @@ start_server {tags {"aofrw external:skip"} overrides {aof-use-rdb-preamble no}} 
         assert_match {*scheduled*} [r bgrewriteaof]
         assert_equal [s aof_rewrite_scheduled] 1
         r config set rdb-key-save-delay 0
-        catch {exec kill -9 [get_child_pid 0]}
+        catch {kill_proc2 [get_child_pid 0]}
         while {[s aof_rewrite_scheduled] eq 1} {
             after 100
         }
@@ -227,6 +227,6 @@ start_server {tags {"aofrw external:skip"} overrides {aof-use-rdb-preamble no}} 
         } e
         assert_match {*ERR*already*} $e
         r config set rdb-key-save-delay 0
-        catch {exec kill -9 [get_child_pid 0]}
+        catch {kill_proc2 [get_child_pid 0]}
     }
 }

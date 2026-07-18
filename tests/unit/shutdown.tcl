@@ -30,6 +30,7 @@ start_server {tags {"shutdown external:skip"}} {
     }
 }
 
+if {$::tcl_platform(platform) ne "windows"} {
 start_server {tags {"shutdown external:skip"} overrides {save {900 1}}} {
     test {SHUTDOWN ABORT can cancel SIGTERM} {
         r debug pause-cron 1
@@ -71,6 +72,7 @@ start_server {tags {"shutdown external:skip"} overrides {save {900 1}}} {
         }
     }
 }
+}
 
 start_server {tags {"shutdown external:skip"} overrides {save {900 1}}} {
     set pid [s process_id]
@@ -88,10 +90,12 @@ start_server {tags {"shutdown external:skip"} overrides {save {900 1}}} {
         }
         exec mkdir -p $dump_rdb
     }
-    test {SHUTDOWN will abort if rdb save failed on signal} {
-        # trigger a shutdown which will save an rdb
-        exec kill -SIGINT $pid
-        wait_for_log_messages 0 {"*Error trying to save the DB, can't exit*"} 0 100 10
+    if {$::tcl_platform(platform) ne "windows"} {
+        test {SHUTDOWN will abort if rdb save failed on signal} {
+            # trigger a shutdown which will save an rdb
+            exec kill -SIGINT $pid
+            wait_for_log_messages 0 {"*Error trying to save the DB, can't exit*"} 0 100 10
+        }
     }
     test {SHUTDOWN will abort if rdb save failed on shutdown command} {
         catch {[r shutdown]} err
@@ -109,6 +113,7 @@ start_server {tags {"shutdown external:skip"} overrides {save {900 1}}} {
 }
 
 
+if {$::tcl_platform(platform) ne "windows"} {
 start_server {tags {"shutdown external:skip"} overrides {appendonly no}} {
     test {SHUTDOWN SIGTERM will abort if there's an initial AOFRW - default} {
         r config set shutdown-on-sigterm default
@@ -130,4 +135,5 @@ start_server {tags {"shutdown external:skip"} overrides {appendonly no}} {
 
         r config set shutdown-on-sigterm force
     }
+}
 }
