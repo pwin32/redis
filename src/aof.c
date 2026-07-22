@@ -776,10 +776,34 @@ void aofDelTempIncrAofFile(void) {
     sds aof_filename = getTempIncrAofName();
     sds aof_filepath = makePath(server.aof_dirname, aof_filename);
     serverLog(LL_NOTICE, "Removing the temp incr aof file %s in the background", aof_filename);
-    bg_unlink(aof_filepath);
+    if (bg_unlink(aof_filepath) == -1 && errno != ENOENT) {
+        serverLog(LL_WARNING, "Unable to remove the temp incr aof file %s: %s",
+                  aof_filename, strerror(errno));
+    }
     sdsfree(aof_filepath);
     sdsfree(aof_filename);
     return;
+}
+
+/* Abort the uncommitted AOF state created while waiting for the initial
+ * rewrite.  The temporary INCR file is not in the manifest yet, so retaining
+ * its descriptor or bytes after a QFork/open failure would make the next
+ * retry append to stale state and could leave an orphan file behind. */
+static void aofAbortWaitRewrite(void) {
+    if (server.aof_fd != -1) {
+        close(server.aof_fd);
+        server.aof_fd = -1;
+    }
+    server.aof_selected_db = -1;
+    server.aof_current_size = 0;
+    server.aof_last_incr_size = 0;
+    server.aof_last_incr_fsync_offset = 0;
+    server.aof_flush_postponed_start = 0;
+    server.fsynced_reploff = -1;
+    atomicSet(server.fsynced_reploff_pending, 0);
+    sdsfree(server.aof_buf);
+    server.aof_buf = sdsempty();
+    aofDelTempIncrAofFile();
 }
 
 /* Called after `loadDataFromDisk` when redis start. If `server.aof_state` is
@@ -1043,15 +1067,18 @@ void killAppendOnlyChild(void) {
  * at runtime using the CONFIG command. */
 void stopAppendOnly(void) {
     serverAssert(server.aof_state != AOF_OFF);
-    flushAppendOnlyFile(1);
-    if (redis_fsync(server.aof_fd) == -1) {
-        serverLog(LL_WARNING,"Fail to fsync the AOF file: %s",strerror(errno));
-    } else {
-        server.aof_last_fsync = server.unixtime;
+    int was_wait_rewrite = server.aof_state == AOF_WAIT_REWRITE;
+    if (server.aof_fd != -1) {
+        flushAppendOnlyFile(1);
+        if (redis_fsync(server.aof_fd) == -1) {
+            serverLog(LL_WARNING,"Fail to fsync the AOF file: %s",strerror(errno));
+        } else {
+            server.aof_last_fsync = server.unixtime;
+        }
+        close(server.aof_fd);
+        server.aof_fd = -1;
     }
-    close(server.aof_fd);
 
-    server.aof_fd = -1;
     server.aof_selected_db = -1;
     server.aof_state = AOF_OFF;
     server.aof_rewrite_scheduled = 0;
@@ -1060,6 +1087,12 @@ void stopAppendOnly(void) {
     server.fsynced_reploff = -1;
     atomicSet(server.fsynced_reploff_pending, 0);
     killAppendOnlyChild();
+    if (was_wait_rewrite) {
+        /* The initial rewrite's INCR file was never committed to the
+         * manifest. Remove it after the child is stopped and its handles are
+         * gone. */
+        aofDelTempIncrAofFile();
+    }
     sdsfree(server.aof_buf);
     server.aof_buf = sdsempty();
 }
@@ -2535,6 +2568,8 @@ int rewriteAppendOnlyFileBackground(void) {
     server.aof_selected_db = -1;
     flushAppendOnlyFile(1);
     if (openNewIncrAofForAppend() != C_OK) {
+        if (server.aof_state == AOF_WAIT_REWRITE)
+            aofAbortWaitRewrite();
         server.aof_lastbgrewrite_status = C_ERR;
         return C_ERR;
     }
@@ -2589,6 +2624,8 @@ int rewriteAppendOnlyFileBackground(void) {
 
     /* Parent */
     if (childpid == -1) {
+        if (server.aof_state == AOF_WAIT_REWRITE)
+            aofAbortWaitRewrite();
 #ifdef _WIN32
         closeChildInfoPipe();
 #endif

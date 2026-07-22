@@ -30,6 +30,23 @@ start_server {tags {"modules"}} {
         assert_equal [r auth.changecount] 1
     }
 
+    if {$::tcl_platform(platform) eq "windows"} {
+        test {Windows drains the module-user revocation reply before closing} {
+            for {set iteration 0} {$iteration < 25} {incr iteration} {
+                # Start each cycle with a fresh module user, authenticate this
+                # connection as that user, then replace it. The replacement
+                # must deliver its OK reply before the intentional EOF.
+                assert_equal OK [r auth.createmoduleuser]
+                r auth.authmoduleuser
+                assert_equal OK [r auth.createmoduleuser]
+
+                catch {r ping} err
+                assert_match {*I/O*} $err
+                assert_equal 1 [r auth.changecount]
+            }
+        }
+    }
+
     test {Modules can't authenticate with ACLs users that dont exist} {
         catch { [r auth.authrealuser auth-module-test-fake] } e
         assert_match {*Invalid user*} $e

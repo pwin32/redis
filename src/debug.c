@@ -638,7 +638,23 @@ NULL
         addReply(c,shared.ok);
 #endif
     } else if (!strcasecmp(c->argv[1]->ptr,"loadaof")) {
-        if (server.aof_state != AOF_OFF) flushAppendOnlyFile(1);
+        if (server.aof_state != AOF_OFF) {
+            flushAppendOnlyFile(1);
+#ifdef _WIN32
+            /* loadAppendOnlyFiles sizes manifest entries by path.  Windows
+             * can briefly report the old length for the live INCR file after
+             * a handle write, which makes an empty AOF base plus a first INCR
+             * command look entirely empty.  DEBUG LOADAOF promises to flush
+             * the AOF before reloading, so make the write and metadata visible
+             * before reopening the manifest files. */
+            if (server.aof_fd != -1 && redis_fsync(server.aof_fd) == -1) {
+                addReplyErrorFormat(c,
+                    "Error flushing the AOF before reload: %s",
+                    strerror(errno));
+                return;
+            }
+#endif
+        }
         emptyData(-1,EMPTYDB_NO_FLAGS,NULL);
         protectClient(c);
         if (server.aof_manifest) aofManifestFree(server.aof_manifest);

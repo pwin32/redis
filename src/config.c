@@ -299,6 +299,16 @@ struct standardConfig {
 
 dict *configs = NULL; /* Runtime config values */
 
+#ifdef _WIN32
+dict *configGetQForkData(void) {
+    return configs;
+}
+
+void configSetQForkData(dict *data) {
+    configs = data;
+}
+#endif
+
 /* Lookup a config by the provided sds string name, or return NULL
  * if the config does not exist */
 static standardConfig *lookupConfig(sds name) {

@@ -120,6 +120,9 @@ int moduleForEachForkModule(
     void *privdata);
 size_t moduleCount(void);
 void moduleSetQForkChildReady(int ready);
+size_t RedisSharedForkDataSize(void);
+BOOL RedisCopySharedForkData(void *data, size_t size);
+void RedisGetCoreForkData(RedisCoreForkData *data);
 }
 
 //#define DEBUG_WITH_PROCMON
@@ -168,6 +171,10 @@ struct QForkInfo {
     BYTE redisData[MAX_REDIS_DATA_SIZE];
     size_t redisDataSize;
     uint8_t dictHashSeed[16];
+    RedisACLForkData acl;
+    RedisCoreForkData core;
+    size_t sharedDataSize;
+    BYTE sharedData[REDIS_QFORK_MAX_SHARED_DATA_SIZE];
     RedisModuleForkData modules;
     HANDLE moduleSnapshotMap;
     uint64_t moduleSnapshotSize;
@@ -246,6 +253,19 @@ BOOL g_QForkHeapReady;
 //[tporadowski/#2]
 BOOL g_StartedAsCheckAofOrRdbTool;
 
+/* Jemalloc initializes before the QFork heap exists. The main thread is moved
+ * to a fresh manual arena once QFork is ready, but every newly created thread
+ * starts with independent jemalloc TSD and may otherwise auto-select an arena
+ * that still owns pre-QFork extents. Keep the selected arena process-local and
+ * bind each Redis allocator thread once per arena generation. */
+static unsigned g_QForkJemallocArena;
+static volatile LONG g_QForkJemallocArenaGeneration;
+#ifdef __MINGW32__
+static __thread LONG g_QForkThreadArenaGeneration;
+#else
+static __declspec(thread) LONG g_QForkThreadArenaGeneration;
+#endif
+
 /* Jemalloc can call the process-wide heap hooks from different arenas and
  * worker threads. Keep this lock process-local: QForkControl is copied into
  * the child, while an SRW lock must never be shared that way. */
@@ -273,6 +293,54 @@ static void FlushJemallocThreadCache(const char* context) {
     }
 }
 
+int QForkEnsureCurrentThreadJemallocArena() {
+    LONG generation = g_QForkJemallocArenaGeneration;
+
+    if (generation == 0 ||
+        g_QForkThreadArenaGeneration == generation ||
+        g_IsForkedProcess ||
+        g_BypassMemoryMapOnAlloc ||
+        !g_QForkHeapReady ||
+        g_pQForkControl == NULL) {
+        return 0;
+    }
+
+    int err = je_mallctl("thread.tcache.flush", NULL, NULL, NULL, 0);
+    if (err != 0 && err != EFAULT) return err;
+
+    unsigned arena = g_QForkJemallocArena;
+    err = je_mallctl("thread.arena", NULL, NULL, &arena, sizeof(arena));
+    if (err != 0) return err;
+
+    err = je_mallctl("thread.tcache.flush", NULL, NULL, NULL, 0);
+    if (err != 0 && err != EFAULT) return err;
+
+    g_QForkThreadArenaGeneration = generation;
+    return 0;
+}
+
+BOOL QForkIsInheritedHeapAddress(const void *ptr) {
+    if (ptr == NULL || !g_IsForkedProcess || !g_QForkHeapReady ||
+        g_pQForkControl == NULL)
+        return FALSE;
+
+    uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+    uintptr_t heapStart = reinterpret_cast<uintptr_t>(
+        g_pQForkControl->heapStart);
+    uintptr_t heapEnd = reinterpret_cast<uintptr_t>(
+        g_pQForkControl->heapEnd);
+    if (address < heapStart || address >= heapEnd)
+        return FALSE;
+
+    /* Child-private VirtualAlloc extents can occupy an unused address inside
+     * the reserved range.  Only the inherited MapViewOfFile view is owned by
+     * the parent snapshot and must be left untouched. */
+    MEMORY_BASIC_INFORMATION memInfo;
+    if (!VirtualQuery(ptr, &memInfo, sizeof(memInfo)))
+        return FALSE;
+    return memInfo.Type == MEM_MAPPED;
+}
+
 static void SwitchToQForkJemallocArena() {
     unsigned arena = 0;
     size_t arenaSize = sizeof(arena);
@@ -284,12 +352,13 @@ static void SwitchToQForkJemallocArena() {
         throw system_error(err, generic_category(), "QForkMasterInit: could not create QFork jemalloc arena");
     }
 
-    err = je_mallctl("thread.arena", NULL, NULL, &arena, sizeof(arena));
+    g_QForkJemallocArena = arena;
+    _InterlockedIncrement(&g_QForkJemallocArenaGeneration);
+
+    err = QForkEnsureCurrentThreadJemallocArena();
     if (err != 0) {
         throw system_error(err, generic_category(), "QForkMasterInit: could not set QFork jemalloc arena");
     }
-
-    FlushJemallocThreadCache("QForkMasterInit: could not flush QFork jemalloc thread cache");
 }
 
 bool ReportSpecialSystemErrors(int error) {
@@ -1719,11 +1788,17 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
         g_QForkHeapReady = TRUE;
 
         // Copy redis globals into fork process
-        SetupRedisGlobals(g_pQForkControl->globalData.redisData,
-            g_pQForkControl->globalData.redisDataSize,
-            g_pQForkControl->globalData.dictHashSeed,
-            &g_pQForkControl->globalData.modules,
-            g_pQForkControl->globalData.usedMemory);
+        if (!SetupRedisGlobals(g_pQForkControl->globalData.redisData,
+                g_pQForkControl->globalData.redisDataSize,
+                g_pQForkControl->globalData.dictHashSeed,
+                &g_pQForkControl->globalData.acl,
+                &g_pQForkControl->globalData.core,
+                g_pQForkControl->globalData.sharedData,
+                g_pQForkControl->globalData.sharedDataSize,
+                &g_pQForkControl->globalData.modules,
+                g_pQForkControl->globalData.usedMemory)) {
+            throw runtime_error("Could not restore Redis globals in QFork child");
+        }
 
         if (moduleCount() !=
             g_pQForkControl->globalData.moduleSnapshotCount)
@@ -2023,6 +2098,15 @@ void CopyForkOperationData(OperationType type, LPVOID redisData, int redisDataSi
         g_pQForkControl->typeOfOperation = type;
         memcpy(&(g_pQForkControl->globalData.redisData), redisData, redisDataSize);
         g_pQForkControl->globalData.redisDataSize = redisDataSize;
+        ACLGetForkData(&g_pQForkControl->globalData.acl);
+        RedisGetCoreForkData(&g_pQForkControl->globalData.core);
+        size_t sharedDataSize = RedisSharedForkDataSize();
+        if (sharedDataSize > sizeof(g_pQForkControl->globalData.sharedData))
+            throw runtime_error("Global Redis shared data too large.");
+        if (!RedisCopySharedForkData(
+                g_pQForkControl->globalData.sharedData, sharedDataSize))
+            throw runtime_error("Could not copy global Redis shared data.");
+        g_pQForkControl->globalData.sharedDataSize = sharedDataSize;
         memcpy(&g_pQForkControl->globalData.modules, modules,
                sizeof(g_pQForkControl->globalData.modules));
         g_pQForkControl->globalData.usedMemory = usedMemory;

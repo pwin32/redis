@@ -139,6 +139,10 @@ proc create_aof_manifest {dir aof_manifest_file code} {
     create_aof_dir $dir
     upvar fp fp
     set fp [open $aof_manifest_file w+]
+    # RESP and manifest fixtures must have byte-exact line endings.  Native
+    # Windows Tcl otherwise expands each LF in an existing CRLF sequence,
+    # producing CR-CR-LF and turning intentional truncation into bad format.
+    fconfigure $fp -translation binary
     uplevel 1 $code
     close $fp
 }
@@ -152,6 +156,7 @@ proc create_aof {dir aof_file code} {
     create_aof_dir $dir
     upvar fp fp
     set fp [open $aof_file w+]
+    fconfigure $fp -translation binary
     uplevel 1 $code
     close $fp
 }

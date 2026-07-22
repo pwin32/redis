@@ -116,6 +116,10 @@ static void connUnixShutdown(connection *conn) {
     connectionTypeTcp()->shutdown(conn);
 }
 
+static int connUnixShutdownWrite(connection *conn) {
+    return connectionTypeTcp()->shutdown_write(conn);
+}
+
 static void connUnixClose(connection *conn) {
     (connectionTypeTcp()->close)(conn);
 }
@@ -180,6 +184,7 @@ static ConnectionType CT_Unix = {
     .conn_create = connCreateUnix,
     .conn_create_accepted = connCreateAcceptedUnix,
     .shutdown = connUnixShutdown,
+    .shutdown_write = connUnixShutdownWrite,
     .close = connUnixClose,
 
     /* connect & accept */

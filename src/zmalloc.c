@@ -59,6 +59,10 @@ void zlibc_free(void *ptr) {
 #include "zmalloc.h"
 #include "atomicvar.h"
 
+#if defined(_WIN32) && defined(USE_JEMALLOC) && !defined(NO_QFORKIMPL)
+#include "Win32_Interop/Win32_QFork.h"
+#endif
+
 #define UNUSED(x) ((void)(x))
 
 #ifdef HAVE_MALLOC_SIZE
@@ -112,6 +116,17 @@ static void zmalloc_default_oom(size_t size) {
 
 static void (*zmalloc_oom_handler)(size_t) = zmalloc_default_oom;
 
+/* Keep arena-binding errors in the normal allocation-failure channel: ztry*
+ * callers must receive NULL, while the hard allocation wrappers invoke the
+ * configured OOM handler. */
+static inline int zmalloc_prepare_allocator_thread(void) {
+#if defined(_WIN32) && defined(USE_JEMALLOC) && !defined(NO_QFORKIMPL)
+    return QForkEnsureCurrentThreadJemallocArena();
+#else
+    return 0;
+#endif
+}
+
 #ifdef HAVE_MALLOC_SIZE
 void *extend_to_usable(void *ptr, size_t size) {
     UNUSED(size);
@@ -124,6 +139,7 @@ void *extend_to_usable(void *ptr, size_t size) {
 static inline void *ztrymalloc_usable_internal(size_t size, size_t *usable) {
     /* Possible overflow, return NULL, so that the caller can panic or handle a failed allocation. */
     if (size >= SIZE_MAX/2) return NULL;
+    if (zmalloc_prepare_allocator_thread() != 0) return NULL;
     void *ptr = malloc(MALLOC_MIN_SIZE(size)+PREFIX_SIZE);
 
     if (!ptr) return NULL;
@@ -182,6 +198,10 @@ void *zmalloc_usable(size_t size, size_t *usable) {
 #ifdef HAVE_DEFRAG
 void *zmalloc_no_tcache(size_t size) {
     if (size >= SIZE_MAX/2) zmalloc_oom_handler(size);
+    if (zmalloc_prepare_allocator_thread() != 0) {
+        zmalloc_oom_handler(size);
+        return NULL;
+    }
     void *ptr = mallocx(size+PREFIX_SIZE, MALLOCX_TCACHE_NONE);
     if (!ptr) zmalloc_oom_handler(size);
     update_zmalloc_stat_alloc(zmalloc_size(ptr));
@@ -190,6 +210,9 @@ void *zmalloc_no_tcache(size_t size) {
 
 void zfree_no_tcache(void *ptr) {
     if (ptr == NULL) return;
+#if defined(_WIN32) && defined(USE_JEMALLOC) && !defined(NO_QFORKIMPL)
+    if (QForkIsInheritedHeapAddress(ptr)) return;
+#endif
     update_zmalloc_stat_free(zmalloc_size(ptr));
     dallocx(ptr, MALLOCX_TCACHE_NONE);
 }
@@ -200,6 +223,7 @@ void zfree_no_tcache(void *ptr) {
 static inline void *ztrycalloc_usable_internal(size_t size, size_t *usable) {
     /* Possible overflow, return NULL, so that the caller can panic or handle a failed allocation. */
     if (size >= SIZE_MAX/2) return NULL;
+    if (zmalloc_prepare_allocator_thread() != 0) return NULL;
     void *ptr = calloc(1, MALLOC_MIN_SIZE(size)+PREFIX_SIZE);
     if (ptr == NULL) return NULL;
 
@@ -292,6 +316,11 @@ static inline void *ztryrealloc_usable_internal(void *ptr, size_t size, size_t *
         return NULL;
     }
 
+    if (zmalloc_prepare_allocator_thread() != 0) {
+        if (usable) *usable = 0;
+        return NULL;
+    }
+
 #ifdef HAVE_MALLOC_SIZE
     oldsize = zmalloc_size(ptr);
     newptr = realloc(ptr,size);
@@ -379,6 +408,9 @@ void zfree(void *ptr) {
 #endif
 
     if (ptr == NULL) return;
+#if defined(_WIN32) && defined(USE_JEMALLOC) && !defined(NO_QFORKIMPL)
+    if (QForkIsInheritedHeapAddress(ptr)) return;
+#endif
 #ifdef HAVE_MALLOC_SIZE
     update_zmalloc_stat_free(zmalloc_size(ptr));
     free(ptr);
@@ -398,6 +430,12 @@ void zfree_usable(void *ptr, size_t *usable) {
 #endif
 
     if (ptr == NULL) return;
+#if defined(_WIN32) && defined(USE_JEMALLOC) && !defined(NO_QFORKIMPL)
+    if (QForkIsInheritedHeapAddress(ptr)) {
+        if (usable) *usable = 0;
+        return;
+    }
+#endif
 #ifdef HAVE_MALLOC_SIZE
     update_zmalloc_stat_free(*usable = zmalloc_size(ptr));
     free(ptr);

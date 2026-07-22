@@ -221,15 +221,15 @@ start_server {tags {"modules"}} {
     }
     test {startup moduleconfigs} {
         # No loadmodule directive
-        catch {exec $::redis_server_path --moduleconfigs.string "hello"} err
+        set err [redis_server_startup_error --moduleconfigs.string "hello"]
         assert_match {*Module Configuration detected without loadmodule directive or no ApplyConfig call: aborting*} $err
 
         # Bad config value
-        catch {exec $::redis_server_path --loadmodule "$testmodule" --moduleconfigs.string "rejectisfreed"} err
+        set err [redis_server_startup_error --loadmodule "$testmodule" --moduleconfigs.string "rejectisfreed"]
         assert_match {*Issue during loading of configuration moduleconfigs.string : Cannot set string to 'rejectisfreed'*} $err
 
         # missing LoadConfigs call
-        catch {exec $::redis_server_path --loadmodule "$testmodule" noload --moduleconfigs.string "hello"} err
+        set err [redis_server_startup_error --loadmodule "$testmodule" noload --moduleconfigs.string "hello"]
         assert_match {*Module Configurations were not set, likely a missing LoadConfigs call. Unloading the module.*} $err
 
         # successful

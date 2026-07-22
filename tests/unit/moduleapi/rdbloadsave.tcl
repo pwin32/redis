@@ -114,28 +114,36 @@ start_server {tags {"modules"}} {
         r config set rdb-key-save-delay 0
     }
 
-    test "Module rdbloadsave calls rdbsave in a module fork" {
-        r flushdb
-        r config set save ""
-        r config set rdb-key-save-delay 500000
-
-        r set k v1
-
-        # Module will call RM_Fork() before calling RM_RdbSave()
-        assert_equal OK [r test.rdbsave_fork rdbfork.rdb]
-        assert_equal [s module_fork_in_progress] 1
-
-        wait_for_condition 10 1000 {
-            [status r module_fork_in_progress] == "0"
-        } else {
-            fail "Module fork didn't finish"
+    if {$::tcl_platform(platform) eq "windows"} {
+        test "Module rdbloadsave rejects unsupported module fork on Windows" {
+            assert_error {*Fork api is not supported in the current redis version*} {
+                r test.rdbsave_fork rdbfork.rdb
+            }
         }
+    } else {
+        test "Module rdbloadsave calls rdbsave in a module fork" {
+            r flushdb
+            r config set save ""
+            r config set rdb-key-save-delay 500000
 
-        r set k v2
-        assert_equal OK [r test.rdbload rdbfork.rdb]
-        assert_equal v1 [r get k]
+            r set k v1
 
-        r config set rdb-key-save-delay 0
+            # Module will call RM_Fork() before calling RM_RdbSave()
+            assert_equal OK [r test.rdbsave_fork rdbfork.rdb]
+            assert_equal [s module_fork_in_progress] 1
+
+            wait_for_condition 10 1000 {
+                [status r module_fork_in_progress] == "0"
+            } else {
+                fail "Module fork didn't finish"
+            }
+
+            r set k v2
+            assert_equal OK [r test.rdbload rdbfork.rdb]
+            assert_equal v1 [r get k]
+
+            r config set rdb-key-save-delay 0
+        }
     }
 
     test "Unload the module - rdbloadsave" {

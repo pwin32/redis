@@ -32,7 +32,7 @@ if {$backtrace_supported} {
 
 # Valgrind will complain that the process terminated by a signal, skip it.
 if {!$::valgrind} {
-    if {$backtrace_supported} {
+    if {$backtrace_supported || $::tcl_platform(platform) eq "windows"} {
         set crash_pattern "*STACK TRACE*"
     } else {
         set crash_pattern "*crashed by signal*"

@@ -189,6 +189,19 @@ start_server {tags {"bitops"}} {
         list [r get res1{t}] [r get res2{t}] [r get res3{t}]
     } [list "\x01\x02\xff" "\x01\x02\xff" "\x01\x02\xff"]
 
+    test {BITOP fast path processes every word on LLP64} {
+        set a "[string repeat \x0f 16][string repeat \xf0 16]"
+        set b "[string repeat \x33 16][string repeat \x55 16]"
+        r set bitop-a $a
+        r set bitop-b $b
+        foreach op {and or xor} {
+            r bitop $op bitop-result bitop-a bitop-b
+            assert_equal [simulate_bit_op $op $a $b] [r get bitop-result]
+        }
+        r bitop not bitop-result bitop-a
+        assert_equal [simulate_bit_op not $a] [r get bitop-result]
+    }
+
     test {BITOP missing key is considered a stream of zero} {
         r set a{t} "\x01\x02\xff"
         r bitop and res1{t} no-suck-key{t} a{t}

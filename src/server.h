@@ -1231,6 +1231,9 @@ typedef struct client {
     dictEntry *cur_script;  /* Cached pointer to the dictEntry of the script being executed. */
     time_t lastinteraction; /* Time of the last interaction, used for timeout */
     time_t obuf_soft_limit_reached_time;
+#ifdef _WIN32
+    mstime_t close_after_reply_time;
+#endif
     int authenticated;      /* Needed when the default user requires auth. */
     int replstate;          /* Replication state if this is a slave. */
     int repl_start_cmd_stream_on_ack; /* Install slave write handler on first ACK. */
@@ -3657,6 +3660,12 @@ void hscanCommand(client *c);
 void hrandfieldCommand(client *c);
 void configSetCommand(client *c);
 void configGetCommand(client *c);
+#ifdef _WIN32
+dict *configGetQForkData(void);
+void configSetQForkData(dict *data);
+void clusterSetQForkState(void);
+void rehydrateCommandTableForQFork(void);
+#endif
 void configResetStatCommand(client *c);
 void configRewriteCommand(client *c);
 void configHelpCommand(client *c);

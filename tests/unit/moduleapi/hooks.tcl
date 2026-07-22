@@ -1,5 +1,17 @@
 set testmodule [redis_test_module hooks]
 
+proc set_qfork_probe_key {} {
+    if {$::tcl_platform(platform) ne "windows"} {
+        return
+    }
+    # Persistence callbacks run with a fresh module temp client on DB 0;
+    # populate the immutable read probe there instead of relying on the
+    # harness command client's default DB 9.
+    set db0 [redis [srv 0 host] [srv 0 port] 0 $::tls]
+    $db0 set qfork-api-key value
+    $db0 close
+}
+
 tags "modules" {
     start_server [list overrides [list loadmodule "$testmodule" appendonly yes]] {
         test {Test module aof save on server start from empty} {
@@ -50,6 +62,13 @@ tags "modules" {
             set aof_start_count [count_log_message 0 "module-event-persistence-aof-start"]
             set persistence_end_count [count_log_message 0 "module-event-persistence-end"]
             set timer_info_count [count_log_message 0 "module-event-qfork-timer-info-ok"]
+            if {$::tcl_platform(platform) eq "windows"} {
+                set qfork_core_count [count_log_message 0 "module-event-qfork-rmcall-core-ok"]
+                set qfork_reject_count [count_log_message 0 "module-event-qfork-rmcall-rejected"]
+                set qfork_api_count [count_log_message 0 "module-event-qfork-unsafe-api-rejected"]
+                set qfork_immutable_count [count_log_message 0 "module-event-qfork-immutable-api-rejected"]
+                set_qfork_probe_key
+            }
             r BGREWRITEAOF
             waitForBgrewriteaof r
             assert_equal [r hooks.timer_clear] 1
@@ -57,6 +76,29 @@ tags "modules" {
             assert_equal [expr {$aof_start_count + 1}] [count_log_message 0 "module-event-persistence-aof-start"]
             assert_equal [expr {$persistence_end_count + 1}] [count_log_message 0 "module-event-persistence-end"]
             assert_equal [expr {$timer_info_count + 1}] [count_log_message 0 "module-event-qfork-timer-info-ok"]
+            if {$::tcl_platform(platform) eq "windows"} {
+                assert_equal [expr {$qfork_core_count + 1}] [count_log_message 0 "module-event-qfork-rmcall-core-ok"]
+                assert_equal [expr {$qfork_reject_count + 1}] [count_log_message 0 "module-event-qfork-rmcall-rejected"]
+                assert_equal [expr {$qfork_api_count + 1}] [count_log_message 0 "module-event-qfork-unsafe-api-rejected"]
+                assert_equal [expr {$qfork_immutable_count + 1}] [count_log_message 0 "module-event-qfork-immutable-api-rejected"]
+            }
+        }
+
+        test {Test Windows QFork module API contract during RDB save} {
+            if {$::tcl_platform(platform) eq "windows"} {
+                set qfork_core_count [count_log_message 0 "module-event-qfork-rmcall-core-ok"]
+                set qfork_reject_count [count_log_message 0 "module-event-qfork-rmcall-rejected"]
+                set qfork_api_count [count_log_message 0 "module-event-qfork-unsafe-api-rejected"]
+                set qfork_immutable_count [count_log_message 0 "module-event-qfork-immutable-api-rejected"]
+                set_qfork_probe_key
+                r BGSAVE
+                waitForBgsave r
+                assert_equal ok [s rdb_last_bgsave_status]
+                assert_equal [expr {$qfork_core_count + 1}] [count_log_message 0 "module-event-qfork-rmcall-core-ok"]
+                assert_equal [expr {$qfork_reject_count + 1}] [count_log_message 0 "module-event-qfork-rmcall-rejected"]
+                assert_equal [expr {$qfork_api_count + 1}] [count_log_message 0 "module-event-qfork-unsafe-api-rejected"]
+                assert_equal [expr {$qfork_immutable_count + 1}] [count_log_message 0 "module-event-qfork-immutable-api-rejected"]
+            }
         }
 
         test {Test module aof load and rdb/aof progress hooks} {

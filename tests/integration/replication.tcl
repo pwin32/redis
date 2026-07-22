@@ -766,6 +766,15 @@ test {diskless loading short read} {
             # kill the replication at various points
             set attempts 100
             if {$::accurate} { set attempts 500 }
+            set recovery_log_tries 500
+            if {$::tcl_platform(platform) eq "windows"} {
+                # A kill near the end of the stream can leave the Windows
+                # replica legitimately completing a roughly 80 MB swapdb
+                # load.  The upstream five-second log window is shorter than
+                # that QFork/IOCP completion path; keep all 100 interruption
+                # attempts, but allow the same recovery outcome more time.
+                set recovery_log_tries 5000
+            }
             for {set i 0} {$i < $attempts} {incr i} {
                 # wait for the replica to start reading the rdb
                 # using the log file since the replica only responds to INFO once in 2mb
@@ -778,7 +787,7 @@ test {diskless loading short read} {
                 # kill the replica connection on the master
                 set killed [$master client kill type replica]
 
-                set res [wait_for_log_messages -1 {"*Internal error in RDB*" "*Finished with success*" "*Successful partial resynchronization*"} $loglines 500 10]
+                set res [wait_for_log_messages -1 {"*Internal error in RDB*" "*Finished with success*" "*Successful partial resynchronization*"} $loglines $recovery_log_tries 10]
                 if {$::verbose} { puts $res }
                 set log_text [lindex $res 0]
                 set loglines [lindex $res 1]
@@ -1025,17 +1034,37 @@ test "diskless replication child being killed is collected" {
             after 500
 
             # simulate the OOM killer or anyone else kills the child
-            set fork_child_pid [get_child_pid -1]
-            kill_proc2_checked $fork_child_pid
-
-            # wait for the parent to notice the child have exited
-            wait_for_condition 50 100 {
-                [s -1 rdb_bgsave_in_progress] == 0
-            } else {
-                fail "rdb child didn't terminate"
+            set master_loglines [count_log_lines -1]
+            if {[catch {
+                set fork_child_pid [get_qfork_child_pid -1]
+            } child_error]} {
+                fail "failed to find QFork child: $child_error"
+            }
+            if {[catch {
+                kill_proc2_checked $fork_child_pid
+            } kill_error]} {
+                fail "failed to terminate QFork child $fork_child_pid: $kill_error"
             }
 
-            # Speed up shutdown
+            # Distinguish a failed external kill from a parent collection bug.
+            wait_for_condition 50 100 {
+                [process_is_alive $fork_child_pid] == 0
+            } else {
+                fail "failed to terminate QFork child $fork_child_pid"
+            }
+
+            # Wait for the parent to collect this child and run the socket
+            # completion handler. The aggregate INFO flag can already refer to
+            # a replacement child if the replica reconnects immediately.
+            if {$::tcl_platform(platform) eq "windows"} {
+                set child_exit_pattern "*Background transfer terminated by signal 1*"
+            } else {
+                set child_exit_pattern "*Background transfer terminated by signal 9*"
+            }
+            wait_for_log_messages -1 [list $child_exit_pattern] \
+                $master_loglines 50 100
+
+            # Speed up shutdown after the deliberately stalled diskless load.
             $replica config set key-load-delay 0
         }
     }
@@ -1304,43 +1333,48 @@ start_server {tags {"repl external:skip"}} {
     }
 }
 
-test {replica can handle EINTR if use diskless load} {
-    start_server {tags {"repl"}} {
-        set replica [srv 0 client]
-        set replica_log [srv 0 stdout]
-        start_server {} {
-            set master [srv 0 client]
-            set master_host [srv 0 host]
-            set master_port [srv 0 port]
+if {$::tcl_platform(platform) ne "windows"} {
+    # This test requires the POSIX SIGALRM watchdog to interrupt a blocking
+    # read.  The Windows port deliberately uses Win32 crash diagnostics and
+    # leaves watchdogScheduleSignal() as a no-op.
+    test {replica can handle EINTR if use diskless load} {
+        start_server {tags {"repl"}} {
+            set replica [srv 0 client]
+            set replica_log [srv 0 stdout]
+            start_server {} {
+                set master [srv 0 client]
+                set master_host [srv 0 host]
+                set master_port [srv 0 port]
 
-            $master debug populate 100 master 100000
-            $master config set rdbcompression no
-            $master config set repl-diskless-sync yes
-            $master config set repl-diskless-sync-delay 0
-            $replica config set repl-diskless-load on-empty-db
-            # Construct EINTR error by using the built in watchdog
-            $replica config set watchdog-period 200
-            # Block replica in read()
-            $master config set rdb-key-save-delay 10000
-            # set speedy shutdown
-            $master config set save ""
-            # Start the replication process...
-            $replica replicaof $master_host $master_port
+                $master debug populate 100 master 100000
+                $master config set rdbcompression no
+                $master config set repl-diskless-sync yes
+                $master config set repl-diskless-sync-delay 0
+                $replica config set repl-diskless-load on-empty-db
+                # Construct EINTR error by using the built in watchdog
+                $replica config set watchdog-period 200
+                # Block replica in read()
+                $master config set rdb-key-save-delay 10000
+                # set speedy shutdown
+                $master config set save ""
+                # Start the replication process...
+                $replica replicaof $master_host $master_port
 
-            # Wait for the replica to start reading the rdb
-            set res [wait_for_log_messages -1 {"*Loading DB in memory*"} 0 200 10]
-            set loglines [lindex $res 1]
+                # Wait for the replica to start reading the rdb
+                set res [wait_for_log_messages -1 {"*Loading DB in memory*"} 0 200 10]
+                set loglines [lindex $res 1]
 
-            # Wait till we see the watchgod log line AFTER the loading started
-            wait_for_log_messages -1 {"*WATCHDOG TIMER EXPIRED*"} $loglines 200 10
+                # Wait till we see the watchgod log line AFTER the loading started
+                wait_for_log_messages -1 {"*WATCHDOG TIMER EXPIRED*"} $loglines 200 10
 
-            # Make sure we're still loading, and that there was just one full sync attempt
-            assert ![log_file_matches [srv -1 stdout] "*Reconnecting to MASTER*"]
-            assert_equal 1 [s 0 sync_full]
-            assert_equal 1 [s -1 loading]
+                # Make sure we're still loading, and that there was just one full sync attempt
+                assert ![log_file_matches [srv -1 stdout] "*Reconnecting to MASTER*"]
+                assert_equal 1 [s 0 sync_full]
+                assert_equal 1 [s -1 loading]
+            }
         }
-    }
-} {} {external:skip}
+    } {} {external:skip}
+}
 
 start_server {tags {"repl" "external:skip"}} {
     test "replica do not write the reply to the replication link - SYNC (_addReplyToBufferOrList)" {

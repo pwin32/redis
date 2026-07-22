@@ -56,6 +56,42 @@ proc join_nodes_in_cluster {} {
     # eventually.
     set ids {}
     foreach_redis_id id {lappend ids $id}
+
+    if {$::tcl_platform(platform) eq "windows"} {
+        # Cluster bus connects are asynchronous under IOCP.  Immediately
+        # after CLUSTER RESET HARD, one link in this chain can transiently
+        # fail while its peer recreates the listener.  Retry the same chain
+        # periodically and check the mesh as one condition, so a single lost
+        # MEET does not turn the upstream per-node 50-second wait into a
+        # many-minute stall.  Keeping a chain still exercises auto-discovery.
+        for {set attempt 0} {$attempt < 1000} {incr attempt} {
+            # Retry only after the normal 3-second handshake timeout has had
+            # time to discard a failed attempt.  Faster retries can amplify
+            # inbound-link replacement while a peer is still converging.
+            if {$attempt % 80 == 0} {
+                for {set j 0} {$j < [expr [llength $ids]-1]} {incr j} {
+                    set a [lindex $ids $j]
+                    set b [lindex $ids [expr $j+1]]
+                    set b_port [get_instance_attrib redis $b port]
+                    catch {R $a cluster meet 127.0.0.1 $b_port}
+                }
+            }
+
+            set all_connected 1
+            foreach_redis_id id {
+                if {[catch {
+                    set connected [llength [get_cluster_nodes $id connected]]
+                }] || $connected != [llength $ids]} {
+                    set all_connected 0
+                    break
+                }
+            }
+            if {$all_connected} {return 1}
+            after 50
+        }
+        return 0
+    }
+
     for {set j 0} {$j < [expr [llength $ids]-1]} {incr j} {
         set a [lindex $ids $j]
         set b [lindex $ids [expr $j+1]]

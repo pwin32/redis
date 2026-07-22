@@ -393,6 +393,35 @@ tags "modules" {
                     close_replication_stream $repl
                 }
 
+                if {$::tcl_platform(platform) eq "windows"} {
+                    test {Windows QFork snapshots module-thread allocations} {
+                        # The propagation stream above verifies the command
+                        # sequence, but it does not parse the generated RDB.
+                        # RedisModule_Replicate writes a-from-thread and
+                        # b-from-thread only to the replication stream, while
+                        # RedisModule_Call creates thread-call in the master's
+                        # DB. Wait for both sides, then force a fresh replica
+                        # through a complete diskless QFork snapshot and
+                        # validate the master-side object after RDB loading.
+                        set master_db9 [redis $master_host $master_port 0 $::tls]
+                        $master_db9 select 9
+                        wait_for_condition 500 10 {
+                            [$replica mget a-from-thread thread-call b-from-thread] eq {3 3 3} &&
+                            [$master_db9 get thread-call] eq "3"
+                        } else {
+                            fail "The module thread did not finish publishing its DB 9 values."
+                        }
+                        $master_db9 close
+
+                        start_server {tags {qfork external:skip tls:skip}} {
+                            set fresh_replica [srv 0 client]
+                            $fresh_replica replicaof $master_host $master_port
+                            wait_for_sync $fresh_replica
+                            assert_equal 3 [$fresh_replica get thread-call]
+                        }
+                    } {} {qfork external:skip tls:skip}
+                }
+
                 test {module propagates from thread with detached ctx} {
                     set repl [attach_to_replication_stream]
 

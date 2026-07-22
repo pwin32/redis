@@ -177,6 +177,9 @@ client *createClient(connection *conn) {
     c->flags = 0;
     c->slot = -1;
     c->ctime = c->lastinteraction = server.unixtime;
+#ifdef _WIN32
+    c->close_after_reply_time = 0;
+#endif
     c->duration = 0;
     clientSetDefaultAuth(c);
     c->replstate = REPL_STATE_NONE;
@@ -1325,6 +1328,114 @@ void clientAcceptHandler(connection *conn) {
                           c);
 }
 
+#ifdef _WIN32
+#define REJECTED_REPLY_CLOSE_DELAY 100
+#define REJECTED_REPLY_WRITE_TIMEOUT 1000
+
+typedef struct rejectedConnection {
+    connection *conn;
+    sds reply;
+    size_t sent;
+    long long timeout_id;
+} rejectedConnection;
+
+static int closeRejectedConnection(aeEventLoop *el, long long id,
+                                   void *clientData) {
+    UNUSED(el);
+    UNUSED(id);
+    connClose(clientData);
+    return AE_NOMORE;
+}
+
+static void closeRejectedConnectionAfterReply(connection *conn) {
+    if (FDAPI_shutdown(conn->fd, SD_SEND) == 0 &&
+        aeCreateTimeEvent(server.el, REJECTED_REPLY_CLOSE_DELAY,
+                          closeRejectedConnection,
+                          conn, NULL) != AE_ERR)
+    {
+        return;
+    }
+    connClose(conn);
+}
+
+static void freeRejectedConnection(rejectedConnection *state) {
+    sdsfree(state->reply);
+    zfree(state);
+}
+
+static int rejectedConnectionWriteTimeout(aeEventLoop *el, long long id,
+                                          void *clientData) {
+    UNUSED(el);
+    UNUSED(id);
+    rejectedConnection *state = clientData;
+    connection *conn = state->conn;
+
+    connSetWriteHandler(conn,NULL);
+    connSetPrivateData(conn,NULL);
+    connClose(conn);
+    freeRejectedConnection(state);
+    return AE_NOMORE;
+}
+
+static void finishRejectedConnectionWrite(rejectedConnection *state) {
+    connection *conn = state->conn;
+
+    aeDeleteTimeEvent(server.el,state->timeout_id);
+    connSetWriteHandler(conn,NULL);
+    connSetPrivateData(conn,NULL);
+    freeRejectedConnection(state);
+    closeRejectedConnectionAfterReply(conn);
+}
+
+static void writeRejectedConnectionReply(connection *conn) {
+    rejectedConnection *state = connGetPrivateData(conn);
+    int nwritten = connWrite(conn,state->reply+state->sent,
+                             sdslen(state->reply)-state->sent);
+
+    if (nwritten > 0) state->sent += nwritten;
+    if (state->sent == sdslen(state->reply))
+        finishRejectedConnectionWrite(state);
+}
+
+static void rejectConnection(connection *conn, char *err) {
+    size_t reply_len = strlen(err);
+
+    /* TLS did not perform a handshake yet, so retain upstream's best-effort
+     * write and immediate close for that connection type. */
+    if (strcmp(connGetType(conn),CONN_TYPE_SOCKET) != 0) {
+        connWrite(conn,err,reply_len);
+        connClose(conn);
+        return;
+    }
+
+    int nwritten = connWrite(conn,err,reply_len);
+    if (nwritten == (int)reply_len) {
+        closeRejectedConnectionAfterReply(conn);
+        return;
+    }
+
+    rejectedConnection *state = zmalloc(sizeof(*state));
+    state->conn = conn;
+    state->reply = sdsnewlen(err,reply_len);
+    state->sent = nwritten > 0 ? (size_t)nwritten : 0;
+    state->timeout_id = aeCreateTimeEvent(server.el,
+        REJECTED_REPLY_WRITE_TIMEOUT,rejectedConnectionWriteTimeout,state,NULL);
+    if (state->timeout_id == AE_ERR) {
+        freeRejectedConnection(state);
+        connClose(conn);
+        return;
+    }
+
+    connSetPrivateData(conn,state);
+    if (connSetWriteHandler(conn,writeRejectedConnectionReply) == C_ERR) {
+        aeDeleteTimeEvent(server.el,state->timeout_id);
+        connSetPrivateData(conn,NULL);
+        freeRejectedConnection(state);
+        connClose(conn);
+    }
+}
+#endif
+
 void acceptCommonHandler(connection *conn, int flags, char *ip) {
     client *c;
     UNUSED(ip);
@@ -1359,11 +1470,17 @@ void acceptCommonHandler(connection *conn, int flags, char *ip) {
         /* That's a best effort error message, don't check write errors.
          * Note that for TLS connections, no handshake was done yet so nothing
          * is written and the connection will just drop. */
+#ifdef _WIN32
+        rejectConnection(conn,err);
+#else
         if (connWrite(conn,err,strlen(err)) == -1) {
             /* Nothing to do, Just to avoid the warning... */
         }
+#endif
         server.stat_rejected_conn++;
+#ifndef _WIN32
         connClose(conn);
+#endif
         return;
     }
 
@@ -1742,6 +1859,10 @@ void freeClientAsync(client *c) {
      * are in the context of the main thread while the other threads are
      * idle. */
     if (c->flags & CLIENT_CLOSE_ASAP || c->flags & CLIENT_SCRIPT) return;
+#ifdef _WIN32
+    if (c->flags & CLIENT_CLOSE_AFTER_REPLY)
+        c->close_after_reply_time = mstime() + 100;
+#endif
     c->flags |= CLIENT_CLOSE_ASAP;
     /* Replicas that was marked as CLIENT_CLOSE_ASAP should not keep the
      * replication backlog from been trimmed. */
@@ -1800,6 +1921,12 @@ int beforeNextClient(client *c) {
      * in ACL modifications we disconnect clients authenticated to non-existent
      * users (see ACL LOAD). */
     if (c && (c->flags & CLIENT_CLOSE_ASAP)) {
+#ifdef _WIN32
+        /* A final reply is drained by freeClientsInAsyncFreeQueue(). Do not
+         * bypass that Windows grace period from this per-client fast path. */
+        if (c->close_after_reply_time)
+            return C_OK;
+#endif
         freeClient(c);
         return C_ERR;
     }
@@ -1818,6 +1945,21 @@ int freeClientsInAsyncFreeQueue(void) {
         client *c = listNodeValue(ln);
 
         if (c->flags & CLIENT_PROTECTED) continue;
+
+#ifdef _WIN32
+        /* Let Winsock deliver the final buffered reply before closing. */
+        if (c->close_after_reply_time &&
+            mstime() < c->close_after_reply_time)
+        {
+            continue;
+        }
+
+        /* Unread request bytes make closes abortive and discard the reply. */
+        if ((c->flags & CLIENT_PROTOCOL_ERROR) && c->conn) {
+            char discard[PROTO_IOBUF_LEN];
+            while (connRead(c->conn,discard,sizeof(discard)) > 0) {}
+        }
+#endif
 
         c->flags &= ~CLIENT_CLOSE_ASAP;
         freeClient(c);
@@ -2037,6 +2179,12 @@ int writeToClient(client *c, int handler_installed) {
 
         /* Close connection after entire reply has been sent. */
         if (c->flags & CLIENT_CLOSE_AFTER_REPLY) {
+#ifdef _WIN32
+            /* Start a graceful close before the delayed closesocket below.
+             * Otherwise Winsock can discard its queued final reply. Route
+             * this through the connection type so TLS emits close-notify. */
+            connShutdownWrite(c->conn);
+#endif
             freeClientAsync(c);
             return C_ERR;
         }

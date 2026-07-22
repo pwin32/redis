@@ -35,6 +35,9 @@
 #include <string.h>
 #include <strings.h>
 #include <assert.h>
+#ifdef _WIN32
+#include <errno.h>
+#endif
 
 /* We need to store events to be able to test and see what we got, and we can't
  * store them in the key-space since that would mess up rdb loading (duplicates)
@@ -46,6 +49,8 @@ RedisModuleDict *removed_event_log = NULL;
 RedisModuleDict *removed_subevent_type = NULL;
 /* stores all the keys on which we got 'removed' event with expiry information */
 RedisModuleDict *removed_expiry_log = NULL;
+RedisModuleTimerID persistence_timer = 0;
+int persistence_timer_active = 0;
 
 typedef struct EventElement {
     long count;
@@ -188,6 +193,191 @@ void rasterLinkChangeCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t 
     LogNumericEvent(ctx, keyname, 0);
 }
 
+void persistenceTimerCallback(RedisModuleCtx *ctx, void *data)
+{
+    REDISMODULE_NOT_USED(ctx);
+    REDISMODULE_NOT_USED(data);
+    persistence_timer_active = 0;
+}
+
+int cmdTimerArm(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+    REDISMODULE_NOT_USED(argv);
+    if (argc != 1) {
+        RedisModule_WrongArity(ctx);
+        return REDISMODULE_OK;
+    }
+    if (persistence_timer_active) {
+        RedisModule_ReplyWithError(ctx, "ERR timer already active");
+        return REDISMODULE_OK;
+    }
+
+    persistence_timer = RedisModule_CreateTimer(
+        ctx, 600000, persistenceTimerCallback, NULL);
+    persistence_timer_active = 1;
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
+    return REDISMODULE_OK;
+}
+
+int cmdTimerClear(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+    REDISMODULE_NOT_USED(argv);
+    if (argc != 1) {
+        RedisModule_WrongArity(ctx);
+        return REDISMODULE_OK;
+    }
+
+    int stopped = 0;
+    if (persistence_timer_active) {
+        stopped = RedisModule_StopTimer(ctx, persistence_timer, NULL) ==
+                  REDISMODULE_OK;
+        persistence_timer_active = 0;
+    }
+    RedisModule_ReplyWithLongLong(ctx, stopped);
+    return REDISMODULE_OK;
+}
+
+#ifdef _WIN32
+static int qforkCallReplyIsError(RedisModuleCallReply *reply) {
+    int is_error = reply != NULL &&
+                   RedisModule_CallReplyType(reply) == REDISMODULE_REPLY_ERROR;
+    if (reply) RedisModule_FreeCallReply(reply);
+    return is_error;
+}
+
+static int qforkImmutableApiRegression(RedisModuleCtx *ctx) {
+    RedisModuleString *keyname = RedisModule_CreateString(ctx, "qfork-api-key", 13);
+    RedisModuleKey *key = NULL;
+    int before = (int)RedisModule_DbSize(ctx);
+    int ok = 1;
+
+    errno = 0;
+    ok = ok && RedisModule_SignalModifiedKey(ctx, keyname) == REDISMODULE_ERR &&
+         errno == ENOTSUP;
+
+    errno = 0;
+    ok = ok && RedisModule_GetClientInfoById(NULL, 1) == REDISMODULE_ERR &&
+         errno == ENOTSUP;
+    errno = 0;
+    ok = ok && RedisModule_GetClientNameById(ctx, 1) == NULL &&
+         errno == ENOTSUP;
+    errno = 0;
+    ok = ok && RedisModule_GetClientUserNameById(ctx, 1) == NULL &&
+         errno == ENOTSUP;
+    errno = 0;
+    ok = ok && RedisModule_GetClientCertificate(ctx, 1) == NULL &&
+         errno == ENOTSUP;
+
+    errno = 0;
+    ok = ok && RedisModule_RandomKey(ctx) == NULL && errno == ENOTSUP;
+
+    ok = ok && RedisModule_KeyExists(ctx, keyname) == 1 &&
+         (int)RedisModule_DbSize(ctx) == before;
+
+    key = RedisModule_OpenKey(ctx, keyname, REDISMODULE_READ);
+    if (key != NULL) {
+        mstime_t lru = 0;
+        long long lfu = 0;
+        errno = 0;
+        ok = ok && RedisModule_SetLRU(key, 1) == REDISMODULE_ERR &&
+             errno == ENOTSUP;
+        errno = 0;
+        ok = ok && RedisModule_GetLRU(key, &lru) == REDISMODULE_ERR &&
+             errno == ENOTSUP;
+        errno = 0;
+        ok = ok && RedisModule_SetLFU(key, 1) == REDISMODULE_ERR &&
+             errno == ENOTSUP;
+        errno = 0;
+        ok = ok && RedisModule_GetLFU(key, &lfu) == REDISMODULE_ERR &&
+             errno == ENOTSUP;
+        RedisModule_CloseKey(key);
+    } else {
+        ok = 0;
+    }
+
+    errno = 0;
+    RedisModule_ResetDataset(0, 0);
+    ok = ok && errno == ENOTSUP && (int)RedisModule_DbSize(ctx) == before;
+
+    RedisModule_FreeString(ctx, keyname);
+    return ok;
+}
+
+/* Exercise the deliberately narrow persistence-child module contract. The
+ * callback must be able to emit/log and inspect reviewed scalar metadata, but
+ * it must never enter Lua/Functions, copied event-loop state, network clients,
+ * propagation, or module-owned command/config callbacks. */
+static void qforkPersistenceApiRegression(RedisModuleCtx *ctx) {
+    RedisModuleCallReply *reply;
+    int core_ok = 1;
+
+    reply = RedisModule_Call(ctx, "PING", "E");
+    core_ok = core_ok && reply != NULL &&
+              RedisModule_CallReplyType(reply) == REDISMODULE_REPLY_STRING;
+    if (reply) RedisModule_FreeCallReply(reply);
+
+    reply = RedisModule_Call(ctx, "DBSIZE", "E");
+    core_ok = core_ok && reply != NULL &&
+              RedisModule_CallReplyType(reply) == REDISMODULE_REPLY_INTEGER;
+    if (reply) RedisModule_FreeCallReply(reply);
+
+    reply = RedisModule_Call(ctx, "CONFIG", "Ecc", "GET", "port");
+    core_ok = core_ok && reply != NULL &&
+              RedisModule_CallReplyType(reply) != REDISMODULE_REPLY_ERROR;
+    if (reply) RedisModule_FreeCallReply(reply);
+
+    if (core_ok)
+        RedisModule_Log(ctx, "warning", "module-event-qfork-rmcall-core-ok");
+
+    int rejected = 1;
+    rejected &= qforkCallReplyIsError(
+        RedisModule_Call(ctx, "EVAL_RO", "Ecc", "return 1", "0"));
+    rejected &= qforkCallReplyIsError(
+        RedisModule_Call(ctx, "FCALL_RO", "Ecc", "missing", "0"));
+    rejected &= qforkCallReplyIsError(
+        RedisModule_Call(ctx, "INFO", "Ec", "memory"));
+    rejected &= qforkCallReplyIsError(
+        RedisModule_Call(ctx, "MEMORY", "Ec", "STATS"));
+    rejected &= qforkCallReplyIsError(
+        RedisModule_Call(ctx, "SET", "Ecc", "qfork-key", "value"));
+    rejected &= qforkCallReplyIsError(
+        RedisModule_Call(ctx, "BLPOP", "Ecc", "qfork-key", "0"));
+    rejected &= qforkCallReplyIsError(
+        RedisModule_Call(ctx, "hooks.event_count", "Ec", "qfork-key"));
+    rejected &= qforkCallReplyIsError(
+        RedisModule_Call(ctx, "CONFIG", "Ecc!", "GET", "port"));
+    if (rejected)
+        RedisModule_Log(ctx, "warning", "module-event-qfork-rmcall-rejected");
+
+    errno = 0;
+    RedisModuleServerInfoData *info = RedisModule_GetServerInfo(ctx, "server");
+    int api_rejected = info == NULL && errno == ENOTSUP;
+    if (info) RedisModule_FreeServerInfo(ctx, info);
+
+    errno = 0;
+    RedisModuleTimerID timer = RedisModule_CreateTimer(ctx, 1, NULL, NULL);
+    api_rejected = api_rejected && timer == 0 && errno == ENOTSUP;
+
+    errno = 0;
+    RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
+    api_rejected = api_rejected && bc == NULL && errno == ENOTSUP;
+
+    errno = 0;
+    RedisModule_EventLoopAddOneShot(NULL, NULL);
+    api_rejected = api_rejected && errno == ENOTSUP;
+
+    errno = 0;
+    RedisModule_Yield(ctx, REDISMODULE_YIELD_FLAG_NONE, NULL);
+    api_rejected = api_rejected && errno == ENOTSUP;
+
+    if (api_rejected)
+        RedisModule_Log(ctx, "warning", "module-event-qfork-unsafe-api-rejected");
+
+    if (qforkImmutableApiRegression(ctx))
+        RedisModule_Log(ctx, "warning", "module-event-qfork-immutable-api-rejected");
+}
+#endif
+
 void persistenceCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, void *data)
 {
     REDISMODULE_NOT_USED(e);
@@ -204,6 +394,19 @@ void persistenceCallback(RedisModuleCtx *ctx, RedisModuleEvent e, uint64_t sub, 
     }
     /* modifying the keyspace from the fork child is not an option, using log instead */
     RedisModule_Log(ctx, "warning", "module-event-%s", keyname);
+    if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_AOF_START &&
+        persistence_timer_active)
+    {
+        uint64_t remaining = 0;
+        if (RedisModule_GetTimerInfo(ctx, persistence_timer, &remaining, NULL) ==
+                REDISMODULE_OK && remaining > 0)
+            RedisModule_Log(ctx, "warning", "module-event-qfork-timer-info-ok");
+    }
+#ifdef _WIN32
+    if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_RDB_START ||
+        sub == REDISMODULE_SUBEVENT_PERSISTENCE_AOF_START)
+        qforkPersistenceApiRegression(ctx);
+#endif
     if (sub == REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_RDB_START ||
         sub == REDISMODULE_SUBEVENT_PERSISTENCE_SYNC_AOF_START) 
     {
@@ -464,6 +667,10 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
         return REDISMODULE_ERR;
     if (RedisModule_CreateCommand(ctx,"hooks.clear", cmdEventsClear,"",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
+    if (RedisModule_CreateCommand(ctx,"hooks.timer_arm", cmdTimerArm,"",0,0,0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+    if (RedisModule_CreateCommand(ctx,"hooks.timer_clear", cmdTimerClear,"",0,0,0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
     if (RedisModule_CreateCommand(ctx,"hooks.is_key_removed", cmdIsKeyRemoved,"",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
     if (RedisModule_CreateCommand(ctx,"hooks.pexpireat", cmdKeyExpiry,"",0,0,0) == REDISMODULE_ERR)
@@ -485,6 +692,10 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 }
 
 int RedisModule_OnUnload(RedisModuleCtx *ctx) {
+    if (persistence_timer_active) {
+        RedisModule_StopTimer(ctx, persistence_timer, NULL);
+        persistence_timer_active = 0;
+    }
     clearEvents(ctx);
     RedisModule_FreeDict(ctx, event_log);
     event_log = NULL;
@@ -513,4 +724,3 @@ int RedisModule_OnUnload(RedisModuleCtx *ctx) {
 
     return REDISMODULE_OK;
 }
-

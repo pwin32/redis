@@ -876,9 +876,23 @@ int clientsCronTrackExpansiveClients(client *c, int time_idx) {
  * halved we move it down a bucket.
  * For more details see CLIENT_MEM_USAGE_BUCKETS documentation in server.h. */
 static inline clientMemUsageBucket *getMemUsageBucket(size_t mem) {
-    int size_in_bits = 8*(int)sizeof(mem);
-    int clz = mem > 0 ? __builtin_clzl(mem) : size_in_bits;
-    int bucket_idx = size_in_bits - clz;
+    int bucket_idx = 0;
+
+#if defined(__GNUC__) || defined(__clang__)
+    /* unsigned long is only 32 bits in the Windows LLP64 ABI while size_t is
+     * 64 bits.  Using __builtin_clzl() there makes every normal client appear
+     * to belong to the largest bucket. */
+    if (mem != 0) {
+        bucket_idx = 8*(int)sizeof(unsigned long long) -
+                     __builtin_clzll((unsigned long long)mem);
+    }
+#else
+    /* Keep the legacy Visual Studio build viable without compiler-specific
+     * count-leading-zero intrinsics. */
+    for (size_t value = mem; value != 0; value >>= 1)
+        bucket_idx++;
+#endif
+
     if (bucket_idx > CLIENT_MEM_USAGE_BUCKET_MAX_LOG)
         bucket_idx = CLIENT_MEM_USAGE_BUCKET_MAX_LOG;
     else if (bucket_idx < CLIENT_MEM_USAGE_BUCKET_MIN_LOG)
@@ -3155,6 +3169,33 @@ void populateCommandTable(void) {
     }
 }
 
+#ifdef _WIN32
+/* A QFork child starts as a fresh executable, so the runtime-populated tail
+ * of redisCommandTable[] (including subcommand dictionaries) is zeroed even
+ * though the copied server command dictionaries still point at those static
+ * entries. Re-run population against disposable child dictionaries, then put
+ * the copied parent dictionaries back so renames and module commands remain
+ * exactly as captured. */
+void rehydrateCommandTableForQFork(void) {
+    dict *parent_commands = server.commands;
+    dict *parent_orig_commands = server.orig_commands;
+    dict *child_commands = dictCreate(&commandTableDictType);
+    dict *child_orig_commands = dictCreate(&commandTableDictType);
+
+    serverAssert(parent_commands != NULL && parent_orig_commands != NULL);
+    serverAssert(child_commands != NULL && child_orig_commands != NULL);
+
+    server.commands = child_commands;
+    server.orig_commands = child_orig_commands;
+    populateCommandTable();
+    server.commands = parent_commands;
+    server.orig_commands = parent_orig_commands;
+
+    dictRelease(child_commands);
+    dictRelease(child_orig_commands);
+}
+#endif
+
 void resetCommandTableStats(dict* commands) {
     struct redisCommand *c;
     dictEntry *de;
@@ -4469,6 +4510,7 @@ int finishShutdown(void) {
     if (server.child_type == CHILD_TYPE_RDB) {
         serverLog(LL_WARNING,"There is a child saving an .rdb. Killing it!");
         killRDBChild();
+#ifndef _WIN32
         /* Note that, in killRDBChild normally has backgroundSaveDoneHandler
          * doing it's cleanup, but in this case this code will not be reached,
          * so we need to call rdbRemoveTempFile which will close fd(in order
@@ -4476,6 +4518,7 @@ int finishShutdown(void) {
          * The temp rdb file fd may won't be closed when redis exits quickly,
          * but OS will close this fd when process exits. */
         rdbRemoveTempFile(server.child_pid, 0);
+#endif
     }
 
     /* Kill module child if there is one. */
@@ -4558,12 +4601,27 @@ int finishShutdown(void) {
     /* Close the listening sockets. Apparently this allows faster restarts. */
     closeListeningSockets(1);
 
-#if !defined(__sun) && !defined(_WIN32)
+#if !defined(__sun)
     /* Unlock the cluster config file before shutdown */
     if (server.cluster_enabled && server.cluster_config_file_lock_fd != -1) {
+#ifdef _WIN32
+        HANDLE hFile = (HANDLE)FDAPI_get_osfhandle(
+            server.cluster_config_file_lock_fd);
+        OVERLAPPED overlapped = {0};
+        if (hFile != INVALID_HANDLE_VALUE &&
+            !UnlockFileEx(hFile, 0, MAXDWORD, MAXDWORD, &overlapped))
+        {
+            serverLog(LL_WARNING,
+                "Could not unlock cluster config lock file: %s",
+                wsa_strerror((int)GetLastError()));
+        }
+        close(server.cluster_config_file_lock_fd);
+        server.cluster_config_file_lock_fd = -1;
+#else
         flock(server.cluster_config_file_lock_fd, LOCK_UN|LOCK_NB);
+#endif
     }
-#endif /* !__sun && !_WIN32 */
+#endif /* !__sun */
 
 
     serverLog(LL_WARNING,"%s is now ready to exit, bye bye...",
@@ -6567,7 +6625,7 @@ void redisAsciiArt(void) {
             strtol(redisGitDirty(),NULL,10) > 0,
             (sizeof(void*) == 8) ? "64" : "32",
             mode, server.port ? server.port : server.tls_port,
-            (long) getpid()
+            (long long) getpid()
         );
         serverLogRaw(LL_NOTICE|LL_RAW,buf);
     }

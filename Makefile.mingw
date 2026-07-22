@@ -96,6 +96,8 @@ HDR_HISTOGRAM_CFLAGS := $(BASE_CFLAGS) -std=gnu99 -DNO_QFORKIMPL -DHDR_MALLOC_IN
 TEST_MODULE_CFLAGS := $(OPT) $(WARNINGS) -std=gnu99 -Isrc
 TEST_MODULE_LDFLAGS := -shared -static-libgcc -no-pthread -Wl,--export-all-symbols
 TEST_MODULE_LDLIBS := -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
+TEST_LAUNCHER_CFLAGS := $(OPT) $(WARNINGS) -std=gnu99
+TEST_LAUNCHER_LDFLAGS := -municode -mwindows
 
 LDFLAGS_COMMON := \
 	-no-pthread \
@@ -400,6 +402,13 @@ BENCHMARK_OBJS := \
 	$(addprefix $(BUILD)/benchmark/,$(TOOL_WIN32_INTEROP_C_SOURCES:.c=.o)) \
 	$(addprefix $(BUILD)/benchmark/,$(TOOL_WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
 
+AE_BACKEND_SOURCE := src/ae_wsiocp.c
+AE_OBJS := \
+	$(BUILD)/server/src/ae.o \
+	$(BUILD)/cli/src/ae.o \
+	$(BUILD)/benchmark/src/ae.o \
+	$(BUILD)/hiredis-test/src/ae.o
+
 HIREDIS_LIB := $(BUILD)/lib/libhiredis.a
 LUA_LIB := $(BUILD)/lib/liblua.a
 JEMALLOC_LIB := $(JEMALLOC_BUILD)/lib/jemalloc.lib
@@ -408,9 +417,9 @@ REDIS_CHECK_ALIASES := $(BUILD)/redis-check-aof.exe $(BUILD)/redis-check-rdb.exe
 TEST_MODULE_SOURCES := $(sort $(wildcard tests/modules/*.c))
 TEST_MODULES := $(patsubst tests/modules/%.c,$(BUILD)/tests/modules/%.so,$(TEST_MODULE_SOURCES))
 
-.PHONY: all clean distclean deps eventlog hiredis-test interop-test test-modules
+.PHONY: all clean distclean deps eventlog hiredis-test interop-test test-launcher test-modules FORCE
 
-all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL)
+all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/redis-test-launcher.exe
 
 deps: $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(JEMALLOC_LIB)
 
@@ -420,10 +429,18 @@ hiredis-test: $(BUILD)/hiredis-test.exe
 
 interop-test: $(BUILD)/interop-test.exe
 
+test-launcher: $(BUILD)/redis-test-launcher.exe
+
 test-modules: $(TEST_MODULES)
 
-src/release.h:
+src/release.h: FORCE
 	cd src && ./mkreleasehdr.sh
+
+# The generated header is ignored and can outlive a branch switch or a
+# linked-worktree checkout. Always let mkreleasehdr.sh verify its commit and
+# dirty-tree metadata; it only rewrites the file (and touches release.c) when
+# those values actually changed.
+FORCE:
 
 $(JEMALLOC_SRC)/configure: $(JEMALLOC_SRC)/configure.ac
 	cd $(JEMALLOC_SRC) && autoconf
@@ -485,6 +502,12 @@ $(BUILD)/hiredis-test.exe: Makefile.mingw $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB)
 
 $(BUILD)/interop-test.exe: Makefile.mingw $(INTEROP_TEST_OBJS)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(INTEROP_TEST_OBJS) $(LDLIBS_COMMON)
+
+$(AE_OBJS): $(AE_BACKEND_SOURCE)
+
+$(BUILD)/redis-test-launcher.exe: Makefile.mingw tests/windows/test-launcher.c
+	mkdir -p $(dir $@)
+	$(CC) $(TEST_LAUNCHER_CFLAGS) $(TEST_LAUNCHER_LDFLAGS) $(LDFLAGS_COMMON) -o $@ tests/windows/test-launcher.c -lws2_32
 
 $(BUILD)/tests/modules/%.so: tests/modules/%.c src/redismodule.h src/Win32_Interop/win32_types_hiredis.h Makefile.mingw
 	mkdir -p $(dir $@)
@@ -550,7 +573,7 @@ clean:
 	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/hdr_histogram $(BUILD)/fpconv $(BUILD)/cli $(BUILD)/benchmark
 	rm -rf $(BUILD)/eventlog $(BUILD)/hiredis-test $(BUILD)/interop-test
 	rm -rf $(BUILD)/tests/modules
-	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe
+	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe $(BUILD)/redis-test-launcher.exe
 	rm -rf $(BUILD)/lib
 
 distclean: clean

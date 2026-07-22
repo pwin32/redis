@@ -22,9 +22,26 @@
 
 #include "..\server.h"
 #include "Win32_Portability.h"
+#include "Win32_QFork.h"
+#include "Win32_QFork_impl.h"
 
 void moduleSetForkData(void *data);
 int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi);
+
+size_t RedisSharedForkDataSize(void) {
+    return sizeof(shared);
+}
+
+BOOL RedisCopySharedForkData(void *data, size_t size) {
+    if (data == NULL || size != sizeof(shared)) return FALSE;
+    memcpy(data, &shared, sizeof(shared));
+    return TRUE;
+}
+
+void RedisGetCoreForkData(RedisCoreForkData *data) {
+    memset(data, 0, sizeof(*data));
+    data->configs = configGetQForkData();
+}
 
 static rdbSaveInfo *copyRdbSaveInfo(rdbSaveInfo *dst, const void *src,
                                     size_t src_size)
@@ -41,21 +58,83 @@ static rdbSaveInfo *copyRdbSaveInfo(rdbSaveInfo *dst, const void *src,
     return dst;
 }
 
-void SetupRedisGlobals(LPVOID redisData, size_t redisDataSize, uint8_t *dictHashSeed,
-    LPVOID redisModules, size_t usedMemory)
+BOOL SetupRedisGlobals(LPVOID redisData, size_t redisDataSize,
+    uint8_t *dictHashSeed, const RedisACLForkData *redisACL,
+    const RedisCoreForkData *redisCore, LPVOID sharedData,
+    size_t sharedDataSize, LPVOID redisModules, size_t usedMemory)
 {
 #ifndef NO_QFORKIMPL
+    if (redisData == NULL || redisDataSize != sizeof(server) ||
+        redisACL == NULL || redisCore == NULL || redisModules == NULL ||
+        sharedData == NULL || sharedDataSize != sizeof(shared))
+    {
+        serverLog(LL_WARNING,
+            "QFork global ABI mismatch: server=%llu/%llu shared=%llu/%llu",
+            (unsigned long long)redisDataSize,
+            (unsigned long long)sizeof(server),
+            (unsigned long long)sharedDataSize,
+            (unsigned long long)sizeof(shared));
+        return FALSE;
+    }
+
     memcpy(&server, redisData, redisDataSize);
+    memcpy(&shared, sharedData, sharedDataSize);
     dictSetHashFunctionSeed(dictHashSeed);
+    ACLSetForkData(redisACL);
+    configSetQForkData((dict *)redisCore->configs);
     moduleSetForkData(redisModules);
     zmalloc_set_used_memory(usedMemory);
     crc64_init();
+    /* QFork children are fresh processes, so executable-image globals are not
+     * inherited with the mapped Redis heap. Redis 7.2's module callbacks call
+     * through getMonotonicUs; initialize that process-local function pointer
+     * before any persistence event can enter moduleCreateContext(). */
+    monotonicInit();
+    R_Zero = 0.0;
+    R_PosInf = 1.0/R_Zero;
+    R_NegInf = -1.0/R_Zero;
+    R_Nan = R_Zero/R_Zero;
+    server.main_thread_id = pthread_self();
+    /* Live clients and their connection/event-loop ownership are process
+     * local.  Never expose the copied parent registries to persistence-child
+     * module callbacks.  Temporary module clients are unlinked and continue
+     * to be created from the mapped database/configuration snapshot. */
+    server.current_client = NULL;
+    server.executing_client = NULL;
+    server.clients = listCreate();
+    server.clients_index = raxNew();
+    server.clients_to_close = listCreate();
+    server.clients_pending_write = listCreate();
+    server.clients_pending_read = listCreate();
+    server.clients_timeout_table = raxNew();
+    server.slaves = listCreate();
+    server.monitors = listCreate();
+    server.unblocked_clients = listCreate();
+    server.ready_keys = listCreate();
+    server.tracking_pending_keys = listCreate();
+    server.pending_push_messages = listCreate();
+    server.clients_waiting_acks = listCreate();
+    server.postponed_clients = listCreate();
+    server.master = NULL;
+    server.cached_master = NULL;
+    server.repl_transfer_s = NULL;
+    server.module_pipe[0] = -1;
+    server.module_pipe[1] = -1;
+    server.cluster_config_file_lock_fd = -1;
     /* Parent FDAPI descriptor numbers are process-local. Until child-info
      * pipe handles are passed explicitly, disable this optional metrics path
      * so it cannot collide with the AOF descriptors opened in the child. */
     server.child_info_pipe[0] = -1;
     server.child_info_pipe[1] = -1;
+    clusterSetQForkState();
+    if (connTypeInitialize() != C_OK) {
+        serverLog(LL_WARNING,
+                  "QFork could not initialize child connection types");
+        return FALSE;
+    }
+    rehydrateCommandTableForQFork();
 #endif
+    return TRUE;
 }
 
 int do_rdbSave(int req, char* filename, const void *rdb_save_info,

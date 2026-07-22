@@ -142,7 +142,39 @@ BOOL FDAPI_WSAGetOverlappedResult(int rfd, LPWSAOVERLAPPED lpOverlapped, LPDWORD
     } CATCH_AND_REPORT();
 
     errno = EBADF;
-    return SOCKET_ERROR;
+    return FALSE;
+}
+
+/* Test level-triggered write readiness without allocating an event object or
+ * changing the socket's IOCP association.  Winsock select() reports a socket
+ * in writefds when a send can make progress, and in exceptfds for an error
+ * that the ordinary write callback must observe and clean up. */
+int FDAPI_IsSocketWritable(int rfd) {
+    try {
+        SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
+        if (socket == INVALID_SOCKET) {
+            errno = EBADF;
+            return -1;
+        }
+
+        fd_set writefds;
+        fd_set exceptfds;
+        struct timeval timeout = {0, 0};
+        FD_ZERO(&writefds);
+        FD_ZERO(&exceptfds);
+        FD_SET(socket, &writefds);
+        FD_SET(socket, &exceptfds);
+
+        int result = f_select(0, NULL, &writefds, &exceptfds, &timeout);
+        if (result == SOCKET_ERROR) {
+            errno = f_WSAGetLastError();
+            return -1;
+        }
+        return result > 0 ? 1 : 0;
+    } CATCH_AND_REPORT();
+
+    errno = EBADF;
+    return -1;
 }
 
 /* This method should only be called to close the sockets duplicated
@@ -379,15 +411,33 @@ void FDAPI_GetAcceptExSockaddrs(int rfd, PVOID lpOutputBuffer, DWORD dwReceiveDa
     } CATCH_AND_REPORT();
 }
 
-int FDAPI_UpdateAcceptContext(int rfd) {
+int FDAPI_UpdateAcceptContext(int accept_rfd, int listen_rfd) {
+    try {
+        SOCKET accept_socket = RFDMap::getInstance().lookupSocket(accept_rfd);
+        SOCKET listen_socket = RFDMap::getInstance().lookupSocket(listen_rfd);
+        if (accept_socket != INVALID_SOCKET &&
+            listen_socket != INVALID_SOCKET) {
+            return f_setsockopt(accept_socket,
+                                SOL_SOCKET,
+                                SO_UPDATE_ACCEPT_CONTEXT,
+                                (char*) &listen_socket,
+                                sizeof(listen_socket));
+        }
+    } CATCH_AND_REPORT();
+
+    errno = EBADF;
+    return SOCKET_ERROR;
+}
+
+int FDAPI_UpdateConnectContext(int rfd) {
     try {
         SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
         if (socket != INVALID_SOCKET) {
             return f_setsockopt(socket,
                                 SOL_SOCKET,
-                                SO_UPDATE_ACCEPT_CONTEXT,
-                                (char*) &socket,
-                                sizeof(SOCKET));
+                                SO_UPDATE_CONNECT_CONTEXT,
+                                NULL,
+                                0);
         }
     } CATCH_AND_REPORT();
 
@@ -872,6 +922,14 @@ static void set_errno_from_wsa_error(void) {
     errno = translated_error == -9999 ? wsa_error : translated_error;
 }
 
+static void set_errno_from_win32_file_error(DWORD error) {
+    int translated_error = translate_sys_error((int)error);
+
+    /* File APIs must expose a POSIX errno.  ERROR_SUCCESS can be observed
+     * when a wrapper reports failure without preserving LastError. */
+    errno = translated_error <= 0 ? EIO : translated_error;
+}
+
 ssize_t FDAPI_read(int rfd, void *buf, size_t count) {
     try {
         SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
@@ -885,13 +943,10 @@ ssize_t FDAPI_read(int rfd, void *buf, size_t count) {
             int crt_fd = RFDMap::getInstance().lookupCrtFD(rfd);
             if (crt_fd != INVALID_FD) {
                 int retval = crt_read(crt_fd, buf, (unsigned int) count);
-                if (retval == -1) {
-                    errno = GetLastError();
-                }
                 return retval;
             } else {
                 errno = EBADF;
-                return 0;
+                return -1;
             }
         }
     } CATCH_AND_REPORT();
@@ -917,27 +972,23 @@ ssize_t FDAPI_write(int rfd, const void *buf, size_t count) {
                     if (FALSE != ParseAndPrintANSIString(GetStdHandle(STD_OUTPUT_HANDLE), buf, (DWORD) count, &bytesWritten)) {
                         return (int) bytesWritten;
                     } else {
-                        errno = GetLastError();
-                        return 0;
+                        set_errno_from_win32_file_error(GetLastError());
+                        return -1;
                     }
                 } else if (crt_fd == _fileno(stderr)) {
                     DWORD bytesWritten = 0;
                     if (FALSE != ParseAndPrintANSIString(GetStdHandle(STD_ERROR_HANDLE), buf, (DWORD) count, &bytesWritten)) {
                         return (int) bytesWritten;
                     } else {
-                        errno = GetLastError();
-                        return 0;
+                        set_errno_from_win32_file_error(GetLastError());
+                        return -1;
                     }
                 } else {
-                    int retval = crt_write(crt_fd, buf, (unsigned int) count);
-                    if (retval == -1) {
-                        errno = GetLastError();
-                    }
-                    return retval;
+                    return crt_write(crt_fd, buf, (unsigned int) count);
                 }
             } else {
                 errno = EBADF;
-                return 0;
+                return -1;
             }
         }
     } CATCH_AND_REPORT();
@@ -951,6 +1002,11 @@ ssize_t FDAPI_write(int rfd, const void *buf, size_t count) {
 ssize_t FDAPI_writev(int rfd, const struct iovec *iov, int iovcnt) {
     if (iovcnt < 0 || iovcnt > IOV_MAX) {
         errno = EINVAL;
+        return -1;
+    }
+    if (iovcnt == 0) return 0;
+    if (iov == NULL) {
+        errno = EFAULT;
         return -1;
     }
 
@@ -986,25 +1042,26 @@ ssize_t FDAPI_writev(int rfd, const struct iovec *iov, int iovcnt) {
 int FDAPI_fsync(int rfd) {
     try {
         int crt_fd = RFDMap::getInstance().lookupCrtFD(rfd);
-        if (crt_fd != INVALID_FD) {
-            HANDLE h = (HANDLE) crt_get_osfhandle(crt_fd);
-            if (h == INVALID_HANDLE_VALUE) {
-                errno = EBADF;
-                return -1;
-            }
+        if (crt_fd == INVALID_FD) {
+            errno = RFDMap::getInstance().lookupSocket(rfd) != INVALID_SOCKET
+                        ? EINVAL : EBADF;
+            return -1;
+        }
 
-            if (!FlushFileBuffers(h)) {
-                DWORD err = GetLastError();
-                switch (err) {
-                    case ERROR_INVALID_HANDLE:
-                        errno = EINVAL;
-                        break;
+        HANDLE h = (HANDLE) crt_get_osfhandle(crt_fd);
+        if (h == INVALID_HANDLE_VALUE) {
+            errno = EBADF;
+            return -1;
+        }
 
-                    default:
-                        errno = EIO;
-                }
-                return -1;
+        if (!FlushFileBuffers(h)) {
+            DWORD err = GetLastError();
+            if (err == ERROR_INVALID_HANDLE) {
+                errno = EINVAL;
+            } else {
+                set_errno_from_win32_file_error(err);
             }
+            return -1;
         }
         return 0;
     } CATCH_AND_REPORT();
@@ -1046,6 +1103,11 @@ int FDAPI_listen(int rfd, int backlog) {
 }
 
 int FDAPI_ftruncate(int rfd, PORT_LONGLONG length) {
+    if (length < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
     try {
         int crt_fd = RFDMap::getInstance().lookupCrtFD(rfd);
         if (crt_fd != INVALID_FD) {
@@ -1056,11 +1118,14 @@ int FDAPI_ftruncate(int rfd, PORT_LONGLONG length) {
                 return -1;
             }
 
-            LARGE_INTEGER l, o;
-            l.QuadPart = length;
-
-            if (!SetFilePointerEx(h, l, &o, FILE_BEGIN)) return -1;
-            if (!SetEndOfFile(h)) return -1;
+            FILE_END_OF_FILE_INFO end_of_file;
+            end_of_file.EndOfFile.QuadPart = length;
+            if (!SetFileInformationByHandle(h, FileEndOfFileInfo,
+                                            &end_of_file,
+                                            sizeof(end_of_file))) {
+                set_errno_from_win32_file_error(GetLastError());
+                return -1;
+            }
 
             return 0;
         }
@@ -1077,7 +1142,7 @@ int FDAPI_bind(int rfd, const struct sockaddr *addr, socklen_t addrlen) {
             return f_bind(socket, addr, addrlen);
         } else {
             errno = EBADF;
-            return 0;
+            return -1;
         }
     } CATCH_AND_REPORT();
 

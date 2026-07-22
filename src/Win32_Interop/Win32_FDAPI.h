@@ -46,6 +46,8 @@ typedef unsigned long nfds_t;
 #define bind redis_mingw_system_bind
 #define connect redis_mingw_system_connect
 #define freeaddrinfo redis_mingw_system_freeaddrinfo
+#define ftruncate redis_mingw_system_ftruncate
+#define ftruncate64 redis_mingw_system_ftruncate64
 #define getaddrinfo redis_mingw_system_getaddrinfo
 #define getpeername redis_mingw_system_getpeername
 #define getsockname redis_mingw_system_getsockname
@@ -64,6 +66,8 @@ typedef unsigned long nfds_t;
 #define select redis_mingw_system_select
 #define setsockopt redis_mingw_system_setsockopt
 #define socket redis_mingw_system_socket
+#define truncate redis_mingw_system_truncate
+#define truncate64 redis_mingw_system_truncate64
 #define write redis_mingw_system_write
 #define gai_strerror redis_mingw_system_gai_strerror
 #define gai_strerrorA redis_mingw_system_gai_strerrorA
@@ -76,6 +80,12 @@ typedef unsigned long nfds_t;
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#ifdef __MINGW32__
+/* Consume MinGW's complete ftruncate/truncate declaration block while its
+ * symbols are temporarily renamed.  Later includes then cannot redeclare the
+ * FDAPI_ftruncate macro with MinGW's ftruncate64 assembler alias. */
+#include <unistd.h>
+#endif
 #ifndef IOV_MAX
 /* Winsock's WSABUF count is a DWORD, but Redis only needs a small bounded
  * vector for reply batching. */
@@ -104,6 +114,8 @@ struct iovec {
 #undef bind
 #undef connect
 #undef freeaddrinfo
+#undef ftruncate
+#undef ftruncate64
 #undef getaddrinfo
 #undef getpeername
 #undef getsockname
@@ -122,6 +134,8 @@ struct iovec {
 #undef select
 #undef setsockopt
 #undef socket
+#undef truncate
+#undef truncate64
 #undef write
 #undef gai_strerror
 #undef gai_strerrorA
@@ -280,7 +294,8 @@ BOOL    FDAPI_SocketAttachIOCP(int rfd, HANDLE iocph);
 BOOL    FDAPI_AcceptEx(int listenFD,int acceptFD,PVOID lpOutputBuffer,DWORD dwReceiveDataLength,DWORD dwLocalAddressLength,DWORD dwRemoteAddressLength,LPDWORD lpdwBytesReceived,LPOVERLAPPED lpOverlapped);
 BOOL    FDAPI_ConnectEx(int fd,const struct sockaddr *name,int namelen,PVOID lpSendBuffer,DWORD dwSendDataLength,LPDWORD lpdwBytesSent,LPOVERLAPPED lpOverlapped);
 void    FDAPI_GetAcceptExSockaddrs(int fd, PVOID lpOutputBuffer,DWORD dwReceiveDataLength,DWORD dwLocalAddressLength,DWORD dwRemoteAddressLength,LPSOCKADDR *LocalSockaddr,LPINT LocalSockaddrLength,LPSOCKADDR *RemoteSockaddr,LPINT RemoteSockaddrLength);
-int     FDAPI_UpdateAcceptContext( int fd );
+int     FDAPI_UpdateAcceptContext( int accept_fd, int listen_fd );
+int     FDAPI_UpdateConnectContext( int fd );
 int     FDAPI_PipeSetNonBlock(int rfd, int non_blocking);
 void**  FDAPI_GetSocketStatePtr(int rfd);
 void    FDAPI_ClearSocketInfo(int fd);
@@ -289,6 +304,7 @@ int     FDAPI_WSAIoctl(int rfd, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD
 int     FDAPI_WSASend(int rfd, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesSent, DWORD dwFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 int     FDAPI_WSARecv(int rfd, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 BOOL    FDAPI_WSAGetOverlappedResult(int rfd, LPWSAOVERLAPPED lpOverlapped, LPDWORD lpcbTransfer, BOOL fWait, LPDWORD lpdwFlags);
+int     FDAPI_IsSocketWritable(int rfd);
 BOOL    FDAPI_CloseDuplicatedSocket(int rfd);
 int     FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFOW lpProtocolInfo);
 int     FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFOW lpProtocolInfo, GROUP g, DWORD dwFlags);
@@ -296,8 +312,8 @@ int     FDAPI_WSAGetLastError(void);
 ssize_t FDAPI_writev(int rfd, const struct iovec *iov, int iovcnt);
 int     FDAPI_ftruncate(int rfd, PORT_LONGLONG length);
 
-/* Keep MinGW's later <unistd.h> declaration compatible while routing Redis
- * callers through the synthetic descriptor layer. */
+/* The MinGW declarations were consumed above under temporary names, so calls
+ * in Redis can now be routed through the synthetic descriptor map safely. */
 #define ftruncate FDAPI_ftruncate
 
 intptr_t FDAPI_get_osfhandle(int fd);

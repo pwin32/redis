@@ -272,6 +272,13 @@ void sendTrackingMessage(client *c, char *keyname, size_t keylen, int proto) {
     int using_redirection = 0;
     if (c->client_tracking_redirection) {
         client *redir = lookupClientByID(c->client_tracking_redirection);
+#ifdef _WIN32
+        /* A gracefully closing client remains indexed briefly while Winsock
+         * drains its final reply, but it can no longer receive invalidations. */
+        if (redir && (redir->flags &
+                     (CLIENT_CLOSE_AFTER_REPLY|CLIENT_CLOSE_ASAP)))
+            redir = NULL;
+#endif
         if (!redir) {
             c->flags |= CLIENT_TRACKING_BROKEN_REDIR;
             /* We need to signal to the original connection that we

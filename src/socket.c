@@ -142,6 +142,16 @@ static void connSocketShutdown(connection *conn) {
 #endif
 }
 
+static int connSocketShutdownWrite(connection *conn) {
+    if (conn->fd == -1) return C_OK;
+
+#ifdef _WIN32
+    return FDAPI_shutdown(conn->fd, SD_SEND) == 0 ? C_OK : C_ERR;
+#else
+    return shutdown(conn->fd, SHUT_WR) == 0 ? C_OK : C_ERR;
+#endif
+}
+
 /* Close the connection and free resources. */
 static void connSocketClose(connection *conn) {
     if (conn->fd != -1) {
@@ -162,6 +172,12 @@ static void connSocketClose(connection *conn) {
 }
 
 static int connSocketWrite(connection *conn, const void *data, size_t data_len) {
+#ifdef _WIN32
+    if (conn->state == CONN_STATE_ERROR) {
+        errno = conn->last_errno ? conn->last_errno : EIO;
+        return -1;
+    }
+#endif
     int ret = write(conn->fd, data, data_len);
     if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         conn->last_errno = errno;
@@ -177,6 +193,12 @@ static int connSocketWrite(connection *conn, const void *data, size_t data_len) 
 }
 
 static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcnt) {
+#ifdef _WIN32
+    if (conn->state == CONN_STATE_ERROR) {
+        errno = conn->last_errno ? conn->last_errno : EIO;
+        return -1;
+    }
+#endif
     int ret = writev(conn->fd, iov, iovcnt);
     if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         conn->last_errno = errno;
@@ -192,6 +214,12 @@ static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcn
 }
 
 static int connSocketRead(connection *conn, void *buf, size_t buf_len) {
+#ifdef _WIN32
+    if (conn->state == CONN_STATE_ERROR) {
+        errno = conn->last_errno ? conn->last_errno : EIO;
+        return -1;
+    }
+#endif
     int ret = read(conn->fd, buf, buf_len);
     if (!ret) {
         conn->state = CONN_STATE_CLOSED;
@@ -260,8 +288,31 @@ static int connSocketSetReadHandler(connection *conn, ConnectionCallbackFunc fun
     return C_OK;
 }
 
+#ifdef _WIN32
+/* A one-shot IOCP rearm failure must not leave a live connection registered
+ * with no future completion.  Mark the connection failed and run its current
+ * handler once so the owner follows the normal cleanup path. */
+static int connSocketRearmFailed(connection *conn,
+                                 ConnectionCallbackFunc handler,
+                                 const char *operation)
+{
+    int error = errno;
+    conn->last_errno = error;
+    conn->state = CONN_STATE_ERROR;
+    aeDeleteFileEvent(server.el, conn->fd, AE_READABLE | AE_WRITABLE);
+    serverLog(LL_WARNING, "IOCP %s rearm failed for fd=%d: %s",
+              operation, conn->fd, wsa_strerror(error));
+    if (handler != NULL) return callHandler(conn, handler);
+    return 1;
+}
+#endif
+
 static const char *connSocketGetLastError(connection *conn) {
+#ifdef _WIN32
+    return wsa_strerror(conn->last_errno);
+#else
     return strerror(conn->last_errno);
+#endif
 }
 
 static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask)
@@ -270,10 +321,22 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
     UNUSED(fd);
     connection *conn = clientData;
 
+#ifdef _WIN32
+    int deferred_error = WSIOCP_TakeDeferredError(fd);
+    if (deferred_error != 0) {
+        conn->last_errno = deferred_error;
+    }
+#endif
+
     if (conn->state == CONN_STATE_CONNECTING &&
             (mask & AE_WRITABLE) && conn->conn_handler) {
 
+#ifdef _WIN32
+        int conn_error = deferred_error != 0 ? deferred_error :
+                         anetGetError(conn->fd);
+#else
         int conn_error = anetGetError(conn->fd);
+#endif
         if (conn_error) {
             conn->last_errno = conn_error;
             conn->state = CONN_STATE_ERROR;
@@ -312,8 +375,8 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
         if (conn->fd != -1 && conn->read_handler &&
             conn->state != CONN_STATE_CLOSED && conn->state != CONN_STATE_ERROR) {
             if (WSIOCP_QueueNextRead(conn->fd) != 0) {
-                conn->last_errno = errno;
-                conn->state = CONN_STATE_ERROR;
+                if (!connSocketRearmFailed(conn, conn->read_handler, "read"))
+                    return;
             }
         }
 #endif
@@ -324,7 +387,10 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
 #ifdef _WIN32
         if (conn->fd != -1 && conn->write_handler &&
             conn->state != CONN_STATE_CLOSED && conn->state != CONN_STATE_ERROR) {
-            WSIOCP_QueueWriteReady(conn->fd);
+            if (WSIOCP_QueueWriteReady(conn->fd) != 0) {
+                if (!connSocketRearmFailed(conn, conn->write_handler, "write"))
+                    return;
+            }
         }
 #endif
     }
@@ -336,8 +402,8 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
         if (conn->fd != -1 && conn->read_handler &&
             conn->state != CONN_STATE_CLOSED && conn->state != CONN_STATE_ERROR) {
             if (WSIOCP_QueueNextRead(conn->fd) != 0) {
-                conn->last_errno = errno;
-                conn->state = CONN_STATE_ERROR;
+                if (!connSocketRearmFailed(conn, conn->read_handler, "read"))
+                    return;
             }
         }
 #endif
@@ -452,6 +518,7 @@ static ConnectionType CT_Socket = {
     .conn_create = connCreateSocket,
     .conn_create_accepted = connCreateAcceptedSocket,
     .shutdown = connSocketShutdown,
+    .shutdown_write = connSocketShutdownWrite,
     .close = connSocketClose,
 
     /* connect & accept */

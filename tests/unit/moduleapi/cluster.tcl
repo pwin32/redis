@@ -175,7 +175,17 @@ start_cluster 2 2 [list config_lines $modules] {
         $master2 set count_dels_{4oi} 1
         $master2 del count_dels_{4oi}
         assert_equal 1 [$master2 keyspace.get_dels]
-        assert_equal 1 [$replica2 keyspace.get_dels]
+        # The Windows IOCP replication path can acknowledge the master's
+        # command before the replica's module callback has run.  Synchronize
+        # the replication offset before observing module-local notification
+        # state; the assertion otherwise races even though replication is
+        # correct.
+        wait_for_ofs_sync $master2 $replica2
+        wait_for_condition 50 100 {
+            [$replica2 keyspace.get_dels] eq 1
+        } else {
+            fail "replica did not deliver the initial keyspace notification"
+        }
         $master2 set count_dels_{4oi} 1
         
         set repl [attach_to_replication_stream_on_connection -3]

@@ -16,6 +16,12 @@ start_cluster 1 1 {tags {external:skip cluster}} {
         pause_process $replica1_pid
 
         wait_node_marked_fail 0 $replica1_instance_id
+        if {$::tcl_platform(platform) eq "windows"} {
+            # A suspended Windows process cannot service the harness's normal
+            # SHUTDOWN request.  Resume it after the observation so cleanup
+            # remains bounded; the failure-marking assertion is already done.
+            resume_process $replica1_pid
+        }
     }
 }
 
@@ -49,5 +55,8 @@ start_cluster 2 1 {tags {external:skip cluster}} {
         resume_process $primary2_pid
 
         wait_node_marked_fail 0 $replica1_instance_id
+        if {$::tcl_platform(platform) eq "windows"} {
+            resume_process $replica1_pid
+        }
     }
 }

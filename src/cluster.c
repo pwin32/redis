@@ -61,6 +61,12 @@
  * that represents this node. */
 clusterNode *myself = NULL;
 
+#ifdef _WIN32
+void clusterSetQForkState(void) {
+    myself = server.cluster ? server.cluster->myself : NULL;
+}
+#endif
+
 clusterNode *createClusterNode(char *nodename, int flags);
 void clusterAddNode(clusterNode *node);
 void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask);
@@ -781,6 +787,19 @@ int clusterSaveConfig(int do_fsync) {
         }
     }
 
+#ifdef _WIN32
+    /* MoveFileEx cannot rename an _open() file whose handle lacks
+     * FILE_SHARE_DELETE. Close the fully written temporary file before the
+     * atomic replacement; the companion lock file still excludes another
+     * Redis process using this nodes.conf path. */
+    if (close(fd) == -1) {
+        fd = -1;
+        serverLog(LL_WARNING,"Could not close tmp cluster config file: %s",strerror(errno));
+        goto cleanup;
+    }
+    fd = -1;
+#endif
+
     if (rename(tmpfilename, server.cluster_configfile) == -1) {
         serverLog(LL_WARNING,"Could not rename tmp cluster config file: %s",strerror(errno));
         goto cleanup;
@@ -809,33 +828,46 @@ void clusterSaveConfigOrDie(int do_fsync) {
     }
 }
 
-/* Lock the cluster config using flock(), and retain the file descriptor used to
- * acquire the lock so that the file will be locked as long as the process is up.
+/* Lock the cluster-config path and retain the descriptor for the process
+ * lifetime. POSIX keeps the lock on nodes.conf itself; Windows uses a stable
+ * companion .lock file because nodes.conf is atomically replaced. The latter
+ * avoids holding a destination handle that would make MoveFileEx fail.
  *
- * This works because we always update nodes.conf with a new version
- * in-place, reopening the file, and writing to it in place (later adjusting
- * the length with ftruncate()).
- *
- * On success C_OK is returned, otherwise an error is logged and
- * the function returns C_ERR to signal a lock was not acquired. */
+ * On success C_OK is returned, otherwise an error is logged and the function
+ * returns C_ERR to signal that the lock was not acquired. */
 int clusterLockConfig(char *filename) {
 /* flock() does not exist on Solaris
  * and a fcntl-based solution won't help, as we constantly re-open that file,
  * which will release _all_ locks anyway
  */
 #if !defined(__sun)
+#ifdef _WIN32
+    /* nodes.conf is atomically replaced. Holding a Windows handle to that
+     * destination prevents MoveFileEx, so serialize users of the configured
+     * path with a stable companion file instead. The descriptor is still
+     * retained for the process lifetime and closed in QFork children. */
+    sds lockfilename = sdscatfmt(sdsempty(), "%s.lock", filename);
+    const char *lock_target = lockfilename;
+#else
+    const char *lock_target = filename;
+#endif
     /* To lock it, we need to open the file in a way it is created if
      * it does not exist, otherwise there is a race condition with other
      * processes. */
     int open_flags = O_WRONLY|O_CREAT;
-#ifndef _WIN32
+#ifdef _WIN32
+    open_flags |= O_NOINHERIT;
+#else
     open_flags |= O_CLOEXEC;
 #endif
-    int fd = open(filename,open_flags,0644);
+    int fd = open(lock_target,open_flags,0644);
     if (fd == -1) {
         serverLog(LL_WARNING,
             "Can't open %s in order to acquire a lock: %s",
-            filename, strerror(errno));
+            lock_target, strerror(errno));
+#ifdef _WIN32
+        sdsfree(lockfilename);
+#endif
         return C_ERR;
     }
 
@@ -865,6 +897,9 @@ int clusterLockConfig(char *filename) {
 #endif
         }
         close(fd);
+#ifdef _WIN32
+        sdsfree(lockfilename);
+#endif
         return C_ERR;
     }
     /* Lock acquired: leak the 'fd' by not closing it until shutdown time, so that
@@ -877,6 +912,9 @@ int clusterLockConfig(char *filename) {
      * (redis-aof-rewrite) is still alive, the fd(lock) will still be held by the
      * child process, and the main process will fail to get lock, means fail to start. */
     server.cluster_config_file_lock_fd = fd;
+#ifdef _WIN32
+    sdsfree(lockfilename);
+#endif
 #else
     UNUSED(filename);
 #endif /* __sun */
@@ -3393,6 +3431,12 @@ void clusterWriteHandler(connection *conn) {
         size_t msg_len = ntohl(msg->totlen);
 
         nwritten = connWrite(conn, (char*)msg + msg_offset, msg_len - msg_offset);
+        if (nwritten == -1 && connGetState(conn) == CONN_STATE_CONNECTED) {
+            /* Windows IOCP re-arms writable callbacks synthetically.  A
+             * callback can therefore run while Winsock still reports
+             * WSAEWOULDBLOCK; retain the queued block and try again later. */
+            return;
+        }
         if (nwritten <= 0) {
             serverLog(LL_DEBUG,"I/O error writing to node link: %s",
                 (nwritten == -1) ? connGetLastError(conn) : "short write");

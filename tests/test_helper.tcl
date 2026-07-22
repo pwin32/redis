@@ -14,6 +14,8 @@ source tests/support/test.tcl
 source tests/support/util.tcl
 
 set ::all_tests {
+    windows/aof
+    windows/iocp
     windows/regression
     unit/printver
     unit/dump
@@ -387,7 +389,10 @@ proc test_server_cron {} {
 }
 
 proc accept_test_clients {fd addr port} {
-    fconfigure $fd -encoding binary
+    fconfigure $fd -encoding binary -translation binary \
+        -buffering none -blocking 0
+    set ::test_client_input($fd) {}
+    set ::test_client_expected($fd) -1
     fileevent $fd readable [list read_from_test_client $fd]
 }
 
@@ -407,8 +412,60 @@ proc accept_test_clients {fd addr port} {
 # done: all the specified test file was processed, this test client is
 #       ready to accept a new task.
 proc read_from_test_client fd {
-    set bytes [gets $fd]
-    set payload [read $fd $bytes]
+    if {[catch {set chunk [read $fd]} error]} {
+        fileevent $fd readable {}
+        catch {close $fd}
+        unset -nocomplain ::test_client_input($fd)
+        unset -nocomplain ::test_client_expected($fd)
+        error $error
+    }
+    append ::test_client_input($fd) $chunk
+
+    while 1 {
+        if {$::test_client_expected($fd) < 0} {
+            set newline [string first "\n" $::test_client_input($fd)]
+            if {$newline < 0} break
+
+            set header [string range $::test_client_input($fd) 0 \
+                [expr {$newline - 1}]]
+            set ::test_client_input($fd) \
+                [string range $::test_client_input($fd) \
+                    [expr {$newline + 1}] end]
+            if {![string is wideinteger -strict $header] || $header < 0} {
+                error "invalid test-client packet length: $header"
+            }
+            set ::test_client_expected($fd) $header
+        }
+
+        set bytes $::test_client_expected($fd)
+        if {[string length $::test_client_input($fd)] < $bytes} break
+
+        if {$bytes == 0} {
+            set payload {}
+        } else {
+            set payload [string range $::test_client_input($fd) 0 \
+                [expr {$bytes - 1}]]
+        }
+        set ::test_client_input($fd) \
+            [string range $::test_client_input($fd) $bytes end]
+        set ::test_client_expected($fd) -1
+        process_test_client_packet $fd $payload
+    }
+
+    if {[eof $fd]} {
+        fileevent $fd readable {}
+        catch {close $fd}
+        unset -nocomplain ::test_client_input($fd)
+        unset -nocomplain ::test_client_expected($fd)
+    }
+}
+
+proc process_test_client_packet {fd payload} {
+    if {[catch {set field_count [llength $payload]} list_error] || \
+        $field_count != 3} {
+        binary scan $payload H* payload_hex
+        error "invalid test-client packet payload ($list_error): $payload_hex"
+    }
     foreach {status data elapsed} $payload break
     set ::last_progress [clock seconds]
 
@@ -578,7 +635,8 @@ proc the_end {} {
 # to read the command, execute, reply... all this in a loop.
 proc test_client_main server_port {
     set ::test_server_fd [socket localhost $server_port]
-    fconfigure $::test_server_fd -encoding binary
+    fconfigure $::test_server_fd \
+        -encoding binary -translation binary -buffering none -blocking 1
     send_data_packet $::test_server_fd ready [pid]
     while 1 {
         set bytes [gets $::test_server_fd]
@@ -597,8 +655,10 @@ proc test_client_main server_port {
 
 proc send_data_packet {fd status data {elapsed 0}} {
     set payload [list $status $data $elapsed]
-    puts $fd [string length $payload]
-    puts -nonewline $fd $payload
+    # Keep the length header and payload in one channel write. Sending the
+    # header separately can wake the peer's readable callback before the full
+    # payload has arrived, corrupting back-to-back lifecycle notifications.
+    puts -nonewline $fd "[string length $payload]\n$payload"
     flush $fd
 }
 

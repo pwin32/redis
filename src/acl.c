@@ -29,6 +29,9 @@
 
 #include "server.h"
 #include "sha256.h"
+#ifdef _WIN32
+#include "Win32_Interop/Win32_QFork.h"
+#endif
 #include <fcntl.h>
 #include <ctype.h>
 
@@ -58,6 +61,28 @@ long long ACLLogEntryCount = 0; /* Number of ACL log entries created */
 static rax *commandId = NULL; /* Command name to id mapping */
 
 static unsigned long nextid = 0; /* Next command id that has not been assigned */
+
+#ifdef _WIN32
+void ACLGetForkData(RedisACLForkData *data) {
+    data->users = Users;
+    data->defaultUser = DefaultUser;
+    data->usersToLoad = UsersToLoad;
+    data->aclLog = ACLLog;
+    data->aclLogEntryCount = ACLLogEntryCount;
+    data->commandId = commandId;
+    data->nextid = nextid;
+}
+
+void ACLSetForkData(const RedisACLForkData *data) {
+    Users = data->users;
+    DefaultUser = data->defaultUser;
+    UsersToLoad = data->usersToLoad;
+    ACLLog = data->aclLog;
+    ACLLogEntryCount = data->aclLogEntryCount;
+    commandId = data->commandId;
+    nextid = data->nextid;
+}
+#endif
 
 struct ACLCategoryItem {
     const char *name;
@@ -450,6 +475,13 @@ void ACLFreeUserAndKillClients(user *u) {
     while ((ln = listNext(&li)) != NULL) {
         client *c = listNodeValue(ln);
         if (c->user == u) {
+#ifdef _WIN32
+            /* Windows deliberately delays physical client destruction while
+             * the final reply drains. Notify module authentication callbacks
+             * at the logical user transition; the callback clears itself so
+             * the later freeClient() notification remains idempotent. */
+            moduleNotifyUserChanged(c);
+#endif
             /* We'll free the connection asynchronously, so
              * in theory to set a different user is not needed.
              * However if there are bugs in Redis, soon or later

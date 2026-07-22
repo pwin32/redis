@@ -676,9 +676,18 @@ tags {"external:skip"} {
     }
 
     test {Multi Part AOF can handle appendfilename contains whitespaces} {
-        start_server [list overrides [list appendonly yes appendfilename "\" file seq \\n\\n.aof \""]] {
+        if {$::tcl_platform(platform) eq "windows"} {
+            # Win32 filenames cannot contain control characters such as LF.
+            # Keep the manifest quoting/whitespace coverage with a legal name.
+            set whitespace_aof_basename "file seq spaced.aof"
+        } else {
+            set whitespace_aof_basename " file seq \n\n.aof "
+        }
+        set manifest_aof_basename [string map [list "\\" "\\\\" "\n" "\\n" "\r" "\\r"] $whitespace_aof_basename]
+
+        start_server [list overrides [list appendonly yes appendfilename "\"$whitespace_aof_basename\""]] {
             set dir [get_redis_dir]
-            set aof_manifest_name [format "%s/%s/%s%s" $dir "appendonlydir" " file seq \n\n.aof " $::manifest_suffix]
+            set aof_manifest_name [format "%s/%s/%s%s" $dir "appendonlydir" $whitespace_aof_basename $::manifest_suffix]
             set redis [redis [srv host] [srv port] 0 $::tls]
 
             assert_equal OK [$redis set k1 v1]
@@ -686,10 +695,9 @@ tags {"external:skip"} {
             $redis bgrewriteaof
             waitForBgrewriteaof $redis
 
-            assert_aof_manifest_content $aof_manifest_name {
-                {file " file seq \n\n.aof .2.base.rdb" seq 2 type b}
-                {file " file seq \n\n.aof .2.incr.aof" seq 2 type i}
-            }
+            assert_aof_manifest_content $aof_manifest_name [list \
+                [format {file "%s.2.base.rdb" seq 2 type b} $manifest_aof_basename] \
+                [format {file "%s.2.incr.aof" seq 2 type i} $manifest_aof_basename]]
 
             set d1 [$redis debug digest]
             $redis debug loadaof

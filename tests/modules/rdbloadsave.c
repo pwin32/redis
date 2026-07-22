@@ -84,6 +84,17 @@ int cmd_rdbsave_fork(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         return REDISMODULE_OK;
     }
 
+    /* The Windows port uses QFork only for Redis-owned persistence children.
+     * It cannot resume an arbitrary module call stack in a fresh process, so
+     * the general module fork API family is intentionally not exported. */
+    if (!RMAPI_FUNC_SUPPORTED(RedisModule_Fork) ||
+        !RMAPI_FUNC_SUPPORTED(RedisModule_ExitFromChild))
+    {
+        RedisModule_ReplyWithError(ctx,
+            "Fork api is not supported in the current redis version");
+        return REDISMODULE_OK;
+    }
+
     size_t len;
     const char *filename = RedisModule_StringPtrLen(argv[1], &len);
 
@@ -129,8 +140,13 @@ int cmd_rdbload(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     RedisModuleRdbStream *stream = RedisModule_RdbStreamCreateFromFile(tmp);
 
     if (RedisModule_RdbLoad(ctx, stream, 0) != REDISMODULE_OK || errno != 0) {
+        int error = errno;
         RedisModule_RdbStreamFree(stream);
-        RedisModule_ReplyWithError(ctx, strerror(errno));
+        /* MinGW's CRT has no strerror() text for its ENOTSUP value even
+         * though the module API correctly reports that errno. Keep the test
+         * module's client-facing error deterministic on every platform. */
+        RedisModule_ReplyWithError(ctx,
+            error == ENOTSUP ? "Operation not supported" : strerror(error));
         return REDISMODULE_OK;
     }
 

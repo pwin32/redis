@@ -45,7 +45,11 @@ int replace_rename(const char *src, const char *dst) {
     DWORD error;
 
     while (1) {
-        if (MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH)) {
+        /* Redis persistence renames must remain atomic.  COPY_ALLOWED turns a
+         * cross-volume rename into copy+delete and can expose a partial RDB,
+         * AOF, manifest, or rewritten configuration after a crash. */
+        if (MoveFileExA(src, dst,
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             return 0;
         }
 
@@ -60,6 +64,7 @@ int replace_rename(const char *src, const char *dst) {
     }
 
     errno = translate_sys_error((int)error);
+    if (errno == -9999) errno = EIO;
     return -1;
 }
 

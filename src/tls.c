@@ -32,6 +32,9 @@
 #include "server.h"
 #include "connhelpers.h"
 #include "adlist.h"
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Error.h"
+#endif
 
 #if (USE_OPENSSL == 1 /* BUILD_YES */ ) || ((USE_OPENSSL == 2 /* BUILD_MODULE */) && (BUILD_TLS_MODULE == 2))
 
@@ -43,8 +46,10 @@
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #include <openssl/decoder.h>
 #endif
+#ifndef _WIN32
 #include <sys/uio.h>
 #include <arpa/inet.h>
+#endif
 
 #define REDIS_TLS_PROTO_TLSv1       (1<<0)
 #define REDIS_TLS_PROTO_TLSv1_1     (1<<1)
@@ -630,8 +635,63 @@ static void updateSSLEvent(tls_connection *conn) {
         aeDeleteFileEvent(server.el, conn->c.fd, AE_WRITABLE);
 }
 
+#ifdef _WIN32
+static int tlsRearmFailed(tls_connection *conn,
+                          ConnectionCallbackFunc handler,
+                          const char *operation)
+{
+    int error = errno;
+    conn->c.last_errno = error;
+    conn->c.state = CONN_STATE_ERROR;
+    aeDeleteFileEvent(server.el, conn->c.fd, AE_READABLE | AE_WRITABLE);
+    serverLog(LL_WARNING, "IOCP TLS %s rearm failed for fd=%d: %s",
+              operation, conn->c.fd, wsa_strerror(error));
+    if (handler != NULL) return callHandler((connection *)conn, handler);
+    return 1;
+}
+
+/* IOCP readiness is one-shot. Re-arm every direction that remains registered
+ * after OpenSSL updates WANT_READ/WANT_WRITE state, even when the AE mask did
+ * not change and updateSSLEvent() therefore had no reason to add it again. */
+static int tlsRearmEvents(tls_connection *conn) {
+    int mask;
+    ConnectionCallbackFunc handler;
+
+    if (conn->c.fd == -1 || conn->c.state == CONN_STATE_CLOSED ||
+        conn->c.state == CONN_STATE_ERROR) return 1;
+
+    mask = aeGetFileEvents(server.el, conn->c.fd);
+    if (mask & AE_READABLE) {
+        if (WSIOCP_QueueNextRead(conn->c.fd) != 0) {
+            handler = conn->c.conn_handler ? conn->c.conn_handler :
+                      (conn->c.read_handler ? conn->c.read_handler :
+                       conn->c.write_handler);
+            tlsRearmFailed(conn, handler, "read");
+            return 0;
+        }
+    }
+    if (mask & AE_WRITABLE) {
+        if (WSIOCP_QueueWriteReady(conn->c.fd) != 0) {
+            handler = conn->c.conn_handler ? conn->c.conn_handler :
+                      (conn->c.write_handler ? conn->c.write_handler :
+                       conn->c.read_handler);
+            tlsRearmFailed(conn, handler, "write");
+            return 0;
+        }
+    }
+    return 1;
+}
+#endif
+
 static void tlsHandleEvent(tls_connection *conn, int mask) {
     int ret, conn_error;
+
+#ifdef _WIN32
+    int deferred_error = WSIOCP_TakeDeferredError(conn->c.fd);
+    if (deferred_error != 0) {
+        conn->c.last_errno = deferred_error;
+    }
+#endif
 
     TLSCONN_DEBUG("tlsEventHandler(): fd=%d, state=%d, mask=%d, r=%d, w=%d, flags=%d",
             fd, conn->c.state, mask, conn->c.read_handler != NULL, conn->c.write_handler != NULL,
@@ -641,7 +701,12 @@ static void tlsHandleEvent(tls_connection *conn, int mask) {
 
     switch (conn->c.state) {
         case CONN_STATE_CONNECTING:
+#ifdef _WIN32
+            conn_error = deferred_error != 0 ? deferred_error :
+                         anetGetError(conn->c.fd);
+#else
             conn_error = anetGetError(conn->c.fd);
+#endif
             if (conn_error) {
                 conn->c.last_errno = conn_error;
                 conn->c.state = CONN_STATE_ERROR;
@@ -655,6 +720,9 @@ static void tlsHandleEvent(tls_connection *conn, int mask) {
                     WantIOType want = 0;
                     if (!handleSSLReturnCode(conn, ret, &want)) {
                         registerSSLEvent(conn, want);
+#ifdef _WIN32
+                        tlsRearmEvents(conn);
+#endif
 
                         /* Avoid hitting UpdateSSLEvent, which knows nothing
                          * of what SSL_connect() wants and instead looks at our
@@ -683,6 +751,9 @@ static void tlsHandleEvent(tls_connection *conn, int mask) {
                      * R/W handlers.
                      */
                     registerSSLEvent(conn, want);
+#ifdef _WIN32
+                    tlsRearmEvents(conn);
+#endif
                     return;
                 }
 
@@ -755,6 +826,9 @@ static void tlsHandleEvent(tls_connection *conn, int mask) {
     }
 
     updateSSLEvent(conn);
+#ifdef _WIN32
+    tlsRearmEvents(conn);
+#endif
 }
 
 static void tlsEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask) {
@@ -809,6 +883,18 @@ static void connTLSShutdown(connection *conn_) {
     }
 
     connectionTypeTcp()->shutdown(conn_);
+}
+
+/* Send TLS close-notify without half-closing the underlying socket before
+ * OpenSSL has had a chance to flush the alert. The connection remains alive
+ * until the normal delayed connClose() path frees the SSL object and socket. */
+static int connTLSShutdownWrite(connection *conn_) {
+    tls_connection *conn = (tls_connection *) conn_;
+
+    if (!conn->ssl || conn->c.state != CONN_STATE_CONNECTED)
+        return C_OK;
+
+    return SSL_shutdown(conn->ssl) < 0 ? C_ERR : C_OK;
 }
 
 static void connTLSClose(connection *conn_) {
@@ -945,6 +1031,9 @@ static const char *connTLSGetLastError(connection *conn_) {
     tls_connection *conn = (tls_connection *) conn_;
 
     if (conn->ssl_error) return conn->ssl_error;
+#ifdef _WIN32
+    if (conn->c.last_errno) return wsa_strerror(conn->c.last_errno);
+#endif
     return NULL;
 }
 
@@ -1128,6 +1217,7 @@ static ConnectionType CT_TLS = {
     .conn_create = connCreateTLS,
     .conn_create_accepted = connCreateAcceptedTLS,
     .shutdown = connTLSShutdown,
+    .shutdown_write = connTLSShutdownWrite,
     .close = connTLSClose,
 
     /* connect & accept */

@@ -632,44 +632,44 @@ start_server {tags {"introspection"}} {
 
     test {redis-server command line arguments - error cases} {
         # Take '--invalid' as the option.
-        catch {exec $::redis_server_path --invalid} err
+        set err [redis_server_startup_error --invalid]
         assert_match {*Bad directive or wrong number of arguments*} $err
 
-        catch {exec $::redis_server_path --port} err
+        set err [redis_server_startup_error --port]
         assert_match {*'port'*wrong number of arguments*} $err
 
-        catch {exec $::redis_server_path --port 6380 --loglevel} err
+        set err [redis_server_startup_error --port 6380 --loglevel]
         assert_match {*'loglevel'*wrong number of arguments*} $err
 
         # Take `6379` and `6380` as the port option value.
-        catch {exec $::redis_server_path --port 6379 6380} err
+        set err [redis_server_startup_error --port 6379 6380]
         assert_match {*'port "6379" "6380"'*wrong number of arguments*} $err
 
         # Take `--loglevel` and `verbose` as the port option value.
-        catch {exec $::redis_server_path --port --loglevel verbose} err
+        set err [redis_server_startup_error --port --loglevel verbose]
         assert_match {*'port "--loglevel" "verbose"'*wrong number of arguments*} $err
 
         # Take `--bla` as the port option value.
-        catch {exec $::redis_server_path --port --bla --loglevel verbose} err
+        set err [redis_server_startup_error --port --bla --loglevel verbose]
         assert_match {*'port "--bla"'*argument couldn't be parsed into an integer*} $err
 
         # Take `--bla` as the loglevel option value.
-        catch {exec $::redis_server_path --logfile --my--log--file --loglevel --bla} err
+        set err [redis_server_startup_error --logfile --my--log--file --loglevel --bla]
         assert_match {*'loglevel "--bla"'*argument(s) must be one of the following*} $err
 
         # Using MULTI_ARG's own check, empty option value
-        catch {exec $::redis_server_path --shutdown-on-sigint} err
+        set err [redis_server_startup_error --shutdown-on-sigint]
         assert_match {*'shutdown-on-sigint'*argument(s) must be one of the following*} $err
-        catch {exec $::redis_server_path --shutdown-on-sigint "now force" --shutdown-on-sigterm} err
+        set err [redis_server_startup_error --shutdown-on-sigint "now force" --shutdown-on-sigterm]
         assert_match {*'shutdown-on-sigterm'*argument(s) must be one of the following*} $err
 
         # Something like `redis-server --some-config --config-value1 --config-value2 --loglevel debug` would break,
         # because if you want to pass a value to a config starting with `--`, it can only be a single value.
-        catch {exec $::redis_server_path --replicaof 127.0.0.1 abc} err
+        set err [redis_server_startup_error --replicaof 127.0.0.1 abc]
         assert_match {*'replicaof "127.0.0.1" "abc"'*Invalid master port*} $err
-        catch {exec $::redis_server_path --replicaof --127.0.0.1 abc} err
+        set err [redis_server_startup_error --replicaof --127.0.0.1 abc]
         assert_match {*'replicaof "--127.0.0.1" "abc"'*Invalid master port*} $err
-        catch {exec $::redis_server_path --replicaof --127.0.0.1 --abc} err
+        set err [redis_server_startup_error --replicaof --127.0.0.1 --abc]
         assert_match {*'replicaof "--127.0.0.1"'*wrong number of arguments*} $err
     } {} {external:skip}
 

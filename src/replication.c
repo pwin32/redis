@@ -1362,7 +1362,7 @@ int replicaPutOnline(client *slave) {
          * client alive until its peer closes or repl-timeout expires. */
         if (!strcmp(connGetType(slave->conn),CONN_TYPE_SOCKET) &&
             connSetReadHandler(slave->conn,rdbOnlyReplicaDrain) == C_OK &&
-            FDAPI_shutdown(slave->conn->fd,SD_SEND) == 0)
+            connShutdownWrite(slave->conn) == C_OK)
         {
             return 0;
         }

@@ -99,6 +99,9 @@ typedef struct ConnectionType {
     connection* (*conn_create)(void);
     connection* (*conn_create_accepted)(int fd, void *priv);
     void (*shutdown)(struct connection *conn);
+    /* Shut down only the application write side while retaining the
+     * connection object for a delayed, graceful close. */
+    int (*shutdown_write)(struct connection *conn);
     void (*close)(struct connection *conn);
 
     /* connect & accept */
@@ -259,6 +262,13 @@ static inline int connSetWriteHandlerWithBarrier(connection *conn, ConnectionCal
 
 static inline void connShutdown(connection *conn) {
     conn->type->shutdown(conn);
+}
+
+/* Gracefully finish a reply without bypassing the connection type. TLS
+ * implementations use this hook to emit close-notify before the eventual
+ * physical close, while TCP/Unix implementations half-close the socket. */
+static inline int connShutdownWrite(connection *conn) {
+    return conn->type->shutdown_write(conn);
 }
 
 static inline void connClose(connection *conn) {

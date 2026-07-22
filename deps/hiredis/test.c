@@ -905,6 +905,13 @@ static void test_blocking_connection_errors(void) {
         test("Returns error when host cannot be resolved: ");
         // First see if this domain name *actually* resolves to NXDOMAIN
         c = redisConnect(HIREDIS_BAD_DOMAIN, 6379);
+#ifdef _WIN32
+        /* Winsock obtains this text from the localized Windows message
+         * catalog, so matching an English sentence makes the test depend on
+         * the host UI language. The getaddrinfo probe above already proved
+         * NXDOMAIN; verify the hiredis error class and a useful diagnostic. */
+        test_cond(c->err == REDIS_ERR_OTHER && c->errstr[0] != '\0');
+#else
         test_cond(
             c->err == REDIS_ERR_OTHER &&
             (strcmp(c->errstr, "Name or service not known") == 0 ||
@@ -917,6 +924,7 @@ static void test_blocking_connection_errors(void) {
              strcmp(c->errstr, "hostname nor servname provided, or not known") == 0 ||
              strcmp(c->errstr, "no address associated with name") == 0 ||
              strcmp(c->errstr, "No such host is known. ") == 0));
+#endif
         redisFree(c);
     } else {
         printf("Skipping NXDOMAIN test. Found evil ISP!\n");

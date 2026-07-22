@@ -16,6 +16,27 @@ tags "modules" {
         }
     }
 
+    if {$::tcl_platform(platform) eq "windows"} {
+        test {QFork captures module state before the parent fork-born event} {
+            start_server [list overrides [list loadmodule "$testmodule 2"]] {
+                for {set i 0} {$i < 5} {incr i} {
+                    set snapshot_value "snapshot-$i"
+                    set parent_value "parent-after-fork-$i"
+                    r testrdb.set.before $snapshot_value
+                    r testrdb.set.fork $parent_value
+
+                    r bgsave
+                    waitForBgsave r
+                    assert_equal ok [s rdb_last_bgsave_status]
+                    assert_equal $parent_value [r testrdb.get.before]
+
+                    r debug reload nosave
+                    assert_equal $snapshot_value [r testrdb.get.before]
+                }
+            }
+        }
+    }
+
     test {modules global are lost without aux} {
         set server_path [tmpdir "server.module-testrdb"]
         start_server [list overrides [list loadmodule "$testmodule" "dir" $server_path] keep_persistence true] {

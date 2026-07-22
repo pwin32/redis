@@ -417,6 +417,21 @@ typedef struct RedisModuleServerInfoData {
 #define REDISMODULE_ARGV_DRY_RUN (1<<10)
 #define REDISMODULE_ARGV_ALLOW_BLOCK (1<<11)
 
+#ifdef _WIN32
+/* Windows persistence children are fresh QFork processes. They receive the
+ * mapped Redis heap and selected process-static roots, but they do not have a
+ * valid parent IOCP event loop or CRT-owned Lua runtimes. Keep child-only API
+ * restrictions centralized and fail them deterministically. */
+static int moduleInQForkChild(void) {
+    return server.in_fork_child != CHILD_TYPE_NONE;
+}
+
+static int moduleQForkUnsupported(void) {
+    errno = ENOTSUP;
+    return REDISMODULE_ERR;
+}
+#endif
+
 /* Determine whether Redis should signalModifiedKey implicitly.
  * In case 'ctx' has no 'module' member (and therefore no module->options),
  * we assume default behavior, that is, Redis signals.
@@ -2365,6 +2380,14 @@ int RM_BlockedClientMeasureTimeEnd(RedisModuleBlockedClient *bc) {
  */
 void RM_Yield(RedisModuleCtx *ctx, int flags, const char *busy_reply) {
     static int yield_nesting = 0;
+#ifdef _WIN32
+    /* server.el and its IOCP apidata belong to the parent process. A QFork
+     * persistence callback must never enter processEventsWhileBlocked(). */
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     /* Avoid nested calls to RM_Yield */
     if (yield_nesting)
         return;
@@ -2468,6 +2491,9 @@ void RM_SetModuleOptions(RedisModuleCtx *ctx, int options) {
  * RM_SetModuleOptions().
 */
 int RM_SignalModifiedKey(RedisModuleCtx *ctx, RedisModuleString *keyname) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     signalModifiedKey(ctx->client,ctx->client->db,keyname);
     return REDISMODULE_OK;
 }
@@ -3543,6 +3569,9 @@ int RM_ReplyWithLongDouble(RedisModuleCtx *ctx, long double ld) {
  * The command returns REDISMODULE_ERR if the format specifiers are invalid
  * or the command name does not belong to a known command. */
 int RM_Replicate(RedisModuleCtx *ctx, const char *cmdname, const char *fmt, ...) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     struct redisCommand *cmd;
     robj **argv = NULL;
     int argc = 0, flags = 0, j;
@@ -3585,6 +3614,9 @@ int RM_Replicate(RedisModuleCtx *ctx, const char *cmdname, const char *fmt, ...)
  *
  * The function always returns REDISMODULE_OK. */
 int RM_ReplicateVerbatim(RedisModuleCtx *ctx) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     alsoPropagate(ctx->client->db->id,
         ctx->client->argv,ctx->client->argc,
         PROPAGATE_AOF|PROPAGATE_REPL);
@@ -3625,6 +3657,12 @@ unsigned long long RM_GetClientId(RedisModuleCtx *ctx) {
  * exist, NULL is returned and errno is set to ENOENT. If the client isn't
  * using an ACL user, NULL is returned and errno is set to ENOTSUP */
 RedisModuleString *RM_GetClientUserNameById(RedisModuleCtx *ctx, uint64_t id) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     client *client = lookupClientByID(id);
     if (client == NULL) {
         errno = ENOENT;
@@ -3739,6 +3777,9 @@ int modulePopulateReplicationInfoStructure(void *ri, int structver) {
  *      }
  */
 int RM_GetClientInfoById(void *ci, uint64_t id) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     client *client = lookupClientByID(id);
     if (client == NULL) return REDISMODULE_ERR;
     if (ci == NULL) return REDISMODULE_OK;
@@ -3753,6 +3794,12 @@ int RM_GetClientInfoById(void *ci, uint64_t id) {
  * If the client ID does not exist or if the client has no name associated with
  * it, NULL is returned. */
 RedisModuleString *RM_GetClientNameById(RedisModuleCtx *ctx, uint64_t id) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     client *client = lookupClientByID(id);
     if (client == NULL || client->name == NULL) return NULL;
     robj *name = client->name;
@@ -3770,6 +3817,9 @@ RedisModuleString *RM_GetClientNameById(RedisModuleCtx *ctx, uint64_t id) {
  * - ENOENT if the client does not exist
  * - EINVAL if the name contains invalid characters */
 int RM_SetClientNameById(uint64_t id, RedisModuleString *name) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     client *client = lookupClientByID(id);
     if (client == NULL) {
         errno = ENOENT;
@@ -3785,12 +3835,18 @@ int RM_SetClientNameById(uint64_t id, RedisModuleString *name) {
 /* Publish a message to subscribers (see PUBLISH command). */
 int RM_PublishMessage(RedisModuleCtx *ctx, RedisModuleString *channel, RedisModuleString *message) {
     UNUSED(ctx);
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     return pubsubPublishMessageAndPropagateToCluster(channel, message, 0);
 }
 
 /* Publish a message to shard-subscribers (see SPUBLISH command). */
 int RM_PublishMessageShard(RedisModuleCtx *ctx, RedisModuleString *channel, RedisModuleString *message) {
     UNUSED(ctx);
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     return pubsubPublishMessageAndPropagateToCluster(channel, message, 1);
 }
 
@@ -4006,7 +4062,11 @@ int RM_SelectDb(RedisModuleCtx *ctx, int newid) {
  * calling RM_CloseKey on the opened key.
  */
 int RM_KeyExists(RedisModuleCtx *ctx, robj *keyname) {
-    robj *value = lookupKeyReadWithFlags(ctx->client->db, keyname, LOOKUP_NOTOUCH);
+    int flags = LOOKUP_NOTOUCH;
+#ifdef _WIN32
+    if (moduleInQForkChild()) flags |= LOOKUP_NOEFFECTS;
+#endif
+    robj *value = lookupKeyReadWithFlags(ctx->client->db, keyname, flags);
     return (value != NULL);
 }
 
@@ -4052,6 +4112,12 @@ static void moduleInitKeyTypeSpecific(RedisModuleKey *key) {
  * * REDISMODULE_OPEN_KEY_NOEXPIRE - Avoid deleting lazy expired keys.
  * * REDISMODULE_OPEN_KEY_NOEFFECTS - Avoid any effects from fetching the key. */
 RedisModuleKey *RM_OpenKey(RedisModuleCtx *ctx, robj *keyname, int mode) {
+#ifdef _WIN32
+    if (moduleInQForkChild() && (mode & REDISMODULE_WRITE)) {
+        errno = ENOTSUP;
+        return NULL;
+    }
+#endif
     RedisModuleKey *kp;
     robj *value;
     int flags = 0;
@@ -4060,6 +4126,13 @@ RedisModuleKey *RM_OpenKey(RedisModuleCtx *ctx, robj *keyname, int mode) {
     flags |= (mode & REDISMODULE_OPEN_KEY_NOSTATS? LOOKUP_NOSTATS: 0);
     flags |= (mode & REDISMODULE_OPEN_KEY_NOEXPIRE? LOOKUP_NOEXPIRE: 0);
     flags |= (mode & REDISMODULE_OPEN_KEY_NOEFFECTS? LOOKUP_NOEFFECTS: 0);
+
+#ifdef _WIN32
+    /* A persistence child sees an immutable snapshot. Even read opens must
+     * not touch LRU/LFU counters, expire keys, notify subscribers, or update
+     * key hit/miss statistics in the copied parent state. */
+    if (moduleInQForkChild()) flags |= LOOKUP_NOEFFECTS;
+#endif
 
     if (mode & REDISMODULE_WRITE) {
         value = lookupKeyWriteWithFlags(ctx->client->db,keyname, flags);
@@ -4254,6 +4327,12 @@ int RM_SetAbsExpire(RedisModuleKey *key, mstime_t expire) {
  * propagated to the AOF file.
  * When async is set to true, db contents will be freed by a background thread. */
 void RM_ResetDataset(int restart_aof, int async) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     if (restart_aof && server.aof_state != AOF_OFF) stopAppendOnly();
     flushAllDataAndResetRDB((async? EMPTYDB_ASYNC: EMPTYDB_NO_FLAGS) | EMPTYDB_NOFUNCTIONS);
     if (server.aof_enabled && restart_aof) restartAOFAfterSYNC();
@@ -4266,6 +4345,12 @@ unsigned long long RM_DbSize(RedisModuleCtx *ctx) {
 
 /* Returns a name of a random key, or NULL if current db is empty. */
 RedisModuleString *RM_RandomKey(RedisModuleCtx *ctx) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     robj *key = dbRandomKey(ctx->client->db);
     autoMemoryAdd(ctx,REDISMODULE_AM_STRING,key);
     return key;
@@ -5992,6 +6077,12 @@ int RM_CallReplyAttributeElement(RedisModuleCallReply *reply, size_t idx, RedisM
 /* Set unblock handler (callback and private data) on the given promise RedisModuleCallReply.
  * The given reply must be of promise type (REDISMODULE_REPLY_PROMISE). */
 void RM_CallReplyPromiseSetUnblockHandler(RedisModuleCallReply *reply, RedisModuleOnUnblocked on_unblock, void *private_data) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     RedisModuleAsyncRMCallPromise *promise = callReplyGetPrivateData(reply);
     promise->on_unblocked = on_unblock;
     promise->private_data = private_data;
@@ -6009,6 +6100,9 @@ void RM_CallReplyPromiseSetUnblockHandler(RedisModuleCallReply *reply, RedisModu
  * This can happened if, for example, a module implements some blocking command and does not respect the
  * disconnect callback. For pure Redis commands this can not happened.*/
 int RM_CallReplyPromiseAbort(RedisModuleCallReply *reply, void **private_data) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     RedisModuleAsyncRMCallPromise *promise = callReplyGetPrivateData(reply);
     if (!promise->c) return REDISMODULE_ERR; /* Promise can not be aborted, either already aborted or already finished. */
     if (!(promise->c->flags & CLIENT_BLOCKED)) return REDISMODULE_ERR; /* Client is not blocked anymore, can not abort it. */
@@ -6327,8 +6421,14 @@ RedisModuleCallReply *RM_Call(RedisModuleCtx *ctx, const char *cmdname, const ch
         goto cleanup;
     }
 
-    /* Call command filters */
+    /* Command filters are arbitrary module callbacks. The parent process may
+     * use them normally, but a fresh Windows QFork child cannot safely enter
+     * them before the requested command has passed the child allowlist. */
+#ifdef _WIN32
+    if (!moduleInQForkChild()) moduleCallCommandFilters(c);
+#else
     moduleCallCommandFilters(c);
+#endif
 
     /* Lookup command now, after filters had a chance to make modifications
      * if necessary.
@@ -6347,6 +6447,51 @@ RedisModuleCallReply *RM_Call(RedisModuleCtx *ctx, const char *cmdname, const ch
             reply = callReplyCreateError(err, ctx);
         goto cleanup;
     }
+
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        redisCommandProc *proc = c->cmd->proc;
+        int allowed = proc == pingCommand || proc == echoCommand ||
+                      proc == dbsizeCommand;
+
+        /* CONFIG GET can invoke module-owned getters and wildcard scans. Keep
+         * the one reviewed built-in scalar probe used by the QFork regression,
+         * while rejecting every other CONFIG path in the child. */
+        if (proc == configGetCommand && c->argc == 3 &&
+            !strcasecmp(c->argv[2]->ptr, "port"))
+        {
+            allowed = 1;
+        }
+
+        /* Do not let child calls opt into propagation, ACL callbacks,
+         * blocking, script mode, or any other modifier that can re-enter
+         * parent-only state. RESP selection and the error-as-reply option are
+         * the only modifiers needed by the reviewed probes below. */
+        if (flags & (REDISMODULE_ARGV_REPLICATE |
+                     REDISMODULE_ARGV_NO_AOF |
+                     REDISMODULE_ARGV_NO_REPLICAS |
+                     REDISMODULE_ARGV_RUN_AS_USER |
+                     REDISMODULE_ARGV_SCRIPT_MODE |
+                     REDISMODULE_ARGV_NO_WRITES |
+                     REDISMODULE_ARGV_RESPECT_DENY_OOM |
+                     REDISMODULE_ARGV_ALLOW_BLOCK))
+        {
+            allowed = 0;
+        }
+
+        if (!allowed) {
+            errno = ENOTSUP;
+            if (error_as_call_replies) {
+                sds name = c->cmd->fullname ? c->cmd->fullname : c->argv[0]->ptr;
+                sds msg = sdscatfmt(sdsempty(),
+                    "command '%S' is unavailable in a Windows QFork persistence child",
+                    name);
+                reply = callReplyCreateError(msg, ctx);
+            }
+            goto cleanup;
+        }
+    }
+#endif
 
     cmd_flags = getCommandFlags(c);
 
@@ -6523,7 +6668,9 @@ RedisModuleCallReply *RM_Call(RedisModuleCtx *ctx, const char *cmdname, const ch
     int prev_replication_allowed = server.replication_allowed;
     server.replication_allowed = replicate && server.replication_allowed;
 
-    /* Run the command */
+    /* Run the command. In a Windows QFork child, invoke only the reviewed
+     * read-only core procs directly. Going through call() would feed copied
+     * monitor/tracking/post-job/event-loop state even for a harmless reply. */
     int call_flags = CMD_CALL_FROM_MODULE;
     if (replicate) {
         if (!(flags & REDISMODULE_ARGV_NO_AOF))
@@ -6531,6 +6678,14 @@ RedisModuleCallReply *RM_Call(RedisModuleCtx *ctx, const char *cmdname, const ch
         if (!(flags & REDISMODULE_ARGV_NO_REPLICAS))
             call_flags |= CMD_CALL_PROPAGATE_REPL;
     }
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        c->cmd->proc(c);
+        reply = moduleParseReply(c, (ctx->flags & REDISMODULE_CTX_AUTO_MEMORY) ? ctx : NULL);
+        server.replication_allowed = prev_replication_allowed;
+        goto cleanup;
+    }
+#endif
     call(c,call_flags);
     server.replication_allowed = prev_replication_allowed;
 
@@ -8050,6 +8205,12 @@ int moduleTryServeClientBlockedOnKey(client *c, robj *key) {
 RedisModuleBlockedClient *RM_BlockClient(RedisModuleCtx *ctx, RedisModuleCmdFunc reply_callback,
                                          RedisModuleCmdFunc timeout_callback, void (*free_privdata)(RedisModuleCtx*,void*),
                                          long long timeout_ms) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     return moduleBlockClient(ctx,reply_callback,NULL,timeout_callback,free_privdata,timeout_ms, NULL,0,NULL,0);
 }
 
@@ -8059,6 +8220,12 @@ RedisModuleBlockedClient *RM_BlockClient(RedisModuleCtx *ctx, RedisModuleCmdFunc
  * Note: Only use this API from the context of a module auth callback. */
 RedisModuleBlockedClient *RM_BlockClientOnAuth(RedisModuleCtx *ctx, RedisModuleAuthCallback reply_callback,
                                                void (*free_privdata)(RedisModuleCtx*,void*)) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     if (!clientHasModuleAuthInProgress(ctx->client)) {
         addReplyError(ctx->client, "Module blocking client on auth when not currently undergoing module authentication");
         return NULL;
@@ -8141,6 +8308,12 @@ void RM_BlockClientSetPrivateData(RedisModuleBlockedClient *blocked_client, void
 RedisModuleBlockedClient *RM_BlockClientOnKeys(RedisModuleCtx *ctx, RedisModuleCmdFunc reply_callback,
                                                RedisModuleCmdFunc timeout_callback, void (*free_privdata)(RedisModuleCtx*,void*),
                                                long long timeout_ms, RedisModuleString **keys, int numkeys, void *privdata) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     return moduleBlockClient(ctx,reply_callback,NULL,timeout_callback,free_privdata,timeout_ms, keys,numkeys,privdata,0);
 }
 
@@ -8157,6 +8330,12 @@ RedisModuleBlockedClient *RM_BlockClientOnKeysWithFlags(RedisModuleCtx *ctx, Red
                                                         RedisModuleCmdFunc timeout_callback, void (*free_privdata)(RedisModuleCtx*,void*),
                                                         long long timeout_ms, RedisModuleString **keys, int numkeys, void *privdata,
                                                         int flags) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     return moduleBlockClient(ctx,reply_callback,NULL,timeout_callback,free_privdata,timeout_ms, keys,numkeys,privdata,flags);
 }
 
@@ -8164,6 +8343,12 @@ RedisModuleBlockedClient *RM_BlockClientOnKeysWithFlags(RedisModuleCtx *ctx, Red
  * on keys with RedisModule_BlockClientOnKeys(). When this function is called,
  * all the clients blocked for this key will get their reply_callback called. */
 void RM_SignalKeyAsReady(RedisModuleCtx *ctx, RedisModuleString *key) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     signalKeyAsReady(ctx->client->db, key, OBJ_MODULE);
 }
 
@@ -8216,6 +8401,9 @@ int moduleClientIsBlockedOnKeys(client *c) {
  * RedisModule_BlockClientOnKeys() is accessible from the timeout
  * callback via RM_GetBlockedClientPrivateData). */
 int RM_UnblockClient(RedisModuleBlockedClient *bc, void *privdata) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (bc->blocked_on_keys) {
         /* In theory the user should always pass the timeout handler as an
          * argument, but better to be safe than sorry. */
@@ -8230,6 +8418,9 @@ int RM_UnblockClient(RedisModuleBlockedClient *bc, void *privdata) {
 /* Abort a blocked client blocking operation: the client will be unblocked
  * without firing any callback. */
 int RM_AbortBlock(RedisModuleBlockedClient *bc) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     bc->reply_callback = NULL;
     bc->disconnect_callback = NULL;
     bc->auth_reply_cb = NULL;
@@ -8471,6 +8662,12 @@ int RM_BlockedClientDisconnected(RedisModuleCtx *ctx) {
  * consider using `RM_GetDetachedThreadSafeContext` which will also retain
  * the module ID and thus be more useful for logging. */
 RedisModuleCtx *RM_GetThreadSafeContext(RedisModuleBlockedClient *bc) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     RedisModuleCtx *ctx = zmalloc(sizeof(*ctx));
     RedisModule *module = bc ? bc->module : NULL;
     int flags = REDISMODULE_CTX_THREAD_SAFE;
@@ -8509,6 +8706,12 @@ RedisModuleCtx *RM_GetThreadSafeContext(RedisModuleBlockedClient *bc) {
  * This is useful for modules that wish to hold a global context over
  * a long term, for purposes such as logging. */
 RedisModuleCtx *RM_GetDetachedThreadSafeContext(RedisModuleCtx *ctx) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     RedisModuleCtx *new_ctx = zmalloc(sizeof(*new_ctx));
     /* We create a new client object for the detached context.
      * See RM_GetThreadSafeContext() for more information */
@@ -8519,6 +8722,12 @@ RedisModuleCtx *RM_GetDetachedThreadSafeContext(RedisModuleCtx *ctx) {
 
 /* Release a thread safe context. */
 void RM_FreeThreadSafeContext(RedisModuleCtx *ctx) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     moduleFreeContext(ctx);
     zfree(ctx);
 }
@@ -8537,6 +8746,12 @@ void moduleGILAfterLock(void) {
  * a blocked client connected to the thread safe context. */
 void RM_ThreadSafeContextLock(RedisModuleCtx *ctx) {
     UNUSED(ctx);
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     moduleAcquireGIL();
     moduleGILAfterLock();
 }
@@ -8549,6 +8764,10 @@ void RM_ThreadSafeContextLock(RedisModuleCtx *ctx) {
  * accordingly. */
 int RM_ThreadSafeContextTryLock(RedisModuleCtx *ctx) {
     UNUSED(ctx);
+
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
 
     int res = moduleTryAcquireGIL();
     if(res != 0) {
@@ -8574,6 +8793,12 @@ void moduleGILBeforeUnlock(void) {
 /* Release the server lock after a thread safe API call was executed. */
 void RM_ThreadSafeContextUnlock(RedisModuleCtx *ctx) {
     UNUSED(ctx);
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     moduleGILBeforeUnlock();
     moduleReleaseGIL();
 }
@@ -8664,6 +8889,9 @@ void moduleReleaseGIL(void) {
  * See https://redis.io/topics/notifications for more information.
  */
 int RM_SubscribeToKeyspaceEvents(RedisModuleCtx *ctx, int types, RedisModuleNotificationFunc callback) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     RedisModuleKeyspaceSubscriber *sub = zmalloc(sizeof(*sub));
     sub->module = ctx->module;
     sub->event_mask = types;
@@ -8717,6 +8945,9 @@ void firePostExecutionUnitJobs(void) {
  * Return REDISMODULE_OK on success and REDISMODULE_ERR if was called while loading data from disk (AOF or RDB) or
  * if the instance is a readonly replica. */
 int RM_AddPostNotificationJob(RedisModuleCtx *ctx, RedisModulePostNotificationJobFunc callback, void *privdata, void (*free_privdata)(void*)) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (server.loading|| (server.masterhost && server.repl_slave_ro)) {
         return REDISMODULE_ERR;
     }
@@ -8739,6 +8970,9 @@ int RM_GetNotifyKeyspaceEvents(void) {
 
 /* Expose notifyKeyspaceEvent to modules */
 int RM_NotifyKeyspaceEvent(RedisModuleCtx *ctx, int type, const char *event, RedisModuleString *key) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (!ctx || !ctx->client)
         return REDISMODULE_ERR;
     notifyKeyspaceEvent(type, (char *)event, key, ctx->client->db->id);
@@ -8866,6 +9100,12 @@ void moduleCallClusterReceivers(const char *sender_id, uint64_t module_id, uint8
  * is already a callback for this function, the callback is unregistered
  * (so this API call is also used in order to delete the receiver). */
 void RM_RegisterClusterMessageReceiver(RedisModuleCtx *ctx, uint8_t type, RedisModuleClusterMessageReceiver callback) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     if (!server.cluster_enabled) return;
 
     uint64_t module_id = moduleTypeEncodeId(ctx->module->name,0);
@@ -8910,6 +9150,9 @@ void RM_RegisterClusterMessageReceiver(RedisModuleCtx *ctx, uint8_t type, RedisM
  * otherwise if the node is not connected or such node ID does not map to any
  * known cluster node, REDISMODULE_ERR is returned. */
 int RM_SendClusterMessage(RedisModuleCtx *ctx, const char *target_id, uint8_t type, const char *msg, uint32_t len) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (!server.cluster_enabled) return REDISMODULE_ERR;
     uint64_t module_id = moduleTypeEncodeId(ctx->module->name,0);
     if (clusterSendModuleMessageToTarget(target_id,module_id,type,msg,len) == C_OK)
@@ -9164,6 +9407,12 @@ int moduleTimerHandler(struct aeEventLoop *eventLoop, long long id, void *client
  * (If the time it takes to execute 'callback' is negligible the two
  * statements above mean the same) */
 RedisModuleTimerID RM_CreateTimer(RedisModuleCtx *ctx, mstime_t period, RedisModuleTimerProc callback, void *data) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return 0;
+    }
+#endif
     RedisModuleTimer *timer = zmalloc(sizeof(*timer));
     timer->module = ctx->module;
     timer->callback = callback;
@@ -9213,6 +9462,9 @@ RedisModuleTimerID RM_CreateTimer(RedisModuleCtx *ctx, mstime_t period, RedisMod
  * If not NULL, the data pointer is set to the value of the data argument when
  * the timer was created. */
 int RM_StopTimer(RedisModuleCtx *ctx, RedisModuleTimerID id, void **data) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     RedisModuleTimer *timer = raxFind(Timers,(unsigned char*)&id,sizeof(id));
     if (timer == raxNotFound || timer->module != ctx->module)
         return REDISMODULE_ERR;
@@ -9528,6 +9780,12 @@ static size_t moduleWin32IOChunk(size_t count) {
 }
 
 int RM_Win32Pipe(int fds[2]) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return -1;
+    }
+#endif
     if (fds == NULL) {
         errno = EINVAL;
         return -1;
@@ -9538,14 +9796,29 @@ int RM_Win32Pipe(int fds[2]) {
 }
 
 long long RM_Win32Read(int fd, void *buf, size_t count) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return -1;
+    }
+#endif
     return (long long)read(fd, buf, moduleWin32IOChunk(count));
 }
 
 long long RM_Win32Write(int fd, const void *buf, size_t count) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return -1;
+    }
+#endif
     return (long long)write(fd, buf, moduleWin32IOChunk(count));
 }
 
 int RM_Win32Close(int fd) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     return close(fd);
 }
 #endif
@@ -9576,6 +9849,9 @@ int RM_Win32Close(int fd) {
  *     RM_EventLoopAdd(fd, REDISMODULE_EVENTLOOP_READABLE, onReadable, NULL);
  */
 int RM_EventLoopAdd(int fd, int mask, RedisModuleEventLoopFunc func, void *user_data) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (fd < 0 || fd >= aeGetSetSize(server.el)) {
         errno = ERANGE;
         return REDISMODULE_ERR;
@@ -9645,6 +9921,9 @@ int RM_EventLoopAdd(int fd, int mask, RedisModuleEventLoopFunc func, void *user_
  * * EINVAL: `mask` value is invalid.
  */
 int RM_EventLoopDel(int fd, int mask) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (fd < 0 || fd >= aeGetSetSize(server.el)) {
         errno = ERANGE;
         return REDISMODULE_ERR;
@@ -9678,6 +9957,9 @@ int RM_EventLoopDel(int fd, int mask) {
  * REDISMODULE_ERR is returned and errno is set to EINVAL.
  */
 int RM_EventLoopAddOneShot(RedisModuleEventLoopOneShotFunc func, void *user_data) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (!func) {
         errno = EINVAL;
         return REDISMODULE_ERR;
@@ -10020,6 +10302,9 @@ int moduleGetACLLogEntryReason(RedisModuleACLLogEntryReason reason) {
  *
  * For more information about ACL log, please refer to https://redis.io/commands/acl-log */
 int RM_ACLAddLogEntry(RedisModuleCtx *ctx, RedisModuleUser *user, RedisModuleString *object, RedisModuleACLLogEntryReason reason) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     int acl_reason = moduleGetACLLogEntryReason(reason);
     if (!acl_reason) return REDISMODULE_ERR;
     addACLLogEntry(ctx->client, acl_reason, ACL_LOG_CTX_MODULE, -1, user->user->name, sdsdup(object->ptr));
@@ -10031,6 +10316,9 @@ int RM_ACLAddLogEntry(RedisModuleCtx *ctx, RedisModuleUser *user, RedisModuleStr
  *
  * For more information about ACL log, please refer to https://redis.io/commands/acl-log */
 int RM_ACLAddLogEntryByUserName(RedisModuleCtx *ctx, RedisModuleString *username, RedisModuleString *object, RedisModuleACLLogEntryReason reason) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     int acl_reason = moduleGetACLLogEntryReason(reason);
     if (!acl_reason) return REDISMODULE_ERR;
     addACLLogEntry(ctx->client, acl_reason, ACL_LOG_CTX_MODULE, -1, username->ptr, sdsdup(object->ptr));
@@ -10096,6 +10384,9 @@ static int authenticateClientWithUser(RedisModuleCtx *ctx, user *user, RedisModu
  * See authenticateClientWithUser for information about callback, client_id,
  * and general usage for authentication. */
 int RM_AuthenticateClientWithUser(RedisModuleCtx *ctx, RedisModuleUser *module_user, RedisModuleUserChangedFunc callback, void *privdata, uint64_t *client_id) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     return authenticateClientWithUser(ctx, module_user->user, callback, privdata, client_id);
 }
 
@@ -10105,6 +10396,9 @@ int RM_AuthenticateClientWithUser(RedisModuleCtx *ctx, RedisModuleUser *module_u
  * See authenticateClientWithUser for information about callback, client_id,
  * and general usage for authentication. */
 int RM_AuthenticateClientWithACLUser(RedisModuleCtx *ctx, const char *name, size_t len, RedisModuleUserChangedFunc callback, void *privdata, uint64_t *client_id) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     user *acl_user = ACLGetUserByName(name, len);
 
     if (!acl_user) {
@@ -10127,6 +10421,9 @@ int RM_AuthenticateClientWithACLUser(RedisModuleCtx *ctx, const char *name, size
  * of a command or thread safe context. */
 int RM_DeauthenticateAndCloseClient(RedisModuleCtx *ctx, uint64_t client_id) {
     UNUSED(ctx);
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     client *c = lookupClientByID(client_id);
     if (c == NULL) return REDISMODULE_ERR;
 
@@ -10166,6 +10463,12 @@ int RM_RedactClientCommandArgument(RedisModuleCtx *ctx, int pos) {
  * - Connection is a TLS connection but no client certificate was used
  */
 RedisModuleString *RM_GetClientCertificate(RedisModuleCtx *ctx, uint64_t client_id) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     client *c = lookupClientByID(client_id);
     if (c == NULL) return NULL;
 
@@ -10634,6 +10937,14 @@ sds modulesCollectInfo(sds info, dict *sections_dict, int for_crash_report, int 
  * When done, it needs to be freed with RedisModule_FreeServerInfo or with the
  * automatic memory management mechanism if enabled. */
 RedisModuleServerInfoData *RM_GetServerInfo(RedisModuleCtx *ctx, const char *section) {
+#ifdef _WIN32
+    /* INFO generation reaches process-local Lua engines, module callbacks and
+     * listener/event-loop state depending on the requested section. */
+    if (moduleInQForkChild()) {
+        moduleQForkUnsupported();
+        return NULL;
+    }
+#endif
     struct RedisModuleServerInfoData *d = zmalloc(sizeof(*d));
     d->rax = raxNew();
     if (ctx != NULL) autoMemoryAdd(ctx,REDISMODULE_AM_INFO,d);
@@ -11464,6 +11775,12 @@ int RM_Fork(RedisModuleForkDoneHandler cb, void *user_data) {
  * reported in INFO.
  * The `progress` argument should between 0 and 1, or -1 when not available. */
 void RM_SendChildHeartbeat(double progress) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) {
+        errno = ENOTSUP;
+        return;
+    }
+#endif
     sendChildInfoGeneric(CHILD_INFO_TYPE_CURRENT_INFO, 0, progress, "Module fork");
 }
 
@@ -11471,6 +11788,9 @@ void RM_SendChildHeartbeat(double progress) {
  * retcode will be provided to the done handler executed on the parent process.
  */
 int RM_ExitFromChild(int retcode) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     sendChildCowInfo(CHILD_INFO_TYPE_MODULE_COW_SIZE, "Module fork");
     exitFromChild(retcode);
     return REDISMODULE_OK;
@@ -13466,6 +13786,9 @@ size_t moduleCount(void) {
  * servers's maxmemory policy is LFU based. Value is idle time in milliseconds.
  * returns REDISMODULE_OK if the LRU was updated, REDISMODULE_ERR otherwise. */
 int RM_SetLRU(RedisModuleKey *key, mstime_t lru_idle) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (!key->value)
         return REDISMODULE_ERR;
     if (objectSetLRUOrLFU(key->value, -1, lru_idle, lru_idle>=0 ? LRU_CLOCK() : 0, 1))
@@ -13478,6 +13801,9 @@ int RM_SetLRU(RedisModuleKey *key, mstime_t lru_idle) {
  * LFU based.
  * returns REDISMODULE_OK if when key is valid. */
 int RM_GetLRU(RedisModuleKey *key, mstime_t *lru_idle) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     *lru_idle = -1;
     if (!key->value)
         return REDISMODULE_ERR;
@@ -13493,6 +13819,9 @@ int RM_GetLRU(RedisModuleKey *key, mstime_t *lru_idle) {
  * the access frequencyonly (must be <= 255).
  * returns REDISMODULE_OK if the LFU was updated, REDISMODULE_ERR otherwise. */
 int RM_SetLFU(RedisModuleKey *key, long long lfu_freq) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     if (!key->value)
         return REDISMODULE_ERR;
     if (objectSetLRUOrLFU(key->value, lfu_freq, -1, 0, 1))
@@ -13504,6 +13833,9 @@ int RM_SetLFU(RedisModuleKey *key, long long lfu_freq) {
  * LFU based.
  * returns REDISMODULE_OK if when key is valid. */
 int RM_GetLFU(RedisModuleKey *key, long long *lfu_freq) {
+#ifdef _WIN32
+    if (moduleInQForkChild()) return moduleQForkUnsupported();
+#endif
     *lfu_freq = -1;
     if (!key->value)
         return REDISMODULE_ERR;

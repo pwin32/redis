@@ -36,6 +36,7 @@ set ::redis_cli_path [redis_test_binary REDIS_CLI {src redis-cli}]
 set ::redis_benchmark_path [redis_test_binary REDIS_BENCHMARK {src redis-benchmark}]
 set ::redis_check_aof_path [redis_test_binary REDIS_CHECK_AOF {src redis-check-aof}]
 set ::redis_check_rdb_path [redis_test_binary REDIS_CHECK_RDB {src redis-check-rdb}]
+set ::redis_test_launcher_path [redis_test_binary REDIS_TEST_LAUNCHER {build mingw64 redis-test-launcher}]
 
 proc start_server_error {config_file error} {
     set err {}
@@ -158,37 +159,24 @@ proc kill_server config {
     send_data_packet $::test_server_fd server-killed $pid
 }
 
-# Return the executable and command line for one exact Windows PID.  The
-# caller still validates the path before any terminate/suspend operation.
+# Return the executable path for one exact Windows PID through the native
+# MinGW helper.  The helper deliberately does not invoke PowerShell: these
+# queries sit in tight cleanup/polling loops throughout the test harness.
 proc windows_process_details {pid} {
-    set script "\$p = Get-CimInstance Win32_Process -Filter 'ProcessId = $pid'; if (\$null -eq \$p) { exit 1 }; Write-Output \$p.ExecutablePath; Write-Output \$p.CommandLine"
-    return [exec powershell.exe -NoProfile -NonInteractive -Command $script]
+    set image [string trim [exec $::redis_test_launcher_path --image $pid]]
+    return "$image\n"
 }
 
 proc windows_process_matches {pid {config {}}} {
-    if {[catch {set details [windows_process_details $pid]}]} {
-        return 0
-    }
-    set lines [split [string trim $details] "\r\n"]
-    set actual [string trim [lindex $lines 0]]
-    if {$actual eq {}} { return 0 }
-
     set expected [file nativename [file normalize $::redis_server_path]]
-    set actual [file nativename [file normalize $actual]]
-    if {![string equal -nocase $actual $expected]} {
-        return 0
-    }
-
-    # If a server config is available, require its basename in the command
-    # line as an additional guard against PID reuse or an installed service.
-    if {$config ne {} && [dict exists $config config_file]} {
-        set config_name [file tail [dict get $config config_file]]
-        set commandline [join [lrange $lines 1 end] "\n"]
-        if {[string first $config_name $commandline] < 0} {
-            return 0
-        }
-    }
-    return 1
+    # Exact image-path matching is the ownership boundary.  In particular,
+    # the installed service under Program Files cannot match the checkout's
+    # build/mingw64/redis-server.exe even when a test PID is stale.  Keep the
+    # optional config argument for callers and future command-line metadata,
+    # but do not reintroduce a PowerShell query into this hot path.
+    return [expr {![catch {
+        exec $::redis_test_launcher_path --is-owned $pid $expected
+    }]}]
 }
 
 proc windows_is_alive config {
@@ -222,11 +210,8 @@ proc windows_kill_proc config {
 }
 
 proc windows_process_owned {pid} {
-    if {[catch {set details [windows_process_details $pid]}]} { return 0 }
-    set lines [split [string trim $details] "\r\n"]
-    set actual [file nativename [file normalize [string trim [lindex $lines 0]]]]
     set allowed {}
-    foreach var {redis_server_path redis_cli_path redis_benchmark_path redis_check_aof_path redis_check_rdb_path} {
+    foreach var {redis_server_path redis_cli_path redis_benchmark_path redis_check_aof_path redis_check_rdb_path redis_test_launcher_path} {
         if {[info exists ::$var]} {
             lappend allowed [file nativename [file normalize [set ::$var]]]
         }
@@ -234,11 +219,9 @@ proc windows_process_owned {pid} {
     if {[info exists ::tcl_platform(platform)]} {
         lappend allowed [file nativename [file normalize [info nameofexecutable]]]
     }
-    foreach path $allowed {
-        if {[string equal -nocase $actual $path]} { return 1 }
-    }
-    set commandline [join [lrange $lines 1 end] "\n"]
-    return [expr {[string first [file nativename $::redis_test_root] $commandline] >= 0}]
+    return [expr {![catch {
+        exec $::redis_test_launcher_path --is-owned $pid {*}$allowed
+    }]}]
 }
 
 proc windows_kill_proc2 pid {
@@ -251,6 +234,141 @@ proc windows_kill_proc2_checked pid {
         error "Refusing to terminate unexpected Windows process PID $pid"
     }
     exec taskkill.exe /F /T /PID $pid 2>@1
+}
+
+# Run a redis-server invocation that is expected to fail during startup and
+# return its combined diagnostics.  On Windows, route even these short-lived
+# probes through the native hidden launcher so they cannot flash a console.
+# Since the launcher intentionally returns the real Redis PID immediately,
+# poll that exact process and retain the same executable-path validation used
+# by the normal harness before any forced cleanup.
+proc redis_server_startup_error {args} {
+    if {$::tcl_platform(platform) ne "windows"} {
+        set failed [catch {
+            exec $::redis_server_path {*}$args 2>@1
+        } output]
+        if {!$failed} {
+            error "redis-server unexpectedly accepted startup arguments: $args"
+        }
+        return $output
+    }
+
+    set probe_dir [tmpdir redis-server-startup-error]
+    set stdout [file join $probe_dir stdout]
+    set stderr [file join $probe_dir stderr]
+    set pid {}
+    set cleanup_error {}
+
+    # The Windows native logger honors --logfile before redis_main() parses
+    # the remaining options.  A malformed later directive can therefore put
+    # the authoritative fatal-config diagnostic in that file instead of the
+    # launcher's stdout/stderr handles.  Remember those paths so the probe
+    # returns the same diagnostics that a direct redis-server invocation
+    # exposes, without deleting a file that existed before the probe.
+    set native_logfiles {}
+    set native_logfile_existed {}
+    for {set arg_index 0} {$arg_index < [llength $args]} {incr arg_index} {
+        set arg [lindex $args $arg_index]
+        set logfile_value {}
+        if {$arg eq "--logfile"} {
+            if {$arg_index + 1 < [llength $args]} {
+                incr arg_index
+                set logfile_value [lindex $args $arg_index]
+            }
+        } elseif {[regexp {^--logfile[ \t]+(.+)$} $arg -> logfile_value]} {
+            # Redis accepts an option name and value in one argv element.
+        }
+        if {$logfile_value eq {}} { continue }
+        if {[string length $logfile_value] >= 2} {
+            set first_char [string index $logfile_value 0]
+            set last_char [string index $logfile_value end]
+            if {($first_char eq {"} && $last_char eq {"}) ||
+                ($first_char eq {'} && $last_char eq {'})} {
+                set logfile_value [string range $logfile_value 1 end-1]
+            }
+        }
+        if {$logfile_value eq {} ||
+            [string equal -nocase $logfile_value stdout]} {
+            continue
+        }
+        if {[catch {set logfile_path [file normalize $logfile_value]}]} {
+            continue
+        }
+        if {[lsearch -exact $native_logfiles $logfile_path] < 0} {
+            lappend native_logfiles $logfile_path
+            dict set native_logfile_existed $logfile_path [file exists $logfile_path]
+        }
+    }
+
+    set caught [catch {
+        set launch_cmd [list $::redis_test_launcher_path $stdout $stderr -- \
+            $::redis_server_path]
+        lappend launch_cmd {*}$args
+        set pid [string trim [exec {*}$launch_cmd]]
+        if {![string is wideinteger -strict $pid] || $pid <= 0} {
+            error "hidden Redis launcher returned an invalid PID: $pid"
+        }
+
+        set exited 0
+        for {set attempt 0} {$attempt < 300} {incr attempt} {
+            if {![process_is_alive $pid]} {
+                set exited 1
+                break
+            }
+            after 100
+        }
+        if {!$exited} {
+            error "redis-server unexpectedly remained running for startup arguments: $args"
+        }
+
+        set output {}
+        foreach logfile [list $stdout $stderr] {
+            if {[file exists $logfile]} {
+                set fp [open $logfile r]
+                append output [read $fp]
+                close $fp
+            }
+        }
+        foreach logfile $native_logfiles {
+            if {[file exists $logfile] && [file isfile $logfile]} {
+                set fp [open $logfile r]
+                append output [read $fp]
+                close $fp
+            }
+        }
+        set output
+    } result options]
+
+    if {$pid ne {} && [process_is_alive $pid]} {
+        if {![windows_process_matches $pid]} {
+            set cleanup_error \
+                "refusing to terminate unexpected startup-probe PID $pid"
+        } elseif {[catch {windows_kill_proc2_checked $pid} kill_error]} {
+            set cleanup_error $kill_error
+        } else {
+            set exited 0
+            for {set attempt 0} {$attempt < 100} {incr attempt} {
+                if {![process_is_alive $pid]} {
+                    set exited 1
+                    break
+                }
+                after 20
+            }
+            if {!$exited} {
+                set cleanup_error "startup-probe PID $pid did not exit"
+            }
+        }
+    }
+    foreach logfile $native_logfiles {
+        if {![dict get $native_logfile_existed $logfile]} {
+            catch {file delete -force $logfile}
+        }
+    }
+    catch {file delete -force $probe_dir}
+
+    if {$cleanup_error ne {}} { error $cleanup_error }
+    if {$caught} { return -options $options $result }
+    return $result
 }
 
 if {$::tcl_platform(platform) eq "windows"} {
@@ -425,7 +543,18 @@ proc spawn_server {config_file stdout stderr args} {
         # tries to allocate huge memory area and expects allocator to return
         # NULL, address sanitizer throws an error without this setting.
         if {$::tcl_platform(platform) eq "windows"} {
-            set pid [exec {*}$cmd >> $stdout 2>> $stderr &]
+            # Tcl's Windows exec path does not expose CREATE_NO_WINDOW, so a
+            # CUI redis-server can allocate a console for every test server.
+            # The native launcher creates the actual Redis child with hidden
+            # startup flags and assigns these existing log paths directly as
+            # inherited standard handles.  It prints the Redis PID (not a
+            # wrapper PID), preserving the exact-process cleanup below.
+            set launch_cmd [list $::redis_test_launcher_path $stdout $stderr --]
+            lappend launch_cmd {*}$cmd
+            set pid [string trim [exec {*}$launch_cmd]]
+            if {![string is wideinteger -strict $pid] || $pid <= 0} {
+                error "hidden Redis launcher returned an invalid PID: $pid"
+            }
         } else {
             set pid [exec /usr/bin/env ASAN_OPTIONS=allocator_may_return_null=1 {*}$cmd >> $stdout 2>> $stderr &]
         }

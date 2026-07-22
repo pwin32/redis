@@ -25,10 +25,12 @@
 #include "win32_Interop/win32fixes.h"
 #include "adlist.h"
 #include "win32_Interop/win32_wsiocp.h"
+#include "win32_Interop/Win32_FDAPI.h"
+#include "win32_Interop/Win32_Error.h"
 #include "win32_Interop/Win32_RedisLog.h"
 
-#define MAX_COMPLETE_PER_POLL   100
 #define MAX_SOCKET_LOOKUP       65535
+#define WRITE_REARM_BATCH       64
 
 /* Use GetQueuedCompletionStatusEx if possible.
  * Try to load the function pointer dynamically.
@@ -46,7 +48,11 @@ sGetQueuedCompletionStatusEx pGetQueuedCompletionStatusEx;
 typedef struct aeApiState {
     HANDLE iocp;
     int setsize;
-    OVERLAPPED_ENTRY entries[MAX_COMPLETE_PER_POLL];
+    ULONGLONG next_accept_rearm_ms;
+    ULONGLONG next_accept_ready_ms;
+    ULONGLONG next_write_rearm_ms;
+    int accept_ready_cursor;
+    int write_rearm_cursor;
 } aeApiState;
 
 /* Find matching value in list and remove. If found return TRUE */
@@ -118,9 +124,14 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
         errno = WSAEINVAL;
         return -1;
     }
-    if ((sockstate->masks & SOCKET_ATTACHED) == 0 &&
-        WSIOCP_SocketAttachToPort(fd, sockstate, state->iocp) != 0) {
-        return -1;
+    if (sockstate->masks & SOCKET_ATTACHED) {
+        if (sockstate->completion_port != state->iocp) {
+            errno = WSAEINVAL;
+            return -1;
+        }
+    } else {
+        if (WSIOCP_SocketAttachToPort(fd, sockstate, state->iocp) != 0)
+            return -1;
     }
 
     if (mask & AE_READABLE) {
@@ -158,160 +169,386 @@ static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int mask) {
     }
 
     if (mask & AE_READABLE) sockstate->masks &= ~AE_READABLE;
-    if (mask & AE_WRITABLE) sockstate->masks &= ~AE_WRITABLE;
+    if (mask & AE_WRITABLE) {
+        sockstate->masks &= ~AE_WRITABLE;
+        WSIOCP_CancelWriteReady(fd);
+    }
 }
 
-/* Return array of sockets that are ready for read or write
- * depending on the mask for each socket */
-static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
-    aeApiState *state = (aeApiState *) eventLoop->apidata;
-    iocpSockState *sockstate;
-    ULONG j;
-    int numevents = 0;
-    ULONG numComplete = 0;
-    BOOL rc;
-    int mswait = (tvp == NULL) ? 100 : (tvp->tv_sec * 1000) + (tvp->tv_usec / 1000);
+static int aeApiGetCompletion(aeApiState *state, OVERLAPPED_ENTRY *entry,
+                              DWORD timeout) {
+    memset(entry, 0, sizeof(*entry));
 
     if (pGetQueuedCompletionStatusEx != NULL) {
-        // First get an array of completion notifications
-        rc = pGetQueuedCompletionStatusEx(state->iocp,
-                                          state->entries,
-                                          MAX_COMPLETE_PER_POLL,
-                                          &numComplete,
-                                          mswait,
-                                          FALSE);
-    } else {
-        // Need to get one at a time. Use first array element
-        rc = GetQueuedCompletionStatus(state->iocp,
-                                       &state->entries[0].dwNumberOfBytesTransferred,
-                                       &state->entries[0].lpCompletionKey,
-                                       &state->entries[0].lpOverlapped,
-                                       mswait);
-        if (!rc && state->entries[0].lpOverlapped == NULL) {
-            // Timeout. Return.
+        ULONG numComplete = 0;
+        BOOL rc = pGetQueuedCompletionStatusEx(state->iocp,
+                                               entry,
+                                               1,
+                                               &numComplete,
+                                               timeout,
+                                               FALSE);
+        return rc && numComplete == 1;
+    }
+
+    /* GetQueuedCompletionStatus returns FALSE both for a timeout and for a
+     * failed overlapped operation.  A non-NULL OVERLAPPED identifies a real
+     * completion and must still be processed. */
+    BOOL rc = GetQueuedCompletionStatus(state->iocp,
+                                        &entry->dwNumberOfBytesTransferred,
+                                        &entry->lpCompletionKey,
+                                        &entry->lpOverlapped,
+                                        timeout);
+    return rc || entry->lpOverlapped != NULL;
+}
+
+static void aeApiUnknownCompletion(iocpSockState *sockstate, int rfd) {
+    if (sockstate != NULL && sockstate->unknownComplete == 0) {
+        sockstate->unknownComplete = 1;
+        serverLog(LL_WARNING,
+                  "IOCP completion did not match fd=%d; ignoring late completion",
+                  rfd);
+    }
+}
+
+static int aeApiFireEvent(aeEventLoop *eventLoop, iocpSockState *sockstate,
+                          int fd, int mask) {
+    aeApiState *state = (aeApiState *) eventLoop->apidata;
+    if (fd < 0 || fd >= state->setsize ||
+        sockstate->completion_port != state->iocp) return 0;
+    WSIOCP_RetainSocketState(sockstate);
+    eventLoop->fired[0].fd = fd;
+    eventLoop->fired[0].mask = mask;
+    eventLoop->fired[0].backend_data = sockstate;
+    return 1;
+}
+
+/* AcceptEx completion is edge-triggered, while Redis listener callbacks rely
+ * on level-triggered readiness.  A callback can intentionally leave a
+ * completed accept queued (cluster listeners do this while loading), so
+ * surface that readiness again at a bounded rate until it is consumed. */
+static int aeApiFireQueuedAccept(aeEventLoop *eventLoop) {
+    aeApiState *state = (aeApiState *)eventLoop->apidata;
+    int count = eventLoop->maxfd + 1;
+    ULONGLONG now;
+
+    if (count <= 0) return 0;
+    now = GetTickCount64();
+    if (state->next_accept_ready_ms != 0 &&
+        now < state->next_accept_ready_ms) return 0;
+
+    for (int offset = 0; offset < count; offset++) {
+        int fd = (state->accept_ready_cursor + offset) % count;
+        iocpSockState *sockstate = WSIOCP_GetExistingSocketState(fd);
+        if (sockstate == NULL || sockstate->completion_port != state->iocp ||
+            sockstate->reqs == NULL ||
+            (sockstate->masks & (LISTEN_SOCK | AE_READABLE)) !=
+                (LISTEN_SOCK | AE_READABLE) ||
+            (sockstate->masks & CLOSE_PENDING) != 0)
+            continue;
+
+        state->accept_ready_cursor = (fd + 1) % count;
+        state->next_accept_ready_ms = now + 100;
+        return aeApiFireEvent(eventLoop, sockstate, fd, AE_READABLE);
+    }
+
+    state->next_accept_ready_ms = 0;
+    return 0;
+}
+
+static int aeApiProcessCompletion(aeEventLoop *eventLoop,
+                                  const OVERLAPPED_ENTRY *entry) {
+    aeApiState *state = (aeApiState *)eventLoop->apidata;
+    int rfd = (int) entry->lpCompletionKey;
+    iocpSockState *sockstate = WSIOCP_GetExistingSocketState(rfd);
+    if (sockstate == NULL) {
+        aeApiUnknownCompletion(NULL, rfd);
+        return 0;
+    }
+    if (sockstate->completion_port != state->iocp) {
+        /* A descriptor was recycled after a completion had already been
+         * queued to its former owner's port.  Never apply that packet to the
+         * new socket state. */
+        return 0;
+    }
+
+    /* AcceptEx has a distinct OVERLAPPED owner.  Keep the exact owner in the
+     * state so a late completion cannot be mistaken for a new listener's
+     * accept after descriptor reuse. */
+    if ((sockstate->masks & ACCEPT_PENDING) &&
+        sockstate->accept_pending != NULL &&
+        entry->lpOverlapped == &sockstate->accept_pending->ov) {
+        aacceptreq *areq = sockstate->accept_pending;
+        sockstate->accept_pending = NULL;
+        sockstate->masks &= ~ACCEPT_PENDING;
+
+        if (sockstate->masks & CLOSE_PENDING) {
+            WSIOCP_DisposeAcceptRequest(areq);
+            WSIOCP_TryFinalizeClosedState(sockstate);
             return 0;
-        } else {
-            // Check if more completions are ready
-            BOOL lrc = TRUE;
-            rc = TRUE;
-            numComplete = 1;
-
-            while (numComplete < MAX_COMPLETE_PER_POLL) {
-                lrc = GetQueuedCompletionStatus(state->iocp,
-                                                &state->entries[numComplete].dwNumberOfBytesTransferred,
-                                                &state->entries[numComplete].lpCompletionKey,
-                                                &state->entries[numComplete].lpOverlapped,
-                                                0);
-                if (lrc) {
-                    numComplete++;
-                } else {
-                    if (state->entries[numComplete].lpOverlapped == NULL) break;
-                }
-            }
         }
+
+        areq->next = sockstate->reqs;
+        sockstate->reqs = areq;
+        if (sockstate->masks & AE_READABLE)
+            return aeApiFireEvent(eventLoop, sockstate, rfd, AE_READABLE);
+        return 0;
     }
 
-    if (rc && numComplete > 0) {
-        LPOVERLAPPED_ENTRY entry = state->entries;
-        for (j = 0; j < numComplete && numevents < state->setsize; j++, entry++) {
-            // The competion key is the rfd identifying the socket 
-            int rfd = (int) entry->lpCompletionKey;
-            sockstate = WSIOCP_GetExistingSocketState(rfd);
-            if (sockstate == NULL) {
-                continue;
-            }
+    /* ConnectEx and read readiness share ov_read, but their state bits make
+     * the completion type unambiguous. */
+    if ((sockstate->masks & CONNECT_PENDING) &&
+        entry->lpOverlapped == &sockstate->ov_read) {
+        sockstate->masks &= ~CONNECT_PENDING;
+        if (sockstate->masks & CLOSE_PENDING) {
+            WSIOCP_TryFinalizeClosedState(sockstate);
+            return 0;
+        }
 
-            if ((sockstate->masks & CLOSE_PENDING) == FALSE) {
-                if ((sockstate->masks & LISTEN_SOCK) && entry->lpOverlapped != NULL) {
-                    // Need to set event for listening
-                    aacceptreq *areq = (aacceptreq *) entry->lpOverlapped;
-                    areq->next = sockstate->reqs;
-                    sockstate->reqs = areq;
-                    sockstate->masks &= ~ACCEPT_PENDING;
-                    if (sockstate->masks & AE_READABLE) {
-                        eventLoop->fired[numevents].fd = rfd;
-                        eventLoop->fired[numevents].mask = AE_READABLE;
-                        numevents++;
-                    }
-                } else if (sockstate->masks & CONNECT_PENDING) {
-                    // Check if connect complete
-                    if (entry->lpOverlapped == &sockstate->ov_read) {
-                        sockstate->masks &= ~CONNECT_PENDING;
-                        // Enable read and write events for this connection
-                        aeApiAddEvent(eventLoop, rfd, sockstate->masks);
-                    }
-                } else {
-                    BOOL matched = FALSE;
-                    // Check if event is read complete (may be 0 length read)
-                    if (entry->lpOverlapped == &sockstate->ov_read) {
-                        matched = TRUE;
-                        sockstate->masks &= ~READ_QUEUED;
-                        if (sockstate->masks & AE_READABLE) {
-                            eventLoop->fired[numevents].fd = rfd;
-                            eventLoop->fired[numevents].mask = AE_READABLE;
-                            numevents++;
-                        }
-                    } else if (sockstate->wreqs > 0 && entry->lpOverlapped != NULL) {
-                        // Should be write complete. Get results
-                        asendreq *areq = (asendreq *) entry->lpOverlapped;
-                        matched = removeMatchFromList(&sockstate->wreqlist, areq);
-                        if (matched == TRUE) {
-                            // Call write complete callback so buffers can be freed
-                            if (areq->proc != NULL) {
-                                DWORD written = 0;
-                                DWORD flags;
-                                FDAPI_WSAGetOverlappedResult(rfd, &areq->ov, &written, FALSE, &flags);
-                                areq->proc(areq->eventLoop, rfd, &areq->req, (int) written);
-                            }
-                            sockstate->wreqs--;
-                            FreeMemoryNoCOW(areq);
-                            // If no active write requests, set ready to write
-                            if (sockstate->wreqs == 0 && sockstate->masks & AE_WRITABLE) {
-                                eventLoop->fired[numevents].fd = rfd;
-                                eventLoop->fired[numevents].mask = AE_WRITABLE;
-                                numevents++;
-                            }
-                        }
-                    }
-                    if (matched == 0 && sockstate->unknownComplete == 0) {
-                        /* A late completion can legitimately arrive after a
-                         * descriptor has been closed and reused.  Never close
-                         * the current occupant of the synthetic descriptor;
-                         * mark it for diagnostics and let its owner decide. */
-                        sockstate->unknownComplete = 1;
-                        serverLog(LL_WARNING,
-                                  "IOCP completion did not match fd=%d; ignoring late completion",
-                                  rfd);
-                    }
+        DWORD connected_bytes = 0;
+        DWORD connected_flags = 0;
+        if (FDAPI_WSAGetOverlappedResult(rfd, &sockstate->ov_read,
+                                         &connected_bytes, FALSE,
+                                         &connected_flags) == FALSE) {
+            int connect_error = FDAPI_WSAGetLastError();
+            int visible_mask = sockstate->masks & (AE_READABLE | AE_WRITABLE);
+            WSIOCP_SetDeferredError(rfd, connect_error);
+            if (visible_mask == 0) visible_mask = AE_WRITABLE;
+            return aeApiFireEvent(eventLoop, sockstate, rfd, visible_mask);
+        }
+
+        /* ConnectEx requires the socket context to be updated before the
+         * connected socket is used for normal send/receive operations.  If
+         * this fails, surface the error through the ordinary connection
+         * callback so the owner closes and retries the link. */
+        if (FDAPI_UpdateConnectContext(rfd) == SOCKET_ERROR) {
+            int context_error = FDAPI_WSAGetLastError();
+            int visible_mask = sockstate->masks & (AE_READABLE | AE_WRITABLE);
+            WSIOCP_SetDeferredError(rfd, context_error);
+            serverLog(LL_WARNING,
+                      "IOCP ConnectEx context update failed for fd=%d: %s",
+                      rfd, wsa_strerror(context_error));
+            if (visible_mask == 0) visible_mask = AE_WRITABLE;
+            return aeApiFireEvent(eventLoop, sockstate, rfd, visible_mask);
+        }
+
+        if (aeApiAddEvent(eventLoop, rfd, sockstate->masks) != 0) {
+            int rearm_errno = errno;
+            int visible_mask = sockstate->masks & (AE_READABLE | AE_WRITABLE);
+            WSIOCP_SetDeferredError(rfd, rearm_errno);
+            serverLog(LL_WARNING,
+                      "IOCP connect completion could not rearm fd=%d: %s",
+                      rfd, wsa_strerror(rearm_errno));
+            /* The original connect event is writable, so preserve a visible
+             * event even if the failed rearm was for the read side. The
+             * connection handler consumes the deferred error and follows its
+             * ordinary failed-connect/close path. */
+            if (visible_mask == 0) visible_mask = AE_WRITABLE;
+            return aeApiFireEvent(eventLoop, sockstate, rfd, visible_mask);
+        }
+        return 0;
+    }
+
+    if ((sockstate->masks & READ_QUEUED) &&
+        entry->lpOverlapped == &sockstate->ov_read) {
+        sockstate->masks &= ~READ_QUEUED;
+        if (sockstate->masks & CLOSE_PENDING) {
+            WSIOCP_TryFinalizeClosedState(sockstate);
+            return 0;
+        }
+        if (sockstate->masks & AE_READABLE)
+            return aeApiFireEvent(eventLoop, sockstate, rfd, AE_READABLE);
+        return 0;
+    }
+
+    if (sockstate->wreqs > 0 && entry->lpOverlapped != NULL) {
+        asendreq *areq = (asendreq *) entry->lpOverlapped;
+        if (removeMatchFromList(&sockstate->wreqlist, areq)) {
+            DWORD written = 0;
+            DWORD flags = 0;
+            int closing;
+
+            if (!(sockstate->masks & CLOSE_PENDING) && areq->proc != NULL)
+                FDAPI_WSAGetOverlappedResult(rfd, &areq->ov, &written, FALSE, &flags);
+
+            /* Keep the state alive while a completion callback can close its
+             * client and consequently request finalization. */
+            if (areq->proc != NULL && !(sockstate->masks & CLOSE_PENDING)) {
+                WSIOCP_RetainSocketState(sockstate);
+                areq->proc(areq->eventLoop, rfd, &areq->req, (int) written);
+                closing = (sockstate->masks & CLOSE_PENDING) != 0;
+                sockstate->wreqs--;
+                FreeMemoryNoCOW(areq);
+                if (closing) {
+                    /* Release may finalize and free the state.  Do not touch
+                     * sockstate on this path afterward. */
+                    WSIOCP_ReleaseSocketState(sockstate);
+                    return 0;
                 }
+                /* Without CLOSE_PENDING, releasing the callback reference
+                 * cannot finalize the still-open socket state. */
+                WSIOCP_ReleaseSocketState(sockstate);
             } else {
-                if (sockstate->masks & CONNECT_PENDING) {
-                    // Check if connect complete
-                    if (entry->lpOverlapped == &sockstate->ov_read) {
-                        sockstate->masks &= ~CONNECT_PENDING;
-                    }
-                } else if (entry->lpOverlapped == &sockstate->ov_read) {
-                    // Read complete
-                    sockstate->masks &= ~READ_QUEUED;
-                } else {
-                    // Check pending writes
-                    asendreq *areq = (asendreq *) entry->lpOverlapped;
-                    if (removeMatchFromList(&sockstate->wreqlist, areq)) {
-                        sockstate->wreqs--;
-                        FreeMemoryNoCOW(areq);
-                    }
-                }
-                if (sockstate->wreqs == 0 &&
-                    (sockstate->masks & (CONNECT_PENDING | READ_QUEUED | SOCKET_ATTACHED)) == 0) {
-                    sockstate->masks &= ~(CLOSE_PENDING);
-                    if (WSIOCP_CloseSocketState(sockstate)) {
-                        FDAPI_ClearSocketInfo(rfd);
-                    }
+                sockstate->wreqs--;
+                FreeMemoryNoCOW(areq);
+                if (sockstate->masks & CLOSE_PENDING) {
+                    WSIOCP_TryFinalizeClosedState(sockstate);
+                    return 0;
                 }
             }
+
+            if (sockstate->wreqs == 0 && (sockstate->masks & AE_WRITABLE))
+                return aeApiFireEvent(eventLoop, sockstate, rfd, AE_WRITABLE);
+            return 0;
         }
     }
-    return numevents;
+
+    aeApiUnknownCompletion(sockstate, rfd);
+    return 0;
+}
+
+static void aeApiRetryAccepts(aeEventLoop *eventLoop) {
+    aeApiState *state = (aeApiState *)eventLoop->apidata;
+    if (!WSIOCP_AcceptRearmPending()) {
+        state->next_accept_rearm_ms = 0;
+        return;
+    }
+
+    ULONGLONG now = GetTickCount64();
+    if (state->next_accept_rearm_ms != 0 &&
+        now < state->next_accept_rearm_ms) return;
+    state->next_accept_rearm_ms = now + 100;
+
+    for (int fd = 0; fd <= eventLoop->maxfd; fd++) {
+        iocpSockState *sockstate = WSIOCP_GetExistingSocketState(fd);
+        if (sockstate == NULL || sockstate->completion_port != state->iocp ||
+            (sockstate->masks & ACCEPT_REARM_NEEDED) == 0 ||
+            (sockstate->masks & CLOSE_PENDING) != 0)
+            continue;
+
+        if (WSIOCP_QueueAccept(fd) == 0) {
+            serverLog(LL_NOTICE,
+                      "IOCP listener fd=%d resumed AcceptEx after a transient failure",
+                      fd);
+        } else if (!sockstate->accept_rearm_logged) {
+            serverLog(LL_WARNING,
+                      "IOCP listener fd=%d could not rearm AcceptEx: %s",
+                      fd, wsa_strerror(errno));
+            sockstate->accept_rearm_logged = 1;
+        }
+    }
+}
+
+/* A nonblocking send may consume all currently available buffer space after a
+ * writable callback.  Retry the real Winsock readiness probe at a bounded
+ * cadence; once ready, WSIOCP_QueueWriteReady posts the ordinary one-shot
+ * completion consumed by this backend. */
+static int aeApiRetryWrites(aeEventLoop *eventLoop) {
+    aeApiState *state = (aeApiState *)eventLoop->apidata;
+    if (!WSIOCP_WriteRearmPending()) {
+        state->next_write_rearm_ms = 0;
+        return 0;
+    }
+
+    ULONGLONG now = GetTickCount64();
+    if (state->next_write_rearm_ms != 0 &&
+        now < state->next_write_rearm_ms) return 0;
+    state->next_write_rearm_ms = now + 10;
+
+    int fd_count = eventLoop->maxfd + 1;
+    if (fd_count <= 0) return 0;
+
+    struct pollfd candidates[WRITE_REARM_BATCH];
+    iocpSockState *candidate_states[WRITE_REARM_BATCH];
+    int candidate_count = 0;
+    int last_fd = state->write_rearm_cursor % fd_count;
+
+    /* Batch blocked writers into one WSAPoll call.  The cursor keeps a large
+     * set of slow clients fair without scanning or probing every fd on each
+     * 10 ms retry tick. */
+    for (int offset = 0;
+         offset < fd_count && candidate_count < WRITE_REARM_BATCH;
+         offset++) {
+        int fd = (state->write_rearm_cursor + offset) % fd_count;
+        iocpSockState *sockstate = WSIOCP_GetExistingSocketState(fd);
+        if (sockstate == NULL || sockstate->completion_port != state->iocp ||
+            (sockstate->masks & WRITE_REARM_NEEDED) == 0 ||
+            (sockstate->masks & CLOSE_PENDING) != 0)
+            continue;
+
+        candidates[candidate_count].fd = fd;
+        candidates[candidate_count].events = POLLOUT;
+        candidates[candidate_count].revents = 0;
+        candidate_states[candidate_count] = sockstate;
+        candidate_count++;
+        last_fd = fd;
+    }
+
+    if (candidate_count == 0) return 0;
+    state->write_rearm_cursor = (last_fd + 1) % fd_count;
+
+    int poll_result = poll(candidates, candidate_count, 0);
+    for (int index = 0; index < candidate_count; index++) {
+        if (poll_result >= 0 && candidates[index].revents == 0) continue;
+
+        int fd = candidates[index].fd;
+        iocpSockState *sockstate = candidate_states[index];
+        if (WSIOCP_QueueWriteReady(fd) != 0) {
+            int rearm_error = errno;
+            if (!sockstate->write_rearm_logged) {
+                serverLog(LL_WARNING,
+                          "IOCP fd=%d could not rearm write readiness: %s",
+                          fd, wsa_strerror(rearm_error));
+                sockstate->write_rearm_logged = 1;
+            }
+            if (sockstate->masks & AE_WRITABLE)
+                return aeApiFireEvent(eventLoop, sockstate, fd, AE_WRITABLE);
+        }
+    }
+    return 0;
+}
+
+/* Return at most one visible readiness event.  Internal completion packets
+ * (connect completion, disabled reads, and close cleanup) are consumed here
+ * with a zero timeout, bounded so a busy queue cannot monopolize the event
+ * loop. */
+static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp,
+                     int *completion_budget) {
+    aeApiState *state = (aeApiState *) eventLoop->apidata;
+    int first_timeout = (tvp == NULL) ? 100 :
+                        (tvp->tv_sec * 1000) + (tvp->tv_usec / 1000);
+
+    if (state->setsize <= 0 || *completion_budget <= 0) return 0;
+    aeApiRetryAccepts(eventLoop);
+    eventLoop->fired[0].backend_data = NULL;
+    if (aeApiFireQueuedAccept(eventLoop)) return 1;
+    if (aeApiRetryWrites(eventLoop)) return 1;
+    if (WSIOCP_WriteRearmPending() && first_timeout > 10)
+        first_timeout = 10;
+    int attempt = 0;
+    while (*completion_budget > 0) {
+        OVERLAPPED_ENTRY entry;
+        DWORD timeout = attempt == 0 ? (DWORD)first_timeout : 0;
+        if (!aeApiGetCompletion(state, &entry, timeout)) return 0;
+        (*completion_budget)--;
+        attempt++;
+        if (aeApiProcessCompletion(eventLoop, &entry)) return 1;
+    }
+    return 0;
+}
+
+static int aeApiFiredEventValid(aeEventLoop *eventLoop, aeFiredEvent *event) {
+    aeApiState *state = (aeApiState *)eventLoop->apidata;
+    iocpSockState *expected = (iocpSockState *)event->backend_data;
+    return expected != NULL &&
+           WSIOCP_GetExistingSocketState(event->fd) == expected &&
+           expected->completion_port == state->iocp &&
+           (expected->masks & CLOSE_PENDING) == 0;
+}
+
+static void aeApiReleaseFiredEvent(aeFiredEvent *event) {
+    iocpSockState *socketState = (iocpSockState *)event->backend_data;
+    event->backend_data = NULL;
+    if (socketState != NULL) WSIOCP_ReleaseSocketState(socketState);
 }
 
 /* Name of this event handler */

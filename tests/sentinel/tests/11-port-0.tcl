@@ -19,6 +19,17 @@ test "Start/Stop sentinel on same port with a different runID should not change 
         # Restart sentinel with the modified config file
         set pid [exec_instance "sentinel" $dirname $orgfilename]
         lappend ::pids $pid
+        # This process replaces the instance we killed above.  Keep the
+        # instance table in sync so the next unit does not start a second
+        # sentinel on the same port, and so cleanup targets the replacement.
+        set_instance_attrib sentinel $sentinel_id pid $pid
+        set port [get_instance_attrib sentinel $sentinel_id port]
+        if {[server_is_up 127.0.0.1 $port 100] == 0} {
+                fail "Replacement sentinel failed to start on port $port"
+        }
+        set link [redis 127.0.0.1 $port 0 $::tls]
+        $link reconnect 1
+        set_instance_attrib sentinel $sentinel_id link $link
 
         after 1000
 

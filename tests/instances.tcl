@@ -60,6 +60,17 @@ proc exec_instance {type dirname cfgfile} {
     set errfile [file join $dirname err.txt]
     if {$::valgrind} {
         set pid [exec valgrind --track-origins=yes --suppressions=../../../src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full $prg {*}$args 2>> $errfile &]
+    } elseif {$::tcl_platform(platform) eq "windows"} {
+        # Launch the real Redis process without allocating a console window.
+        # The native launcher exits after printing the Redis child PID, so the
+        # existing exact-PID lifecycle and cleanup logic continues to apply.
+        set outfile [file join $dirname log.txt]
+        set launch_cmd [list $::redis_test_launcher_path $outfile $errfile -- $prg]
+        lappend launch_cmd {*}$args
+        set pid [string trim [exec {*}$launch_cmd]]
+        if {![string is wideinteger -strict $pid] || $pid <= 0} {
+            error "hidden Redis launcher returned an invalid PID: $pid"
+        }
     } else {
         set pid [exec $prg {*}$args 2>> $errfile &]
     }

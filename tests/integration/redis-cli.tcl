@@ -49,17 +49,34 @@ start_server {tags {"cli"}} {
                 set empty_reads 0
             }
         }
+        if {$::tcl_platform(platform) eq "windows"} {
+            set ret [string map {"\r\n" "\n"} $ret]
+        }
         return $ret
     }
 
     proc write_cli {fd buf} {
+        if {$::tcl_platform(platform) eq "windows"} {
+            # MinGW Tcl does not flush writes reliably to a native child while
+            # the duplex pipe channel is nonblocking.
+            fconfigure $fd -blocking true
+        }
         puts $fd $buf
         flush $fd
+        if {$::tcl_platform(platform) eq "windows"} {
+            fconfigure $fd -blocking false
+        }
     }
 
     # Helpers to run tests in interactive mode
 
     proc format_output {output} {
+        if {$::tcl_platform(platform) eq "windows"} {
+            # Native redis-cli writes CRLF through MinGW pipes. Normalize line
+            # endings but retain standalone carriage returns used for TTY
+            # redraws such as the subscribed-mode prompt.
+            set output [string map {"\r\n" "\n"} $output]
+        }
         set _ [string trimright $output "\n"]
     }
 
@@ -148,8 +165,9 @@ start_server {tags {"cli"}} {
     test_interactive_cli "INFO response should be printed raw" {
         set lines [split [run_command $fd info] "\n"]
         foreach line $lines {
-            # Info lines end in \r\n, so they now end in \r.
-            if {![regexp {^\r$|^#|^[^#:]+:} $line]} {
+            # Accept the normalized blank separators and any raw carriage
+            # return left by a channel that did not translate CRLF.
+            if {![regexp {^$|^\r$|^#|^[^#:]+:} $line]} {
                 fail "Malformed info line: $line"
             }
         }
@@ -449,6 +467,11 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
         r function flush
 
         set dir [lindex [r config get dir] 1]
+        if {$::tcl_platform(platform) eq "windows"} {
+            # Avoid Tcl list re-parsing backslashes in --rdb paths (for
+            # example, \t and \r in <local-repository>-...).
+            set dir [string map [list "\\" "/"] $dir]
+        }
 
         assert_equal "OK" [r debug populate 100000 key 1000]
         assert_equal "lib1" [r function load "#!lua name=lib1\nredis.register_function('func1', function() return 123 end)"]
@@ -542,6 +565,7 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
     test "Piping raw protocol" {
         set cmds [tmpfile "cli_cmds"]
         set cmds_fd [open $cmds "w"]
+        fconfigure $cmds_fd -translation binary
 
         set cmds_count 2101
 
@@ -561,9 +585,16 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
         }
         close $cmds_fd
 
-        set cli_fd [open_cli "--pipe" $cmds]
-        fconfigure $cli_fd -blocking true
-        set output [read_cli $cli_fd]
+        if {$::tcl_platform(platform) eq "windows"} {
+            # MinGW Tcl can keep a redirected pipeline channel open after the
+            # native child exits, so capture this one-shot command atomically.
+            set output [exec {*}[rediscli [srv host] [srv port] --pipe] \
+                < $cmds 2>@1]
+        } else {
+            set cli_fd [open_cli "--pipe" $cmds]
+            fconfigure $cli_fd -blocking true
+            set output [read_cli $cli_fd]
+        }
 
         assert_equal {1000} [r get test-counter]
         assert_match "*All data transferred*errors: 0*replies: ${cmds_count}*" $output

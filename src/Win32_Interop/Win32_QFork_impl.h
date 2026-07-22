@@ -26,8 +26,10 @@
 extern "C" {
 #endif
 
-    void SetupRedisGlobals(LPVOID redisData, size_t redisDataSize, uint8_t *dictHashKey,
-        LPVOID redisModules, size_t usedMemory);
+    BOOL SetupRedisGlobals(LPVOID redisData, size_t redisDataSize,
+        uint8_t *dictHashKey, const RedisACLForkData *redisACL,
+        const RedisCoreForkData *redisCore, LPVOID sharedData,
+        size_t sharedDataSize, LPVOID redisModules, size_t usedMemory);
     int do_rdbSave(int req, char* filename, const void *rdb_save_info,
         size_t rdb_save_info_size, int rdbflags);
     int do_aofSave(char* filename);

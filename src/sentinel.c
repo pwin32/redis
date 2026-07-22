@@ -42,6 +42,9 @@
 #include "hiredis_ssl.h"
 #endif
 #include "async.h"
+#ifdef _WIN32
+#include "async_private.h"
+#endif
 
 #include <ctype.h>
 #ifndef _WIN32
@@ -313,28 +316,60 @@ typedef struct redisAeEvents {
     aeEventLoop *loop;
     int fd;
     int reading, writing;
+    int callback_refs;
+    int cleanup_pending;
 } redisAeEvents;
+
+#ifdef _WIN32
+/* IOCP readiness is one-shot.  If posting the next readiness request fails,
+ * keeping the hiredis event registered would leave a Sentinel link that can
+ * never make progress.  Turn the post failure into an ordinary hiredis I/O
+ * disconnect so Sentinel's existing reconnect path owns recovery. */
+static void redisAeRearmFailed(redisAeEvents *e, int fd,
+                               const char *operation)
+{
+    int rearm_errno = errno;
+
+    serverLog(LL_WARNING,
+        "Sentinel link fd=%d failed to rearm IOCP %s readiness: %s",
+        fd, operation, wsa_strerror(rearm_errno));
+    e->context->c.err = REDIS_ERR_IO;
+    snprintf(e->context->c.errstr, sizeof(e->context->c.errstr),
+             "IOCP %s rearm failed: %s",
+             operation, wsa_strerror(rearm_errno));
+    errno = rearm_errno;
+    __redisAsyncDisconnect(e->context);
+}
+#endif
 
 static void redisAeReadEvent(aeEventLoop *el, int fd, void *privdata, int mask) {
     ((void)el); ((void)fd); ((void)mask);
 
     redisAeEvents *e = (redisAeEvents*)privdata;
+    e->callback_refs++;
     redisAsyncHandleRead(e->context);
 #ifdef _WIN32
-    if (e->reading && e->fd != -1)
-        WSIOCP_QueueNextRead(e->fd);
+    if (!e->cleanup_pending && e->reading && e->fd == fd &&
+        WSIOCP_QueueNextRead(fd) != 0)
+        redisAeRearmFailed(e, fd, "read");
 #endif
+    e->callback_refs--;
+    if (e->cleanup_pending && e->callback_refs == 0) zfree(e);
 }
 
 static void redisAeWriteEvent(aeEventLoop *el, int fd, void *privdata, int mask) {
     ((void)el); ((void)fd); ((void)mask);
 
     redisAeEvents *e = (redisAeEvents*)privdata;
+    e->callback_refs++;
     redisAsyncHandleWrite(e->context);
 #ifdef _WIN32
-    if (e->writing && e->fd != -1)
-        WSIOCP_QueueWriteReady(e->fd);
+    if (!e->cleanup_pending && e->writing && e->fd == fd &&
+        WSIOCP_QueueWriteReady(fd) != 0)
+        redisAeRearmFailed(e, fd, "write");
 #endif
+    e->callback_refs--;
+    if (e->cleanup_pending && e->callback_refs == 0) zfree(e);
 }
 
 static void redisAeAddRead(void *privdata) {
@@ -342,7 +377,14 @@ static void redisAeAddRead(void *privdata) {
     aeEventLoop *loop = e->loop;
     if (!e->reading) {
         e->reading = 1;
+#ifdef _WIN32
+        if (aeCreateFileEvent(loop,e->fd,AE_READABLE,redisAeReadEvent,e) == AE_ERR) {
+            e->reading = 0;
+            redisAeRearmFailed(e, e->fd, "initial read");
+        }
+#else
         aeCreateFileEvent(loop,e->fd,AE_READABLE,redisAeReadEvent,e);
+#endif
     }
 }
 
@@ -360,7 +402,14 @@ static void redisAeAddWrite(void *privdata) {
     aeEventLoop *loop = e->loop;
     if (!e->writing) {
         e->writing = 1;
+#ifdef _WIN32
+        if (aeCreateFileEvent(loop,e->fd,AE_WRITABLE,redisAeWriteEvent,e) == AE_ERR) {
+            e->writing = 0;
+            redisAeRearmFailed(e, e->fd, "initial write");
+        }
+#else
         aeCreateFileEvent(loop,e->fd,AE_WRITABLE,redisAeWriteEvent,e);
+#endif
     }
 }
 
@@ -377,7 +426,10 @@ static void redisAeCleanup(void *privdata) {
     redisAeEvents *e = (redisAeEvents*)privdata;
     redisAeDelRead(privdata);
     redisAeDelWrite(privdata);
-    zfree(e);
+    if (e->callback_refs != 0)
+        e->cleanup_pending = 1;
+    else
+        zfree(e);
 }
 
 static int redisAeAttach(aeEventLoop *loop, redisAsyncContext *ac) {
@@ -394,6 +446,8 @@ static int redisAeAttach(aeEventLoop *loop, redisAsyncContext *ac) {
     e->loop = loop;
     e->fd = c->fd;
     e->reading = e->writing = 0;
+    e->callback_refs = 0;
+    e->cleanup_pending = 0;
 
     /* Register functions to start/stop listening for events */
     ac->ev.addRead = redisAeAddRead;
