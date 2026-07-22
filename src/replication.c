@@ -1970,7 +1970,16 @@ void readSyncBulkPayload(connection *conn) {
     /* During full sync, the functions engine is freed right before loading
      * the RDB. To avoid this happening while a function is still running,
      * delay full sync processing until it finishes. */
-    if (isInsideYieldingLongCommand()) return;
+    if (isInsideYieldingLongCommand()) {
+        /* A live transfer can wait until the yielding command completes, but
+         * a failed connection must still enter the normal reconnect path.
+         * This matters for one-shot event backends such as Windows IOCP: a
+         * read rearm can discover the reset after the first deferred callback
+         * and invoke us once more with no future event left to deliver. */
+        if (connGetState(conn) != CONN_STATE_CONNECTED)
+            cancelReplicationHandshake(1);
+        return;
+    }
 
     char buf[PROTO_IOBUF_LEN];
     ssize_t nread, readlen, nwritten;
