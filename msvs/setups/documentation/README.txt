@@ -1,19 +1,17 @@
-Redis for Windows - https://github.com/tporadowski/redis
-========================================================
+Redis for Windows - legacy Visual Studio/MSI documentation staging
+=================================================================
 
-This version of Redis (https://redis.io/) is an unofficial port to Windows OS
-based on work contributed by Microsoft Open Technologies Inc. It is maintained
-by Tomasz Poradowski (tomasz@poradowski.com, http://www.poradowski.com/en/).
+This directory belongs to the historical Visual Studio/MSI packaging path. It
+is retained as best-effort compatibility material and is not the supported or
+validated Redis 7.2.14 release package.
 
-Contents of this package:
-- *.exe - various Redis for Windows executables compiled for x64 platfrom,
-- *.pdb - accompanying PDB files useful for debugging purposes,
-- license.txt - license information (BSD-like),
-- RELEASENOTES.txt - Windows-specific release notes,
-- 00-RELEASENOTES - changelog of original Redis project, those changes are
-  ported back to this Windows version.
+The current release path is the MinGW64 flat ZIP produced by
+package-mingw.sh. Read the repository root README.md,
+WINDOWS-7.2-CHANGES.md, Windows Service Documentation.md, and
+RELEASENOTES.txt before using the files in this directory.
 
-For more information - please visit https://github.com/tporadowski/redis
-
-If you find this version of Redis useful and would like to support ongoing
-development - please consider sponsoring my work at https://github.com/sponsors/tporadowski
+The redis.windows.conf and redis.windows-service.conf files remain the source
+templates staged into the MinGW portable archive. Their active directives are
+validated through the MinGW package and runtime gates; comments for less common
+options are compatibility reference material rather than a complete Redis 7.2
+configuration manual.

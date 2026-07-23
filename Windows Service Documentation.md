@@ -1,95 +1,102 @@
-﻿Running Redis as a Service
-==========================
+# Running Redis 7.2 as a Windows service
 
-If you installed Redis using the MSI package, then Redis was already installed as a Windows service. Nothing further to do. If you would like to change its settings, you can update the *redis.windows-service.conf* file and then restart the Redis service (Run -\> services.msc -\> Redis -\> Restart).
+This document describes the built-in service interface for the Redis 7.2.14
+MinGW portable package. The historical Visual Studio/MSI projects under
+`msvs/` are retained as best-effort compatibility files, but MSI installation
+is not the current package path and has not been validated for this release.
 
-During installation of the MSI you can either use the installer’s user interface to update the port that Redis listens at and the firewall exception or run it silently without a UI. The following examples show how to install from the command line:
+Read [Redis 7.2 behavior in the Windows port](WINDOWS-7.2-CHANGES.md) before
+deployment. Service management requires an elevated Windows token.
 
-**default install (port 6379 and firewall exception ON):**
+## Install, start, stop, and uninstall
 
-*msiexec /i Redis-x64.msi *
+The service action must be the first argument. If a custom name is used,
+`--service-name` must follow the action and precede the configuration and Redis
+options. Run these commands from an elevated Command Prompt or PowerShell:
 
-**set port and turn OFF firewall exception:**
+```bat
+redis-server.exe --service-install --service-name Redis7214 redis.windows-service.conf
+redis-server.exe --service-start --service-name Redis7214
+redis-server.exe --service-stop --service-name Redis7214
+redis-server.exe --service-uninstall --service-name Redis7214
+```
 
-*msiexec /i Redis-x64.msi PORT=1234 FIREWALL\_ON=""*
+Installation creates an automatic-start service running as
+`NT AUTHORITY\NetworkService`, but it does not start the service.
+Uninstallation removes the SCM registration, but it does not stop a running
+service. Keep the install, start, stop, uninstall order.
 
-**set port and turn ON firewall exception:**
+Use a unique service name for every instance. The default name is `Redis`, so
+release tests and side-by-side deployments should always pass an explicit name
+that cannot target an unrelated installed service.
 
-*msiexec /i Redis-x64.msi PORT=1234 FIREWALL\_ON=1*
+## Paths and permissions
 
-**install with no user interface:**
+Use absolute executable and configuration paths when the command is not run
+from the extracted package directory. At runtime the service changes its
+working directory to the directory that contains `redis-server.exe`, so relative
+configuration, logfile, RDB, AOF, and module paths resolve from there.
 
-*msiexec /quiet /i Redis-x64.msi*
+During installation, the bootstrap parser discovers the configuration file,
+included configuration directories, and Redis `dir`, and grants the default
+NetworkService account access to those paths. Relative paths are resolved from
+the elevated install command's current directory during that discovery. Install
+from the executable directory or use absolute paths so install-time ACLs and
+runtime path resolution name the same locations.
 
-If you did *not* install Redis using the MSI package, then you still run Redis as a Windows service by following these instructions:
+Review and grant permissions separately for external ACL files, module DLLs,
+log directories outside the package, certificates in a custom TLS build, and
+other paths not discovered by the installer. `CONFIG REWRITE` also requires
+write access to the configuration file's directory.
 
-In order to better integrate with the Windows Services model, new command line arguments have been introduced to Redis. These service arguments require an elevated user context in order to connect to the service control manager. If these commands are invoked from a non-elevated context, Redis will attempt to create an elevated context in which to execute these commands. This will cause a User Account Control dialog to be displayed by Windows and may require Administrative user credentials in order to proceed.
+## Shutdown and restart behavior
 
-Installing the Service
-----------------------
+`--service-stop` sends an SCM stop request. `STOP` and `PRESHUTDOWN` are routed
+to Redis' graceful shutdown path on the main worker thread. The service reports
+the stopped state only after the Redis worker has actually exited.
 
-*--service-install*
+Automation should still verify all three conditions before restart, cleanup,
+or binary replacement:
 
-This must be the first argument on the redis-server command line. Arguments after this are passed in the order they occur to Redis when the service is launched. The service will be configured as Autostart and will be launched as "NT AUTHORITY\\NetworkService". Upon successful installation a success message will be displayed and Redis will exit.
+1. SCM reports the named service as stopped.
+2. The exact Redis process ID for that service has exited.
+3. The configured TCP port is closed.
 
-This command does not start the service.
+Do not identify a service process only by the executable name when multiple
+instances exist. Match the SCM process ID, executable path, `--service-run`, and
+the exact `--service-name` command-line value.
 
-For instance:
+## Logging and Event Log registration
 
-redis-server --service-install redis.windows.conf --loglevel verbose
+Service mode always enables the Windows Application Event Log while retaining
+the configured `logfile` sink. The packaged `redis.windows-service.conf` uses
+`server_log.txt` and `syslog-enabled yes`, so it writes to both the file and the
+Application Event Log. The Event Log provider/source is named `redis`; the
+configured `syslog-ident` is included in the message text.
 
-Uninstalling the Service
-------------------------
+All named Redis services share that one Event Log source registration. The
+first install creates the message-resource path, later named installs do not
+refresh it, and uninstalling any one named Redis service removes the shared
+registration. Removing one instance can therefore make events from surviving
+instances render incorrectly until a Redis service is installed again.
 
-*--service-uninstall*
+For side-by-side services, coordinate uninstallation, keep the registered
+message-resource executable available, and recreate the source from the
+intended surviving Redis executable after a removal or path change.
 
-This will remove the Redis service configuration information from the registry. Upon successful uninstallation a success message will be displayed and Redis will exit.
+## Multiple instances
 
-This does command not stop the service.
+Each instance needs its own service name, TCP port, writable data directory,
+logfile, and Cluster configuration file if Cluster is enabled. For example:
 
-For instance:
+```bat
+redis-server.exe --service-install --service-name Redis7214A redis-a.conf --port 10001
+redis-server.exe --service-start --service-name Redis7214A
 
-redis-server --service-uninstall
+redis-server.exe --service-install --service-name Redis7214B redis-b.conf --port 10002
+redis-server.exe --service-start --service-name Redis7214B
+```
 
-Starting the Service
---------------------
-
-*--service-start*
-
-This will start the Redis service. Upon successful start, a success message will be displayed and Redis will begin running.
-
-For instance:
-
-redis-server --service-start
-
-Stopping the Service
---------------------
-
-*--service-stop*
-
-This will stop the Redis service. Upon successful termination a success message will be displayed and Redis will exit.
-
-For instance:
-
-redis-server --service-stop
-
-Naming the Service
-------------------
-
-*--service-name **name***
-
-This optional argument may be used with any of the preceding commands to set the name of the installed service. This argument should follow the service-install, service-start, service-stop or service-uninstall commands, and precede any arguments to be passed to Redis via the service-install command.
-
-The following would install and start three separate instances of Redis as a service:
-
-redis-server --service-install --service-name redisService1 --port 10001
-
-redis-server --service-start --service-name redisService1
-
-redis-server --service-install --service-name redisService2 --port 10002
-
-redis-server --service-start --service-name redisService2
-
-redis-server --service-install --service-name redisService3 --port 10003
-
-redis-server --service-start --service-name redisService3
+Do not reuse a writable configuration file between Sentinel or Cluster
+instances. Back up and test each instance's complete RDB or multi-part AOF
+state before upgrading the service binary.
