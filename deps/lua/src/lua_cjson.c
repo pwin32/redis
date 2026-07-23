@@ -464,9 +464,8 @@ static void json_encode_exception(lua_State *l, json_config_t *cfg, strbuf_t *js
 static void json_append_string(lua_State *l, strbuf_t *json, int lindex)
 {
     const char *escstr;
-    int i;
     const char *str;
-    size_t len;
+    size_t i, len;
 
     str = lua_tolstring(l, lindex, &len);
 
@@ -1277,7 +1276,7 @@ static int json_decode(lua_State *l)
     /* Ensure the temporary buffer can hold the entire string.
      * This means we no longer need to do length checks since the decoded
      * string must be smaller than the entire json string */
-    json.tmp = strbuf_new((int)json_len);                                       /* WIN_PORT_FIX cast (int) */
+    json.tmp = strbuf_new(json_len);
 
     json_next_token(&json, &token);
     json_process_value(l, &json, &token);

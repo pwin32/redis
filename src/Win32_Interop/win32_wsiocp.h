@@ -53,8 +53,14 @@ typedef struct aacceptreq {
 typedef struct iocpSockState {
     int masks;
     int fd;
+    HANDLE completion_port;
     aacceptreq *reqs;
+    aacceptreq *accept_pending;
     int wreqs;
+    int event_refs;
+    int accept_rearm_logged;
+    int write_rearm_logged;
+    int deferred_error;
     OVERLAPPED ov_read;
     list wreqlist;
     int unknownComplete;
@@ -66,6 +72,8 @@ typedef struct iocpSockState {
 #define LISTEN_SOCK         0x001000
 #define CONNECT_PENDING     0x002000
 #define CLOSE_PENDING       0x004000
+#define ACCEPT_REARM_NEEDED 0x008000
+#define WRITE_REARM_NEEDED  0x010000
 
 void           WSIOCP_Init(HANDLE iocp);
 void           WSIOCP_Cleanup(HANDLE iocp);
@@ -76,6 +84,12 @@ int            WSIOCP_SocketAttachToPort(int fd, iocpSockState *socketState,
                                          HANDLE iocp);
 BOOL           WSIOCP_CloseSocketState(iocpSockState* pSocketState);
 BOOL           WSIOCP_CloseSocketStateRFD(int rfd);
+void           WSIOCP_RetainSocketState(iocpSockState *socketState);
+void           WSIOCP_ReleaseSocketState(iocpSockState *socketState);
+BOOL           WSIOCP_TryFinalizeClosedState(iocpSockState *socketState);
+void           WSIOCP_DisposeAcceptRequest(aacceptreq *request);
+BOOL           WSIOCP_AcceptRearmPending(void);
+BOOL           WSIOCP_WriteRearmPending(void);
 
 
 void* CallocMemoryNoCOW(size_t size);

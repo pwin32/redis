@@ -57,14 +57,55 @@ extern "C" {
      * module DLL images have been restored. */
     typedef struct redisModuleForkData {
         LPVOID modules;
+        LPVOID authCallbacks;
+        LPVOID unblockedClients;
+        LPVOID tempClients;
+        size_t tempClientCap;
+        size_t tempClientCount;
+        size_t tempClientMinCount;
         LPVOID keyspaceSubscribers;
+        LPVOID postExecUnitJobs;
         LPVOID commandFilters;
         LPVOID eventListeners;
-        LPVOID freeContextClient;
+        LPVOID eventLoopOneShots;
         LPVOID timers;
         long long aeTimer;
-        unsigned long long modulesInHooks;
+        LPVOID clusterReceivers[UINT8_MAX];
+        /* Redis Functions metadata roots also live in process-static storage
+         * rather than redisServer. The library/source metadata is mapped and
+         * needed by RDB/AOF serialization; the embedded Lua engine state is
+         * CRT-owned and remains unavailable in the fresh QFork child. */
+        LPVOID functionsEngines;
+        LPVOID functionsLibCtx;
+        size_t functionsEngineCacheMemory;
     } RedisModuleForkData;
+
+    /* ACL subsystem roots that live in process-static storage. The pointed
+     * objects are allocated in the mapped Redis heap, so the fresh QFork
+     * persistence process must reconnect these roots to the parent snapshot. */
+    typedef struct redisACLForkData {
+        LPVOID users;
+        LPVOID defaultUser;
+        LPVOID usersToLoad;
+        LPVOID aclLog;
+        long long aclLogEntryCount;
+        LPVOID commandId;
+        unsigned long nextid;
+    } RedisACLForkData;
+
+    /* Core roots that are initialized outside redisServer and point into the
+     * mapped Redis heap. Process-local runtimes such as Lua are deliberately
+     * excluded and remain unavailable in the disposable persistence child. */
+    typedef struct redisCoreForkData {
+        LPVOID configs;
+    } RedisCoreForkData;
+
+    /* Keep the QFork control block bounded while allowing the complete 7.2
+     * shared-object table to be copied by value. */
+#define REDIS_QFORK_MAX_SHARED_DATA_SIZE (128 * 1024)
+
+    void ACLGetForkData(RedisACLForkData *data);
+    void ACLSetForkData(const RedisACLForkData *data);
 
     /* Validate that a native module image can be restored safely enough for
      * callbacks executed inside the disposable QFork persistence child. */
@@ -75,16 +116,17 @@ extern "C" {
 
     // For parent process use only
     pid_t BeginForkOperation_Rdb(
+        int req,
         char* fileName,
+        const void *rdbSaveInfo,
+        size_t rdbSaveInfoSize,
+        int rdbFlags,
         LPVOID redisData,
         int sizeOfRedisData,
         uint8_t *dictHashSeed,
         LPVOID modules);
 
     pid_t BeginForkOperation_Aof(
-        int aof_pipe_write_ack_to_parent,
-        int aof_pipe_read_ack_from_parent,
-        int aof_pipe_read_data_from_parent,
         char* fileName,
         LPVOID redisData,
         int sizeOfRedisData,
@@ -92,6 +134,9 @@ extern "C" {
         LPVOID modules);
 
     pid_t BeginForkOperation_Socket(
+        int req,
+        const void *rdbSaveInfo,
+        size_t rdbSaveInfoSize,
         int rdb_pipe_write_fd,
         int safe_to_exit_pipe_fd,
         LPVOID redisData,
@@ -104,6 +149,18 @@ extern "C" {
     OperationStatus GetForkOperationStatus();
     BOOL EndForkOperation(int * pExitCode);
     BOOL AbortForkOperation();
+
+    /* Bind the current parent thread to the post-startup jemalloc arena whose
+     * extents are backed by the QFork heap. This is a no-op before QFork is
+     * ready and in child/tool/non-persistent processes. Returns zero on
+     * success or an errno-style jemalloc error code. */
+    int QForkEnsureCurrentThreadJemallocArena(void);
+
+    /* A QFork child maps the parent's Redis heap with copy-on-write, but it
+     * starts with a fresh jemalloc metadata tree.  Inherited mapped blocks
+     * therefore must not be passed to jemalloc free/usable-size routines in
+     * the disposable child. */
+    BOOL QForkIsInheritedHeapAddress(const void *ptr);
 
     LPVOID AllocHeapBlock(LPVOID addr, size_t size, BOOL zero);
     BOOL PurgePages(LPVOID addr, size_t length);

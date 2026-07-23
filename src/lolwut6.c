@@ -32,7 +32,7 @@
  * fun and interesting, and should be replaced by a new implementation at
  * each new version of Redis.
  *
- * Thanks to Michele Hiki Falcone for the original image that ispired
+ * Thanks to Michele Hiki Falcone for the original image that inspired
  * the image, part of his game, Plaguemon.
  *
  * Thanks to the Shhh computer art collective for the help in tuning the
@@ -167,8 +167,8 @@ void generateSkyline(lwCanvas *canvas) {
  * per column.
  */
 void lolwut6Command(client *c) {
-    PORT_LONG cols = 80;
-    PORT_LONG rows = 20;
+    long cols = 80;
+    long rows = 20;
 
     /* Parse the optional arguments if any. */
     if (c->argc > 1 &&
@@ -180,7 +180,7 @@ void lolwut6Command(client *c) {
         return;
 
     /* Limits. We want LOLWUT to be always reasonably fast and cheap to execute
-     * so we have maximum number of columns, rows, and output resulution. */
+     * so we have maximum number of columns, rows, and output resolution. */
     if (cols < 1) cols = 1;
     if (cols > 1000) cols = 1000;
     if (rows < 1) rows = 1;

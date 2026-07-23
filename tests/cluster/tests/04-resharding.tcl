@@ -38,7 +38,7 @@ proc process_is_running {pid} {
     # PS should return with an error if PID is non existing,
     # and catch will return non-zero. We want to return non-zero if
     # the PID exists, so we invert the return value with expr not operator.
-    expr {![catch {exec ps -p $pid}]}
+    process_is_alive $pid
 }
 
 # Our resharding test performs the following actions:
@@ -137,21 +137,103 @@ test "Verify $numkeys keys for consistency with logical content" {
     }
 }
 
-test "Crash and restart all the instances" {
-    foreach_redis_id id {
-        # Stop AOF so an initial rewrite does not overlap termination. The
-        # unchanged config file enables AOF and loads it again on restart.
-        R $id config set appendonly no
-        kill_instance redis $id
-        restart_instance redis $id
+set ::resharding_original_cluster_node_timeout {}
+
+proc restore_resharding_cluster_node_timeouts {} {
+    set first_error {}
+    dict for {id timeout} $::resharding_original_cluster_node_timeout {
+        if {[catch {R $id config set cluster-node-timeout $timeout} restore_error] &&
+            $first_error eq {}} {
+            set first_error "Unable to restore cluster-node-timeout on node $id: $restore_error"
+        }
+        if {[catch {R $id config rewrite} rewrite_error] &&
+            $first_error eq {}} {
+            set first_error "Unable to persist cluster-node-timeout on node $id: $rewrite_error"
+        }
+    }
+    set ::resharding_original_cluster_node_timeout {}
+    return $first_error
+}
+
+test "Terminate and restart all the instances" {
+    set restart_rc [catch {
+        if {$::tcl_platform(platform) eq "windows"} {
+            # A rolling restart is materially slower on Windows: each MinGW
+            # server must reload its AOF and recreate its IOCP listeners before
+            # the next instance is restarted.  Keep the still-starting tail
+            # from crossing the normal 3-second failure threshold.  Persist
+            # the value because restart_instance reads the on-disk
+            # configuration.
+            foreach_redis_id id {
+                set configured [R $id config get cluster-node-timeout]
+                set timeout [lindex $configured 1]
+                if {![string is integer -strict $timeout] || $timeout <= 0} {
+                    error "Invalid cluster-node-timeout for node $id: $configured"
+                }
+                dict set ::resharding_original_cluster_node_timeout $id $timeout
+                R $id config set cluster-node-timeout 120000
+                R $id config rewrite
+            }
+        }
+
+        foreach_redis_id id {
+            # Stop AOF so that an initial AOFRW won't prevent the instance
+            # from terminating.
+            R $id config set appendonly no
+            kill_instance redis $id
+            restart_instance redis $id
+        }
+
+        if {$::tcl_platform(platform) eq "windows"} {
+            # Do not restore the normal timeout until every restarted node has
+            # reached the cluster again.
+            assert_cluster_state ok
+        }
+    } restart_error restart_options]
+
+    set restore_error {}
+    if {$::tcl_platform(platform) eq "windows" &&
+        [dict size $::resharding_original_cluster_node_timeout] > 0} {
+        set restore_error [restore_resharding_cluster_node_timeouts]
+    }
+
+    if {$restart_rc} {
+        if {$restore_error ne {}} {
+            append restart_error "\nCleanup error: $restore_error"
+        }
+        return -options $restart_options $restart_error
+    }
+    if {$restore_error ne {}} {
+        error $restore_error
     }
 }
 
 test "Cluster should eventually be up again" {
+    if {$::tcl_platform(platform) eq "windows"} {
+        # Let one complete normal failure-detection window elapse after the
+        # persisted timeout is restored.  A stale-but-present link can look
+        # connected until cluster cron has had time to invalidate it.
+        after 4000
+    }
     assert_cluster_state ok
+
+    if {$::tcl_platform(platform) eq "windows"} {
+        # Verify the topology after restoring the normal 3-second timeout.
+        # cluster_state alone can remain temporarily optimistic while a dead
+        # link is still inside the failure-detection window.
+        set expected_nodes 0
+        foreach_redis_id id {incr expected_nodes}
+        foreach_redis_id id {
+            wait_for_condition 600 50 {
+                [llength [get_cluster_nodes $id connected]] == $expected_nodes
+            } else {
+                fail "Cluster node $id does not have a full connected mesh"
+            }
+        }
+    }
 }
 
-test "Verify $numkeys keys after the crash & restart" {
+test "Verify $numkeys keys after the restart" {
     # Check that the Redis Cluster content matches our logical content.
     foreach {key value} [array get content] {
         if {[$cluster lrange $key 0 -1] ne $value} {
@@ -190,6 +272,7 @@ test "Verify slaves consistency" {
 }
 
 test "Dump sanitization was skipped for migrations" {
+    set verified_masters 0
     foreach_redis_id id {
         assert {[RI $id dump_payload_sanitizations] == 0}
     }

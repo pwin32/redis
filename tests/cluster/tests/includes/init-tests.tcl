@@ -25,20 +25,6 @@ test "Cluster nodes are reachable" {
     }
 }
 
-test "Cluster replicas are synchronized" {
-    # A restarted replica may trigger a QFork-backed full synchronization on
-    # its master. Let every sync finish before resetting any cluster node.
-    foreach_redis_id id {
-        if {[RI $id role] eq {slave}} {
-            wait_for_condition 1000 50 {
-                [RI $id master_link_status] eq {up}
-            } else {
-                fail "Replica #$id did not finish synchronizing"
-            }
-        }
-    }
-}
-
 test "Cluster nodes hard reset" {
     foreach_redis_id id {
         if {$::valgrind} {
@@ -53,12 +39,17 @@ test "Cluster nodes hard reset" {
         R $id EXEC
         R $id config set cluster-node-timeout $node_timeout
         R $id config set cluster-slave-validity-factor 10
+        R $id config set loading-process-events-interval-bytes 2097152
+        R $id config set key-load-delay 0
         R $id config set repl-diskless-load disabled
+        R $id config set cluster-announce-hostname ""
+        R $id DEBUG DROP-CLUSTER-PACKET-FILTER -1
         R $id config rewrite
     }
 }
 
-# Attempt to have each node meet the next one, then wait for auto-discovery.
+# Helper function to attempt to have each node in a cluster
+# meet each other.
 proc join_nodes_in_cluster {} {
     # Join node 0 with 1, 1 with 2, ... and so forth.
     # If auto-discovery works all nodes will know every other node
@@ -66,56 +57,68 @@ proc join_nodes_in_cluster {} {
     set ids {}
     foreach_redis_id id {lappend ids $id}
 
-    # Hard resets and replica restarts can invalidate the long-lived harness
-    # sockets. Reconnect before each attempt so a stale read cannot block the
-    # topology retry itself.
-    foreach id $ids {
-        set oldlink [Rn $id]
-        catch {$oldlink close}
-        set host [get_instance_attrib redis $id host]
-        set port [get_instance_attrib redis $id port]
-        if {[catch {set link [redis $host $port]}]} {
-            return 0
+    if {$::tcl_platform(platform) eq "windows"} {
+        # Cluster bus connects are asynchronous under IOCP.  Immediately
+        # after CLUSTER RESET HARD, one link in this chain can transiently
+        # fail while its peer recreates the listener.  Retry the same chain
+        # periodically and check the mesh as one condition, so a single lost
+        # MEET does not turn the upstream per-node 50-second wait into a
+        # many-minute stall.  Keeping a chain still exercises auto-discovery.
+        for {set attempt 0} {$attempt < 1000} {incr attempt} {
+            # Retry only after the normal 3-second handshake timeout has had
+            # time to discard a failed attempt.  Faster retries can amplify
+            # inbound-link replacement while a peer is still converging.
+            if {$attempt % 80 == 0} {
+                for {set j 0} {$j < [expr [llength $ids]-1]} {incr j} {
+                    set a [lindex $ids $j]
+                    set b [lindex $ids [expr $j+1]]
+                    set b_port [get_instance_attrib redis $b port]
+                    catch {R $a cluster meet 127.0.0.1 $b_port}
+                }
+            }
+
+            set all_connected 1
+            foreach_redis_id id {
+                if {[catch {
+                    set connected [llength [get_cluster_nodes $id connected]]
+                }] || $connected != [llength $ids]} {
+                    set all_connected 0
+                    break
+                }
+            }
+            if {$all_connected} {return 1}
+            after 50
         }
-        $link reconnect 1
-        set_instance_attrib redis $id link $link
+        return 0
     }
 
     for {set j 0} {$j < [expr [llength $ids]-1]} {incr j} {
         set a [lindex $ids $j]
         set b [lindex $ids [expr $j+1]]
         set b_port [get_instance_attrib redis $b port]
-        catch {R $a cluster meet 127.0.0.1 $b_port}
+        R $a cluster meet 127.0.0.1 $b_port
     }
 
-    # A native Windows Tcl connection is relatively expensive. Check the
-    # whole topology once per pass instead of opening hundreds of connections
-    # to the first node that has not converged yet.
-    for {set checks 10} {$checks > 0} {incr checks -1} {
-        set joined 1
-        foreach id $ids {
-            if {[catch {set nodes [get_cluster_nodes_fresh $id connected]}] ||
-                [llength $nodes] != [llength $ids]} {
-                set joined 0
-                break
-            }
+    foreach_redis_id id {
+        wait_for_condition 1000 50 {
+            [llength [get_cluster_nodes $id connected]] == [llength $ids]
+        } else {
+            return 0
         }
-        if {$joined} {
-            return 1
-        }
-        after 500
     }
-    return 0
+    return 1
 }
 
 test "Cluster Join and auto-discovery test" {
-    # Retry because an individual CLUSTER MEET handshake can time out while
-    # nodes are reconnecting after the previous test unit.
+    # Use multiple attempts since sometimes nodes timeout
+    # while attempting to connect.
     for {set attempts 3} {$attempts > 0} {incr attempts -1} {
-        if {[join_nodes_in_cluster]} break
+        if {[join_nodes_in_cluster] == 1} {
+            break
+        }
     }
     if {$attempts == 0} {
-        fail "Cluster failed to join into a full mesh."
+        fail "Cluster failed to form full mesh"
     }
 }
 

@@ -35,9 +35,11 @@
 
 #define HI_SDS_MAX_PREALLOC (1024*1024)
 #ifdef _MSC_VER
-#define __attribute__(x)
 typedef long long ssize_t;
 #define SSIZE_MAX (LLONG_MAX >> 1)
+#ifndef __clang__
+#define __attribute__(x)
+#endif
 #endif
 
 #include <sys/types.h>
@@ -46,48 +48,36 @@ typedef long long ssize_t;
 
 typedef char *hisds;
 
-#ifdef _MSC_VER
-#pragma pack(push, 1)
-#define HI_SDS_PACKED
-#else
-#define HI_SDS_PACKED __attribute__ ((__packed__))
-#endif
-
 /* Note: sdshdr5 is never used, we just access the flags byte directly.
  * However is here to document the layout of type 5 SDS strings. */
-struct HI_SDS_PACKED hisdshdr5 {
+struct __attribute__ ((__packed__)) hisdshdr5 {
     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
     char buf[];
 };
-struct HI_SDS_PACKED hisdshdr8 {
+struct __attribute__ ((__packed__)) hisdshdr8 {
     uint8_t len; /* used */
     uint8_t alloc; /* excluding the header and null terminator */
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
-struct HI_SDS_PACKED hisdshdr16 {
+struct __attribute__ ((__packed__)) hisdshdr16 {
     uint16_t len; /* used */
     uint16_t alloc; /* excluding the header and null terminator */
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
-struct HI_SDS_PACKED hisdshdr32 {
+struct __attribute__ ((__packed__)) hisdshdr32 {
     uint32_t len; /* used */
     uint32_t alloc; /* excluding the header and null terminator */
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
-struct HI_SDS_PACKED hisdshdr64 {
+struct __attribute__ ((__packed__)) hisdshdr64 {
     uint64_t len; /* used */
     uint64_t alloc; /* excluding the header and null terminator */
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
-
-#undef HI_SDS_PACKED
-#ifdef _MSC_VER
-#pragma pack(pop)
-#endif
 
 #define HI_SDS_TYPE_5  0
 #define HI_SDS_TYPE_8  1
@@ -244,10 +234,7 @@ hisds hi_sdscpylen(hisds s, const char *t, size_t len);
 hisds hi_sdscpy(hisds s, const char *t);
 
 hisds hi_sdscatvprintf(hisds s, const char *fmt, va_list ap);
-#if defined(__GNUC__) && defined(__MINGW32__)
-hisds hi_sdscatprintf(hisds s, const char *fmt, ...)
-    __attribute__((format(gnu_printf, 2, 3)));
-#elif defined(__GNUC__)
+#ifdef __GNUC__
 hisds hi_sdscatprintf(hisds s, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 #else

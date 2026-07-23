@@ -120,6 +120,9 @@ int moduleForEachForkModule(
     void *privdata);
 size_t moduleCount(void);
 void moduleSetQForkChildReady(int ready);
+size_t RedisSharedForkDataSize(void);
+BOOL RedisCopySharedForkData(void *data, size_t size);
+void RedisGetCoreForkData(RedisCoreForkData *data);
 }
 
 //#define DEBUG_WITH_PROCMON
@@ -158,11 +161,20 @@ BOOL WriteToProcmon(wstring message)
 
 #define IFFAILTHROW(a,m) if(!(a)) { throw system_error(GetLastError(), system_category(), m); }
 
-#define MAX_REDIS_DATA_SIZE 10000
+/* redisServer grew substantially between 6.2 and 7.2.  Keep the copied
+ * process-static server image bounded, but leave enough headroom for future
+ * 7.2 maintenance fields; CopyForkOperationData still fails closed if the
+ * live structure ever exceeds this contract. */
+#define MAX_REDIS_DATA_SIZE (64 * 1024)
+#define MAX_RDB_SAVE_INFO_SIZE 128
 struct QForkInfo {
     BYTE redisData[MAX_REDIS_DATA_SIZE];
     size_t redisDataSize;
     uint8_t dictHashSeed[16];
+    RedisACLForkData acl;
+    RedisCoreForkData core;
+    size_t sharedDataSize;
+    BYTE sharedData[REDIS_QFORK_MAX_SHARED_DATA_SIZE];
     RedisModuleForkData modules;
     HANDLE moduleSnapshotMap;
     uint64_t moduleSnapshotSize;
@@ -170,18 +182,19 @@ struct QForkInfo {
     uint32_t moduleSnapshotReserved;
     size_t usedMemory;
     char filename[MAX_PATH];
+    int rdb_req;
+    int rdb_flags;
+    size_t rdb_save_info_size;
+    BYTE rdb_save_info[MAX_RDB_SAVE_INFO_SIZE];
     int rdb_pipe_write_fd;
     WSAPROTOCOL_INFOW rdb_pipe_write_protocol_info;
     int rdb_child_exit_pipe_read_fd;
     WSAPROTOCOL_INFOW rdb_child_exit_pipe_read_protocol_info;
-    HANDLE aof_pipe_write_ack_handle;
-    HANDLE aof_pipe_read_ack_handle;
-    HANDLE aof_pipe_read_data_handle;
 };
 
 extern "C"
 {
-    int checkForSentinelMode(int argc, char **argv);
+    int checkForSentinelMode(int argc, char **argv, char *exec_name);
     void InitTimeFunctions();
     PORT_LONGLONG memtoll(const char *p, int *err);     // Forward def from util.h
     size_t zmalloc_used_memory(void);
@@ -240,6 +253,19 @@ BOOL g_QForkHeapReady;
 //[tporadowski/#2]
 BOOL g_StartedAsCheckAofOrRdbTool;
 
+/* Jemalloc initializes before the QFork heap exists. The main thread is moved
+ * to a fresh manual arena once QFork is ready, but every newly created thread
+ * starts with independent jemalloc TSD and may otherwise auto-select an arena
+ * that still owns pre-QFork extents. Keep the selected arena process-local and
+ * bind each Redis allocator thread once per arena generation. */
+static unsigned g_QForkJemallocArena;
+static volatile LONG g_QForkJemallocArenaGeneration;
+#ifdef __MINGW32__
+static __thread LONG g_QForkThreadArenaGeneration;
+#else
+static __declspec(thread) LONG g_QForkThreadArenaGeneration;
+#endif
+
 /* Jemalloc can call the process-wide heap hooks from different arenas and
  * worker threads. Keep this lock process-local: QForkControl is copied into
  * the child, while an SRW lock must never be shared that way. */
@@ -267,6 +293,54 @@ static void FlushJemallocThreadCache(const char* context) {
     }
 }
 
+int QForkEnsureCurrentThreadJemallocArena() {
+    LONG generation = g_QForkJemallocArenaGeneration;
+
+    if (generation == 0 ||
+        g_QForkThreadArenaGeneration == generation ||
+        g_IsForkedProcess ||
+        g_BypassMemoryMapOnAlloc ||
+        !g_QForkHeapReady ||
+        g_pQForkControl == NULL) {
+        return 0;
+    }
+
+    int err = je_mallctl("thread.tcache.flush", NULL, NULL, NULL, 0);
+    if (err != 0 && err != EFAULT) return err;
+
+    unsigned arena = g_QForkJemallocArena;
+    err = je_mallctl("thread.arena", NULL, NULL, &arena, sizeof(arena));
+    if (err != 0) return err;
+
+    err = je_mallctl("thread.tcache.flush", NULL, NULL, NULL, 0);
+    if (err != 0 && err != EFAULT) return err;
+
+    g_QForkThreadArenaGeneration = generation;
+    return 0;
+}
+
+BOOL QForkIsInheritedHeapAddress(const void *ptr) {
+    if (ptr == NULL || !g_IsForkedProcess || !g_QForkHeapReady ||
+        g_pQForkControl == NULL)
+        return FALSE;
+
+    uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+    uintptr_t heapStart = reinterpret_cast<uintptr_t>(
+        g_pQForkControl->heapStart);
+    uintptr_t heapEnd = reinterpret_cast<uintptr_t>(
+        g_pQForkControl->heapEnd);
+    if (address < heapStart || address >= heapEnd)
+        return FALSE;
+
+    /* Child-private VirtualAlloc extents can occupy an unused address inside
+     * the reserved range.  Only the inherited MapViewOfFile view is owned by
+     * the parent snapshot and must be left untouched. */
+    MEMORY_BASIC_INFORMATION memInfo;
+    if (!VirtualQuery(ptr, &memInfo, sizeof(memInfo)))
+        return FALSE;
+    return memInfo.Type == MEM_MAPPED;
+}
+
 static void SwitchToQForkJemallocArena() {
     unsigned arena = 0;
     size_t arenaSize = sizeof(arena);
@@ -278,12 +352,13 @@ static void SwitchToQForkJemallocArena() {
         throw system_error(err, generic_category(), "QForkMasterInit: could not create QFork jemalloc arena");
     }
 
-    err = je_mallctl("thread.arena", NULL, NULL, &arena, sizeof(arena));
+    g_QForkJemallocArena = arena;
+    _InterlockedIncrement(&g_QForkJemallocArenaGeneration);
+
+    err = QForkEnsureCurrentThreadJemallocArena();
     if (err != 0) {
         throw system_error(err, generic_category(), "QForkMasterInit: could not set QFork jemalloc arena");
     }
-
-    FlushJemallocThreadCache("QForkMasterInit: could not flush QFork jemalloc thread cache");
 }
 
 bool ReportSpecialSystemErrors(int error) {
@@ -1713,11 +1788,17 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
         g_QForkHeapReady = TRUE;
 
         // Copy redis globals into fork process
-        SetupRedisGlobals(g_pQForkControl->globalData.redisData,
-            g_pQForkControl->globalData.redisDataSize,
-            g_pQForkControl->globalData.dictHashSeed,
-            &g_pQForkControl->globalData.modules,
-            g_pQForkControl->globalData.usedMemory);
+        if (!SetupRedisGlobals(g_pQForkControl->globalData.redisData,
+                g_pQForkControl->globalData.redisDataSize,
+                g_pQForkControl->globalData.dictHashSeed,
+                &g_pQForkControl->globalData.acl,
+                &g_pQForkControl->globalData.core,
+                g_pQForkControl->globalData.sharedData,
+                g_pQForkControl->globalData.sharedDataSize,
+                &g_pQForkControl->globalData.modules,
+                g_pQForkControl->globalData.usedMemory)) {
+            throw runtime_error("Could not restore Redis globals in QFork child");
+        }
 
         if (moduleCount() !=
             g_pQForkControl->globalData.moduleSnapshotCount)
@@ -1731,17 +1812,15 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
 
         // Execute requested operation
         if (g_pQForkControl->typeOfOperation == OperationType::otRDB) {
-            g_ChildExitCode = do_rdbSave(g_pQForkControl->globalData.filename);
+            g_ChildExitCode = do_rdbSave(
+                g_pQForkControl->globalData.rdb_req,
+                g_pQForkControl->globalData.filename,
+                g_pQForkControl->globalData.rdb_save_info,
+                g_pQForkControl->globalData.rdb_save_info_size,
+                g_pQForkControl->globalData.rdb_flags);
         }
         else if (g_pQForkControl->typeOfOperation == OperationType::otAOF) {
-            int aof_pipe_read_ack = FDAPI_open_osfhandle((intptr_t) g_pQForkControl->globalData.aof_pipe_read_ack_handle, _O_APPEND);
-            int aof_pipe_read_data = FDAPI_open_osfhandle((intptr_t) g_pQForkControl->globalData.aof_pipe_read_data_handle, _O_APPEND);
-            int aof_pipe_write_ack = FDAPI_open_osfhandle((intptr_t) g_pQForkControl->globalData.aof_pipe_write_ack_handle, _O_APPEND);
-            g_ChildExitCode = do_aofSave(g_pQForkControl->globalData.filename,
-                aof_pipe_read_ack,
-                aof_pipe_read_data,
-                aof_pipe_write_ack
-            );
+            g_ChildExitCode = do_aofSave(g_pQForkControl->globalData.filename);
         }
         else if (g_pQForkControl->typeOfOperation == OperationType::otSocket) {
             int rdb_pipe_write_fd = FDAPI_WSASocket(
@@ -1769,8 +1848,12 @@ BOOL QForkChildInit(HANDLE QForkControlMemoryMapHandle, DWORD ParentProcessID) {
                     "Could not recreate diskless RDB exit pipe reader in QFork child");
             }
 
-            g_ChildExitCode = do_socketSave(rdb_pipe_write_fd,
-                                             safe_to_exit_pipe_fd);
+            g_ChildExitCode = do_socketSave(
+                g_pQForkControl->globalData.rdb_req,
+                g_pQForkControl->globalData.rdb_save_info,
+                g_pQForkControl->globalData.rdb_save_info_size,
+                rdb_pipe_write_fd,
+                safe_to_exit_pipe_fd);
         }
         else {
             throw runtime_error("unexpected operation type");
@@ -2015,6 +2098,15 @@ void CopyForkOperationData(OperationType type, LPVOID redisData, int redisDataSi
         g_pQForkControl->typeOfOperation = type;
         memcpy(&(g_pQForkControl->globalData.redisData), redisData, redisDataSize);
         g_pQForkControl->globalData.redisDataSize = redisDataSize;
+        ACLGetForkData(&g_pQForkControl->globalData.acl);
+        RedisGetCoreForkData(&g_pQForkControl->globalData.core);
+        size_t sharedDataSize = RedisSharedForkDataSize();
+        if (sharedDataSize > sizeof(g_pQForkControl->globalData.sharedData))
+            throw runtime_error("Global Redis shared data too large.");
+        if (!RedisCopySharedForkData(
+                g_pQForkControl->globalData.sharedData, sharedDataSize))
+            throw runtime_error("Could not copy global Redis shared data.");
+        g_pQForkControl->globalData.sharedDataSize = sharedDataSize;
         memcpy(&g_pQForkControl->globalData.modules, modules,
                sizeof(g_pQForkControl->globalData.modules));
         g_pQForkControl->globalData.usedMemory = usedMemory;
@@ -2167,34 +2259,41 @@ pid_t BeginForkOperation(OperationType type,
     return -1;
 }
 
-pid_t BeginForkOperation_Rdb(char *filename,
+static void SetRdbOperationData(int req, const void *rdbSaveInfo,
+    size_t rdbSaveInfoSize, int rdbFlags)
+{
+    if (rdbSaveInfoSize > MAX_RDB_SAVE_INFO_SIZE ||
+        (rdbSaveInfoSize != 0 && rdbSaveInfo == NULL))
+        throw runtime_error("RDB save metadata is too large or missing");
+
+    g_pQForkControl->globalData.rdb_req = req;
+    g_pQForkControl->globalData.rdb_flags = rdbFlags;
+    g_pQForkControl->globalData.rdb_save_info_size = rdbSaveInfoSize;
+    memset(g_pQForkControl->globalData.rdb_save_info, 0,
+           sizeof(g_pQForkControl->globalData.rdb_save_info));
+    if (rdbSaveInfoSize != 0)
+        memcpy(g_pQForkControl->globalData.rdb_save_info,
+               rdbSaveInfo, rdbSaveInfoSize);
+}
+
+pid_t BeginForkOperation_Rdb(int req, char *filename,
+    const void *rdbSaveInfo, size_t rdbSaveInfoSize, int rdbFlags,
     LPVOID redisData,
     int redisDataSize,
     uint8_t *dictHashSeed,
     LPVOID modules)
 {
+    SetRdbOperationData(req, rdbSaveInfo, rdbSaveInfoSize, rdbFlags);
     strcpy_s(g_pQForkControl->globalData.filename, filename);
     return BeginForkOperation(otRDB, redisData, redisDataSize, dictHashSeed, modules);
 }
 
-pid_t BeginForkOperation_Aof(int aof_pipe_write_ack_to_parent,
-    int aof_pipe_read_ack_from_parent,
-    int aof_pipe_read_data_from_parent,
-    char *filename,
+pid_t BeginForkOperation_Aof(char *filename,
     LPVOID redisData,
     int redisDataSize,
     uint8_t *dictHashSeed,
     LPVOID modules)
 {
-    HANDLE aof_pipe_write_ack_handle = (HANDLE) FDAPI_get_osfhandle(aof_pipe_write_ack_to_parent);
-    HANDLE aof_pipe_read_ack_handle = (HANDLE) FDAPI_get_osfhandle(aof_pipe_read_ack_from_parent);
-    HANDLE aof_pipe_read_data_handle = (HANDLE) FDAPI_get_osfhandle(aof_pipe_read_data_from_parent);
-
-    // The handle is already inheritable so there is no need to duplicate it
-    g_pQForkControl->globalData.aof_pipe_write_ack_handle = (aof_pipe_write_ack_handle);
-    g_pQForkControl->globalData.aof_pipe_read_ack_handle = (aof_pipe_read_ack_handle);
-    g_pQForkControl->globalData.aof_pipe_read_data_handle = (aof_pipe_read_data_handle);
-
     strcpy_s(g_pQForkControl->globalData.filename, filename);
     return BeginForkOperation(otAOF, redisData, redisDataSize, dictHashSeed, modules);
 }
@@ -2215,13 +2314,15 @@ void BeginForkOperation_Socket_Duplicate(DWORD dwProcessId) {
             "Could not duplicate diskless RDB exit pipe reader into QFork child");
 }
 
-pid_t BeginForkOperation_Socket(int rdb_pipe_write_fd,
+pid_t BeginForkOperation_Socket(int req, const void *rdbSaveInfo,
+    size_t rdbSaveInfoSize, int rdb_pipe_write_fd,
     int safe_to_exit_pipe_fd,
     LPVOID redisData,
     int redisDataSize,
     uint8_t *dictHashSeed,
     LPVOID modules)
 {
+    SetRdbOperationData(req, rdbSaveInfo, rdbSaveInfoSize, 0);
     g_pQForkControl->globalData.rdb_pipe_write_fd = rdb_pipe_write_fd;
     g_pQForkControl->globalData.rdb_child_exit_pipe_read_fd =
         safe_to_exit_pipe_fd;
@@ -2910,7 +3011,7 @@ BOOL IsForkedProcess() {
 
 void SetupQForkGlobals(int argc, char* argv[]) {
     // To check sentinel mode we use the antirez code to avoid duplicating code
-    g_SentinelMode = checkForSentinelMode(argc, argv);
+    g_SentinelMode = checkForSentinelMode(argc, argv, argv[0]);
 
     g_IsForkedProcess = IsForkedProcess();
     g_PersistenceDisabled = IsPersistenceDisabled();

@@ -8,10 +8,10 @@
 set ::cluster_master_nodes 0
 set ::cluster_replica_nodes 0
 
-# Parse CLUSTER NODES output. Optional status can be specified to return only
-# entries with a matching link state.
-proc parse_cluster_nodes {reply {status "*"}} {
-    set lines [split $reply "\r\n"]
+# Returns a parsed CLUSTER NODES output as a list of dictionaries. Optional status field
+# can be specified to only returns entries that match the provided status.
+proc get_cluster_nodes {id {status "*"}} {
+    set lines [split [R $id cluster nodes] "\r\n"]
     set nodes {}
     foreach l $lines {
         set l [string trim $l]
@@ -33,30 +33,6 @@ proc parse_cluster_nodes {reply {status "*"}} {
         }
     }
     return $nodes
-}
-
-# Returns the parsed CLUSTER NODES output for an existing harness connection.
-proc get_cluster_nodes {id {status "*"}} {
-    parse_cluster_nodes [R $id cluster nodes] $status
-}
-
-# Returns CLUSTER NODES through a short-lived connection. Cluster resets can
-# leave the harness' persistent socket waiting on an obsolete connection.
-proc get_cluster_nodes_fresh {id {status "*"}} {
-    set host [get_instance_attrib redis $id host]
-    set port [get_instance_attrib redis $id port]
-    set link {}
-    set errcode [catch {
-        set link [redis $host $port]
-        set reply [$link cluster nodes]
-    } result]
-    if {$link ne {}} {
-        catch {$link close}
-    }
-    if {$errcode} {
-        return -code $errcode $result
-    }
-    parse_cluster_nodes $reply $status
 }
 
 # Test node for flag.
@@ -93,7 +69,7 @@ proc s {n field} {
     get_info_field [R $n info] $field
 }
 
-# Assuming nodes are reest, this function performs slots allocation.
+# Assuming nodes are reset, this function performs slots allocation.
 # Only the first 'n' nodes are used.
 proc cluster_allocate_slots {n} {
     set slot 16383
@@ -156,6 +132,33 @@ proc create_cluster {masters slaves} {
     set ::cluster_replica_nodes $slaves
 }
 
+proc cluster_allocate_with_continuous_slots {n} {
+    set slot 16383
+    set avg [expr ($slot+1) / $n]
+    while {$slot >= 0} {
+        set node [expr $slot/$avg >= $n ? $n-1 : $slot/$avg]
+        lappend slots_$node $slot
+        incr slot -1
+    }
+    for {set j 0} {$j < $n} {incr j} {
+        R $j cluster addslots {*}[set slots_${j}]
+    }
+}
+
+# Create a cluster composed of the specified number of masters and slaves,
+# but with a continuous slot range. 
+proc cluster_create_with_continuous_slots {masters slaves} {
+    cluster_allocate_with_continuous_slots $masters
+    if {$slaves} {
+        cluster_allocate_slaves $masters $slaves
+    }
+    assert_cluster_state ok
+
+    set ::cluster_master_nodes $masters
+    set ::cluster_replica_nodes $slaves
+}
+
+
 # Set the cluster node-timeout to all the reachalbe nodes.
 proc set_cluster_node_timeout {to} {
     foreach_redis_id id {
@@ -201,4 +204,19 @@ proc wait_for_cluster_propagation {} {
     } else {
         fail "cluster config did not reach a consistent state"
     }
+}
+
+# Check if cluster's view of hostnames is consistent
+proc are_hostnames_propagated {match_string} {
+    for {set j 0} {$j < $::cluster_master_nodes + $::cluster_replica_nodes} {incr j} {
+        set cfg [R $j cluster slots]
+        foreach node $cfg {
+            for {set i 2} {$i < [llength $node]} {incr i} {
+                if {! [string match $match_string [lindex [lindex [lindex $node $i] 3] 1]] } {
+                    return 0
+                }
+            }
+        }
+    }
+    return 1
 }

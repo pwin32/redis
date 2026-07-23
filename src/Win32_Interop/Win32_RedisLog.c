@@ -165,7 +165,7 @@ void serverLogRaw(int level, const char *msg) {
             * in addition to when an encoding error occurs. Proceeding with a zero-terminated ellipsis at the end of the
             * buffer seems a better option than not logging this message at all.
             */
-            strncpy(buf + sizeof(buf)-sizeof(ellipsisWithNewLine), ellipsisWithNewLine, sizeof(ellipsisWithNewLine));
+            memcpy(buf + sizeof(buf)-sizeof(ellipsisWithNewLine), ellipsisWithNewLine, sizeof(ellipsisWithNewLine));
             completeMessageLength = sizeof(buf)-1;
         }
     }
@@ -196,7 +196,7 @@ static void serverLogV(int level, const char *fmt, va_list ap) {
      * buffer seems a better option than not logging this message at all.
      */
     if (vlen < 0 || vlen >= sizeof(msg)) {
-        strncpy(msg + sizeof(msg) - sizeof(ellipsis), ellipsis, sizeof(ellipsis));
+        memcpy(msg + sizeof(msg) - sizeof(ellipsis), ellipsis, sizeof(ellipsis));
     }
 
     serverLogRaw(level,msg);
@@ -228,7 +228,6 @@ void _serverLog(int level, const char *fmt, ...) {
  * where we need printf-alike features are served by serverLog(). */
 void serverLogFromHandler(int level, const char *msg) {
 }
-
 
 
 

@@ -21,6 +21,7 @@
  */
 
 #include "Win32_APIs.h"
+#include "Win32_Error.h"
 #include <errno.h>
 
 RtlGenRandomFunc RtlGenRandom;
@@ -41,23 +42,29 @@ int replace_random() {
 /* Rename which works on Windows when file exists */
 int replace_rename(const char *src, const char *dst) {
     int retries = 50;
+    DWORD error;
+
     while (1) {
-        if (MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH)) {
+        /* Redis persistence renames must remain atomic.  COPY_ALLOWED turns a
+         * cross-volume rename into copy+delete and can expose a partial RDB,
+         * AOF, manifest, or rewritten configuration after a crash. */
+        if (MoveFileExA(src, dst,
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             return 0;
-        } else {
-            errno = GetLastError();
-            // Anti-virus may lock file - error code 5.
-            if (errno != 5) {
-                break;
-            }
-            retries--;
-            if (retries == 0) {
-                break;
-            }
-            Sleep(10);
         }
+
+        error = GetLastError();
+        if (error != ERROR_ACCESS_DENIED &&
+            error != ERROR_SHARING_VIOLATION &&
+            error != ERROR_LOCK_VIOLATION) {
+            break;
+        }
+        if (--retries == 0) break;
+        Sleep(10);
     }
-    // On error we will return generic error code without GetLastError()
+
+    errno = translate_sys_error((int)error);
+    if (errno == -9999) errno = EIO;
     return -1;
 }
 

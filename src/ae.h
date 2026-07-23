@@ -57,6 +57,12 @@
 #define AE_NOMORE -1
 #define AE_DELETED_EVENT_ID -1
 
+#ifdef _WIN32
+/* Bound both backend completion cleanup and the number of visible file events
+ * dispatched by one aeProcessEvents() iteration. */
+#define AE_WIN32_MAX_EVENTS_PER_POLL 100
+#endif
+
 /* Macros */
 #define AE_NOTUSED(V) ((void) V)
 
@@ -93,6 +99,11 @@ typedef struct aeTimeEvent {
 typedef struct aeFiredEvent {
     int fd;
     int mask;
+#ifdef _WIN32
+    /* The IOCP backend retains the socket state until this fired event is
+     * dispatched or deliberately dropped after afterSleep(). */
+    void *backend_data;
+#endif
 } aeFiredEvent;
 
 /* State of an event based program */
@@ -118,6 +129,7 @@ int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         aeFileProc *proc, void *clientData);
 void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask);
 int aeGetFileEvents(aeEventLoop *eventLoop, int fd);
+void *aeGetFileClientData(aeEventLoop *eventLoop, int fd);
 long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
         aeTimeProc *proc, void *clientData,
         aeEventFinalizerProc *finalizerProc);

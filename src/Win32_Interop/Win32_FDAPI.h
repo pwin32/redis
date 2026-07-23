@@ -46,6 +46,8 @@ typedef unsigned long nfds_t;
 #define bind redis_mingw_system_bind
 #define connect redis_mingw_system_connect
 #define freeaddrinfo redis_mingw_system_freeaddrinfo
+#define ftruncate redis_mingw_system_ftruncate
+#define ftruncate64 redis_mingw_system_ftruncate64
 #define getaddrinfo redis_mingw_system_getaddrinfo
 #define getpeername redis_mingw_system_getpeername
 #define getsockname redis_mingw_system_getsockname
@@ -64,6 +66,8 @@ typedef unsigned long nfds_t;
 #define select redis_mingw_system_select
 #define setsockopt redis_mingw_system_setsockopt
 #define socket redis_mingw_system_socket
+#define truncate redis_mingw_system_truncate
+#define truncate64 redis_mingw_system_truncate64
 #define write redis_mingw_system_write
 #define gai_strerror redis_mingw_system_gai_strerror
 #define gai_strerrorA redis_mingw_system_gai_strerrorA
@@ -76,6 +80,25 @@ typedef unsigned long nfds_t;
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#ifdef __MINGW32__
+/* Consume MinGW's complete ftruncate/truncate declaration block while its
+ * symbols are temporarily renamed.  Later includes then cannot redeclare the
+ * FDAPI_ftruncate macro with MinGW's ftruncate64 assembler alias. */
+#include <unistd.h>
+#endif
+#ifndef IOV_MAX
+/* Winsock's WSABUF count is a DWORD, but Redis only needs a small bounded
+ * vector for reply batching. */
+#define IOV_MAX 16
+#endif
+
+#ifndef REDIS_WIN32_IOVEC_DEFINED
+#define REDIS_WIN32_IOVEC_DEFINED
+struct iovec {
+    void *iov_base;
+    size_t iov_len;
+};
+#endif
 
 // Including a version of this file modified to eliminate prototype
 // definitions not removed by INCL_WINSOCK_API_PROTOTYPES
@@ -91,6 +114,8 @@ typedef unsigned long nfds_t;
 #undef bind
 #undef connect
 #undef freeaddrinfo
+#undef ftruncate
+#undef ftruncate64
 #undef getaddrinfo
 #undef getpeername
 #undef getsockname
@@ -109,6 +134,8 @@ typedef unsigned long nfds_t;
 #undef select
 #undef setsockopt
 #undef socket
+#undef truncate
+#undef truncate64
 #undef write
 #undef gai_strerror
 #undef gai_strerrorA
@@ -193,6 +220,7 @@ typedef int (*fdapi_getsockopt)(int sockfd, int level, int optname, void *optval
 typedef int (*fdapi_connect)(int sockfd, const struct sockaddr *addr, size_t addrlen);
 typedef ssize_t (*fdapi_read)(int fd, void *buf, size_t count);
 typedef ssize_t (*fdapi_write)(int fd, const void *buf, size_t count);
+typedef ssize_t (*fdapi_writev)(int fd, const struct iovec *iov, int iovcnt);
 typedef int (*fdapi_fsync)(int fd);
 typedef int (*fdapi_listen)(int sockfd, int backlog);
 typedef int (*fdapi_ftruncate)(int fd, PORT_LONGLONG length);
@@ -237,7 +265,6 @@ extern fdapi_fcntl          fcntl;
 extern fdapi_fstat          fdapi_fstat64;
 extern fdapi_freeaddrinfo   freeaddrinfo;
 extern fdapi_fsync          fsync;
-extern fdapi_ftruncate      ftruncate;
 extern fdapi_getaddrinfo    getaddrinfo;
 extern fdapi_getsockopt     getsockopt;
 extern fdapi_getpeername    getpeername;
@@ -259,6 +286,7 @@ extern fdapi_select         select;
 extern fdapi_setsockopt     setsockopt;
 extern fdapi_socket         socket;
 extern fdapi_write          write;
+extern fdapi_writev         writev;
 
 // Other FD based APIs
 void    FDAPI_SaveSocketAddrStorage(int rfd, SOCKADDR_STORAGE* socketAddrStorage);
@@ -266,7 +294,8 @@ BOOL    FDAPI_SocketAttachIOCP(int rfd, HANDLE iocph);
 BOOL    FDAPI_AcceptEx(int listenFD,int acceptFD,PVOID lpOutputBuffer,DWORD dwReceiveDataLength,DWORD dwLocalAddressLength,DWORD dwRemoteAddressLength,LPDWORD lpdwBytesReceived,LPOVERLAPPED lpOverlapped);
 BOOL    FDAPI_ConnectEx(int fd,const struct sockaddr *name,int namelen,PVOID lpSendBuffer,DWORD dwSendDataLength,LPDWORD lpdwBytesSent,LPOVERLAPPED lpOverlapped);
 void    FDAPI_GetAcceptExSockaddrs(int fd, PVOID lpOutputBuffer,DWORD dwReceiveDataLength,DWORD dwLocalAddressLength,DWORD dwRemoteAddressLength,LPSOCKADDR *LocalSockaddr,LPINT LocalSockaddrLength,LPSOCKADDR *RemoteSockaddr,LPINT RemoteSockaddrLength);
-int     FDAPI_UpdateAcceptContext( int fd );
+int     FDAPI_UpdateAcceptContext( int accept_fd, int listen_fd );
+int     FDAPI_UpdateConnectContext( int fd );
 int     FDAPI_PipeSetNonBlock(int rfd, int non_blocking);
 void**  FDAPI_GetSocketStatePtr(int rfd);
 void    FDAPI_ClearSocketInfo(int fd);
@@ -275,10 +304,17 @@ int     FDAPI_WSAIoctl(int rfd, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD
 int     FDAPI_WSASend(int rfd, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesSent, DWORD dwFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 int     FDAPI_WSARecv(int rfd, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 BOOL    FDAPI_WSAGetOverlappedResult(int rfd, LPWSAOVERLAPPED lpOverlapped, LPDWORD lpcbTransfer, BOOL fWait, LPDWORD lpdwFlags);
+int     FDAPI_IsSocketWritable(int rfd);
 BOOL    FDAPI_CloseDuplicatedSocket(int rfd);
 int     FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFOW lpProtocolInfo);
 int     FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFOW lpProtocolInfo, GROUP g, DWORD dwFlags);
 int     FDAPI_WSAGetLastError(void);
+ssize_t FDAPI_writev(int rfd, const struct iovec *iov, int iovcnt);
+int     FDAPI_ftruncate(int rfd, PORT_LONGLONG length);
+
+/* The MinGW declarations were consumed above under temporary names, so calls
+ * in Redis can now be routed through the synthetic descriptor map safely. */
+#define ftruncate FDAPI_ftruncate
 
 intptr_t FDAPI_get_osfhandle(int fd);
 int      FDAPI_open_osfhandle(intptr_t osfhandle, int flags);

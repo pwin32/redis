@@ -2,13 +2,23 @@ set ::global_overrides {}
 set ::tags {}
 set ::valgrind_errors {}
 
+# Resolve all test executables and modules through the runner-provided paths.
+# The MinGW build keeps its native PE files under build/mingw64, while the
+# upstream harness assumes src/*.  Keeping this indirection here means tests
+# can retain upstream command content without accidentally launching the
+# unrelated installed Redis service or loading source-tree modules.
 set ::redis_test_root [file normalize [file join [file dirname [info script]] ../..]]
 
 proc redis_test_binary {envvar relative_path} {
     if {[info exists ::env($envvar)] && [string length $::env($envvar)] > 0} {
-        return $::env($envvar)
+        return [file normalize $::env($envvar)]
     }
-    return [file normalize [file join $::redis_test_root {*}$relative_path]]
+
+    set path [file normalize [file join $::redis_test_root {*}$relative_path]]
+    if {$::tcl_platform(platform) eq "windows" && [file extension $path] eq {}} {
+        append path ".exe"
+    }
+    return $path
 }
 
 proc redis_test_module {name} {
@@ -26,6 +36,7 @@ set ::redis_cli_path [redis_test_binary REDIS_CLI {src redis-cli}]
 set ::redis_benchmark_path [redis_test_binary REDIS_BENCHMARK {src redis-benchmark}]
 set ::redis_check_aof_path [redis_test_binary REDIS_CHECK_AOF {src redis-check-aof}]
 set ::redis_check_rdb_path [redis_test_binary REDIS_CHECK_RDB {src redis-check-rdb}]
+set ::redis_test_launcher_path [redis_test_binary REDIS_TEST_LAUNCHER {build mingw64 redis-test-launcher}]
 
 proc start_server_error {config_file error} {
     set err {}
@@ -44,19 +55,37 @@ proc check_valgrind_errors stderr {
     }
 }
 
+proc check_sanitizer_errors stderr {
+    set res [sanitizer_errors_from_file $stderr]
+    if {$res != ""} {
+        send_data_packet $::test_server_fd err "Sanitizer error: $res\n"
+    }
+}
+
 proc clean_persistence config {
     # we may wanna keep the logs for later, but let's clean the persistence
     # files right away, since they can accumulate and take up a lot of space
     set config [dict get $config "config"]
-    set rdb [format "%s/%s" [dict get $config "dir"] "dump.rdb"]
-    set aof [format "%s/%s" [dict get $config "dir"] "appendonly.aof"]
+    set dir [dict get $config "dir"]
+    set rdb [format "%s/%s" $dir "dump.rdb"]
+    if {[dict exists $config "appenddirname"]} {
+        set aofdir [dict get $config "appenddirname"]
+    } else {
+        set aofdir "appendonlydir"
+    }
+    set aof_dirpath [format "%s/%s" $dir $aofdir]
+    clean_aof_persistence $aof_dirpath
     catch {exec rm -rf $rdb}
-    catch {exec rm -rf $aof}
 }
 
 proc kill_server config {
     # nothing to kill when running against external server
     if {$::external} return
+
+    # Close client connection if exists
+    if {[dict exists $config "client"]} {
+        [dict get $config "client"] close
+    }
 
     # nevermind if its already dead
     if {![is_alive $config]} {
@@ -64,6 +93,8 @@ proc kill_server config {
         if {$::valgrind} {
             check_valgrind_errors [dict get $config stderr]
         }
+
+        check_sanitizer_errors [dict get $config stderr]
         return
     }
     set pid [dict get $config pid]
@@ -97,21 +128,20 @@ proc kill_server config {
     # kill server and wait for the process to be totally exited
     send_data_packet $::test_server_fd server-killing $pid
     kill_proc $config
-    # Node might have been stopped in the test
-    if {$::tcl_platform(platform) != "windows"} {
-        catch {exec kill -SIGCONT $pid}
-    }
     if {$::valgrind} {
-        set max_wait 60000
+        set max_wait 120000
     } else {
         set max_wait 10000
     }
     while {[is_alive $config]} {
         incr wait 10
 
-        if {$wait >= $max_wait} {
+        if {$wait == $max_wait} {
+            puts "Forcing process $pid to crash..."
+            catch {kill_proc2 $pid}
+        } elseif {$wait >= $max_wait * 2} {
             puts "Forcing process $pid to exit..."
-            kill_proc2 $pid
+            catch {kill_proc2 $pid}
         } elseif {$wait % 1000 == 0} {
             puts "Waiting for process $pid to exit..."
         }
@@ -123,30 +153,45 @@ proc kill_server config {
         check_valgrind_errors [dict get $config stderr]
     }
 
+    check_sanitizer_errors [dict get $config stderr]
+
     # Remove this pid from the set of active pids in the test server.
     send_data_packet $::test_server_fd server-killed $pid
 }
 
+# Return the executable path for one exact Windows PID through the native
+# MinGW helper.  The helper deliberately does not invoke PowerShell: these
+# queries sit in tight cleanup/polling loops throughout the test harness.
+proc windows_process_details {pid} {
+    set image [string trim [exec $::redis_test_launcher_path --image $pid]]
+    return "$image\n"
+}
+
+proc windows_process_matches {pid {config {}}} {
+    set expected [file nativename [file normalize $::redis_server_path]]
+    # Exact image-path matching is the ownership boundary.  In particular,
+    # the installed service under Program Files cannot match the checkout's
+    # build/mingw64/redis-server.exe even when a test PID is stale.  Keep the
+    # optional config argument for callers and future command-line metadata,
+    # but do not reintroduce a PowerShell query into this hot path.
+    return [expr {![catch {
+        exec $::redis_test_launcher_path --is-owned $pid $expected
+    }]}]
+}
+
 proc windows_is_alive config {
-    set pid [dict get $config pid]
-    set mfilter {PID eq }
-    append mfilter $pid
-    if { [string first $pid [exec tasklist.exe -FI ${mfilter}]] != -1 } {
-        return 1
-    } else {
-        return 0
-    }
+    return [windows_process_matches [dict get $config pid] $config]
 }
 
 proc windows_kill_proc config {
     set pid [dict get $config pid]
+    if {![windows_is_alive $config]} { return }
+
+    # Match POSIX SIGTERM by asking Redis to execute its normal shutdown path.
+    # If the server is blocked or already stopped, kill_proc2 performs an
+    # exact-PID tree termination after the caller's bounded wait.
     set shutdown_client {}
     set shutdown_sent 0
-
-    # POSIX kill_server sends SIGTERM, which runs Redis' normal shutdown path
-    # (including module hooks and a final RDB save when configured). Attempt
-    # the equivalent command on Windows without waiting for a reply; the
-    # generic kill_server timeout below still falls back to taskkill /F.
     catch {
         set shutdown_client [redis [dict get $config host] \
                                    [dict get $config port] 1 $::tls]
@@ -157,71 +202,192 @@ proc windows_kill_proc config {
         $shutdown_client shutdown
         set shutdown_sent 1
     }
-    if {$shutdown_client ne {}} {
-        catch {$shutdown_client close}
-    }
+    if {$shutdown_client ne {}} { catch {$shutdown_client close} }
 
     if {!$shutdown_sent} {
-        catch {exec taskkill.exe /F /T /PID $pid}
+        catch {windows_kill_proc2 $pid}
     }
 }
 
+proc windows_process_owned {pid} {
+    set allowed {}
+    foreach var {redis_server_path redis_cli_path redis_benchmark_path redis_check_aof_path redis_check_rdb_path redis_test_launcher_path} {
+        if {[info exists ::$var]} {
+            lappend allowed [file nativename [file normalize [set ::$var]]]
+        }
+    }
+    if {[info exists ::tcl_platform(platform)]} {
+        lappend allowed [file nativename [file normalize [info nameofexecutable]]]
+    }
+    return [expr {![catch {
+        exec $::redis_test_launcher_path --is-owned $pid {*}$allowed
+    }]}]
+}
+
 proc windows_kill_proc2 pid {
+    if {![windows_process_owned $pid]} { return }
     catch {exec taskkill.exe /F /T /PID $pid}
 }
 
 proc windows_kill_proc2_checked pid {
+    if {![windows_process_owned $pid]} {
+        error "Refusing to terminate unexpected Windows process PID $pid"
+    }
     exec taskkill.exe /F /T /PID $pid 2>@1
 }
 
-if { $tcl_platform(platform) == "windows" } {
+# Run a redis-server invocation that is expected to fail during startup and
+# return its combined diagnostics.  On Windows, route even these short-lived
+# probes through the native hidden launcher so they cannot flash a console.
+# Since the launcher intentionally returns the real Redis PID immediately,
+# poll that exact process and retain the same executable-path validation used
+# by the normal harness before any forced cleanup.
+proc redis_server_startup_error {args} {
+    if {$::tcl_platform(platform) ne "windows"} {
+        set failed [catch {
+            exec $::redis_server_path {*}$args 2>@1
+        } output]
+        if {!$failed} {
+            error "redis-server unexpectedly accepted startup arguments: $args"
+        }
+        return $output
+    }
+
+    set probe_dir [tmpdir redis-server-startup-error]
+    set stdout [file join $probe_dir stdout]
+    set stderr [file join $probe_dir stderr]
+    set pid {}
+    set cleanup_error {}
+
+    # The Windows native logger honors --logfile before redis_main() parses
+    # the remaining options.  A malformed later directive can therefore put
+    # the authoritative fatal-config diagnostic in that file instead of the
+    # launcher's stdout/stderr handles.  Remember those paths so the probe
+    # returns the same diagnostics that a direct redis-server invocation
+    # exposes, without deleting a file that existed before the probe.
+    set native_logfiles {}
+    set native_logfile_existed {}
+    for {set arg_index 0} {$arg_index < [llength $args]} {incr arg_index} {
+        set arg [lindex $args $arg_index]
+        set logfile_value {}
+        if {$arg eq "--logfile"} {
+            if {$arg_index + 1 < [llength $args]} {
+                incr arg_index
+                set logfile_value [lindex $args $arg_index]
+            }
+        } elseif {[regexp {^--logfile[ \t]+(.+)$} $arg -> logfile_value]} {
+            # Redis accepts an option name and value in one argv element.
+        }
+        if {$logfile_value eq {}} { continue }
+        if {[string length $logfile_value] >= 2} {
+            set first_char [string index $logfile_value 0]
+            set last_char [string index $logfile_value end]
+            if {($first_char eq {"} && $last_char eq {"}) ||
+                ($first_char eq {'} && $last_char eq {'})} {
+                set logfile_value [string range $logfile_value 1 end-1]
+            }
+        }
+        if {$logfile_value eq {} ||
+            [string equal -nocase $logfile_value stdout]} {
+            continue
+        }
+        if {[catch {set logfile_path [file normalize $logfile_value]}]} {
+            continue
+        }
+        if {[lsearch -exact $native_logfiles $logfile_path] < 0} {
+            lappend native_logfiles $logfile_path
+            dict set native_logfile_existed $logfile_path [file exists $logfile_path]
+        }
+    }
+
+    set caught [catch {
+        set launch_cmd [list $::redis_test_launcher_path $stdout $stderr -- \
+            $::redis_server_path]
+        lappend launch_cmd {*}$args
+        set pid [string trim [exec {*}$launch_cmd]]
+        if {![string is wideinteger -strict $pid] || $pid <= 0} {
+            error "hidden Redis launcher returned an invalid PID: $pid"
+        }
+
+        set exited 0
+        for {set attempt 0} {$attempt < 300} {incr attempt} {
+            if {![process_is_alive $pid]} {
+                set exited 1
+                break
+            }
+            after 100
+        }
+        if {!$exited} {
+            error "redis-server unexpectedly remained running for startup arguments: $args"
+        }
+
+        set output {}
+        foreach logfile [list $stdout $stderr] {
+            if {[file exists $logfile]} {
+                set fp [open $logfile r]
+                append output [read $fp]
+                close $fp
+            }
+        }
+        foreach logfile $native_logfiles {
+            if {[file exists $logfile] && [file isfile $logfile]} {
+                set fp [open $logfile r]
+                append output [read $fp]
+                close $fp
+            }
+        }
+        set output
+    } result options]
+
+    if {$pid ne {} && [process_is_alive $pid]} {
+        if {![windows_process_matches $pid]} {
+            set cleanup_error \
+                "refusing to terminate unexpected startup-probe PID $pid"
+        } elseif {[catch {windows_kill_proc2_checked $pid} kill_error]} {
+            set cleanup_error $kill_error
+        } else {
+            set exited 0
+            for {set attempt 0} {$attempt < 100} {incr attempt} {
+                if {![process_is_alive $pid]} {
+                    set exited 1
+                    break
+                }
+                after 20
+            }
+            if {!$exited} {
+                set cleanup_error "startup-probe PID $pid did not exit"
+            }
+        }
+    }
+    foreach logfile $native_logfiles {
+        if {![dict get $native_logfile_existed $logfile]} {
+            catch {file delete -force $logfile}
+        }
+    }
+    catch {file delete -force $probe_dir}
+
+    if {$cleanup_error ne {}} { error $cleanup_error }
+    if {$caught} { return -options $options $result }
+    return $result
+}
+
+if {$::tcl_platform(platform) eq "windows"} {
+    proc is_alive config { return [windows_is_alive $config] }
+    proc kill_proc config { windows_kill_proc $config }
+    proc kill_proc2 pid { windows_kill_proc2 $pid }
+    proc kill_proc2_checked pid { windows_kill_proc2_checked $pid }
+} else {
     proc is_alive config {
-        return [windows_is_alive $config]
+        set pid [dict get $config pid]
+        return [expr {![catch {exec kill -0 $pid}]}]
     }
-}
-
-if { $tcl_platform(platform) == "windows" } {
-    proc kill_proc config {
-        windows_kill_proc $config
-    }
-}
-
-if { $tcl_platform(platform) == "windows" } {
-    proc kill_proc2 pid {
-        windows_kill_proc2 $pid
-    }
-
-    proc kill_proc2_checked pid {
-        windows_kill_proc2_checked $pid
-    }
-}
-
-if { $tcl_platform(platform) != "windows" } {
-  proc is_alive config {
-    set pid [dict get $config pid]
-    if {[catch {exec kill -0 $pid} err]} {
-        return 0
-    } else {
-        return 1
-    }
-  }
-}
-
-if { $tcl_platform(platform) != "windows" } {
     proc kill_proc config {
         set pid [dict get $config pid]
-        catch {exec /bin/kill $pid}
+        catch {exec kill -SIGCONT $pid}
+        catch {exec kill $pid}
     }
-}
-
-if { $tcl_platform(platform) != "windows" } {
-    proc kill_proc2 pid {
-        catch {exec /bin/kill -9 $pid}
-    }
-
-    proc kill_proc2_checked pid {
-        exec /bin/kill -9 $pid
-    }
+    proc kill_proc2 pid { catch {exec /bin/kill -9 $pid} }
+    proc kill_proc2_checked pid { exec /bin/kill -9 $pid }
 }
 
 proc ping_server {host port} {
@@ -273,9 +439,8 @@ proc server_is_up {host port retrynum} {
 # there must be some intersection. If ::denytags are used, no intersection
 # is allowed. Returns 1 if tags are acceptable or 0 otherwise, in which
 # case err_return names a return variable for the message to be logged.
-proc tags_acceptable {err_return} {
+proc tags_acceptable {tags err_return} {
     upvar $err_return err
-    set tags $::tags
 
     # If tags are whitelisted, make sure there's match
     if {[llength $::allowtags] > 0} {
@@ -298,6 +463,12 @@ proc tags_acceptable {err_return} {
         }
     }
 
+    # some units mess with the client output buffer so we can't really use the req-res logging mechanism.
+    if {$::log_req_res && [lsearch $tags "logreqres:skip"] >= 0} {
+        set err "Not supported when running in log-req-res mode"
+        return 0
+    }
+
     if {$::external && [lsearch $tags "external:skip"] >= 0} {
         set err "Not supported on external server"
         return 0
@@ -305,6 +476,11 @@ proc tags_acceptable {err_return} {
 
     if {$::singledb && [lsearch $tags "singledb:skip"] >= 0} {
         set err "Not supported on singledb"
+        return 0
+    }
+
+    if {$::cluster_mode && [lsearch $tags "cluster:skip"] >= 0} {
+        set err "Not supported in cluster mode"
         return 0
     }
 
@@ -323,11 +499,11 @@ proc tags_acceptable {err_return} {
 
 # doesn't really belong here, but highly coupled to code in start_server
 proc tags {tags code} {
-    # If we 'tags' contain multiple tags, quoted and seperated by spaces,
+    # If we 'tags' contain multiple tags, quoted and separated by spaces,
     # we want to get rid of the quotes in order to have a proper list
     set tags [string map { \" "" } $tags]
     set ::tags [concat $::tags $tags]
-    if {![tags_acceptable err]} {
+    if {![tags_acceptable $::tags err]} {
         incr ::num_aborted
         send_data_packet $::test_server_fd ignore $err
         set ::tags [lrange $::tags 0 end-[llength $tags]]
@@ -339,22 +515,49 @@ proc tags {tags code} {
 
 # Write the configuration in the dictionary 'config' in the specified
 # file name.
-proc create_server_config_file {filename config} {
+proc create_server_config_file {filename config config_lines} {
     set fp [open $filename w+]
     foreach directive [dict keys $config] {
         puts -nonewline $fp "$directive "
         puts $fp [dict get $config $directive]
     }
+    foreach {config_line_directive config_line_args} $config_lines {
+        puts $fp "$config_line_directive $config_line_args"
+    }
     close $fp
 }
 
-proc spawn_server {config_file stdout stderr} {
+proc spawn_server {config_file stdout stderr args} {
+    set cmd [list $::redis_server_path $config_file]
+    set args {*}$args
+    if {[llength $args] > 0} {
+        lappend cmd {*}$args
+    }
+
     if {$::valgrind} {
-        set pid [exec valgrind --track-origins=yes --trace-children=yes --suppressions=[pwd]/src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full $::redis_server_path $config_file >> $stdout 2>> $stderr &]
-    } elseif ($::stack_logging) {
-        set pid [exec /usr/bin/env MallocStackLogging=1 MallocLogFile=/tmp/malloc_log.txt $::redis_server_path $config_file >> $stdout 2>> $stderr &]
+        set pid [exec valgrind --track-origins=yes --trace-children=yes --suppressions=[pwd]/src/valgrind.sup --show-reachable=no --show-possibly-lost=no --leak-check=full {*}$cmd >> $stdout 2>> $stderr &]
+    } elseif {$::stack_logging && $::tcl_platform(platform) ne "windows"} {
+        set pid [exec /usr/bin/env MallocStackLogging=1 MallocLogFile=/tmp/malloc_log.txt {*}$cmd >> $stdout 2>> $stderr &]
     } else {
-        set pid [exec $::redis_server_path $config_file >> $stdout 2>> $stderr &]
+        # ASAN_OPTIONS environment variable is for address sanitizer. If a test
+        # tries to allocate huge memory area and expects allocator to return
+        # NULL, address sanitizer throws an error without this setting.
+        if {$::tcl_platform(platform) eq "windows"} {
+            # Tcl's Windows exec path does not expose CREATE_NO_WINDOW, so a
+            # CUI redis-server can allocate a console for every test server.
+            # The native launcher creates the actual Redis child with hidden
+            # startup flags and assigns these existing log paths directly as
+            # inherited standard handles.  It prints the Redis PID (not a
+            # wrapper PID), preserving the exact-process cleanup below.
+            set launch_cmd [list $::redis_test_launcher_path $stdout $stderr --]
+            lappend launch_cmd {*}$cmd
+            set pid [string trim [exec {*}$launch_cmd]]
+            if {![string is wideinteger -strict $pid] || $pid <= 0} {
+                error "hidden Redis launcher returned an invalid PID: $pid"
+            }
+        } else {
+            set pid [exec /usr/bin/env ASAN_OPTIONS=allocator_may_return_null=1 {*}$cmd >> $stdout 2>> $stderr &]
+        }
     }
 
     if {$::wait_server} {
@@ -374,7 +577,7 @@ proc wait_server_started {config_file stdout pid} {
     set maxiter [expr {120*1000/$checkperiod}] ; # Wait up to 2 minutes.
     set port_busy 0
     while 1 {
-        if {[regexp -- " PID: $pid|pid=$pid," [exec cat $stdout]]} {
+        if {[regexp -- " PID: $pid.*Server initialized" [exec cat $stdout]]} {
             break
         }
         after $checkperiod
@@ -402,6 +605,77 @@ proc dump_server_log {srv} {
     puts "\n===== Start of server log (pid $pid) =====\n"
     puts [exec cat [dict get $srv "stdout"]]
     puts "===== End of server log (pid $pid) =====\n"
+
+    puts "\n===== Start of server stderr log (pid $pid) =====\n"
+    puts [exec cat [dict get $srv "stderr"]]
+    puts "===== End of server stderr log (pid $pid) =====\n"
+}
+
+proc run_external_server_test {code overrides} {
+    set srv {}
+    dict set srv "host" $::host
+    dict set srv "port" $::port
+    set client [redis $::host $::port 0 $::tls]
+    dict set srv "client" $client
+    if {!$::singledb} {
+        $client select 9
+    }
+
+    set config {}
+    dict set config "port" $::port
+    dict set srv "config" $config
+
+    # append the server to the stack
+    lappend ::servers $srv
+
+    if {[llength $::servers] > 1} {
+        if {$::verbose} {
+            puts "Notice: nested start_server statements in external server mode, test must be aware of that!"
+        }
+    }
+
+    r flushall
+    r function flush
+
+    # store overrides
+    set saved_config {}
+    foreach {param val} $overrides {
+        dict set saved_config $param [lindex [r config get $param] 1]
+        r config set $param $val
+
+        # If we enable appendonly, wait for for rewrite to complete. This is
+        # required for tests that begin with a bg* command which will fail if
+        # the rewriteaof operation is not completed at this point.
+        if {$param == "appendonly" && $val == "yes"} {
+            waitForBgrewriteaof r
+        }
+    }
+
+    if {[catch {set retval [uplevel 2 $code]} error]} {
+        if {$::durable} {
+            set msg [string range $error 10 end]
+            lappend details $msg
+            lappend details $::errorInfo
+            lappend ::tests_failed $details
+
+            incr ::num_failed
+            send_data_packet $::test_server_fd err [join $details "\n"]
+        } else {
+            # Re-raise, let handler up the stack take care of this.
+            error $error $::errorInfo
+        }
+    }
+
+    # restore overrides
+    dict for {param val} $saved_config {
+        r config set $param $val
+    }
+
+    set srv [lpop ::servers]
+    
+    if {[dict exists $srv "client"]} {
+        [dict get $srv "client"] close
+    }
 }
 
 proc start_server {options {code undefined}} {
@@ -410,7 +684,9 @@ proc start_server {options {code undefined}} {
     set overrides {}
     set omit {}
     set tags {}
+    set args {}
     set keep_persistence false
+    set config_lines {}
 
     # parse options
     foreach {option value} $options {
@@ -419,13 +695,19 @@ proc start_server {options {code undefined}} {
                 set baseconfig $value
             }
             "overrides" {
-                set overrides $value
+                set overrides [concat $overrides $value]
+            }
+            "config_lines" {
+                set config_lines $value
+            }
+            "args" {
+                set args $value
             }
             "omit" {
                 set omit $value
             }
             "tags" {
-                # If we 'tags' contain multiple tags, quoted and seperated by spaces,
+                # If we 'tags' contain multiple tags, quoted and separated by spaces,
                 # we want to get rid of the quotes in order to have a proper list
                 set tags [string map { \" "" } $value]
                 set ::tags [concat $::tags $tags]
@@ -440,7 +722,7 @@ proc start_server {options {code undefined}} {
     }
 
     # We skip unwanted tags
-    if {![tags_acceptable err]} {
+    if {![tags_acceptable $::tags err]} {
         incr ::num_aborted
         send_data_packet $::test_server_fd ignore $err
         set ::tags [lrange $::tags 0 end-[llength $tags]]
@@ -450,38 +732,8 @@ proc start_server {options {code undefined}} {
     # If we are running against an external server, we just push the
     # host/port pair in the stack the first time
     if {$::external} {
-        if {[llength $::servers] == 0} {
-            set srv {}
-            dict set srv "host" $::host
-            dict set srv "port" $::port
-            set client [redis $::host $::port 0 $::tls]
-            dict set srv "client" $client
-            if {!$::singledb} {
-                $client select 9
-            }
+        run_external_server_test $code $overrides
 
-            set config {}
-            dict set config "port" $::port
-            dict set srv "config" $config
-
-            # append the server to the stack
-            lappend ::servers $srv
-        }
-        r flushall
-        if {[catch {set retval [uplevel 1 $code]} error]} {
-            if {$::durable} {
-                set msg [string range $error 10 end]
-                lappend details $msg
-                lappend details $::errorInfo
-                lappend ::tests_failed $details
-
-                incr ::num_failed
-                send_data_packet $::test_server_fd err [join $details "\n"]
-            } else {
-                # Re-raise, let handler up the stack take care of this.
-                error $error $::errorInfo
-            }
-        }
         set ::tags [lrange $::tags 0 end-[llength $tags]]
         return
     }
@@ -489,6 +741,9 @@ proc start_server {options {code undefined}} {
     set data [split [exec cat "tests/assets/$baseconfig"] "\n"]
     set config {}
     if {$::tls} {
+        if {$::tls_module} {
+            lappend config_lines [list "loadmodule" [format "%s/src/redis-tls.so" [pwd]]]
+        }
         dict set config "tls-cert-file" [format "%s/tests/tls/server.crt" [pwd]]
         dict set config "tls-key-file" [format "%s/tests/tls/server.key" [pwd]]
         dict set config "tls-client-cert-file" [format "%s/tests/tls/client.crt" [pwd]]
@@ -512,7 +767,8 @@ proc start_server {options {code undefined}} {
     # start every server on a different port
     set port [find_available_port $::baseport $::portcount]
     if {$::tls} {
-        dict set config "port" 0
+        set pport [find_available_port $::baseport $::portcount]
+        dict set config "port" $pport
         dict set config "tls-port" $port
         dict set config "tls-cluster" "yes"
         dict set config "tls-replication" "yes"
@@ -520,8 +776,8 @@ proc start_server {options {code undefined}} {
         dict set config port $port
     }
 
-    set unixsocket ""
-    if {$::tcl_platform(platform) != "windows"} {
+    set unixsocket {}
+    if {$::tcl_platform(platform) ne "windows"} {
         set unixsocket [file normalize [format "%s/%s" [dict get $config "dir"] "socket"]]
         dict set config "unixsocket" $unixsocket
     }
@@ -536,9 +792,17 @@ proc start_server {options {code undefined}} {
         dict unset config $directive
     }
 
+    if {$::log_req_res} {
+        dict set config "req-res-logfile" "stdout.reqres"
+    }
+
+    if {$::force_resp3} {
+        dict set config "client-default-resp" "3"
+    }
+
     # write new configuration to temporary file
     set config_file [tmpfile redis.conf]
-    create_server_config_file $config_file $config
+    create_server_config_file $config_file $config $config_lines
 
     set stdout [format "%s/%s" [dict get $config "dir"] "stdout"]
     set stderr [format "%s/%s" [dict get $config "dir"] "stderr"]
@@ -548,7 +812,14 @@ proc start_server {options {code undefined}} {
         set fd [open $stdout "a+"]
         puts $fd "### Starting server for test $::cur_test"
         close $fd
+        if {$::verbose > 1} {
+            puts "### Starting server $stdout for test - $::cur_test"
+        }
     }
+
+    # We may have a stdout left over from the previous tests, so we need
+    # to get the current count of ready logs
+    set previous_ready_count [count_message_lines $stdout "Ready to accept"]
 
     # We need a loop here to retry with different ports.
     set server_started 0
@@ -559,7 +830,7 @@ proc start_server {options {code undefined}} {
 
         send_data_packet $::test_server_fd "server-spawning" "port $port"
 
-        set pid [spawn_server $config_file $stdout $stderr]
+        set pid [spawn_server $config_file $stdout $stderr $args]
 
         # check that the server actually started
         set port_busy [wait_server_started $config_file $stdout $pid]
@@ -571,11 +842,13 @@ proc start_server {options {code undefined}} {
             puts "Port $port was already busy, trying another port..."
             set port [find_available_port $::baseport $::portcount]
             if {$::tls} {
+                set pport [find_available_port $::baseport $::portcount]
+                dict set config port $pport
                 dict set config "tls-port" $port
             } else {
                 dict set config port $port
             }
-            create_server_config_file $config_file $config
+            create_server_config_file $config_file $config $config_lines
 
             # Truncate log so wait_server_started will not be looking at
             # output of the failed server.
@@ -619,6 +892,9 @@ proc start_server {options {code undefined}} {
     dict set srv "stdout" $stdout
     dict set srv "stderr" $stderr
     dict set srv "unixsocket" $unixsocket
+    if {$::tls} {
+        dict set srv "pport" $pport
+    }
 
     # if a block of code is supplied, we wait for the server to become
     # available, create a client object and kill the server afterwards
@@ -628,15 +904,9 @@ proc start_server {options {code undefined}} {
             error_and_quit $config_file $line
         }
 
-        if {$::wait_server} {
-            set msg "server started PID: [dict get $srv "pid"]. press any key to continue..."
-            puts $msg
-            read stdin 1
-        }
-
         while 1 {
             # check that the server actually started and is ready for connections
-            if {[count_message_lines $stdout "Ready to accept"] > 0} {
+            if {[count_message_lines $stdout "Ready to accept"] > $previous_ready_count} {
                 break
             }
             after 10
@@ -677,6 +947,13 @@ proc start_server {options {code undefined}} {
                 if {[string length $crashlog] > 0} {
                     puts [format "\nLogged crash report (pid %d):" [dict get $srv "pid"]]
                     puts "$crashlog"
+                    puts ""
+                }
+
+                set sanitizerlog [sanitizer_errors_from_file [dict get $srv "stderr"]]
+                if {[string length $sanitizerlog] > 0} {
+                    puts [format "\nLogged sanitizer errors (pid %d):" [dict get $srv "pid"]]
+                    puts "$sanitizerlog"
                     puts ""
                 }
             }
@@ -724,9 +1001,23 @@ proc start_server {options {code undefined}} {
     }
 }
 
-proc restart_server {level wait_ready rotate_logs} {
+# Start multiple servers with the same options, run code, then stop them.
+proc start_multiple_servers {num options code} {
+    for {set i 0} {$i < $num} {incr i} {
+        set code [list start_server $options $code]
+    }
+    uplevel 1 $code
+}
+
+proc restart_server {level wait_ready rotate_logs {reconnect 1} {shutdown sigterm}} {
     set srv [lindex $::servers end+$level]
+    if {$shutdown ne {sigterm}} {
+        catch {[dict get $srv "client"] shutdown $shutdown}
+    }
+    # Kill server doesn't mind if the server is already dead
     kill_server $srv
+    # Remove the default client from the server
+    dict unset srv "client"
 
     set pid [dict get $srv "pid"]
     set stdout [dict get $srv "stdout"]
@@ -747,7 +1038,7 @@ proc restart_server {level wait_ready rotate_logs} {
 
     set config_file [dict get $srv "config_file"]
 
-    set pid [spawn_server $config_file $stdout $stderr]
+    set pid [spawn_server $config_file $stdout $stderr {}]
 
     # check that the server actually started
     wait_server_started $config_file $stdout $pid
@@ -766,5 +1057,7 @@ proc restart_server {level wait_ready rotate_logs} {
             after 10
         }
     }
-    reconnect $level
+    if {$reconnect} {
+        reconnect $level
+    }
 }

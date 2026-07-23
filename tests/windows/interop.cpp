@@ -5,6 +5,7 @@
 #define FDAPI_NOCRTREDEFS
 #include "Win32_Interop/Win32_FDAPI.h"
 #include "Win32_Interop/Win32_Common.h"
+#include <unistd.h>
 
 extern "C" {
 #include "Win32_Interop/Win32_Signal_Process.h"
@@ -131,6 +132,81 @@ static void close_eventloop_pipe(int pipefds[2]) {
     }
 }
 
+static void test_synthetic_fd_ftruncate() {
+    int reservation_pipe[2] = {-1, -1};
+    int fd = -1;
+    int stale_fd = -1;
+    char filename[] = "redis-interop-ftruncate-XXXXXX";
+    const char payload[] = "0123456789abcdef";
+    char byte = 0;
+    struct __stat64 statbuf = {};
+
+    /* Reserve two Redis descriptors without consuming CRT descriptors.  The
+     * temporary file must therefore be accessed through the FDAPI mapping,
+     * rather than by treating its Redis descriptor as a native CRT fd. */
+    check(FDAPI_pipe_for_eventloop(reservation_pipe) == 0,
+          "ftruncate test should reserve synthetic socket descriptors");
+    if (reservation_pipe[0] == -1 || reservation_pipe[1] == -1) goto cleanup;
+
+    fd = FDAPI_mkstemp(filename);
+    check(fd != -1,
+          "ftruncate test temporary file creation should succeed");
+    if (fd == -1) goto cleanup;
+
+    check(write(fd, payload, sizeof(payload) - 1) ==
+              (ssize_t)(sizeof(payload) - 1),
+          "synthetic file descriptor should accept the initial payload");
+    check(fdapi_fstat64(fd, &statbuf) == 0 &&
+              statbuf.st_size == (off_t)(sizeof(payload) - 1),
+          "synthetic file descriptor should report the initial file size");
+
+    check(lseek64(fd, 7, SEEK_SET) == 7,
+          "ftruncate test should position the synthetic file descriptor");
+
+    check(ftruncate(fd, 5) == 0,
+          "ftruncate should shrink a file through the synthetic descriptor map");
+    check(fdapi_fstat64(fd, &statbuf) == 0 && statbuf.st_size == 5,
+          "ftruncate should persist the shortened synthetic file size");
+    check(lseek64(fd, 0, SEEK_CUR) == 7,
+          "ftruncate shrink should preserve the current file offset");
+
+    check(ftruncate(fd, 32) == 0,
+          "ftruncate should extend a file through the synthetic descriptor map");
+    check(fdapi_fstat64(fd, &statbuf) == 0 && statbuf.st_size == 32,
+          "ftruncate should persist the extended synthetic file size");
+    check(lseek64(fd, 0, SEEK_CUR) == 7,
+          "ftruncate extension should preserve the current file offset");
+
+    errno = 0;
+    check(ftruncate(fd, -1) == -1 && errno == EINVAL,
+          "ftruncate should reject a negative file size");
+
+cleanup:
+    if (fd != -1) {
+        stale_fd = fd;
+        check(FDAPI_close(fd) == 0,
+              "ftruncate test temporary file should close cleanly");
+        fd = -1;
+        check(DeleteFileA(filename) != FALSE,
+              "ftruncate test temporary file should be removed");
+    }
+    if (stale_fd != -1) {
+        errno = 0;
+        check(write(stale_fd, &byte, 1) == -1 && errno == EBADF,
+              "write should reject a stale synthetic file descriptor");
+        errno = 0;
+        check(read(stale_fd, &byte, 1) == -1 && errno == EBADF,
+              "read should reject a stale synthetic file descriptor");
+        errno = 0;
+        check(fsync(stale_fd) == -1 && errno == EBADF,
+              "fsync should reject a stale synthetic file descriptor");
+        errno = 0;
+        check(FDAPI_ftruncate(stale_fd, 0) == -1 && errno == EBADF,
+              "ftruncate should reject a stale synthetic file descriptor");
+    }
+    close_eventloop_pipe(reservation_pipe);
+}
+
 static void test_eventloop_pipe() {
     int pipefds[2] = {-1, -1};
 
@@ -141,6 +217,10 @@ static void test_eventloop_pipe() {
     check(FDAPI_GetSocketStatePtr(pipefds[0]) != NULL &&
               FDAPI_GetSocketStatePtr(pipefds[1]) != NULL,
           "event-loop pipe endpoints should be socket descriptors");
+
+    errno = 0;
+    check(fsync(pipefds[0]) == -1 && errno == EINVAL,
+          "fsync should reject a socket-backed synthetic descriptor");
 
     int flags = fcntl(pipefds[0], F_GETFL, 0);
     check(flags != -1,
@@ -356,6 +436,7 @@ int main(int argc, char **argv) {
     emulate_modern_windows = std::strcmp(argv[1], "--modern") == 0;
     test_address_conversion();
     test_getrusage();
+    test_synthetic_fd_ftruncate();
     test_eventloop_pipe();
     test_iocp_blocking_transition();
     test_socket_duplication();

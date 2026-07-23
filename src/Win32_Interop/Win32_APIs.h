@@ -48,7 +48,7 @@
  * In other cases, usleep is called with millisec resolution
  * which can be directly translated to WinAPI Sleep() */
 #undef usleep
-#define usleep(x) (x == 1) ? Sleep(0) : Sleep((int)((x)/1000))
+#define usleep(x) ((x) == 1 ? Sleep(0) : Sleep((int)((x)/1000)))
 
 
 /* following defined to choose little endian byte order */

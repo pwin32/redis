@@ -27,31 +27,33 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef _WIN32
-#include "Win32_Interop/Win32_Portability.h"
-#include "Win32_Interop/win32fixes.h"
-#include "Win32_Interop/Win32_Time.h"
-#include <process.h>    // for getpid
-#include <direct.h>     // for getcwd
-#include <shlwapi.h>    // for PathIsRelative
-#endif
-
 #include "fmacros.h"
+#include "fpconv_dtoa.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
 #include <limits.h>
 #include <math.h>
-POSIX_ONLY(#include <unistd.h>)
-POSIX_ONLY(#include <sys/time.h>)
+#include <unistd.h>
+#include <sys/time.h>
 #include <float.h>
 #include <stdint.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <libgen.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 #include "util.h"
 #include "sha256.h"
+#include "config.h"
+
+#define UNUSED(x) ((void)(x))
 
 /* Glob-style pattern matching. */
 static int stringmatchlen_impl(const char *pattern, int patternLen,
@@ -216,25 +218,29 @@ int stringmatchlen_fuzz_test(void) {
     return total_matches;
 }
 
+
 /* Convert a string representing an amount of memory into the number of
- * bytes, so for instance memtoll("1Gb") will return 1073741824 that is
+ * bytes, so for instance memtoull("1Gb") will return 1073741824 that is
  * (1024*1024*1024).
  *
  * On parsing error, if *err is not NULL, it's set to 1, otherwise it's
  * set to 0. On error the function return value is 0, regardless of the
  * fact 'err' is NULL or not. */
-PORT_LONGLONG memtoll(const char *p, int *err) {
+unsigned long long memtoull(const char *p, int *err) {
     const char *u;
     char buf[128];
-    PORT_LONG mul; /* unit multiplier */
-    PORT_LONGLONG val;
+    long mul; /* unit multiplier */
+    unsigned long long val;
     unsigned int digits;
 
     if (err) *err = 0;
 
     /* Search the first non digit character. */
     u = p;
-    if (*u == '-') u++;
+    if (*u == '-') {
+        if (err) *err = 1;
+        return 0;
+    }
     while(*u && isdigit(*u)) u++;
     if (*u == '\0' || !strcasecmp(u,"b")) {
         mul = 1;
@@ -257,7 +263,7 @@ PORT_LONGLONG memtoll(const char *p, int *err) {
 
     /* Copy the digits into a buffer, we'll use strtoll() to convert
      * the digit (without the unit) into a number. */
-    digits = (unsigned int)(u-p);                                                WIN_PORT_FIX /* cast (unsigned int) */
+    digits = u-p;
     if (digits >= sizeof(buf)) {
         if (err) *err = 1;
         return 0;
@@ -267,7 +273,7 @@ PORT_LONGLONG memtoll(const char *p, int *err) {
 
     char *endptr;
     errno = 0;
-    val = strtoll(buf,&endptr,10);
+    val = strtoull(buf,&endptr,10);
     if ((val == 0 && errno == EINVAL) || *endptr != '\0') {
         if (err) *err = 1;
         return 0;
@@ -338,47 +344,64 @@ uint32_t sdigits10(int64_t v) {
 
 /* Convert a long long into a string. Returns the number of
  * characters needed to represent the number.
+ * If the buffer is not big enough to store the string, 0 is returned. */
+int ll2string(char *dst, size_t dstlen, long long svalue) {
+    unsigned long long value;
+    int negative = 0;
+
+    /* The ull2string function with 64bit unsigned integers for simplicity, so
+     * we convert the number here and remember if it is negative. */
+    if (svalue < 0) {
+        if (svalue != LLONG_MIN) {
+            value = -svalue;
+        } else {
+            value = ((unsigned long long) LLONG_MAX)+1;
+        }
+        if (dstlen < 2)
+            goto err;
+        negative = 1;
+        dst[0] = '-';
+        dst++;
+        dstlen--;
+    } else {
+        value = svalue;
+    }
+
+    /* Converts the unsigned long long value to string*/
+    int length = ull2string(dst, dstlen, value);
+    if (length == 0) return 0;
+    return length + negative;
+
+err:
+    /* force add Null termination */
+    if (dstlen > 0)
+        dst[0] = '\0';
+    return 0;
+}
+
+/* Convert a unsigned long long into a string. Returns the number of
+ * characters needed to represent the number.
  * If the buffer is not big enough to store the string, 0 is returned.
  *
  * Based on the following article (that apparently does not provide a
  * novel approach but only publicizes an already used technique):
  *
- * https://www.facebook.com/notes/facebook-engineering/three-optimization-tips-for-c/10151361643253920
- *
- * Modified in order to handle signed integers since the original code was
- * designed for unsigned integers. */
-int ll2string(char *dst, size_t dstlen, PORT_LONGLONG svalue) {
+ * https://www.facebook.com/notes/facebook-engineering/three-optimization-tips-for-c/10151361643253920 */
+int ull2string(char *dst, size_t dstlen, unsigned long long value) {
     static const char digits[201] =
         "0001020304050607080910111213141516171819"
         "2021222324252627282930313233343536373839"
         "4041424344454647484950515253545556575859"
         "6061626364656667686970717273747576777879"
         "8081828384858687888990919293949596979899";
-    int negative;
-    PORT_ULONGLONG value;
-
-    /* The main loop works with 64bit unsigned integers for simplicity, so
-     * we convert the number here and remember if it is negative. */
-    if (svalue < 0) {
-        if (svalue != LLONG_MIN) {
-            value = -svalue;
-        } else {
-            value = ((PORT_ULONGLONG) LLONG_MAX)+1;
-        }
-        negative = 1;
-    } else {
-        value = svalue;
-        negative = 0;
-    }
 
     /* Check length. */
-    uint32_t const length = digits10(value)+negative;
-    if (length >= dstlen) return 0;
+    uint32_t length = digits10(value);
+    if (length >= dstlen) goto err;;
 
     /* Null term. */
-    uint32_t next = length;
-    dst[next] = '\0';
-    next--;
+    uint32_t next = length - 1;
+    dst[next + 1] = '\0';
     while (value >= 100) {
         int const i = (value % 100) * 2;
         value /= 100;
@@ -395,10 +418,12 @@ int ll2string(char *dst, size_t dstlen, PORT_LONGLONG svalue) {
         dst[next] = digits[i + 1];
         dst[next - 1] = digits[i];
     }
-
-    /* Add sign. */
-    if (negative) dst[0] = '-';
     return length;
+err:
+    /* force add Null termination */
+    if (dstlen > 0)
+        dst[0] = '\0';
+    return 0;
 }
 
 /* Convert a string into a long long. Returns 1 if the string could be parsed
@@ -413,14 +438,14 @@ int ll2string(char *dst, size_t dstlen, PORT_LONGLONG svalue) {
  * Because of its strictness, it is safe to use this function to check if
  * you can convert a string into a long long, and obtain back the string
  * from the number without any loss in the string representation. */
-int string2ll(const char *s, size_t slen, PORT_LONGLONG *value) {
+int string2ll(const char *s, size_t slen, long long *value) {
     const char *p = s;
     size_t plen = 0;
     int negative = 0;
-    PORT_ULONGLONG v;
+    unsigned long long v;
 
-    /* A zero length string is not a valid number. */
-    if (plen == slen)
+    /* A string of zero length or excessive length is not a valid number. */
+    if (plen == slen || slen >= LONG_STR_SIZE)
         return 0;
 
     /* Special case: first and only digit is 0. */
@@ -468,7 +493,7 @@ int string2ll(const char *s, size_t slen, PORT_LONGLONG *value) {
     /* Convert to negative if needed, and do the final overflow check when
      * converting from unsigned long long to long long. */
     if (negative) {
-        if (v > ((PORT_ULONGLONG)(-(LLONG_MIN+1))+1)) /* Overflow. */
+        if (v > ((unsigned long long)(-(LLONG_MIN+1))+1)) /* Overflow. */
             return 0;
         if (value != NULL) *value = -v;
     } else {
@@ -502,16 +527,16 @@ int string2ull(const char *s, unsigned long long *value) {
 /* Convert a string into a long. Returns 1 if the string could be parsed into a
  * (non-overflowing) long, 0 otherwise. The value will be set to the parsed
  * value when appropriate. */
-int string2l(const char *s, size_t slen, PORT_LONG *lval) {
-    PORT_LONGLONG llval;
+int string2l(const char *s, size_t slen, long *lval) {
+    long long llval;
 
     if (!string2ll(s,slen,&llval))
         return 0;
 
-    if (llval < PORT_LONG_MIN || llval > PORT_LONG_MAX)
+    if (llval < LONG_MIN || llval > LONG_MAX)
         return 0;
 
-    *lval = (PORT_LONG)llval;
+    *lval = (long)llval;
     return 1;
 }
 
@@ -522,9 +547,9 @@ int string2l(const char *s, size_t slen, PORT_LONG *lval) {
  * Note that this function demands that the string strictly represents
  * a double: no spaces or other characters before or after the string
  * representing the number are accepted. */
-int string2ld(const char *s, size_t slen, PORT_LONGDOUBLE *dp) {
+int string2ld(const char *s, size_t slen, long double *dp) {
     char buf[MAX_LONG_DOUBLE_CHARS];
-    PORT_LONGDOUBLE value;
+    long double value;
     char *eptr;
 
     if (slen == 0 || slen >= sizeof(buf)) return 0;
@@ -536,7 +561,7 @@ int string2ld(const char *s, size_t slen, PORT_LONGDOUBLE *dp) {
     if (isspace(buf[0]) || eptr[0] != '\0' ||
         (size_t)(eptr-buf) != slen ||
         (errno == ERANGE &&
-            (value == HUGE_VAL || value == -HUGE_VAL || value == 0)) ||
+            (value == HUGE_VAL || value == -HUGE_VAL || fpclassify(value) == FP_ZERO)) ||
         errno == EINVAL ||
         isnan(value))
         return 0;
@@ -560,21 +585,56 @@ int string2d(const char *s, size_t slen, double *dp) {
         isspace(((const char*)s)[0]) ||
         (size_t)(eptr-(char*)s) != slen ||
         (errno == ERANGE &&
-            (*dp == HUGE_VAL || *dp == -HUGE_VAL || *dp == 0)) ||
+            (*dp == HUGE_VAL || *dp == -HUGE_VAL || fpclassify(*dp) == FP_ZERO)) ||
         isnan(*dp))
         return 0;
     return 1;
+}
+
+/* Returns 1 if the double value can safely be represented in long long without
+ * precision loss, in which case the corresponding long long is stored in the out variable. */
+int double2ll(double d, long long *out) {
+#if (DBL_MANT_DIG >= 52) && (DBL_MANT_DIG <= 63) && (LLONG_MAX == 0x7fffffffffffffffLL)
+    /* Check if the float is in a safe range to be casted into a
+     * long long. We are assuming that long long is 64 bit here.
+     * Also we are assuming that there are no implementations around where
+     * double has precision < 52 bit.
+     *
+     * Under this assumptions we test if a double is inside a range
+     * where casting to long long is safe. Then using two castings we
+     * make sure the decimal part is zero. If all this is true we can use
+     * integer without precision loss.
+     *
+     * Note that numbers above 2^52 and below 2^63 use all the fraction bits as real part,
+     * and the exponent bits are positive, which means the "decimal" part must be 0.
+     * i.e. all double values in that range are representable as a long without precision loss,
+     * but not all long values in that range can be represented as a double.
+     * we only care about the first part here. */
+    if (d < (double)(-LLONG_MAX/2) || d > (double)(LLONG_MAX/2))
+        return 0;
+    long long ll = d;
+    if (ll == d) {
+        *out = ll;
+        return 1;
+    }
+#endif
+    return 0;
 }
 
 /* Convert a double to a string representation. Returns the number of bytes
  * required. The representation should always be parsable by strtod(3).
  * This function does not support human-friendly formatting like ld2string
  * does. It is intended mainly to be used inside t_zset.c when writing scores
- * into a ziplist representing a sorted set. */
+ * into a listpack representing a sorted set. */
 int d2string(char *buf, size_t len, double value) {
     if (isnan(value)) {
+        /* Libc in some systems will format nan in a different way,
+         * like nan, -nan, NAN, nan(char-sequence).
+         * So we normalize it and create a single nan form in an explicit way. */
         len = snprintf(buf,len,"nan");
     } else if (isinf(value)) {
+        /* Libc in odd systems (Hi Solaris!) will format infinite in a
+         * different way, so better to handle it in an explicit way. */
         if (value < 0)
             len = snprintf(buf,len,"-inf");
         else
@@ -586,26 +646,142 @@ int d2string(char *buf, size_t len, double value) {
         else
             len = snprintf(buf,len,"0");
     } else {
-#if (DBL_MANT_DIG >= 52) && (LLONG_MAX == 0x7fffffffffffffffLL)
-        /* Check if the float is in a safe range to be casted into a
-         * long long. We are assuming that long long is 64 bit here.
-         * Also we are assuming that there are no implementations around where
-         * double has precision < 52 bit.
-         *
-         * Under this assumptions we test if a double is inside an interval
-         * where casting to long long is safe. Then using two castings we
-         * make sure the decimal part is zero. If all this is true we use
-         * integer printing function that is much faster. */
-        double min = -4503599627370495; /* (2^52)-1 */
-        double max = 4503599627370496; /* -(2^52) */
-        if (value > min && value < max && value == ((double)((PORT_LONGLONG)value)))
-            len = ll2string(buf,len,(PORT_LONGLONG)value);
-        else
-#endif
-            len = snprintf(buf,len,"%.17g",value);
+        long long lvalue;
+        /* Integer printing function is much faster, check if we can safely use it. */
+        if (double2ll(value, &lvalue))
+            len = ll2string(buf,len,lvalue);
+        else {
+            len = fpconv_dtoa(value, buf);
+            buf[len] = '\0';
+        }
     }
 
-    return (int)len;                                                            WIN_PORT_FIX /* cast (int) */
+    return len;
+}
+
+/* Convert a double into a string with 'fractional_digits' digits after the dot precision.
+ * This is an optimized version of snprintf "%.<fractional_digits>f".
+ * We convert the double to long and multiply it  by 10 ^ <fractional_digits> to shift
+ * the decimal places.
+ * Note that multiply it of input value by 10 ^ <fractional_digits> can overflow but on the scenario
+ * that we currently use within redis this that is not possible.
+ * After we get the long representation we use the logic from ull2string function on this file
+ * which is based on the following article:
+ * https://www.facebook.com/notes/facebook-engineering/three-optimization-tips-for-c/10151361643253920
+ *
+ * Input values:
+ * char: the buffer to store the string representation
+ * dstlen: the buffer length
+ * dvalue: the input double
+ * fractional_digits: the number of fractional digits after the dot precision. between 1 and 17
+ *
+ * Return values:
+ * Returns the number of characters needed to represent the number.
+ * If the buffer is not big enough to store the string, 0 is returned.
+ */
+int fixedpoint_d2string(char *dst, size_t dstlen, double dvalue, int fractional_digits) {
+    if (fractional_digits < 1 || fractional_digits > 17)
+        goto err;
+    /* min size of 2 ( due to 0. ) + n fractional_digitits + \0 */
+    if ((int)dstlen < (fractional_digits+3))
+        goto err;
+    if (dvalue == 0) {
+        dst[0] = '0';
+        dst[1] = '.';
+        memset(dst + 2, '0', fractional_digits);
+        dst[fractional_digits+2] = '\0';
+        return fractional_digits + 2;
+    }
+    /* scale and round */
+    static double powers_of_ten[] = {1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0,
+    10000000.0, 100000000.0, 1000000000.0, 10000000000.0, 100000000000.0, 1000000000000.0,
+    10000000000000.0, 100000000000000.0, 1000000000000000.0, 10000000000000000.0,
+    100000000000000000.0 };
+    long long svalue = llrint(dvalue * powers_of_ten[fractional_digits]);
+    unsigned long long value;
+    /* write sign */
+    int negative = 0;
+    if (svalue < 0) {
+        if (svalue != LLONG_MIN) {
+            value = -svalue;
+        } else {
+            value = ((unsigned long long) LLONG_MAX)+1;
+        }
+        if (dstlen < 2)
+            goto err;
+        negative = 1;
+        dst[0] = '-';
+        dst++;
+        dstlen--;
+    } else {
+        value = svalue;
+    }
+
+    static const char digitsd[201] =
+        "0001020304050607080910111213141516171819"
+        "2021222324252627282930313233343536373839"
+        "4041424344454647484950515253545556575859"
+        "6061626364656667686970717273747576777879"
+        "8081828384858687888990919293949596979899";
+
+    /* Check length. */
+    uint32_t ndigits = digits10(value);
+    if (ndigits >= dstlen) goto err;
+    int integer_digits = ndigits - fractional_digits;
+    /* Fractional only check to avoid representing 0.7750 as .7750.
+     * This means we need to increment the length and store 0 as the first character.
+     */
+    if (integer_digits < 1) {
+        dst[0] = '0';
+        integer_digits = 1;
+    }
+    dst[integer_digits] = '.';
+    int size = integer_digits + 1 + fractional_digits;
+    /* fill with 0 from fractional digits until size */
+    memset(dst + integer_digits + 1, '0', fractional_digits);
+    int next = size - 1;
+    while (value >= 100) {
+        int const i = (value % 100) * 2;
+        value /= 100;
+        dst[next] = digitsd[i + 1];
+        dst[next - 1] = digitsd[i];
+        next -= 2;
+        /* dot position */
+        if (next == integer_digits) {
+            next--;
+        }
+    }
+
+    /* Handle last 1-2 digits. */
+    if (value < 10) {
+        dst[next] = '0' + (uint32_t) value;
+    } else {
+        int i = (uint32_t) value * 2;
+        dst[next] = digitsd[i + 1];
+        dst[next - 1] = digitsd[i];
+    }
+    /* Null term. */
+    dst[size] = '\0';
+    return size + negative;
+err:
+    /* force add Null termination */
+    if (dstlen > 0)
+        dst[0] = '\0';
+    return 0;
+}
+
+/* Trims off trailing zeros from a string representing a double. */
+int trimDoubleString(char *buf, size_t len) {
+    if (strchr(buf,'.') != NULL) {
+        char *p = buf+len-1;
+        while(*p == '0') {
+            p--;
+            len--;
+        }
+        if (*p == '.') len--;
+    }
+    buf[len] = '\0';
+    return len;
 }
 
 /* Create a string object from a long double.
@@ -617,13 +793,13 @@ int d2string(char *buf, size_t len, double value) {
  *
  * The function returns the length of the string or zero if there was not
  * enough buffer room to store it. */
-int ld2string(char *buf, size_t len, PORT_LONGDOUBLE value, ld2string_mode mode) {
+int ld2string(char *buf, size_t len, long double value, ld2string_mode mode) {
     size_t l = 0;
 
     if (isinf(value)) {
         /* Libc in odd systems (Hi Solaris!) will format infinite in a
          * different way, so better to handle it in an explicit way. */
-        if (len < 5) return 0; /* No room. 5 is "-inf\0" */
+        if (len < 5) goto err; /* No room. 5 is "-inf\0" */
         if (value > 0) {
             memcpy(buf,"inf",3);
             l = 3;
@@ -631,23 +807,22 @@ int ld2string(char *buf, size_t len, PORT_LONGDOUBLE value, ld2string_mode mode)
             memcpy(buf,"-inf",4);
             l = 4;
         }
+    } else if (isnan(value)) {
+        /* Libc in some systems will format nan in a different way,
+         * like nan, -nan, NAN, nan(char-sequence).
+         * So we normalize it and create a single nan form in an explicit way. */
+        if (len < 4) goto err; /* No room. 4 is "nan\0" */
+        memcpy(buf, "nan", 3);
+        l = 3;
     } else {
         switch (mode) {
         case LD_STR_AUTO:
-#ifdef __MINGW32__
             l = snprintf(buf,len,"%.17Lg",value);
-#else
-            l = snprintf(buf,len,"%.17g",(double)value);
-#endif
-            if (l+1 > len) return 0; /* No room. */
+            if (l+1 > len) goto err;; /* No room. */
             break;
         case LD_STR_HEX:
-#ifdef __MINGW32__
             l = snprintf(buf,len,"%La",value);
-#else
-            l = snprintf(buf,len,"%a",(double)value);
-#endif
-            if (l+1 > len) return 0; /* No room. */
+            if (l+1 > len) goto err; /* No room. */
             break;
         case LD_STR_HUMAN:
             /* We use 17 digits precision since with 128 bit floats that precision
@@ -655,12 +830,8 @@ int ld2string(char *buf, size_t len, PORT_LONGDOUBLE value, ld2string_mode mode)
              * way that is "non surprising" for the user (that is, most small
              * decimal numbers will be represented in a way that when converted
              * back into a string are exactly the same as what the user typed.) */
-#ifdef __MINGW32__
             l = snprintf(buf,len,"%.17Lf",value);
-#else
-            l = snprintf(buf,len,"%.17f",(double)value);
-#endif
-            if (l+1 > len) return 0; /* No room. */
+            if (l+1 > len) goto err; /* No room. */
             /* Now remove trailing zeroes after the '.' */
             if (strchr(buf,'.') != NULL) {
                 char *p = buf+l-1;
@@ -675,11 +846,16 @@ int ld2string(char *buf, size_t len, PORT_LONGDOUBLE value, ld2string_mode mode)
                 l = 1;
             }
             break;
-        default: return 0; /* Invalid mode. */
+        default: goto err; /* Invalid mode. */
         }
     }
     buf[l] = '\0';
     return l;
+err:
+    /* force add Null termination */
+    if (len > 0)
+        buf[0] = '\0';
+    return 0;
 }
 
 /* Get random bytes, attempts to get an initial seed from /dev/urandom and
@@ -770,27 +946,6 @@ void getRandomHexChars(char *p, size_t len) {
  * The function does not try to normalize everything, but only the obvious
  * case of one or more "../" appearing at the start of "filename"
  * relative path. */
-#ifdef _WIN32
-sds getAbsolutePath(char *filename) {
-    char fullPath[MAX_PATH];
-    DWORD gfpnResult;
-    sds abspath;
-    sds relpath = sdsnew(filename);
-
-    relpath = sdstrim(relpath, " \r\n\t");
-
-    if (!PathIsRelative(relpath)) return relpath;
-
-    gfpnResult = GetFullPathNameA(relpath, sizeof(fullPath), fullPath, NULL);
-    sdsfree(relpath);
-
-    if (gfpnResult == 0 || gfpnResult > sizeof(fullPath)) {
-        return NULL;
-    }
-    abspath = sdsnew(fullPath);
-    return abspath;
-}
-#else
 sds getAbsolutePath(char *filename) {
     char cwd[1024];
     sds abspath;
@@ -835,7 +990,7 @@ sds getAbsolutePath(char *filename) {
     sdsfree(relpath);
     return abspath;
 }
-#endif
+
 /*
  * Gets the proper timezone in a more portable fashion
  * i.e timezone variables are linux specific.
@@ -861,116 +1016,279 @@ int pathIsBaseName(char *path) {
     return strchr(path,'/') == NULL && strchr(path,'\\') == NULL;
 }
 
+int fileExist(char *filename) {
+    struct stat statbuf;
+    return stat(filename, &statbuf) == 0 && S_ISREG(statbuf.st_mode);
+}
+
+int dirExists(char *dname) {
+    struct stat statbuf;
+    return stat(dname, &statbuf) == 0 && S_ISDIR(statbuf.st_mode);
+}
+
+int dirCreateIfMissing(char *dname) {
+#ifdef _WIN32
+    int mkdir_result = _mkdir(dname);
+#else
+    int mkdir_result = mkdir(dname, 0755);
+#endif
+    if (mkdir_result != 0) {
+        if (errno != EEXIST) {
+            return -1;
+        } else if (!dirExists(dname)) {
+            errno = ENOTDIR;
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int dirRemove(char *dname) {
+    DIR *dir;
+    struct stat stat_entry;
+    struct dirent *entry;
+    char full_path[PATH_MAX + 1];
+
+    if ((dir = opendir(dname)) == NULL) {
+        return -1;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+
+        snprintf(full_path, sizeof(full_path), "%s/%s", dname, entry->d_name);
+
+#ifdef _WIN32
+        if (stat(full_path, &stat_entry) == -1) {
+            closedir(dir);
+            return -1;
+        }
+#else
+        int fd = open(full_path, O_RDONLY|O_NONBLOCK);
+        if (fd == -1) {
+            closedir(dir);
+            return -1;
+        }
+
+        if (fstat(fd, &stat_entry) == -1) {
+            close(fd);
+            closedir(dir);
+            return -1;
+        }
+        close(fd);
+#endif
+
+        if (S_ISDIR(stat_entry.st_mode) != 0) {
+            if (dirRemove(full_path) == -1) {
+                return -1;
+            }
+            continue;
+        }
+
+        if (unlink(full_path) != 0) {
+            closedir(dir);
+            return -1;
+        }
+    }
+
+    if (rmdir(dname) != 0) {
+        closedir(dir);
+        return -1;
+    }
+
+    closedir(dir);
+    return 0;
+}
+
+sds makePath(char *path, char *filename) {
+    return sdscatfmt(sdsempty(), "%s/%s", path, filename);
+}
+
+/* Given the filename, sync the corresponding directory.
+ *
+ * Usually a portable and safe pattern to overwrite existing files would be like:
+ * 1. create a new temp file (on the same file system!)
+ * 2. write data to the temp file
+ * 3. fsync() the temp file
+ * 4. rename the temp file to the appropriate name
+ * 5. fsync() the containing directory */
+int fsyncFileDir(const char *filename) {
+#ifdef _WIN32
+    /* Windows cannot fsync a directory through the CRT.  The Windows rename
+     * wrapper uses MoveFileEx(MOVEFILE_WRITE_THROUGH), which provides the
+     * durability barrier for the manifest/RDB replacement itself. */
+    UNUSED(filename);
+    return 0;
+#else
+#ifdef _AIX
+    /* AIX is unable to fsync a directory */
+    return 0;
+#endif
+    char temp_filename[PATH_MAX + 1];
+    char *dname;
+    int dir_fd;
+
+    if (strlen(filename) > PATH_MAX) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    /* In the glibc implementation dirname may modify their argument. */
+    memcpy(temp_filename, filename, strlen(filename) + 1);
+    dname = dirname(temp_filename);
+
+    dir_fd = open(dname, O_RDONLY);
+    if (dir_fd == -1) {
+        /* Some OSs don't allow us to open directories at all, just
+         * ignore the error in that case */
+        if (errno == EISDIR) {
+            return 0;
+        }
+        return -1;
+    }
+    /* Some OSs don't allow us to fsync directories at all, so we can ignore
+     * those errors. */
+    if (redis_fsync(dir_fd) == -1 && !(errno == EBADF || errno == EINVAL)) {
+        int save_errno = errno;
+        close(dir_fd);
+        errno = save_errno;
+        return -1;
+    }
+    
+    close(dir_fd);
+    return 0;
+#endif
+}
+
+ /* free OS pages backed by file */
+int reclaimFilePageCache(int fd, size_t offset, size_t length) {
+#ifdef HAVE_FADVISE
+    int ret = posix_fadvise(fd, offset, length, POSIX_FADV_DONTNEED);
+    if (ret) {
+        errno = ret;
+        return -1;
+    }
+    return 0;
+#else
+    UNUSED(fd);
+    UNUSED(offset);
+    UNUSED(length);
+    return 0;
+#endif
+}
+
 #ifdef REDIS_TEST
 #include <assert.h>
+#include <sys/mman.h>
+#include "testhelp.h"
 
 static void test_string2ll(void) {
     char buf[32];
-    PORT_LONGLONG v;
+    long long v;
 
     /* May not start with +. */
-    strcpy(buf,"+1");
+    redis_strlcpy(buf,"+1",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 0);
 
     /* Leading space. */
-    strcpy(buf," 1");
+    redis_strlcpy(buf," 1",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 0);
 
     /* Trailing space. */
-    strcpy(buf,"1 ");
+    redis_strlcpy(buf,"1 ",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 0);
 
     /* May not start with 0. */
-    strcpy(buf,"01");
+    redis_strlcpy(buf,"01",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 0);
 
-    strcpy(buf,"-1");
+    redis_strlcpy(buf,"-1",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 1);
     assert(v == -1);
 
-    strcpy(buf,"0");
+    redis_strlcpy(buf,"0",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 1);
     assert(v == 0);
 
-    strcpy(buf,"1");
+    redis_strlcpy(buf,"1",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 1);
     assert(v == 1);
 
-    strcpy(buf,"99");
+    redis_strlcpy(buf,"99",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 1);
     assert(v == 99);
 
-    strcpy(buf,"-99");
+    redis_strlcpy(buf,"-99",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 1);
     assert(v == -99);
 
-    strcpy(buf,"-9223372036854775808");
+    redis_strlcpy(buf,"-9223372036854775808",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 1);
     assert(v == LLONG_MIN);
 
-    strcpy(buf,"-9223372036854775809"); /* overflow */
+    redis_strlcpy(buf,"-9223372036854775809",sizeof(buf)); /* overflow */
     assert(string2ll(buf,strlen(buf),&v) == 0);
 
-    strcpy(buf,"9223372036854775807");
+    redis_strlcpy(buf,"9223372036854775807",sizeof(buf));
     assert(string2ll(buf,strlen(buf),&v) == 1);
     assert(v == LLONG_MAX);
 
-    strcpy(buf,"9223372036854775808"); /* overflow */
+    redis_strlcpy(buf,"9223372036854775808",sizeof(buf)); /* overflow */
     assert(string2ll(buf,strlen(buf),&v) == 0);
 }
 
 static void test_string2l(void) {
     char buf[32];
-    PORT_LONG v;
+    long v;
 
     /* May not start with +. */
-    strcpy(buf,"+1");
+    redis_strlcpy(buf,"+1",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 0);
 
     /* May not start with 0. */
-    strcpy(buf,"01");
+    redis_strlcpy(buf,"01",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 0);
 
-    strcpy(buf,"-1");
+    redis_strlcpy(buf,"-1",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 1);
     assert(v == -1);
 
-    strcpy(buf,"0");
+    redis_strlcpy(buf,"0",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 1);
     assert(v == 0);
 
-    strcpy(buf,"1");
+    redis_strlcpy(buf,"1",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 1);
     assert(v == 1);
 
-    strcpy(buf,"99");
+    redis_strlcpy(buf,"99",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 1);
     assert(v == 99);
 
-    strcpy(buf,"-99");
+    redis_strlcpy(buf,"-99",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 1);
     assert(v == -99);
 
-#if PORT_LONG_MAX != LLONG_MAX
-    strcpy(buf,"-2147483648");
+#if LONG_MAX != LLONG_MAX
+    redis_strlcpy(buf,"-2147483648",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 1);
-    assert(v == PORT_LONG_MIN);
+    assert(v == LONG_MIN);
 
-    strcpy(buf,"-2147483649"); /* overflow */
+    redis_strlcpy(buf,"-2147483649",sizeof(buf)); /* overflow */
     assert(string2l(buf,strlen(buf),&v) == 0);
 
-    strcpy(buf,"2147483647");
+    redis_strlcpy(buf,"2147483647",sizeof(buf));
     assert(string2l(buf,strlen(buf),&v) == 1);
-    assert(v == PORT_LONG_MAX);
+    assert(v == LONG_MAX);
 
-    strcpy(buf,"2147483648"); /* overflow */
+    redis_strlcpy(buf,"2147483648",sizeof(buf)); /* overflow */
     assert(string2l(buf,strlen(buf),&v) == 0);
 #endif
 }
 
 static void test_ll2string(void) {
     char buf[32];
-    PORT_LONGLONG v;
+    long long v;
     int sz;
 
     v = 0;
@@ -1009,15 +1327,132 @@ static void test_ll2string(void) {
     assert(!strcmp(buf, "9223372036854775807"));
 }
 
-#define UNUSED(x) (void)(x)
-int utilTest(int argc, char **argv, int accurate) {
+static void test_ld2string(void) {
+    char buf[32];
+    long double v;
+    int sz;
+
+    v = 0.0 / 0.0;
+    sz = ld2string(buf, sizeof(buf), v, LD_STR_AUTO);
+    assert(sz == 3);
+    assert(!strcmp(buf, "nan"));
+}
+
+static void test_fixedpoint_d2string(void) {
+    char buf[32];
+    double v;
+    int sz;
+    v = 0.0;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 4);
+    assert(sz == 6);
+    assert(!strcmp(buf, "0.0000"));
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 1);
+    assert(sz == 3);
+    assert(!strcmp(buf, "0.0"));
+    /* set junk in buffer */
+    memset(buf,'A',32);
+    v = 0.0001;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 4);
+    assert(sz == 6);
+    assert(buf[sz] == '\0');
+    assert(!strcmp(buf, "0.0001"));
+    /* set junk in buffer */
+    memset(buf,'A',32);
+    v = 6.0642951598391699e-05;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 4);
+    assert(sz == 6);
+    assert(buf[sz] == '\0');
+    assert(!strcmp(buf, "0.0001"));
+    v = 0.01;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 4);
+    assert(sz == 6);
+    assert(!strcmp(buf, "0.0100"));
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 1);
+    assert(sz == 3);
+    assert(!strcmp(buf, "0.0"));
+    v = -0.01;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 4);
+    assert(sz == 7);
+    assert(!strcmp(buf, "-0.0100"));
+     v = -0.1;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 1);
+    assert(sz == 4);
+    assert(!strcmp(buf, "-0.1"));
+    v = 0.1;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 1);
+    assert(sz == 3);
+    assert(!strcmp(buf, "0.1"));
+    v = 0.01;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 17);
+    assert(sz == 19);
+    assert(!strcmp(buf, "0.01000000000000000"));
+    v = 10.01;
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 4);
+    assert(sz == 7);
+    assert(!strcmp(buf, "10.0100"));
+    /* negative tests */
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 18);
+    assert(sz == 0);
+    sz = fixedpoint_d2string(buf, sizeof buf, v, 0);
+    assert(sz == 0);
+    sz = fixedpoint_d2string(buf, 1, v, 1);
+    assert(sz == 0);
+}
+
+#if defined(__linux__)
+/* Since fadvise and mincore is only supported in specific platforms like
+ * Linux, we only verify the fadvise mechanism works in Linux */
+static int cache_exist(int fd) {
+    unsigned char flag;
+    void *m = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+    assert(m);
+    assert(mincore(m, 4096, &flag) == 0);
+    munmap(m, 4096);
+    /* the least significant bit of the byte will be set if the corresponding
+     * page is currently resident in memory */
+    return flag&1;
+}
+
+static void test_reclaimFilePageCache(void) {
+    char *tmpfile = "/tmp/redis-reclaim-cache-test";
+    int fd = open(tmpfile, O_RDWR|O_CREAT, 0644);
+    assert(fd >= 0);
+
+    /* test write file */
+    char buf[4] = "foo";
+    assert(write(fd, buf, sizeof(buf)) > 0);
+    assert(cache_exist(fd));
+    assert(redis_fsync(fd) == 0);
+    assert(reclaimFilePageCache(fd, 0, 0) == 0);
+    assert(!cache_exist(fd));
+
+    /* test read file */
+    assert(pread(fd, buf, sizeof(buf), 0) > 0);
+    assert(cache_exist(fd));
+    assert(reclaimFilePageCache(fd, 0, 0) == 0);
+    assert(!cache_exist(fd));
+
+    unlink(tmpfile);
+    printf("reclaimFilePageCach test is ok\n");
+}
+#endif
+
+int utilTest(int argc, char **argv, int flags) {
     UNUSED(argc);
     UNUSED(argv);
-    UNUSED(accurate);
+    UNUSED(flags);
 
     test_string2ll();
     test_string2l();
     test_ll2string();
+    test_ld2string();
+    test_fixedpoint_d2string();
+#if defined(__linux__)
+    if (!(flags & REDIS_TEST_VALGRIND)) {
+        test_reclaimFilePageCache();
+    }
+#endif
+    printf("Done testing util\n");
     return 0;
 }
 #endif

@@ -95,7 +95,7 @@
       <LanguageStandard_C>stdc11</LanguageStandard_C>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;_DEBUG;_CONSOLE;%(PreprocessorDefinitions);NO_QFORKIMPL</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
     </ClCompile>
@@ -117,7 +117,7 @@
       <LanguageStandard_C>stdc11</LanguageStandard_C>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;_DEBUG;_CONSOLE;%(PreprocessorDefinitions);NO_QFORKIMPL;_WIN32_WINNT=0x0501</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
     </ClCompile>
@@ -141,7 +141,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;NDEBUG;_CONSOLE;%(PreprocessorDefinitions);NO_QFORKIMPL</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
     </ClCompile>
@@ -166,7 +166,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;NDEBUG;_CONSOLE;%(PreprocessorDefinitions);NO_QFORKIMPL;_WIN32_WINNT=0x0501</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
     </ClCompile>
@@ -181,7 +181,10 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\deps\hdr_histogram\hdr_histogram.c" />
+    <ClCompile Include="..\..\deps\fpconv\fpconv_dtoa.c" />
+    <ClCompile Include="..\..\deps\hdr_histogram\hdr_histogram.c">
+      <PreprocessorDefinitions>HDR_MALLOC_INCLUDE=&quot;hdr_redis_malloc.h&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="..\..\src\adlist.c" />
     <ClCompile Include="..\..\src\ae.c" />
     <ClCompile Include="..\..\src\anet.c" />
@@ -193,19 +196,25 @@
     <ClCompile Include="..\..\src\monotonic.c" />
     <ClCompile Include="..\..\src\mt19937-64.c" />
     <ClCompile Include="..\..\src\redis-benchmark.c" />
+    <ClCompile Include="..\..\src\redisassert.c" />
     <ClCompile Include="..\..\src\release.c" />
     <ClCompile Include="..\..\src\siphash.c" />
+    <ClCompile Include="..\..\src\strl.c" />
     <ClCompile Include="..\..\src\zmalloc.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\deps\fpconv\fpconv_dtoa.h" />
+    <ClInclude Include="..\..\deps\fpconv\fpconv_powers.h" />
     <ClInclude Include="..\..\deps\hdr_histogram\hdr_atomic.h" />
     <ClInclude Include="..\..\deps\hdr_histogram\hdr_histogram.h" />
+    <ClInclude Include="..\..\deps\hdr_histogram\hdr_redis_malloc.h" />
     <ClInclude Include="..\..\src\cli_common.h" />
     <ClInclude Include="..\..\src\crc16_slottable.h" />
     <ClInclude Include="..\..\src\crcspeed.h" />
     <ClInclude Include="..\..\src\dict.h" />
     <ClInclude Include="..\..\src\monotonic.h" />
     <ClInclude Include="..\..\src\mt19937-64.h" />
+    <ClInclude Include="..\..\src\redisassert.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Win32_Interop\Win32_Interop.vcxproj">

@@ -25,12 +25,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 
-#ifdef _WIN32
-#include <float.h>
-#define inline __inline
-#define strncasecmp _strnicmp
-#endif
-
 /* Size: Total bytes allocated to *buf
  * Length: String length, excluding optional NULL terminator.
  * Dynamic: True if created via strbuf_new()
@@ -71,10 +65,6 @@ static void strbuf_append_mem(strbuf_t *s, const char *c, size_t len);
 extern void strbuf_append_string(strbuf_t *s, const char *str);
 static void strbuf_append_char(strbuf_t *s, const char c);
 static void strbuf_ensure_null(strbuf_t *s);
-
-#ifdef _WIN32
-#define inline __inline
-#endif
 
 /* Reset string for before use */
 static inline void strbuf_reset(strbuf_t *s)

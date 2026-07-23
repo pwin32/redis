@@ -40,6 +40,7 @@
 #undef ftruncate
 #endif
 #include "anet.h"
+#include "redisassert.h"
 
 #include <stdio.h>
 #ifndef _WIN32
@@ -62,7 +63,12 @@
  * The following should be ordered by performances, descending. */
 #ifdef _WIN32
 #include "ae_wsiocp.c"
+#ifndef NO_QFORKIMPL
 #include "Win32_Interop/Win32_Service.h"
+/* Implemented by server.c.  Keeping the declaration local avoids pulling the
+ * full server state header into the event-loop library. */
+extern void serviceStopRequested(void);
+#endif
 #else
 #ifdef HAVE_EVPORT
 #include "ae_evport.c"
@@ -119,7 +125,11 @@ int aeGetSetSize(aeEventLoop *eventLoop) {
     return eventLoop->setsize;
 }
 
-/* Tells the next iteration/s of the event processing to set timeout of 0. */
+/*
+ * Tell the event processing to change the wait timeout as soon as possible.
+ *
+ * Note: it just means you turn on/off the global AE_DONT_WAIT.
+ */
 void aeSetDontWait(aeEventLoop *eventLoop, int noWait) {
     if (noWait)
         eventLoop->flags |= AE_DONT_WAIT;
@@ -213,6 +223,14 @@ void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
     }
 }
 
+void *aeGetFileClientData(aeEventLoop *eventLoop, int fd) {
+    if (fd >= eventLoop->setsize) return NULL;
+    aeFileEvent *fe = &eventLoop->events[fd];
+    if (fe->mask == AE_NONE) return NULL;
+
+    return fe->clientData;
+}
+
 int aeGetFileEvents(aeEventLoop *eventLoop, int fd) {
     if (fd >= eventLoop->setsize) return 0;
     aeFileEvent *fe = &eventLoop->events[fd];
@@ -271,7 +289,7 @@ static int64_t usUntilEarliestTimer(aeEventLoop *eventLoop) {
 
     aeTimeEvent *earliest = NULL;
     while (te) {
-        if (!earliest || te->when < earliest->when)
+        if ((!earliest || te->when < earliest->when) && te->id != AE_DELETED_EVENT_ID)
             earliest = te;
         te = te->next;
     }
@@ -337,7 +355,7 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
             processed++;
             now = getMonotonicUs();
             if (retval != AE_NOMORE) {
-                te->when = now + retval * 1000;
+                te->when = now + (monotime)retval * 1000;
             } else {
                 te->id = AE_DELETED_EVENT_ID;
             }
@@ -345,6 +363,41 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
         te = te->next;
     }
     return processed;
+}
+
+/* Dispatch one file event.  Keeping this separate from polling lets the
+ * Windows IOCP backend dequeue one completion at a time while preserving the
+ * normal AE callback ordering. */
+static void aeProcessFileEvent(aeEventLoop *eventLoop, int fd, int mask) {
+    if (fd < 0 || fd >= eventLoop->setsize) return;
+
+    aeFileEvent *fe = &eventLoop->events[fd];
+    int fired = 0;
+    int invert = fe->mask & AE_BARRIER;
+
+    if (!invert && fe->mask & mask & AE_READABLE) {
+        fe->rfileProc(eventLoop,fd,fe->clientData,mask);
+        fired++;
+        if (fd >= eventLoop->setsize) return;
+        fe = &eventLoop->events[fd];
+    }
+
+    if (fe->mask & mask & AE_WRITABLE) {
+        if (!fired || fe->wfileProc != fe->rfileProc) {
+            fe->wfileProc(eventLoop,fd,fe->clientData,mask);
+            fired++;
+        }
+    }
+
+    if (invert) {
+        if (fd >= eventLoop->setsize) return;
+        fe = &eventLoop->events[fd];
+        if ((fe->mask & mask & AE_READABLE) &&
+            (!fired || fe->wfileProc != fe->rfileProc))
+        {
+            fe->rfileProc(eventLoop,fd,fe->clientData,mask);
+        }
+    }
 }
 
 /* Process every pending time event, then every pending file event
@@ -356,8 +409,8 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
  * if flags has AE_ALL_EVENTS set, all the kind of events are processed.
  * if flags has AE_FILE_EVENTS set, file events are processed.
  * if flags has AE_TIME_EVENTS set, time events are processed.
- * if flags has AE_DONT_WAIT set the function returns ASAP until all
- * the events that's possible to process without to wait are processed.
+ * if flags has AE_DONT_WAIT set, the function returns ASAP once all
+ * the events that can be handled without a wait are processed.
  * if flags has AE_CALL_AFTER_SLEEP set, the aftersleep callback is called.
  * if flags has AE_CALL_BEFORE_SLEEP set, the beforesleep callback is called.
  *
@@ -366,114 +419,105 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 {
     int processed = 0, numevents;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(NO_QFORKIMPL)
     if (ServiceStopIssued() == TRUE) {
-        aeStop(eventLoop);
+        /* SCM callbacks only set an event.  Ask Redis' main thread to run the
+         * ordinary deferred shutdown path; stopping aeMain here would skip
+         * AOF/RDB cleanup and make ServiceMain report STOPPED too early. */
+        serviceStopRequested();
     }
 #endif
 
     /* Nothing to do? return ASAP */
     if (!(flags & AE_TIME_EVENTS) && !(flags & AE_FILE_EVENTS)) return 0;
 
-    /* Note that we want to call select() even if there are no
+    /* Note that we want to call aeApiPoll() even if there are no
      * file events to process as long as we want to process time
      * events, in order to sleep until the next time event is ready
      * to fire. */
     if (eventLoop->maxfd != -1 ||
         ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT))) {
-        int j;
-        struct timeval tv, *tvp;
-        int64_t usUntilTimer = -1;
+        struct timeval tv, *tvp = NULL; /* NULL means infinite wait. */
+        int64_t usUntilTimer;
 
-        if (flags & AE_TIME_EVENTS && !(flags & AE_DONT_WAIT))
-            usUntilTimer = usUntilEarliestTimer(eventLoop);
-
-        if (usUntilTimer >= 0) {
-            tv.tv_sec = usUntilTimer / 1000000;
-            tv.tv_usec = usUntilTimer % 1000000;
-            tvp = &tv;
-        } else {
-            /* If we have to check for events but need to return
-             * ASAP because of AE_DONT_WAIT we need to set the timeout
-             * to zero */
-            if (flags & AE_DONT_WAIT) {
-                tv.tv_sec = tv.tv_usec = 0;
-                tvp = &tv;
-            } else {
-                /* Otherwise we can block */
-                tvp = NULL; /* wait forever */
-            }
-        }
-
-        if (eventLoop->flags & AE_DONT_WAIT) {
-            tv.tv_sec = tv.tv_usec = 0;
-            tvp = &tv;
-        }
-
-        if (eventLoop->beforesleep != NULL && flags & AE_CALL_BEFORE_SLEEP)
+        if (eventLoop->beforesleep != NULL && (flags & AE_CALL_BEFORE_SLEEP))
             eventLoop->beforesleep(eventLoop);
 
+        /* The eventLoop->flags may be changed inside beforesleep.
+         * So we should check it after beforesleep be called. At the same time,
+         * the parameter flags always should have the highest priority.
+         * That is to say, once the parameter flag is set to AE_DONT_WAIT,
+         * no matter what value eventLoop->flags is set to, we should ignore it. */
+        if ((flags & AE_DONT_WAIT) || (eventLoop->flags & AE_DONT_WAIT)) {
+            tv.tv_sec = tv.tv_usec = 0;
+            tvp = &tv;
+        } else if (flags & AE_TIME_EVENTS) {
+            usUntilTimer = usUntilEarliestTimer(eventLoop);
+            if (usUntilTimer >= 0) {
+                tv.tv_sec = usUntilTimer / 1000000;
+                tv.tv_usec = usUntilTimer % 1000000;
+                tvp = &tv;
+            }
+        }
+#ifdef _WIN32
+        /* IOCP returns one completion per backend poll.  Snapshot the fired
+         * token before afterSleep(), which may re-enter and overwrite the
+         * shared eventLoop->fired[0] slot. */
+        int completion_budget = AE_WIN32_MAX_EVENTS_PER_POLL;
+        numevents = aeApiPoll(eventLoop, tvp, &completion_budget);
+        aeFiredEvent fired_event;
+        int have_fired_event = numevents > 0;
+        if (have_fired_event) fired_event = eventLoop->fired[0];
+
+        if (eventLoop->aftersleep != NULL && flags & AE_CALL_AFTER_SLEEP)
+            eventLoop->aftersleep(eventLoop);
+
+        if (have_fired_event) {
+            if (flags & AE_FILE_EVENTS) {
+                if (aeApiFiredEventValid(eventLoop, &fired_event))
+                    aeProcessFileEvent(eventLoop, fired_event.fd, fired_event.mask);
+                processed++;
+            }
+            aeApiReleaseFiredEvent(&fired_event);
+        }
+
+        /* Drain visible completions without repeating the before/after-sleep
+         * hooks.  All polls share one raw-completion budget so internal and
+         * visible packets cannot multiply into an unbounded timer delay. */
+        int visible_events = have_fired_event && (flags & AE_FILE_EVENTS);
+        while ((flags & AE_FILE_EVENTS) &&
+               visible_events < AE_WIN32_MAX_EVENTS_PER_POLL &&
+               completion_budget > 0 &&
+               !eventLoop->stop) {
+            struct timeval zero = {0, 0};
+            if (aeApiPoll(eventLoop, &zero, &completion_budget) == 0) break;
+            fired_event = eventLoop->fired[0];
+            if (aeApiFiredEventValid(eventLoop, &fired_event))
+                aeProcessFileEvent(eventLoop, fired_event.fd, fired_event.mask);
+            processed++;
+            visible_events++;
+            aeApiReleaseFiredEvent(&fired_event);
+        }
+#else
         /* Call the multiplexing API, will return only on timeout or when
          * some event fires. */
         numevents = aeApiPoll(eventLoop, tvp);
+
+        /* Don't process file events if not requested. */
+        if (!(flags & AE_FILE_EVENTS)) {
+            numevents = 0;
+        }
 
         /* After sleep callback. */
         if (eventLoop->aftersleep != NULL && flags & AE_CALL_AFTER_SLEEP)
             eventLoop->aftersleep(eventLoop);
 
-        for (j = 0; j < numevents; j++) {
-            aeFileEvent *fe = &eventLoop->events[eventLoop->fired[j].fd];
-            int mask = eventLoop->fired[j].mask;
-            int fd = eventLoop->fired[j].fd;
-            int fired = 0; /* Number of events fired for current fd. */
-
-            /* Normally we execute the readable event first, and the writable
-             * event later. This is useful as sometimes we may be able
-             * to serve the reply of a query immediately after processing the
-             * query.
-             *
-             * However if AE_BARRIER is set in the mask, our application is
-             * asking us to do the reverse: never fire the writable event
-             * after the readable. In such a case, we invert the calls.
-             * This is useful when, for instance, we want to do things
-             * in the beforeSleep() hook, like fsyncing a file to disk,
-             * before replying to a client. */
-            int invert = fe->mask & AE_BARRIER;
-
-            /* Note the "fe->mask & mask & ..." code: maybe an already
-             * processed event removed an element that fired and we still
-             * didn't processed, so we check if the event is still valid.
-             *
-             * Fire the readable event if the call sequence is not
-             * inverted. */
-            if (!invert && fe->mask & mask & AE_READABLE) {
-                fe->rfileProc(eventLoop,fd,fe->clientData,mask);
-                fired++;
-                fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
-            }
-
-            /* Fire the writable event. */
-            if (fe->mask & mask & AE_WRITABLE) {
-                if (!fired || fe->wfileProc != fe->rfileProc) {
-                    fe->wfileProc(eventLoop,fd,fe->clientData,mask);
-                    fired++;
-                }
-            }
-
-            /* If we have to invert the call, fire the readable event now
-             * after the writable one. */
-            if (invert) {
-                fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
-                if ((fe->mask & mask & AE_READABLE) &&
-                    (!fired || fe->wfileProc != fe->rfileProc))
-                {
-                    fe->rfileProc(eventLoop,fd,fe->clientData,mask);
-                    fired++;
-                }
-            }
-
+        for (int j = 0; j < numevents; j++) {
+            aeProcessFileEvent(eventLoop, eventLoop->fired[j].fd,
+                               eventLoop->fired[j].mask);
             processed++;
         }
+#endif
     }
     /* Check time events */
     if (flags & AE_TIME_EVENTS)

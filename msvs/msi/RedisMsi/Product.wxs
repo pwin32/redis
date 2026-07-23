@@ -21,7 +21,7 @@
     <Product Id="*"
              Name="Redis on Windows"
              Language="1033"
-             Version="6.2.22"
+             Version="7.2.14"
              Manufacturer="Poradowski.com"
              UpgradeCode="{05410198-7212-4FC4-B7C8-AFEFC3DA0FBC}">
         <Package InstallerVersion="200"
@@ -31,7 +31,7 @@
         <Upgrade Id="{05410198-7212-4FC4-B7C8-AFEFC3DA0FBC}">
           <UpgradeVersion OnlyDetect="no" Property="PREVIOUSFOUND"
             Minimum="3.2.100.0"  IncludeMinimum="yes"
-            Maximum="4.0.2.3" IncludeMaximum="no" />
+            Maximum="7.2.14" IncludeMaximum="no" />
         </Upgrade>
 
         <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
