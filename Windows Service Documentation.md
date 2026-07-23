@@ -23,8 +23,14 @@ redis-server.exe --service-uninstall --service-name Redis7214
 
 Installation creates an automatic-start service running as
 `NT AUTHORITY\NetworkService`, but it does not start the service.
-Uninstallation removes the SCM registration, but it does not stop a running
-service. Keep the install, start, stop, uninstall order.
+Uninstallation requests SCM deletion, but it does not stop a running service.
+A running service remains marked for deletion until it stops and open SCM
+handles are closed. Keep the install, start, stop, uninstall order.
+
+SCM can report the service as `Running` before the Redis worker has finished
+initializing its listener. After every `--service-start` or restart, wait for a
+successful authenticated `PING` (and any required readiness command) before
+accepting traffic or declaring the instance ready.
 
 Use a unique service name for every instance. The default name is `Redis`, so
 release tests and side-by-side deployments should always pass an explicit name
