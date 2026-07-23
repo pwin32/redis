@@ -31,6 +31,14 @@
 
 #include "Win32_APIs.h"
 
+/* POSIX uses O_CLOEXEC to prevent descriptor inheritance across exec(). The
+ * equivalent CRT open flag on Windows is _O_NOINHERIT; FDAPI socket-pair
+ * handles are already created non-inheritable, so this mapping also lets the
+ * shared anetPipe call sites retain their upstream flag shape. */
+#ifndef O_CLOEXEC
+#define O_CLOEXEC _O_NOINHERIT
+#endif
+
 #define WNOHANG 1
 
 /* file mapping */

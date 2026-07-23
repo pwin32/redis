@@ -124,6 +124,7 @@ HDR_HISTOGRAM_HEADERS := $(wildcard deps/hdr_histogram/*.h)
 FPCONV_HEADERS := $(wildcard deps/fpconv/*.h)
 
 SERVER_C_SOURCES := \
+	src/threads_mngr.c \
 	src/acl.c \
 	src/adlist.c \
 	src/ae.c \
@@ -134,6 +135,7 @@ SERVER_C_SOURCES := \
 	src/blocked.c \
 	src/childinfo.c \
 	src/cluster.c \
+	src/cluster_legacy.c \
 	src/config.c \
 	src/connection.c \
 	src/crc16.c \
@@ -143,6 +145,7 @@ SERVER_C_SOURCES := \
 	src/debug.c \
 	src/defrag.c \
 	src/dict.c \
+	src/ebuckets.c \
 	src/endianconv.c \
 	src/evict.c \
 	src/expire.c \
@@ -151,6 +154,7 @@ SERVER_C_SOURCES := \
 	src/geohash_helper.c \
 	src/hyperloglog.c \
 	src/intset.c \
+	src/kvstore.c \
 	src/latency.c \
 	src/lazyfree.c \
 	src/listpack.c \
@@ -162,6 +166,7 @@ SERVER_C_SOURCES := \
 	src/memtest.c \
 	src/module.c \
 	src/monotonic.c \
+	src/mstr.c \
 	src/mt19937-64.c \
 	src/multi.c \
 	src/networking.c \
@@ -488,8 +493,8 @@ $(EVENTLOG_DLL): Makefile.mingw $(EVENTLOG_OBJ)
 $(BUILD)/redis-server.exe: Makefile.mingw $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(LDLIBS_COMMON)
 
-$(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB)
-	$(CXX) $(LDFLAGS_COMMON) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
+$(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS)
+	$(CXX) $(LDFLAGS_COMMON) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(LDLIBS_COMMON)
 
 $(BUILD)/redis-benchmark.exe: Makefile.mingw $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(LDLIBS_COMMON)

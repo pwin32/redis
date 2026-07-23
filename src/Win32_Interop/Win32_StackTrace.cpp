@@ -154,9 +154,9 @@ void StackTraceInfo() {
 }
 
 void ServerInfo() {
-    serverLog(LL_WARNING, "--- INFO OUTPUT");
-    // Call antirez routine to log the info output
-    serverLogRaw(LL_WARNING | LL_RAW, genRedisInfoString("all"));
+    /* Keep the native exception path on the 7.4 C crash-report API. This
+     * avoids calling the pre-7.4 one-argument genRedisInfoString ABI. */
+    logServerInfo();
 }
 
 void BugReportEnd(){

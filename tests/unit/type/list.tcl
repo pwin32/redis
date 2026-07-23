@@ -1,95 +1,68 @@
-# check functionality compression of plain and zipped nodes
+#
+# Copyright (c) 2009-Present, Redis Ltd.
+# All rights reserved.
+#
+# Copyright (c) 2024-present, Valkey contributors.
+# All rights reserved.
+#
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
+#
+# Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
+#
+
+# check functionality compression of plain and packed nodes
 start_server [list overrides [list save ""] ] {
     r config set list-compress-depth 2
     r config set list-max-ziplist-size 1
 
-    # 3 test to check compression with regular ziplist nodes
+    # 3 test to check compression with plain and packed nodes
     # 1. using push + insert
     # 2. using push + insert + trim
     # 3. using push + insert + set
 
-    test {reg node check compression with insert and pop} {
-        r lpush list1 [string repeat a 500]
-        r lpush list1 [string repeat b 500]
-        r lpush list1 [string repeat c 500]
-        r lpush list1 [string repeat d 500]
-        r linsert list1 after [string repeat d 500] [string repeat e 500]
-        r linsert list1 after [string repeat d 500] [string repeat f 500]
-        r linsert list1 after [string repeat d 500] [string repeat g 500]
-        r linsert list1 after [string repeat d 500] [string repeat j 500]
-        assert_equal [r lpop list1] [string repeat d 500]
-        assert_equal [r lpop list1] [string repeat j 500]
-        assert_equal [r lpop list1] [string repeat g 500]
-        assert_equal [r lpop list1] [string repeat f 500]
-        assert_equal [r lpop list1] [string repeat e 500]
-        assert_equal [r lpop list1] [string repeat c 500]
-        assert_equal [r lpop list1] [string repeat b 500]
-        assert_equal [r lpop list1] [string repeat a 500]
+    foreach {container size} {packed 500 plain 8193} {
+    test "$container node check compression with insert and pop" {
+        r flushdb
+        r lpush list1 [string repeat a $size]
+        r lpush list1 [string repeat b $size]
+        r lpush list1 [string repeat c $size]
+        r lpush list1 [string repeat d $size]
+        r linsert list1 after [string repeat d $size] [string repeat e $size]
+        r linsert list1 after [string repeat d $size] [string repeat f $size]
+        r linsert list1 after [string repeat d $size] [string repeat g $size]
+        r linsert list1 after [string repeat d $size] [string repeat j $size]
+        assert_equal [r lpop list1] [string repeat d $size]
+        assert_equal [r lpop list1] [string repeat j $size]
+        assert_equal [r lpop list1] [string repeat g $size]
+        assert_equal [r lpop list1] [string repeat f $size]
+        assert_equal [r lpop list1] [string repeat e $size]
+        assert_equal [r lpop list1] [string repeat c $size]
+        assert_equal [r lpop list1] [string repeat b $size]
+        assert_equal [r lpop list1] [string repeat a $size]
     };
 
-    test {reg node check compression combined with trim} {
-        r lpush list2 [string repeat a 500]
-        r linsert list2 after  [string repeat a 500] [string repeat b 500]
-        r rpush list2 [string repeat c 500]
-        assert_equal [string repeat b 500] [r lindex list2 1]
+    test "$container node check compression combined with trim" {
+        r flushdb
+        r lpush list2 [string repeat a $size]
+        r linsert list2 after  [string repeat a $size] [string repeat b $size]
+        r rpush list2 [string repeat c $size]
+        assert_equal [string repeat b $size] [r lindex list2 1]
         r LTRIM list2 1 -1
         r llen list2
     } {2}
 
-    test {reg node check compression with lset} {
-        r lpush list3 [string repeat a 500]
-        r LSET list3 0 [string repeat b 500]
-        assert_equal [string repeat b 500] [r lindex list3 0]
-        r lpush list3 [string repeat c 500]
-        r LSET list3 0 [string repeat d 500]
-        assert_equal [string repeat d 500] [r lindex list3 0]
+    test "$container node check compression with lset" {
+        r flushdb
+        r lpush list3 [string repeat a $size]
+        r LSET list3 0 [string repeat b $size]
+        assert_equal [string repeat b $size] [r lindex list3 0]
+        r lpush list3 [string repeat c $size]
+        r LSET list3 0 [string repeat d $size]
+        assert_equal [string repeat d $size] [r lindex list3 0]
     }
-
-    # repeating the 3 tests with plain nodes
-    # (by adjusting quicklist-packed-threshold)
-
-    test {plain node check compression} {
-        r debug quicklist-packed-threshold 1b
-        r lpush list4 [string repeat a 500]
-        r lpush list4 [string repeat b 500]
-        r lpush list4 [string repeat c 500]
-        r lpush list4 [string repeat d 500]
-        r linsert list4 after [string repeat d 500] [string repeat e 500]
-        r linsert list4 after [string repeat d 500] [string repeat f 500]
-        r linsert list4 after [string repeat d 500] [string repeat g 500]
-        r linsert list4 after [string repeat d 500] [string repeat j 500]
-        assert_equal [r lpop list4] [string repeat d 500]
-        assert_equal [r lpop list4] [string repeat j 500]
-        assert_equal [r lpop list4] [string repeat g 500]
-        assert_equal [r lpop list4] [string repeat f 500]
-        assert_equal [r lpop list4] [string repeat e 500]
-        assert_equal [r lpop list4] [string repeat c 500]
-        assert_equal [r lpop list4] [string repeat b 500]
-        assert_equal [r lpop list4] [string repeat a 500]
-        r debug quicklist-packed-threshold 0
-    } {OK} {needs:debug}
-
-    test {plain node check compression with ltrim} {
-        r debug quicklist-packed-threshold 1b
-        r lpush list5 [string repeat a 500]
-        r linsert list5 after  [string repeat a 500] [string repeat b 500]
-        r rpush list5 [string repeat c 500]
-        assert_equal [string repeat b 500] [r lindex list5 1]
-        r LTRIM list5 1 -1
-        assert_equal [r llen list5] 2
-        r debug quicklist-packed-threshold 0
-    } {OK} {needs:debug}
-
-    test {plain node check compression using lset} {
-        r debug quicklist-packed-threshold 1b
-        r lpush list6 [string repeat a 500]
-        r LSET list6 0 [string repeat b 500]
-        assert_equal [string repeat b 500] [r lindex list6 0]
-        r lpush list6 [string repeat c 500]
-        r LSET list6 0 [string repeat d 500]
-        assert_equal [string repeat d 500] [r lindex list6 0]
-        r debug quicklist-packed-threshold 0
-    } {OK} {needs:debug}
+    } ;# foreach
 
     # revert config for external mode tests.
     r config set list-compress-depth 0
@@ -97,6 +70,13 @@ start_server [list overrides [list save ""] ] {
 
 # check functionality of plain nodes using low packed-threshold
 start_server [list overrides [list save ""] ] {
+foreach type {listpack quicklist} {
+    if {$type eq "listpack"} {
+        r config set list-max-listpack-size -2
+    } else {
+        r config set list-max-listpack-size 1
+    }
+
     # basic command check for plain nodes - "LPUSH & LPOP"
     test {Test LPUSH and LPOP on plain nodes} {
         r flushdb
@@ -104,6 +84,7 @@ start_server [list overrides [list save ""] ] {
         r lpush lst 9
         r lpush lst xxxxxxxxxx
         r lpush lst xxxxxxxxxx
+        assert_encoding $type lst
         set s0 [s used_memory]
         assert {$s0 > 10}
         assert {[r llen lst] == 3}
@@ -128,6 +109,7 @@ start_server [list overrides [list save ""] ] {
         r lpush lst xxxxxxxxxxx
         r lpush lst 9
         r lpush lst xxxxxxxxxxx
+        assert_encoding $type lst
         r linsert lst before "9" "8"
         assert {[r lindex lst 1] eq "8"}
         r linsert lst BEFORE "9" "7"
@@ -143,6 +125,7 @@ start_server [list overrides [list save ""] ] {
         r lpush lst1 9
         r lpush lst1 xxxxxxxxxxx
         r lpush lst1 9
+        assert_encoding $type lst1
         r LTRIM lst1 1 -1
         assert_equal [r llen lst1] 2
         r debug quicklist-packed-threshold 0
@@ -154,6 +137,7 @@ start_server [list overrides [list save ""] ] {
         r debug quicklist-packed-threshold 1b
         r lpush lst one
         r lpush lst xxxxxxxxxxx
+        assert_encoding $type lst
         set s0 [s used_memory]
         assert {$s0 > 10}
         r lpush lst 9
@@ -169,6 +153,7 @@ start_server [list overrides [list save ""] ] {
         r RPUSH lst "aa"
         r RPUSH lst "bb"
         r RPUSH lst "cc"
+        assert_encoding $type lst
         r LSET lst 0 "xxxxxxxxxxx"
         assert_equal [r LPOS lst "xxxxxxxxxxx"] 0
         r debug quicklist-packed-threshold 0
@@ -180,6 +165,7 @@ start_server [list overrides [list save ""] ] {
         r debug quicklist-packed-threshold 1b
         r RPUSH lst2{t} "aa"
         r RPUSH lst2{t} "bb"
+        assert_encoding $type lst2{t}
         r LSET lst2{t} 0 xxxxxxxxxxx
         r RPUSH lst2{t} "cc"
         r RPUSH lst2{t} "dd"
@@ -200,6 +186,7 @@ start_server [list overrides [list save ""] ] {
         r debug quicklist-packed-threshold 5b
         r RPUSH lst "aa"
         r RPUSH lst "bb"
+        assert_encoding $type lst
         r lset lst 0 [string repeat d 50001]
         set s1 [r lpop lst]
         assert_equal $s1 [string repeat d 50001]
@@ -281,6 +268,7 @@ start_server [list overrides [list save ""] ] {
         # Insert two elements and keep them in the same node
         r RPUSH lst $small_ele
         r RPUSH lst $small_ele
+        assert_encoding $type lst
 
         # When setting the position of -1 to a large element, we first insert
         # a large element at the end and then delete its previous element.
@@ -297,12 +285,14 @@ start_server [list overrides [list save ""] ] {
 
         r LPUSH lst "aa"
         r LPUSH lst "bb"
+        assert_encoding $type lst
         r LSET lst -2 [string repeat x 10]
         r RPOP lst
         assert_equal [string repeat x 10] [r LRANGE lst 0 -1]
 
         r debug quicklist-packed-threshold 0
     } {OK} {needs:debug}
+}
 }
 
 run_solo {list-large-memory} {
@@ -472,7 +462,7 @@ start_server {
         "list-max-ziplist-size" -1
     }
 } {
-    source "tests/unit/type/list-common.tcl"
+    array set largevalue [generate_largevalue_test_array]
 
     # A helper function to execute either B*POP or BLMPOP* with one input key.
     proc bpop_command {rd pop key timeout} {
@@ -1178,12 +1168,12 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         r client unblock $id
         assert_equal {} [$rd read]
         $rd deferred 0
-        # We want to force key deletion to be propagated to the replica 
-        # in order to verify it was expiered on the replication stream. 
+        # We want to force key deletion to be propagated to the replica
+        # in order to verify it was expired on the replication stream.
         $rd set somekey1 someval1
         $rd exists k
         r set somekey2 someval2
-        
+
         assert_replication_stream $repl {
             {select *}
             {flushall}
@@ -1226,8 +1216,8 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         assert_match "*flags=b*" [r client list id $id]
         r client unblock $id
         assert_equal {} [$rd read]
-        # We want to force key deletion to be propagated to the replica 
-        # in order to verify it was expiered on the replication stream. 
+        # We want to force key deletion to be propagated to the replica
+        # in order to verify it was expired on the replication stream.
         $rd exists k
         assert_equal {0} [$rd read]
         assert_replication_stream $repl {
@@ -1309,10 +1299,10 @@ foreach {pop} {BLPOP BLMPOP_LEFT} {
         # Timeout is parsed as float and multiplied by 1000, added mstime()
         # and stored in long-long which might lead to out-of-range value.
         # (Even though given timeout is smaller than LLONG_MAX, the result
-        # will be bigger)            
+        # will be bigger)
         assert_error "ERR *is out of range*" {r BLPOP blist1 0x7FFFFFFFFFFFFF}
-    }  
-        
+    }
+
     foreach {pop} {BLPOP BRPOP BLMPOP_LEFT BLMPOP_RIGHT} {
         test "$pop: with single empty list argument" {
             set rd [redis_deferring_client]
@@ -1729,7 +1719,7 @@ foreach {type large} [array get largevalue] {
         assert_equal {} [r rpoplpush srclist{t} dstlist{t}]
     } {}
 
-    foreach {type large} [array get largevalue] { 
+    foreach {type large} [array get largevalue] {
         test "Basic LPOP/RPOP/LMPOP - $type" {
             create_$type mylist "$large 1 2"
             assert_equal $large [r lpop mylist]
@@ -2204,7 +2194,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         # when a quicklist has only one packed node, it will be
         # converted to listpack during rdb loading
         r RPOP lst
-        assert_encoding quicklist lst 
+        assert_encoding quicklist lst
         r DEBUG RELOAD
         assert_encoding listpack lst
 
@@ -2283,18 +2273,18 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         assert_equal [lpop k] [string repeat x 31]
         set _ $k
     } {12 0 9223372036854775808 2147483647 32767 127}
-    
+
     test "Unblock fairness is kept while pipelining" {
         set rd1 [redis_deferring_client]
         set rd2 [redis_deferring_client]
-        
+
         # delete the list in case already exists
         r del mylist
-        
+
         # block a client on the list
         $rd1 BLPOP mylist 0
         wait_for_blocked_clients_count 1
-        
+
         # pipeline on other client a list push and a blocking pop
         # we should expect the fairness to be kept and have $rd1
         # being unblocked
@@ -2303,83 +2293,83 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         append buf "BLPOP mylist 0\r\n"
         $rd2 write $buf
         $rd2 flush
-        
+
         # we check that we still have 1 blocked client
         # and that the first blocked client has been served
         assert_equal [$rd1 read] {mylist 1}
         assert_equal [$rd2 read] {1}
         wait_for_blocked_clients_count 1
-        
-        # We no unblock the last client and verify it was served last 
+
+        # We no unblock the last client and verify it was served last
         r LPUSH mylist 2
         wait_for_blocked_clients_count 0
         assert_equal [$rd2 read] {mylist 2}
-        
+
         $rd1 close
         $rd2 close
     }
-    
+
     test "Unblock fairness is kept during nested unblock" {
         set rd1 [redis_deferring_client]
         set rd2 [redis_deferring_client]
         set rd3 [redis_deferring_client]
-        
+
         # delete the list in case already exists
         r del l1{t} l2{t} l3{t}
-        
+
         # block a client on the list
         $rd1 BRPOPLPUSH l1{t} l3{t} 0
         wait_for_blocked_clients_count 1
-        
+
         $rd2 BLPOP l2{t} 0
         wait_for_blocked_clients_count 2
-        
+
         $rd3 BLMPOP 0 2 l2{t} l3{t} LEFT COUNT 1
         wait_for_blocked_clients_count 3
-        
+
         r multi
         r lpush l1{t} 1
         r lpush l2{t} 2
         r exec
-        
+
         wait_for_blocked_clients_count 0
-        
+
         assert_equal [$rd1 read] {1}
         assert_equal [$rd2 read] {l2{t} 2}
         assert_equal [$rd3 read] {l3{t} 1}
-        
+
         $rd1 close
         $rd2 close
         $rd3 close
     }
-    
+
     test "Blocking command accounted only once in commandstats" {
         # cleanup first
         r del mylist
-        
+
         # create a test client
         set rd [redis_deferring_client]
-        
+
         # reset the server stats
         r config resetstat
-        
+
         # block a client on the list
         $rd BLPOP mylist 0
         wait_for_blocked_clients_count 1
-        
+
         # unblock the list
         r LPUSH mylist 1
         wait_for_blocked_clients_count 0
-        
+
         assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdrstat blpop r]
-        
+
         $rd close
     }
-    
+
     test "Blocking command accounted only once in commandstats after timeout" {
         # cleanup first
         r del mylist
-        
+
         # create a test client
         set rd [redis_deferring_client]
         $rd client id
@@ -2387,16 +2377,16 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
 
         # reset the server stats
         r config resetstat
-        
+
         # block a client on the list
         $rd BLPOP mylist 0
         wait_for_blocked_clients_count 1
-        
+
         # unblock the client on timeout
         r client unblock $id timeout
-        
+
         assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdrstat blpop r]
-        
+
         $rd close
     }
 
@@ -2447,4 +2437,26 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         close_replication_stream $repl
     } {} {needs:repl}
 
+    test "Blocking timeout following PAUSE should honor the timeout" {
+        # cleanup first
+        r del mylist
+
+        # create a test client
+        set rd [redis_deferring_client]
+
+        # first PAUSE all writes for a very long time
+        r client pause 10000000000000 write
+
+        # block a client on the list
+        $rd BLPOP mylist 1
+        wait_for_blocked_clients_count 1
+
+        # now unpause the writes
+        r client unpause
+
+        # client should time-out
+        wait_for_blocked_clients_count 0
+
+        $rd close
+    }
 } ;# stop servers

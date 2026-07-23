@@ -223,6 +223,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\blocked.c" />
     <ClCompile Include="..\src\childinfo.c" />
     <ClCompile Include="..\src\cluster.c" />
+    <ClCompile Include="..\src\cluster_legacy.c" />
     <ClCompile Include="..\src\config.c" />
     <ClCompile Include="..\src\connection.c" />
     <ClCompile Include="..\src\crc16.c" />
@@ -232,6 +233,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\debug.c" />
     <ClCompile Include="..\src\defrag.c" />
     <ClCompile Include="..\src\dict.c" />
+    <ClCompile Include="..\src\ebuckets.c" />
     <ClCompile Include="..\src\endianconv.c" />
     <ClCompile Include="..\src\evict.c" />
     <ClCompile Include="..\src\expire.c" />
@@ -242,6 +244,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     </ClCompile>
     <ClCompile Include="..\src\hyperloglog.c" />
     <ClCompile Include="..\src\intset.c" />
+    <ClCompile Include="..\src\kvstore.c" />
     <ClCompile Include="..\src\latency.c" />
     <ClCompile Include="..\src\lazyfree.c" />
     <ClCompile Include="..\src\listpack.c" />
@@ -255,6 +258,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\memtest.c" />
     <ClCompile Include="..\src\module.c" />
     <ClCompile Include="..\src\monotonic.c" />
+    <ClCompile Include="..\src\mstr.c" />
     <ClCompile Include="..\src\mt19937-64.c" />
     <ClCompile Include="..\src\multi.c" />
     <ClCompile Include="..\src\networking.c" />
@@ -304,6 +308,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\t_string.c" />
     <ClCompile Include="..\src\t_zset.c" />
     <ClCompile Include="..\src\timeout.c" />
+    <ClCompile Include="..\src\threads_mngr.c" />
     <ClCompile Include="..\src\tls.c" />
     <ClCompile Include="..\src\tracking.c" />
     <ClCompile Include="..\src\util.c" />
@@ -326,6 +331,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\bio.h" />
     <ClInclude Include="..\src\call_reply.h" />
     <ClInclude Include="..\src\cluster.h" />
+    <ClInclude Include="..\src\cluster_legacy.h" />
     <ClInclude Include="..\src\config.h" />
     <ClInclude Include="..\src\commands.h" />
     <ClInclude Include="..\src\connection.h" />
@@ -335,14 +341,17 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\crcspeed.h" />
     <ClInclude Include="..\src\debugmacro.h" />
     <ClInclude Include="..\src\dict.h" />
+    <ClInclude Include="..\src\ebuckets.h" />
     <ClInclude Include="..\src\endianconv.h" />
     <ClInclude Include="..\src\fmacros.h" />
+    <ClInclude Include="..\src\fmtargs.h" />
     <ClInclude Include="..\src\functions.h" />
     <ClInclude Include="..\src\geo.h" />
     <ClInclude Include="..\src\geohash.h" />
     <ClInclude Include="..\src\geohash_helper.h" />
     <ClInclude Include="..\src\help.h" />
     <ClInclude Include="..\src\intset.h" />
+    <ClInclude Include="..\src\kvstore.h" />
     <ClInclude Include="..\src\latency.h" />
     <ClInclude Include="..\src\listpack.h" />
     <ClInclude Include="..\src\listpack_malloc.h" />
@@ -350,6 +359,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\lzf.h" />
     <ClInclude Include="..\src\lzfP.h" />
     <ClInclude Include="..\src\monotonic.h" />
+    <ClInclude Include="..\src\mstr.h" />
     <ClInclude Include="..\src\mt19937-64.h" />
     <ClInclude Include="..\src\pqsort.h" />
     <ClInclude Include="..\src\quicklist.h" />
@@ -375,6 +385,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\stream.h" />
     <ClInclude Include="..\src\syscheck.h" />
     <ClInclude Include="..\src\testhelp.h" />
+    <ClInclude Include="..\src\threads_mngr.h" />
     <ClInclude Include="..\src\util.h" />
     <ClInclude Include="..\src\version.h" />
     <ClInclude Include="..\src\Win32_Interop\dlfcn.h" />

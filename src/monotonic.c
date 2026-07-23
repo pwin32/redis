@@ -6,10 +6,7 @@
 #ifdef _WIN32
 #include "Win32_Interop/Win32_Time.h"
 #endif
-
-#undef NDEBUG
-#include <assert.h>
-
+#include "redisassert.h"
 
 /* The function pointer for clock retrieval.  */
 monotime (*getMonotonicUs)(void) = NULL;

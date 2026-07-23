@@ -1,7 +1,5 @@
 set testmodule [redis_test_module blockonbackground]
 
-source tests/support/util.tcl
-
 proc latency_percentiles_usec {cmd} {
     return [latencyrstat_percentiles $cmd r]
 }

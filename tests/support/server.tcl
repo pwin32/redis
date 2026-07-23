@@ -41,9 +41,9 @@ set ::redis_test_launcher_path [redis_test_binary REDIS_TEST_LAUNCHER {build min
 proc start_server_error {config_file error} {
     set err {}
     append err "Can't start the Redis server\n"
-    append err "CONFIGURATION:"
+    append err "CONFIGURATION:\n"
     append err [exec cat $config_file]
-    append err "\nERROR:"
+    append err "\nERROR:\n"
     append err [string trim $error]
     send_data_packet $::test_server_fd err $err
 }
@@ -88,6 +88,7 @@ proc kill_server config {
     }
 
     # nevermind if its already dead
+    set pid [dict get $config pid]
     if {![is_alive $config]} {
         # Check valgrind errors if needed
         if {$::valgrind} {
@@ -95,9 +96,12 @@ proc kill_server config {
         }
 
         check_sanitizer_errors [dict get $config stderr]
+
+        # Remove this pid from the set of active pids in the test server.
+        send_data_packet $::test_server_fd server-killed $pid
+
         return
     }
-    set pid [dict get $config pid]
 
     # check for leaks
     if {![dict exists $config "skipleaks"]} {
@@ -179,8 +183,14 @@ proc windows_process_matches {pid {config {}}} {
     }]}]
 }
 
-proc windows_is_alive config {
-    return [windows_process_matches [dict get $config pid] $config]
+proc windows_is_alive config_or_pid {
+    # Upstream integration tests sometimes pass [srv pid] directly while the
+    # Windows ownership-aware cleanup path normally receives the full server
+    # dictionary. Accept both forms without weakening the exact-image check.
+    if {[string is integer -strict $config_or_pid]} {
+        return [windows_process_matches $config_or_pid]
+    }
+    return [windows_process_matches [dict get $config_or_pid pid] $config_or_pid]
 }
 
 proc windows_kill_proc config {
@@ -637,10 +647,14 @@ proc run_external_server_test {code overrides} {
     r flushall
     r function flush
 
-    # store overrides
+    # store configs
     set saved_config {}
+    foreach {param val} [r config get *] {
+        dict set saved_config $param $val
+    }
+
+    # apply overrides
     foreach {param val} $overrides {
-        dict set saved_config $param [lindex [r config get $param] 1]
         r config set $param $val
 
         # If we enable appendonly, wait for for rewrite to complete. This is
@@ -668,7 +682,8 @@ proc run_external_server_test {code overrides} {
 
     # restore overrides
     dict for {param val} $saved_config {
-        r config set $param $val
+        # some may fail, specifically immutable ones.
+        catch {r config set $param $val}
     }
 
     set srv [lpop ::servers]
@@ -687,6 +702,9 @@ proc start_server {options {code undefined}} {
     set args {}
     set keep_persistence false
     set config_lines {}
+
+    # Wait for the server to be ready and check for server liveness/client connectivity before starting the test.
+    set wait_ready true
 
     # parse options
     foreach {option value} $options {
@@ -714,6 +732,9 @@ proc start_server {options {code undefined}} {
             }
             "keep_persistence" {
                 set keep_persistence $value
+            }
+            "wait_ready" {
+                set wait_ready $value
             }
             default {
                 error "Unknown option $option"
@@ -858,7 +879,7 @@ proc start_server {options {code undefined}} {
         }
 
         if {$::valgrind} {set retrynum 1000} else {set retrynum 100}
-        if {$code ne "undefined"} {
+        if {$code ne "undefined" && $wait_ready} {
             set serverisup [server_is_up $::host $port $retrynum]
         } else {
             set serverisup 1
@@ -904,19 +925,21 @@ proc start_server {options {code undefined}} {
             error_and_quit $config_file $line
         }
 
-        while 1 {
-            # check that the server actually started and is ready for connections
-            if {[count_message_lines $stdout "Ready to accept"] > $previous_ready_count} {
-                break
-            }
-            after 10
-        }
-
         # append the server to the stack
         lappend ::servers $srv
 
-        # connect client (after server dict is put on the stack)
-        reconnect
+        if {$wait_ready} {
+            while 1 {
+                # check that the server actually started and is ready for connections
+                if {[count_message_lines $stdout "Ready to accept"] > $previous_ready_count} {
+                    break
+                }
+                after 10
+            }
+
+            # connect client (after server dict is put on the stack)
+            reconnect
+        }
 
         # remember previous num_failed to catch new errors
         set prev_num_failed $::num_failed

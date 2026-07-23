@@ -7,8 +7,8 @@ tags {"aof external:skip"} {
     # cleaned after a child responsible for an AOF rewrite exited. This buffer
     # was subsequently appended to the new AOF, resulting in duplicate commands.
     start_server_aof [list dir $server_path] {
-        set client [redis [dict get $srv host] [dict get $srv port] 0 $::tls]
-        set bench_cmd [list | $::redis_benchmark_path -q -h [dict get $srv host] -p [dict get $srv port] -c 20 -n 20000 incr foo]
+        set client [redis [srv host] [srv port] 0 $::tls]
+        set bench_cmd [list | $::redis_benchmark_path -q -h [srv host] -p [srv port] -c 20 -n 20000 incr foo]
         set bench [open $bench_cmd "r+"]
 
         wait_for_condition 100 1 {
@@ -31,7 +31,7 @@ tags {"aof external:skip"} {
 
     # Restart server to replay AOF
     start_server_aof [list dir $server_path] {
-        set client [redis [dict get $srv host] [dict get $srv port] 0 $::tls]
+        set client [redis [srv host] [srv port] 0 $::tls]
         wait_done_loading $client
         assert_equal 20000 [$client get foo]
     }

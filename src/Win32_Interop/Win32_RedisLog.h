@@ -45,7 +45,7 @@ const char* getLogFilename();
 void serverLogRaw(int level, const char *msg);
 void serverLog(int level, const char *fmt, ...);
 void _serverLog(int level, const char *fmt, ...);
-void serverLogFromHandler(int level, const char *msg);
+void serverLogFromHandler(int level, const char *fmt, ...);
 
 #ifdef __cplusplus
 }

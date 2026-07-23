@@ -27,6 +27,8 @@
 
 void StackTraceInit(void);
 
-extern "C" typedef char *sds;
-extern "C" sds genRedisInfoString(char *section);
+/* Redis 7.4 changed genRedisInfoString() from the old one-argument API. The
+ * C crash-report path already owns the section-dictionary lifecycle, so call
+ * its stable logging entry point instead of duplicating that ABI here. */
+extern "C" void logServerInfo(void);
 extern "C" void bugReportStart(void);

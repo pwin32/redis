@@ -220,14 +220,15 @@ void _serverLog(int level, const char *fmt, ...) {
     va_end(ap);
 }
 
-/* Log a fixed message without printf-alike capabilities, in a way that is
- * safe to call from a signal handler.
- *
- * We actually use this only for signals that are not fatal from the point
- * of view of Redis. Signals that are going to kill the server anyway and
- * where we need printf-alike features are served by serverLog(). */
-void serverLogFromHandler(int level, const char *msg) {
-}
+/* Keep the 7.4 variadic handler contract. Windows does not use the POSIX
+ * async-signal-safe implementation, so route the formatted message through
+ * the native logger just as the ordinary serverLog entry point does. */
+void serverLogFromHandler(int level, const char *fmt, ...) {
+    va_list ap;
 
+    va_start(ap, fmt);
+    serverLogV(level, fmt, ap);
+    va_end(ap);
+}
 
 

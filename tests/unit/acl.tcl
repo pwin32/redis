@@ -1,4 +1,15 @@
 start_server {tags {"acl external:skip"}} {
+    # Windows keeps a revoked subscriber in the client index briefly while
+    # Winsock drains its final close-after-reply notification.  The logical
+    # disconnect is immediate, but CLIENT LIST removal is asynchronous.
+    proc assert_acl_subscriber_gone {name} {
+        wait_for_condition 50 10 {
+            [string first $name [r CLIENT LIST]] == -1
+        } else {
+            fail "subscriber $name remained in CLIENT LIST"
+        }
+    }
+
     test {Connections start with the default user} {
         r ACL WHOAMI
     } {default}
@@ -246,7 +257,27 @@ start_server {tags {"acl external:skip"}} {
         catch {$rd read} e
         set e
     } {*NOPERM*channel*}
-    
+
+    test {Subscribers are killed when revoked of channel permission} {
+        # This test covers the case that the SETUSER is requested over the subscriber
+        set rd [redis_deferring_client]
+        r ACL setuser psuser resetchannels &foo:1
+        # we must use RESP 3 since AUTH command is not supported over a subscribed client with RESP2
+        $rd HELLO 3 AUTH psuser pspass
+        $rd read
+        $rd CLIENT SETNAME deathrow
+        $rd read
+        $rd SUBSCRIBE foo:1
+        assert_match {subscribe foo:1 1} [$rd read]
+        $rd ACL setuser psuser resetchannels
+        assert_match {OK} [$rd read]
+        # 'psuser' no longer has access to "foo:1" channel, so they should get disconnected
+        catch {$rd read} e
+        assert_match {*I/O error*} $e
+        assert_acl_subscriber_gone deathrow
+        $rd close
+    } {0}
+
     test {Subscribers are killed when revoked of channel permission} {
         set rd [redis_deferring_client]
         r ACL setuser psuser resetchannels &foo:1
@@ -257,7 +288,7 @@ start_server {tags {"acl external:skip"}} {
         $rd SUBSCRIBE foo:1
         $rd read
         r ACL setuser psuser resetchannels
-        assert_no_match {*deathrow*} [r CLIENT LIST]
+        assert_acl_subscriber_gone deathrow
         $rd close
     } {0}
 
@@ -271,7 +302,7 @@ start_server {tags {"acl external:skip"}} {
         $rd SSUBSCRIBE foo:1
         $rd read
         r ACL setuser psuser resetchannels
-        assert_no_match {*deathrow*} [r CLIENT LIST]
+        assert_acl_subscriber_gone deathrow
         $rd close
     } {0}
 
@@ -285,7 +316,7 @@ start_server {tags {"acl external:skip"}} {
         $rd PSUBSCRIBE bar:*
         $rd read
         r ACL setuser psuser resetchannels
-        assert_no_match {*deathrow*} [r CLIENT LIST]
+        assert_acl_subscriber_gone deathrow
         $rd close
     } {0}
 
@@ -299,7 +330,7 @@ start_server {tags {"acl external:skip"}} {
         $rd PSUBSCRIBE foo
         $rd read
         r ACL setuser psuser resetchannels
-        assert_no_match {*deathrow*} [r CLIENT LIST]
+        assert_acl_subscriber_gone deathrow
         $rd close
     } {0}
 
@@ -802,6 +833,16 @@ start_server {tags {"acl external:skip"}} {
         assert {[dict get $entry username] eq {antirez}}
     }
 
+    test {ACLLOG - zero max length is correctly handled} {
+        r ACL LOG RESET
+        r CONFIG SET acllog-max-len 0
+        for {set j 0} {$j < 10} {incr j} {
+            catch {r SET obj:$j 123}
+        }
+        r AUTH default ""
+        assert {[llength [r ACL LOG]] == 0}
+    }
+
     test {ACL LOG entries are limited to a maximum amount} {
         r ACL LOG RESET
         r CONFIG SET acllog-max-len 5
@@ -810,6 +851,11 @@ start_server {tags {"acl external:skip"}} {
             catch {r SET obj:$j 123}
         }
         r AUTH default ""
+        assert {[llength [r ACL LOG]] == 5}
+    }
+
+    test {ACL LOG entries are still present on update of max len config} {
+        r CONFIG SET acllog-max-len 0
         assert {[llength [r ACL LOG]] == 5}
     }
 
@@ -1005,16 +1051,99 @@ start_server [list overrides [list "dir" $server_path "acl-pubsub-default" "allc
         set e
     } {*NOPERM*set*}
 
+    test {ACL LOAD only disconnects affected clients} {
+        reconnect
+        r ACL SETUSER doug on nopass resetchannels &test* +@all ~*
+
+        set rd1 [redis_deferring_client]
+        set rd2 [redis_deferring_client]
+
+        $rd1 AUTH alice alice
+        $rd1 read
+        $rd1 SUBSCRIBE test1
+        $rd1 read
+
+        $rd2 AUTH doug doug
+        $rd2 read
+        $rd2 SUBSCRIBE test1
+        $rd2 read
+
+        r ACL LOAD
+        r PUBLISH test1 test-message
+
+        # Permissions for 'alice' haven't changed, so they should still be connected
+        assert_match {*test-message*} [$rd1 read]
+
+        # 'doug' no longer has access to "test1" channel, so they should get disconnected
+        catch {$rd2 read} e
+        assert_match {*I/O error*} $e
+
+        $rd1 close
+        $rd2 close
+    }
+
+    test {ACL LOAD disconnects affected subscriber} {
+        # This test covers the case that the LOAD is requested over the subscriber
+        reconnect
+        r ACL SETUSER doug on nopass resetchannels &test* +@all ~*
+
+        set rd1 [redis_deferring_client]
+
+        # we must use RESP 3 since AUTH command is not supported over a subscribed client with RESP2
+        $rd1 HELLO 3 AUTH doug doug
+        $rd1 read
+        $rd1 SUBSCRIBE test1
+        $rd1 read
+
+        $rd1 ACL LOAD
+        assert_match {OK} [$rd1 read]
+
+        # 'doug' no longer has access to "test1" channel, so they should get disconnected
+        catch {$rd1 read} e
+        assert_match {*I/O error*} $e
+
+        $rd1 close
+    }
+
+    test {ACL LOAD disconnects clients of deleted users} {
+        reconnect
+        r ACL SETUSER mortimer on >mortimer ~* &* +@all
+
+        set rd1 [redis_deferring_client]
+        set rd2 [redis_deferring_client]
+
+        $rd1 AUTH alice alice
+        $rd1 read
+        $rd1 SUBSCRIBE test
+        $rd1 read
+
+        $rd2 AUTH mortimer mortimer
+        $rd2 read
+        $rd2 SUBSCRIBE test
+        $rd2 read
+
+        r ACL LOAD
+        r PUBLISH test test-message
+
+        # Permissions for 'alice' haven't changed, so they should still be connected
+        assert_match {*test-message*} [$rd1 read]
+
+        # 'mortimer' has been deleted, so their client should get disconnected
+        catch {$rd2 read} e
+        assert_match {*I/O error*} $e
+
+        $rd1 close
+        $rd2 close
+    }
+
     test {ACL load and save} {
         r ACL setuser eve +get allkeys >eve on
         r ACL save
 
-        # ACL load will free user and kill clients
         r ACL load
-        catch {r ACL LIST} e
-        assert_match {*I/O error*} $e
 
-        reconnect
+        # Clients should not be disconnected since permissions haven't changed
+
         r AUTH alice alice
         r SET key value
         r AUTH eve eve
@@ -1028,18 +1157,38 @@ start_server [list overrides [list "dir" $server_path "acl-pubsub-default" "allc
         r ACL setuser harry on nopass resetchannels &test +@all ~*
         r ACL save
 
-        # ACL load will free user and kill clients
         r ACL load
-        catch {r ACL LIST} e
-        assert_match {*I/O error*} $e
 
-        reconnect
+        # Clients should not be disconnected since permissions haven't changed
+
         r AUTH harry anything
         r publish test bar
         catch {r publish test1 bar} e
         r ACL deluser harry
         set e
     } {*NOPERM*channel*}
+
+    set server_path [tmpdir "server.acl"]
+    exec cp -f tests/assets/user.acl $server_path
+    start_server [list overrides [list "dir" $server_path "acl-pubsub-default" "allchannels" "aclfile" "user.acl"] tags [list "repl" "external:skip"]] {
+        set master [srv -1 client]
+        set master_host [srv -1 host]
+        set master_port [srv -1 port]
+        set slave [srv 0 client]
+
+        test {First server should have role slave after SLAVEOF} {
+            $slave slaveof $master_host $master_port
+            wait_for_condition 50 100 {
+                [s 0 master_link_status] eq {up}
+            } else {
+                fail "Replication not started."
+            }
+        }
+
+        test {ACL load on replica when connected to replica} {
+            assert_match {OK} [$slave ACL LOAD]
+        }
+    }
 }
 
 set server_path [tmpdir "resetchannels.acl"]

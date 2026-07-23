@@ -968,16 +968,36 @@ ssize_t FDAPI_write(int rfd, const void *buf, size_t count) {
             int crt_fd = RFDMap::getInstance().lookupCrtFD(rfd);
             if (crt_fd != INVALID_FD) {
                 if (crt_fd == _fileno(stdout)) {
+                    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+                    DWORD console_mode;
+
+                    /* ANSI translation is only valid for a console handle.
+                     * Tcl's MinGW integration tests (and normal shell
+                     * redirection) expose stdout as a pipe, which must use
+                     * the CRT writer so linenoise can emit its prompt. */
+                    if (output == INVALID_HANDLE_VALUE ||
+                        !GetConsoleMode(output, &console_mode)) {
+                        return crt_write(crt_fd, buf, (unsigned int) count);
+                    }
+
                     DWORD bytesWritten = 0;
-                    if (FALSE != ParseAndPrintANSIString(GetStdHandle(STD_OUTPUT_HANDLE), buf, (DWORD) count, &bytesWritten)) {
+                    if (FALSE != ParseAndPrintANSIString(output, buf, (DWORD) count, &bytesWritten)) {
                         return (int) bytesWritten;
                     } else {
                         set_errno_from_win32_file_error(GetLastError());
                         return -1;
                     }
                 } else if (crt_fd == _fileno(stderr)) {
+                    HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
+                    DWORD console_mode;
+
+                    if (output == INVALID_HANDLE_VALUE ||
+                        !GetConsoleMode(output, &console_mode)) {
+                        return crt_write(crt_fd, buf, (unsigned int) count);
+                    }
+
                     DWORD bytesWritten = 0;
-                    if (FALSE != ParseAndPrintANSIString(GetStdHandle(STD_ERROR_HANDLE), buf, (DWORD) count, &bytesWritten)) {
+                    if (FALSE != ParseAndPrintANSIString(output, buf, (DWORD) count, &bytesWritten)) {
                         return (int) bytesWritten;
                     } else {
                         set_errno_from_win32_file_error(GetLastError());
