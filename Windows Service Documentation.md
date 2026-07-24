@@ -1,11 +1,11 @@
-# Running Redis 7.2 as a Windows service
+# Running Redis 7.4 as a Windows service
 
-This document describes the built-in service interface for the Redis 7.2.14
+This document describes the built-in service interface for the Redis 7.4.10
 MinGW portable package. The historical Visual Studio/MSI projects under
 `msvs/` are retained as best-effort compatibility files, but MSI installation
 is not the current package path and has not been validated for this release.
 
-Read [Redis 7.2 behavior in the Windows port](WINDOWS-7.2-CHANGES.md) before
+Read [Redis 7.4 behavior in the Windows port](WINDOWS-7.4-CHANGES.md) before
 deployment. Service management requires an elevated Windows token.
 
 ## Install, start, stop, and uninstall
@@ -15,10 +15,10 @@ The service action must be the first argument. If a custom name is used,
 options. Run these commands from an elevated Command Prompt or PowerShell:
 
 ```bat
-redis-server.exe --service-install --service-name Redis7214 redis.windows-service.conf
-redis-server.exe --service-start --service-name Redis7214
-redis-server.exe --service-stop --service-name Redis7214
-redis-server.exe --service-uninstall --service-name Redis7214
+redis-server.exe --service-install --service-name Redis7410 redis.windows-service.conf
+redis-server.exe --service-start --service-name Redis7410
+redis-server.exe --service-stop --service-name Redis7410
+redis-server.exe --service-uninstall --service-name Redis7410
 ```
 
 Installation creates an automatic-start service running as
@@ -96,11 +96,11 @@ Each instance needs its own service name, TCP port, writable data directory,
 logfile, and Cluster configuration file if Cluster is enabled. For example:
 
 ```bat
-redis-server.exe --service-install --service-name Redis7214A redis-a.conf --port 10001
-redis-server.exe --service-start --service-name Redis7214A
+redis-server.exe --service-install --service-name Redis7410A redis-a.conf --port 10001
+redis-server.exe --service-start --service-name Redis7410A
 
-redis-server.exe --service-install --service-name Redis7214B redis-b.conf --port 10002
-redis-server.exe --service-start --service-name Redis7214B
+redis-server.exe --service-install --service-name Redis7410B redis-b.conf --port 10002
+redis-server.exe --service-start --service-name Redis7410B
 ```
 
 Do not reuse a writable configuration file between Sentinel or Cluster

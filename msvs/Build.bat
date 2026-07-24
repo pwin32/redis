@@ -13,6 +13,5 @@ msbuild RedisServer.sln -t:Rebuild -p:Configuration=%CONFIGURATION%;Platform=x64
 msbuild RedisServer.sln -t:RedisCli -p:Configuration=%CONFIGURATION%;Platform=x64;Machine=x64
 msbuild RedisServer.sln -t:RedisBenchmark -p:Configuration=%CONFIGURATION%;Platform=x64;Machine=x64
 
-cd msi
-msbuild RedisMsi.sln -t:Rebuild -p:Configuration=%CONFIGURATION%;Platform=x64
-cd ..
+echo Legacy MSI packaging is quarantined for Redis 7.4.10.
+echo See LEGACY-PACKAGING.md and use ..\package-mingw.sh for release artifacts.

@@ -259,8 +259,7 @@ TOOL_WIN32_INTEROP_C_SOURCES := \
 	src/Win32_Interop/Win32_Signal_Process.c \
 	src/Win32_Interop/Win32_ThreadControl.c \
 	src/Win32_Interop/Win32_Time.c \
-	src/Win32_Interop/win32_wsiocp.c \
-	src/Win32_Interop/dlfcn.c
+	src/Win32_Interop/win32_wsiocp.c
 
 TOOL_WIN32_INTEROP_CXX_SOURCES := \
 	src/Win32_Interop/Win32_CommandLine.cpp \

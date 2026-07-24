@@ -4,6 +4,8 @@ param (
 
 $ErrorActionPreference = "Stop"
 
+throw "Legacy NuGet/Chocolatey publishing is quarantined. Use package-mingw.sh and read msvs/LEGACY-PACKAGING.md."
+
 Write-Host "Ensure that the api keys have been set for chocolatey and nuget" -foregroundcolor red -backgroundcolor yellow
 Write-Host "  choco apikey -k <your key here> -s https://chocolatey.org/" -foregroundcolor red -backgroundcolor yellow
 Write-Host "  NuGet SetApiKey <your key here>" -foregroundcolor red -backgroundcolor yellow
@@ -33,4 +35,3 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Set-Location $CurDir
-
