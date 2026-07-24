@@ -2,7 +2,7 @@
 
 This filename is retained for compatibility with old links. The former content
 covered only the 2016 MSOpenTech Redis 3.2.100 and 3.2 preview releases; it is
-not the release record for this repository's current Redis 7.2.14 line.
+not the release record for this repository's current Redis 7.2.15 line.
 
 See [RELEASENOTES.txt](RELEASENOTES.txt) for current Windows port releases,
 [00-RELEASENOTES](00-RELEASENOTES) for upstream Redis release history, and

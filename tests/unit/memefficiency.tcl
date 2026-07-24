@@ -10,7 +10,7 @@ proc test_memory_efficiency {range} {
         incr written [string length $key]
         incr written [string length $val]
         incr written 2 ;# A separator is the minimum to store key-value data.
-        
+
         if {($j + 1) % 500 == 0} {
             for {set i 0} {$i < 500} {incr i} {
                 $rd read ; # Discard replies

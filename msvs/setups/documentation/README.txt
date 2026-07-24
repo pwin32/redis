@@ -3,7 +3,7 @@ Redis for Windows - legacy Visual Studio/MSI documentation staging
 
 This directory belongs to the historical Visual Studio/MSI packaging path. It
 is retained as best-effort compatibility material and is not the supported or
-validated Redis 7.2.14 release package.
+validated Redis 7.2.15 release package.
 
 The current release path is the MinGW64 flat ZIP produced by
 package-mingw.sh. Read the repository root README.md,

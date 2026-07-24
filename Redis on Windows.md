@@ -4,7 +4,7 @@ This filename is retained so old links do not disappear, but the former
 contents described the MSOpenTech Redis 2.8-era port. Its Visual Studio-first
 build instructions, `--maxheap` and fixed pagefile formulas, NuGet/Chocolatey
 release status, service-document references, performance claims, and xcopy
-upgrade advice do not describe the Redis 7.2.14 MinGW release.
+upgrade advice do not describe the Redis 7.2.15 MinGW release.
 
 Use the current documentation instead:
 
