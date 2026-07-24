@@ -50,8 +50,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 6,2,22
- PRODUCTVERSION 6,2,22
+ FILEVERSION 6,2,23
+ PRODUCTVERSION 6,2,23
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -68,10 +68,10 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Poradowski.com Tomasz Poradowski"
             VALUE "FileDescription", "Redis for Windows, based on MS OpenTech port."
-            VALUE "FileVersion", "6.2.22"
+            VALUE "FileVersion", "6.2.23"
             VALUE "LegalCopyright", "Copyright (C) 2006-2018 Salvatore Sanfilippo, Microsoft Open Technologies Inc., Tomasz Poradowski"
             VALUE "ProductName", "Redis for Windows"
-            VALUE "ProductVersion", "6.2.22"
+            VALUE "ProductVersion", "6.2.23"
         END
     END
     BLOCK "VarFileInfo"
