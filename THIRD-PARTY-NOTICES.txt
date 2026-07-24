@@ -22,7 +22,9 @@ MinGW-w64 runtime. EventLog.dll is a resource-only DLL and does not link these
 runtime libraries.
 
 The source paths named below identify the exact notices in this source tree.
-License text and attribution are reproduced verbatim in the following sections.
+The following sections reproduce those notices and attributions. Where the
+upstream permission is documented outside an imported source file, its terms
+and provenance are summarized explicitly.
 
 
 -------------------------------------------------------------------------------
@@ -823,7 +825,9 @@ A million repetitions of "a"
 
 -------------------------------------------------------------------------------
 SHA-256
-Source notice: src/sha256.c
+Source notices: src/sha256.c and src/sha256.h
+Origin: B-Con/crypto-algorithms, source commit
+02b66ec38b474445d10a5d1f0114bc0e8326707e
 -------------------------------------------------------------------------------
 
 /*********************************************************************
@@ -839,6 +843,14 @@ Source notice: src/sha256.c
                * http://csrc.nist.gov/publications/fips/fips180-2/fips180-2withchangenotice.pdf
               This implementation uses little endian byte order.
 *********************************************************************/
+
+The author's crypto-algorithms repository README, commit
+100f4ff91b5a5b31a84b3999365c3058df6251ea, states that the code was written
+from scratch and released into the public domain without restrictions.
+Acknowledgement is requested but is not required. The author provides no
+liability or quality guarantee. Redis imported a slightly modified copy and
+subsequently fixed implementation details; this Windows fork additionally
+renames the generic WORD type to SHA256_WORD without changing the algorithm.
 
 
 -------------------------------------------------------------------------------

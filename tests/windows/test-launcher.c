@@ -195,6 +195,14 @@ static HANDLE open_process_for_control(DWORD process_id) {
                        process_id);
 }
 
+static HANDLE open_process_for_terminate(DWORD process_id) {
+    return OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
+                           PROCESS_TERMINATE |
+                           SYNCHRONIZE,
+                       FALSE,
+                       process_id);
+}
+
 static int process_handle_is_alive(HANDLE process) {
     DWORD exit_code;
 
@@ -273,6 +281,56 @@ cleanup:
     return matches;
 }
 
+static int parse_creation_token(const wchar_t *text, ULONGLONG *token) {
+    wchar_t *end = NULL;
+    unsigned long long value;
+    const wchar_t *cursor;
+
+    if (text == NULL || text[0] == L'\0') return 0;
+    for (cursor = text; *cursor != L'\0'; cursor++) {
+        if (!iswdigit(*cursor)) return 0;
+    }
+
+    errno = 0;
+    value = wcstoull(text, &end, 10);
+    if (errno != 0 || end == text || *end != L'\0' || value == 0) return 0;
+    *token = (ULONGLONG)value;
+    return 1;
+}
+
+static int query_process_creation_token(HANDLE process, ULONGLONG *token) {
+    FILETIME creation, exit_time, kernel_time, user_time;
+    ULARGE_INTEGER value;
+
+    if (!GetProcessTimes(process, &creation, &exit_time,
+                         &kernel_time, &user_time)) {
+        return 0;
+    }
+    value.LowPart = creation.dwLowDateTime;
+    value.HighPart = creation.dwHighDateTime;
+    if (value.QuadPart == 0) return 0;
+    *token = value.QuadPart;
+    return 1;
+}
+
+static int process_matches_instance(HANDLE process,
+                                    ULONGLONG expected_token,
+                                    int expected_count,
+                                    wchar_t **expected_images) {
+    ULONGLONG actual_token;
+    int index;
+
+    if (!process_handle_is_alive(process)) return 0;
+    if (!query_process_creation_token(process, &actual_token) ||
+        actual_token != expected_token) {
+        return 0;
+    }
+    for (index = 0; index < expected_count; index++) {
+        if (process_image_matches(process, expected_images[index])) return 1;
+    }
+    return 0;
+}
+
 static int query_command_is_alive(int argc, wchar_t **argv) {
     DWORD process_id;
     HANDLE process;
@@ -294,11 +352,31 @@ static int query_command_is_owned(int argc, wchar_t **argv) {
     DWORD process_id;
     HANDLE process;
     int index;
+    int first_image = 3;
+    ULONGLONG expected_token = 0;
+    int require_token = 0;
 
     if (argc < 4 || !parse_process_id(argv[2], &process_id)) {
         fprintf(stderr,
                 "usage: redis-test-launcher.exe --is-owned PID "
-                "expected-executable [... ]\n");
+                "[--token CREATION] expected-executable [... ]\n");
+        return 2;
+    }
+
+    if (argc >= 6 && wcscmp(argv[3], L"--token") == 0) {
+        if (!parse_creation_token(argv[4], &expected_token)) {
+            fprintf(stderr,
+                    "usage: redis-test-launcher.exe --is-owned PID "
+                    "[--token CREATION] expected-executable [... ]\n");
+            return 2;
+        }
+        require_token = 1;
+        first_image = 5;
+    }
+    if (argc <= first_image) {
+        fprintf(stderr,
+                "usage: redis-test-launcher.exe --is-owned PID "
+                "[--token CREATION] expected-executable [... ]\n");
         return 2;
     }
 
@@ -308,7 +386,17 @@ static int query_command_is_owned(int argc, wchar_t **argv) {
         CloseHandle(process);
         return 1;
     }
-    for (index = 3; index < argc; index++) {
+    if (require_token) {
+        if (!process_matches_instance(process, expected_token,
+                                      argc - first_image,
+                                      argv + first_image)) {
+            CloseHandle(process);
+            return 1;
+        }
+        CloseHandle(process);
+        return 0;
+    }
+    for (index = first_image; index < argc; index++) {
         if (process_image_matches(process, argv[index])) {
             CloseHandle(process);
             return 0;
@@ -316,6 +404,39 @@ static int query_command_is_owned(int argc, wchar_t **argv) {
     }
     CloseHandle(process);
     return 1;
+}
+
+static int query_command_terminate(int argc, wchar_t **argv) {
+    DWORD process_id;
+    ULONGLONG expected_token;
+    HANDLE process;
+    int first_image = 5;
+    DWORD wait_status;
+
+    if (argc < 6 || !parse_process_id(argv[2], &process_id) ||
+        wcscmp(argv[3], L"--token") != 0 ||
+        !parse_creation_token(argv[4], &expected_token)) {
+        fprintf(stderr,
+                "usage: redis-test-launcher.exe --terminate PID "
+                "--token CREATION expected-executable [... ]\n");
+        return 2;
+    }
+
+    process = open_process_for_terminate(process_id);
+    if (process == NULL) return 1;
+    if (!process_matches_instance(process, expected_token,
+                                  argc - first_image,
+                                  argv + first_image)) {
+        CloseHandle(process);
+        return 1;
+    }
+    if (!TerminateProcess(process, 1)) {
+        CloseHandle(process);
+        return 1;
+    }
+    wait_status = WaitForSingleObject(process, 10000);
+    CloseHandle(process);
+    return wait_status == WAIT_OBJECT_0 ? 0 : 1;
 }
 
 static int query_command_image(int argc, wchar_t **argv) {
@@ -342,11 +463,39 @@ cleanup:
     return result;
 }
 
+static int query_command_creation_token(int argc, wchar_t **argv) {
+    DWORD process_id;
+    HANDLE process;
+    ULONGLONG token;
+    int result = 1;
+
+    if (argc != 3 || !parse_process_id(argv[2], &process_id)) {
+        fprintf(stderr,
+                "usage: redis-test-launcher.exe --creation-token PID\n");
+        return 2;
+    }
+
+    process = open_process_for_query(process_id);
+    if (process == NULL) return 1;
+    if (!process_handle_is_alive(process)) goto cleanup;
+    if (!query_process_creation_token(process, &token)) goto cleanup;
+    if (printf("%llu\n", (unsigned long long)token) >= 0 &&
+        fflush(stdout) == 0) {
+        result = 0;
+    }
+
+cleanup:
+    CloseHandle(process);
+    return result;
+}
+
 typedef NTSTATUS (NTAPI *NtProcessControlFunction)(HANDLE process);
 
 static int control_process(DWORD process_id,
                            const wchar_t *expected_image,
-                           const char *function_name) {
+                           const char *function_name,
+                           int require_token,
+                           ULONGLONG expected_token) {
     HANDLE process;
     HMODULE ntdll;
     FARPROC raw_function;
@@ -355,8 +504,15 @@ static int control_process(DWORD process_id,
 
     process = open_process_for_control(process_id);
     if (process == NULL) return 1;
-    if (!process_handle_is_alive(process) ||
-        !process_image_matches(process, expected_image)) {
+    if (require_token) {
+        wchar_t *images[1];
+        images[0] = (wchar_t *)expected_image;
+        if (!process_matches_instance(process, expected_token, 1, images)) {
+            CloseHandle(process);
+            return 1;
+        }
+    } else if (!process_handle_is_alive(process) ||
+               !process_image_matches(process, expected_image)) {
         CloseHandle(process);
         return 1;
     }
@@ -485,14 +641,25 @@ static int query_command_find_qfork_child(int argc, wchar_t **argv) {
 static int query_command_control(int argc, wchar_t **argv,
                                  const char *function_name) {
     DWORD process_id;
+    ULONGLONG expected_token = 0;
+    int require_token = 0;
+    const wchar_t *expected_image;
 
-    if (argc != 4 || !parse_process_id(argv[2], &process_id)) {
+    if (argc == 4 && parse_process_id(argv[2], &process_id)) {
+        expected_image = argv[3];
+    } else if (argc == 6 && parse_process_id(argv[2], &process_id) &&
+               wcscmp(argv[3], L"--token") == 0 &&
+               parse_creation_token(argv[4], &expected_token)) {
+        require_token = 1;
+        expected_image = argv[5];
+    } else {
         fprintf(stderr,
                 "usage: redis-test-launcher.exe --suspend|--resume PID "
-                "expected-executable\n");
+                "[--token CREATION] expected-executable\n");
         return 2;
     }
-    return control_process(process_id, argv[3], function_name);
+    return control_process(process_id, expected_image, function_name,
+                           require_token, expected_token);
 }
 
 static int parse_unsigned_value(const wchar_t *text,
@@ -714,13 +881,21 @@ int wmain(int argc, wchar_t **argv) {
     int attribute_list_initialized = 0;
     int process_created = 0;
     int exit_code = 1;
+    int emit_token = 0;
+    int stdout_index = 1;
+    int stderr_index = 2;
+    int executable_index = 4;
 
     if (argc >= 2 && wcscmp(argv[1], L"--is-alive") == 0)
         return query_command_is_alive(argc, argv);
     if (argc >= 2 && wcscmp(argv[1], L"--is-owned") == 0)
         return query_command_is_owned(argc, argv);
+    if (argc >= 2 && wcscmp(argv[1], L"--terminate") == 0)
+        return query_command_terminate(argc, argv);
     if (argc >= 2 && wcscmp(argv[1], L"--image") == 0)
         return query_command_image(argc, argv);
+    if (argc >= 2 && wcscmp(argv[1], L"--creation-token") == 0)
+        return query_command_creation_token(argc, argv);
     if (argc >= 2 && wcscmp(argv[1], L"--find-qfork-child") == 0)
         return query_command_find_qfork_child(argc, argv);
     if (argc >= 2 && wcscmp(argv[1], L"--suspend") == 0)
@@ -730,21 +905,30 @@ int wmain(int argc, wchar_t **argv) {
     if (argc >= 2 && wcscmp(argv[1], L"--slow-reader") == 0)
         return query_command_slow_reader(argc, argv);
 
-    if (argc < 5 || wcscmp(argv[3], L"--") != 0) {
+    if (argc >= 6 && wcscmp(argv[1], L"--emit-token") == 0 &&
+        wcscmp(argv[4], L"--") == 0) {
+        emit_token = 1;
+        stdout_index = 2;
+        stderr_index = 3;
+        executable_index = 5;
+    } else if (!(argc >= 5 && wcscmp(argv[3], L"--") == 0)) {
         fprintf(stderr,
                 "usage: redis-test-launcher.exe --is-alive PID\n"
                 "       redis-test-launcher.exe --is-owned PID "
-                "expected-executable\n"
+                "[--token CREATION] expected-executable\n"
+                "       redis-test-launcher.exe --terminate PID "
+                "--token CREATION expected-executable\n"
                 "       redis-test-launcher.exe --image PID\n"
+                "       redis-test-launcher.exe --creation-token PID\n"
                 "       redis-test-launcher.exe --find-qfork-child PID "
                 "expected-executable\n"
                 "       redis-test-launcher.exe --suspend PID "
-                "expected-executable\n"
+                "[--token CREATION] expected-executable\n"
                 "       redis-test-launcher.exe --resume PID "
-                "expected-executable\n"
+                "[--token CREATION] expected-executable\n"
                 "       redis-test-launcher.exe --slow-reader HOST PORT "
                 "NAME KEY RECEIVE_BUFFER HOLD_MS EXPECTED_BYTES REPEAT\n"
-                "usage: redis-test-launcher.exe stdout stderr -- executable "
+                "usage: redis-test-launcher.exe [--emit-token] stdout stderr -- executable "
                 "[argument ...]\n");
         return 2;
     }
@@ -766,21 +950,21 @@ int wmain(int argc, wchar_t **argv) {
         goto cleanup;
     }
 
-    inherited_handles[1] = open_append_file(argv[1], &attributes);
+    inherited_handles[1] = open_append_file(argv[stdout_index], &attributes);
     if (inherited_handles[1] == INVALID_HANDLE_VALUE) {
         error = GetLastError();
         report_error("opening the server stdout log", error);
         goto cleanup;
     }
 
-    inherited_handles[2] = open_append_file(argv[2], &attributes);
+    inherited_handles[2] = open_append_file(argv[stderr_index], &attributes);
     if (inherited_handles[2] == INVALID_HANDLE_VALUE) {
         error = GetLastError();
         report_error("opening the server stderr log", error);
         goto cleanup;
     }
 
-    command_line = build_command_line(argc, argv, 4);
+    command_line = build_command_line(argc, argv, executable_index);
     if (command_line == NULL) {
         error = GetLastError();
         report_error("building the child command line", error);
@@ -831,7 +1015,7 @@ int wmain(int argc, wchar_t **argv) {
     startup.lpAttributeList = attribute_list;
 
     ZeroMemory(&process, sizeof(process));
-    if (!CreateProcessW(argv[4],
+    if (!CreateProcessW(argv[executable_index],
                         command_line,
                         NULL,
                         NULL,
@@ -849,8 +1033,20 @@ int wmain(int argc, wchar_t **argv) {
 
     CloseHandle(process.hThread);
     process.hThread = NULL;
-    if (printf("%lu\n", (unsigned long)process.dwProcessId) < 0 ||
-        fflush(stdout) != 0) {
+    if (emit_token) {
+        ULONGLONG creation_token = 0;
+        if (!query_process_creation_token(process.hProcess, &creation_token) ||
+            printf("%lu %llu\n",
+                   (unsigned long)process.dwProcessId,
+                   (unsigned long long)creation_token) < 0 ||
+            fflush(stdout) != 0) {
+            fprintf(stderr, "writing the child process identity failed\n");
+            TerminateProcess(process.hProcess, ERROR_BROKEN_PIPE);
+            WaitForSingleObject(process.hProcess, 5000);
+            goto cleanup;
+        }
+    } else if (printf("%lu\n", (unsigned long)process.dwProcessId) < 0 ||
+               fflush(stdout) != 0) {
         fprintf(stderr, "writing the child process ID failed\n");
         TerminateProcess(process.hProcess, ERROR_BROKEN_PIPE);
         WaitForSingleObject(process.hProcess, 5000);
