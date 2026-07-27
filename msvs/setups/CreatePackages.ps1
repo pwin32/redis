@@ -1,5 +1,7 @@
 $ErrorActionPreference = "Stop"
 
+throw "Legacy NuGet/Chocolatey package creation is quarantined. Use package-mingw.sh and read msvs/LEGACY-PACKAGING.md."
+
 $CurDir            = split-path -parent $MyInvocation.MyCommand.Definition
 $PackagesDir       = $CurDir + "\packages"
 $ChocolateySrcDir  = $CurDir + "\chocolatey"

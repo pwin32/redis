@@ -301,6 +301,8 @@ proc findKeyWithType {r type} {
 
 proc createComplexDataset {r ops {opt {}}} {
     set useexpire [expr {[lsearch -exact $opt useexpire] != -1}]
+    set usehexpire [expr {[lsearch -exact $opt usehexpire] != -1}]
+
     if {[lsearch -exact $opt usetag] != -1} {
         set tag "{t}"
     } else {
@@ -394,6 +396,10 @@ proc createComplexDataset {r ops {opt {}}} {
             {hash} {
                 randpath {{*}$r hset $k $f $v} \
                         {{*}$r hdel $k $f}
+
+                if { [{*}$r hexists $k $f] && $usehexpire && rand() < 0.5} {
+                    {*}$r hexpire $k 1000 FIELDS 1 $f
+                }
             }
         }
     }
@@ -446,8 +452,14 @@ proc csvdump r {
                 hash {
                     set fields [{*}$r hgetall $k]
                     set newfields {}
-                    foreach {k v} $fields {
-                        lappend newfields [list $k $v]
+                    foreach {f v} $fields {
+                        set expirylist [{*}$r hexpiretime $k FIELDS 1 $f]
+                        if {$expirylist eq (-1)} {
+                            lappend newfields [list $f $v]
+                        } else {
+                            set e [lindex $expirylist 0]
+                            lappend newfields [list $f $e $v] # TODO: extract the actual ttl value from the list in $e
+                        }
                     }
                     set fields [lsort -index 0 $newfields]
                     foreach kv $fields {
@@ -481,8 +493,9 @@ proc find_available_port {start count} {
             set port $start
         }
         set fd1 -1
-        if {[catch {set fd1 [socket -server 127.0.0.1 $port]}] ||
-            [catch {set fd2 [socket -server 127.0.0.1 [expr $port+10000]]}]} {
+        proc dummy_accept {chan addr port} {}
+        if {[catch {set fd1 [socket -server dummy_accept -myaddr 127.0.0.1 $port]}] ||
+            [catch {set fd2 [socket -server dummy_accept -myaddr 127.0.0.1 [expr $port+10000]]}]} {
             if {$fd1 != -1} {
                 close $fd1
             }
@@ -610,16 +623,24 @@ proc stop_bg_complex_data {handle} {
 # Write num keys with the given key prefix and value size (in bytes). If idx is
 # given, it's the index (AKA level) used with the srv procedure and it specifies
 # to which Redis instance to write the keys.
-proc populate {num {prefix key:} {size 3} {idx 0} {prints false}} {
+proc populate {num {prefix key:} {size 3} {idx 0} {prints false} {expires 0}} {
     r $idx deferred 1
     if {$num > 16} {set pipeline 16} else {set pipeline $num}
     set val [string repeat A $size]
     for {set j 0} {$j < $pipeline} {incr j} {
-        r $idx set $prefix$j $val
+        if {$expires > 0} {
+            r $idx set $prefix$j $val ex $expires
+        } else {
+            r $idx set $prefix$j $val
+        }
         if {$prints} {puts $j}
     }
     for {} {$j < $num} {incr j} {
-        r $idx set $prefix$j $val
+        if {$expires > 0} {
+            r $idx set $prefix$j $val ex $expires
+        } else {
+            r $idx set $prefix$j $val
+        }
         r $idx read
         if {$prints} {puts $j}
     }
@@ -977,6 +998,14 @@ proc wait_for_blocked_clients_count {count {maxtries 100} {delay 10} {idx 0}} {
     }
 }
 
+proc wait_for_watched_clients_count {count {maxtries 100} {delay 10} {idx 0}} {
+    wait_for_condition $maxtries $delay  {
+        [s $idx watching_clients] == $count
+    } else {
+        fail "Timeout waiting for watched clients"
+    }
+}
+
 proc read_from_aof {fp} {
     # Input fp is a blocking binary file descriptor of an opened AOF file.
     if {[gets $fp count] == -1} return ""
@@ -1173,4 +1202,29 @@ proc format_command {args} {
         append cmd "$[string length $a]\r\n$a\r\n"
     }
     set _ $cmd
+}
+# Returns whether or not the system supports stack traces
+proc system_backtrace_supported {} {
+    set system_name [string tolower [exec uname -s]]
+    if {$system_name eq {darwin}} {
+        return 1
+    } elseif {$system_name ne {linux}} {
+        return 0
+    }
+
+    # libmusl does not support backtrace. Also return 0 on
+    # static binaries (ldd exit code 1) where we can't detect libmusl
+    if {![catch {set ldd [exec ldd src/redis-server]}]} {
+        if {![string match {*libc.*musl*} $ldd]} {
+            return 1
+        }
+    }
+    return 0
+}
+
+proc generate_largevalue_test_array {} {
+    array set largevalue {}
+    set largevalue(listpack) "hello"
+    set largevalue(quicklist) [string repeat "x" 8192]
+    return [array get largevalue]
 }

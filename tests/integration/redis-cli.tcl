@@ -31,8 +31,15 @@ start_server {tags {"cli"}} {
     }
 
     proc read_cli {fd} {
+        set deadline [expr {[clock milliseconds] + 10000}]
         set ret [read $fd]
         while {[string length $ret] == 0} {
+            if {[eof $fd]} {
+                error "redis-cli closed its output before producing a response"
+            }
+            if {[clock milliseconds] >= $deadline} {
+                error "timed out waiting for redis-cli output"
+            }
             after 10
             set ret [read $fd]
         }
@@ -55,17 +62,21 @@ start_server {tags {"cli"}} {
         return $ret
     }
 
-    proc write_cli {fd buf} {
+    proc write_cli_raw {fd buf} {
         if {$::tcl_platform(platform) eq "windows"} {
             # MinGW Tcl does not flush writes reliably to a native child while
             # the duplex pipe channel is nonblocking.
             fconfigure $fd -blocking true
         }
-        puts $fd $buf
+        puts -nonewline $fd $buf
         flush $fd
         if {$::tcl_platform(platform) eq "windows"} {
             fconfigure $fd -blocking false
         }
+    }
+
+    proc write_cli {fd buf} {
+        write_cli_raw $fd "$buf\n"
     }
 
     # Helpers to run tests in interactive mode
@@ -83,6 +94,14 @@ start_server {tags {"cli"}} {
     proc run_command {fd cmd} {
         write_cli $fd $cmd
         set _ [format_output [read_cli $fd]]
+    }
+
+    file delete ./.rediscli_history_test
+    proc test_interactive_cli_with_prompt {name code} {
+        set ::env(FAKETTY_WITH_PROMPT) 1
+        set ::env(REDISCLI_HISTFILE) ".rediscli_history_test"
+        test_interactive_cli $name $code
+        unset ::env(FAKETTY_WITH_PROMPT)
     }
 
     proc test_interactive_cli {name code} {
@@ -160,6 +179,200 @@ start_server {tags {"cli"}} {
         set ::env(FAKETTY) 1
         test "Non-interactive TTY CLI: $name" $code
         unset ::env(FAKETTY)
+    }
+
+    test_interactive_cli_with_prompt "should find first search result" {
+        run_command $fd "keys one\x0D"
+        run_command $fd "keys two\x0D"
+
+        write_cli $fd "\x12" ;# CTRL+R
+        read_cli $fd
+
+        write_cli_raw $fd "ey"
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\): \x1B\[0mk\x1B\[1mey\x1B\[0ms two} $result]
+    }
+
+    test_interactive_cli_with_prompt "should find and use the first search result" {
+        set now [clock seconds]
+        run_command $fd "SET blah \"myvalue\"\x0D"
+        run_command $fd "GET blah\x0D"
+
+        write_cli $fd "\x12" ;# CTRL+R
+        read_cli $fd
+
+        write_cli_raw $fd "ET b"
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\): \x1B\[0mG\x1B\[1mET b\x1B\[0mlah} $result]
+
+        write_cli $fd "\x0D" ;# ENTER
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {.*"myvalue"\n} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should be ok if there is no result" {
+        write_cli $fd "\x12" ;# CTRL+R
+
+        set now [clock seconds]
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        set result2 [run_command $fd "keys \"$now\"\x0D"]
+        assert_equal 1 [regexp {.*(empty array).*} $result2]
+    }
+
+    test_interactive_cli_with_prompt "upon submitting search, (reverse-i-search) prompt should go away" {
+        write_cli $fd "\x12" ;# CTRL+R
+
+        set now [clock seconds]
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        set result2 [run_command $fd "keys \"$now\"\x0D"]
+
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?>} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should find second search result if user presses ctrl+r again" {
+        run_command $fd "keys one\x0D"
+        run_command $fd "keys two\x0D"
+
+        write_cli $fd "\x12" ;# CTRL+R
+        read_cli $fd
+
+        write_cli_raw $fd "ey"
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\): \x1B\[0mk\x1B\[1mey\x1B\[0ms two} $result]
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\): \x1B\[0mk\x1B\[1mey\x1B\[0ms one} $result]
+    }
+
+    test_interactive_cli_with_prompt "should find second search result if user presses ctrl+s" {
+        run_command $fd "keys one\x0D"
+        run_command $fd "keys two\x0D"
+
+        write_cli $fd "\x13" ;# CTRL+S
+        read_cli $fd
+
+        write_cli_raw $fd "ey"
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(i-search\): \x1B\[0mk\x1B\[1mey\x1B\[0ms one} $result]
+
+        write_cli $fd "\x13" ;# CTRL+S
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(i-search\): \x1B\[0mk\x1B\[1mey\x1B\[0ms two} $result]
+    }
+
+    test_interactive_cli_with_prompt "should exit reverse search if user presses ctrl+g" {
+        run_command $fd ""
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        write_cli $fd "\x07" ;# CTRL+G
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?>} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should exit reverse search if user presses up arrow" {
+        run_command $fd ""
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        write_cli $fd "\x1B\x5B\x41" ;# up arrow
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?>} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should exit reverse search if user presses right arrow" {
+        run_command $fd ""
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        write_cli $fd "\x1B\x5B\x42" ;# right arrow
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?>} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should exit reverse search if user presses down arrow" {
+        run_command $fd ""
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        write_cli $fd "\x1B\x5B\x43" ;# down arrow
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?>} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should exit reverse search if user presses left arrow" {
+        run_command $fd ""
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        write_cli $fd "\x1B\x5B\x44" ;# left arrow
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?>} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should disable and persist line if user presses tab" {
+        run_command $fd ""
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        write_cli_raw $fd "GET blah"
+        read_cli $fd
+
+        write_cli_raw $fd "\x09" ;# TAB
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?> GET blah} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should disable and persist search result if user presses tab" {
+        run_command $fd "GET one\x0D"
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        write_cli_raw $fd "one"
+        read_cli $fd
+
+        write_cli_raw $fd "\x09" ;# TAB
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?> GET one} $result2]
+    }
+
+    test_interactive_cli_with_prompt "should disable and persist line and move the cursor if user presses tab" {
+        run_command $fd ""
+
+        write_cli $fd "\x12" ;# CTRL+R
+        set result [read_cli $fd]
+        assert_equal 1 [regexp {\(reverse-i-search\):} $result]
+
+        write_cli_raw $fd "GET blah"
+        read_cli $fd
+
+        write_cli_raw $fd "\x09" ;# TAB
+        set result2 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?> GET blah} $result2]
+
+        write_cli_raw $fd "suffix"
+        set result3 [read_cli $fd]
+        assert_equal 1 [regexp {127\.0\.0\.1:[0-9]*(\[[0-9]])?> GET blahsuffix} $result3]
     }
 
     test_interactive_cli "INFO response should be printed raw" {

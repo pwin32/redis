@@ -1,31 +1,10 @@
 /* blocked.c - generic support for blocking operations like BLPOP & WAIT.
  *
- * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
+ * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- *   * Redistributions of source code must retain the above copyright notice,
- *     this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *   * Neither the name of Redis nor the names of its contributors may be used
- *     to endorse or promote products derived from this software without
- *     specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
+ * Licensed under your choice of the Redis Source Available License 2.0
+ * (RSALv2) or the Server Side Public License v1 (SSPLv1).
  *
  * ---------------------------------------------------------------------------
  *
@@ -89,6 +68,7 @@ void blockClient(client *c, int btype) {
     /* Master client should never be blocked unless pause or module */
     serverAssert(!(c->flags & CLIENT_MASTER &&
                    btype != BLOCKED_MODULE &&
+                   btype != BLOCKED_LAZYFREE &&
                    btype != BLOCKED_POSTPONE));
 
     c->flags |= CLIENT_BLOCKED;
@@ -196,6 +176,8 @@ void unblockClient(client *c, int queue_for_reprocessing) {
         c->postponed_list_node = NULL;
     } else if (c->bstate.btype == BLOCKED_SHUTDOWN) {
         /* No special cleanup. */
+    } else if (c->bstate.btype == BLOCKED_LAZYFREE) {
+        /* No special cleanup. */
     } else {
         serverPanic("Unknown btype in unblockClient().");
     }
@@ -223,11 +205,31 @@ void unblockClient(client *c, int queue_for_reprocessing) {
     if (queue_for_reprocessing) queueClientForReprocessing(c);
 }
 
+/* Check if the specified client can be safely timed out using
+ * unblockClientOnTimeout(). */
+int blockedClientMayTimeout(client *c) {
+    if (c->bstate.btype == BLOCKED_MODULE) {
+        return moduleBlockedClientMayTimeout(c);
+    }
+
+    if (c->bstate.btype == BLOCKED_LIST ||
+        c->bstate.btype == BLOCKED_ZSET ||
+        c->bstate.btype == BLOCKED_STREAM ||
+        c->bstate.btype == BLOCKED_WAIT ||
+        c->bstate.btype == BLOCKED_WAITAOF)
+    {
+        return 1;
+    }
+    return 0;
+}
+
 /* This function gets called when a blocked client timed out in order to
  * send it a reply of some kind. After this function is called,
  * unblockClient() will be called with the same client as argument. */
 void replyToBlockedClientTimedOut(client *c) {
-    if (c->bstate.btype == BLOCKED_LIST ||
+    if (c->bstate.btype == BLOCKED_LAZYFREE) {
+        addReply(c, shared.ok); /* No reason lazy-free to fail */
+    } else if (c->bstate.btype == BLOCKED_LIST ||
         c->bstate.btype == BLOCKED_ZSET ||
         c->bstate.btype == BLOCKED_STREAM) {
         addReplyNullArray(c);
@@ -284,9 +286,17 @@ void disconnectAllBlockedClients(void) {
             if (c->bstate.btype == BLOCKED_POSTPONE)
                 continue;
 
-            unblockClientOnError(c,
-                "-UNBLOCKED force unblock from blocking operation, "
-                "instance state changed (master -> replica?)");
+            if (c->bstate.btype == BLOCKED_LAZYFREE) {
+                addReply(c, shared.ok); /* No reason lazy-free to fail */
+                updateStatsOnUnblock(c, 0, 0, 0);
+                c->flags &= ~CLIENT_PENDING_COMMAND;
+                unblockClient(c, 1);
+            } else {
+
+                unblockClientOnError(c,
+                                     "-UNBLOCKED force unblock from blocking operation, "
+                                     "instance state changed (master -> replica?)");
+            }
             c->flags |= CLIENT_CLOSE_AFTER_REPLY;
         }
     }
@@ -370,7 +380,7 @@ void blockForKeys(client *c, int btype, robj **keys, int numkeys, mstime_t timeo
     list *l;
     int j;
 
-    if (!(c->flags & CLIENT_REPROCESSING_COMMAND)) {
+    if (!(c->flags & CLIENT_REEXECUTING_COMMAND)) {
         /* If the client is re-processing the command, we do not set the timeout
          * because we need to retain the client's original timeout. */
         c->bstate.timeout = timeout;
@@ -656,6 +666,7 @@ static void unblockClientOnKey(client *c, robj *key) {
      * we need to re process the command again */
     if (c->flags & CLIENT_PENDING_COMMAND) {
         c->flags &= ~CLIENT_PENDING_COMMAND;
+        c->flags |= CLIENT_REEXECUTING_COMMAND;
         /* We want the command processing and the unblock handler (see RM_Call 'K' option)
          * to run atomically, this is why we must enter the execution unit here before
          * running the command, and exit the execution unit after calling the unblock handler (if exists).
@@ -680,6 +691,8 @@ static void unblockClientOnKey(client *c, robj *key) {
         }
         exitExecutionUnit();
         afterCommand(c);
+        /* Clear the CLIENT_REEXECUTING_COMMAND flag after the proc is executed. */
+        c->flags &= ~CLIENT_REEXECUTING_COMMAND;
         server.current_client = old_client;
     }
 }
@@ -713,6 +726,9 @@ static void moduleUnblockClientOnKey(client *c, robj *key) {
  * we want to remove the pending flag to indicate we already responded to the
  * command with timeout reply. */
 void unblockClientOnTimeout(client *c) {
+    /* The client has been unlocked (in the moduleUnblocked list), return ASAP. */
+    if (c->bstate.btype == BLOCKED_MODULE && isModuleClientUnblocked(c)) return;
+
     replyToBlockedClientTimedOut(c);
     if (c->flags & CLIENT_PENDING_COMMAND)
         c->flags &= ~CLIENT_PENDING_COMMAND;
@@ -728,21 +744,6 @@ void unblockClientOnError(client *c, const char *err_str) {
     if (c->flags & CLIENT_PENDING_COMMAND)
         c->flags &= ~CLIENT_PENDING_COMMAND;
     unblockClient(c, 1);
-}
-
-/* sets blocking_keys to the total number of keys which has at least one client blocked on them
- * sets blocking_keys_on_nokey to the total number of keys which has at least one client
- * blocked on them to be written or deleted */
-void totalNumberOfBlockingKeys(unsigned long *blocking_keys, unsigned long *bloking_keys_on_nokey) {
-    unsigned long bkeys=0, bkeys_on_nokey=0;
-    for (int j = 0; j < server.dbnum; j++) {
-        bkeys += dictSize(server.db[j].blocking_keys);
-        bkeys_on_nokey += dictSize(server.db[j].blocking_keys_unblock_on_nokey);
-    }
-    if (blocking_keys)
-        *blocking_keys = bkeys;
-    if (bloking_keys_on_nokey)
-        *bloking_keys_on_nokey = bkeys_on_nokey;
 }
 
 void blockedBeforeSleep(void) {

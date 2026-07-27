@@ -89,7 +89,7 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard_C>stdc11</LanguageStandard_C>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\linenoise;$(SolutionDir)..\deps\lua\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\linenoise;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;_DEBUG;_CONSOLE;%(PreprocessorDefinitions);NO_QFORKIMPL</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
@@ -109,7 +109,7 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard_C>stdc11</LanguageStandard_C>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\linenoise;$(SolutionDir)..\deps\lua\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\linenoise;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;_DEBUG;_CONSOLE;%(PreprocessorDefinitions);NO_QFORKIMPL;_WIN32_WINNT=0x0501</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
@@ -132,7 +132,7 @@
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\linenoise;$(SolutionDir)..\deps\lua\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\linenoise;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;NDEBUG;_CONSOLE;%(PreprocessorDefinitions);NO_QFORKIMPL</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
@@ -156,7 +156,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\linenoise;$(SolutionDir)..\deps\lua\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\linenoise;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hdr_histogram</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;NDEBUG;_CONSOLE;%(PreprocessorDefinitions);NO_QFORKIMPL;_WIN32_WINNT=0x0501</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
@@ -173,6 +173,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\deps\hdr_histogram\hdr_histogram.c">
+      <PreprocessorDefinitions>HDR_MALLOC_INCLUDE=&quot;hdr_redis_malloc.h&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="..\..\deps\linenoise\linenoise.c" />
     <ClCompile Include="..\..\src\adlist.c" />
     <ClCompile Include="..\..\src\ae.c" />
@@ -201,6 +204,9 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\deps\hdr_histogram\hdr_atomic.h" />
+    <ClInclude Include="..\..\deps\hdr_histogram\hdr_histogram.h" />
+    <ClInclude Include="..\..\deps\hdr_histogram\hdr_redis_malloc.h" />
     <ClInclude Include="..\..\deps\linenoise\linenoise.h" />
     <ClInclude Include="..\..\src\cli_common.h" />
     <ClInclude Include="..\..\src\cli_commands.h" />

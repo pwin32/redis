@@ -355,10 +355,23 @@ proc test_slave_buffers {test_name cmd_count payload_len limit_memory pipeline} 
             # send some 10mb worth of commands that don't increase the memory usage
             if {$pipeline == 1} {
                 set rd_master [redis_deferring_client -1]
+                # Send commands in batches and read responses to avoid TCP deadlock.
+                # Without interleaving reads, the client's send buffer fills up when
+                # the server's output buffers are full (because we're not reading),
+                # causing flush to block indefinitely on slow machines.
+                set batch_size 10000
                 for {set k 0} {$k < $cmd_count} {incr k} {
                     $rd_master setrange key:0 0 [string repeat A $payload_len]
+                    if {($k + 1) % $batch_size == 0} {
+                        # Drain responses to prevent TCP buffer deadlock
+                        for {set j 0} {$j < $batch_size} {incr j} {
+                            $rd_master read
+                        }
+                    }
                 }
-                for {set k 0} {$k < $cmd_count} {incr k} {
+                # Read any remaining responses
+                set remaining [expr {$cmd_count % $batch_size}]
+                for {set k 0} {$k < $remaining} {incr k} {
                     $rd_master read
                 }
             } else {
@@ -421,11 +434,16 @@ start_server {tags {"maxmemory external:skip"}} {
         r config set maxmemory-policy allkeys-random
 
         # Next rehash size is 8192, that will eat 64k memory
-        populate 4096 "" 1
+        populate 4095 "" 1
 
         set used [s used_memory]
         set limit [expr {$used + 10*1024}]
         r config set maxmemory $limit
+
+        # Adding a key to meet the 1:1 radio.
+        r set k0 v0
+        # The dict has reached 4096, it can be resized in tryResizeHashTables in cron,
+        # or we add a key to let it check whether it can be resized.
         r set k1 v1
         # Next writing command will trigger evicting some keys if last
         # command trigger DB dict rehash
