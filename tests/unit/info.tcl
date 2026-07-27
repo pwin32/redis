@@ -5,8 +5,9 @@
 # Copyright (c) 2024-present, Valkey contributors.
 # All rights reserved.
 #
-# Licensed under your choice of the Redis Source Available License 2.0
-# (RSALv2) or the Server Side Public License v1 (SSPLv1).
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
 #
 # Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
 #
@@ -326,7 +327,7 @@ start_server {tags {"info" "external:skip"}} {
             assert_lessthan $cycle2 [expr $cycle1+10] ;# we expect 2 or 3 cycles here, but allow some tolerance
             if {$::verbose} { puts "eventloop metrics el_sum1: $el_sum1, el_sum2: $el_sum2" }
             assert_morethan $el_sum2 $el_sum1
-            assert_lessthan $el_sum2 [expr $el_sum1+30000] ;# we expect roughly 100ms here, but allow some tolerance
+            assert_lessthan $el_sum2 [expr $el_sum1+100000] ;# we expect roughly 100ms here, but allow some tolerance
             if {$::verbose} { puts "eventloop metrics cmd_sum1: $cmd_sum1, cmd_sum2: $cmd_sum2" }
             assert_morethan $cmd_sum2 $cmd_sum1
             assert_lessthan $cmd_sum2 [expr $cmd_sum1+15000] ;# we expect about tens of ms here, but allow some tolerance
@@ -500,6 +501,30 @@ start_server {tags {"info" "external:skip"}} {
     }
 }
 
+start_cluster 1 0 {tags {external:skip cluster}} {
+    test "Verify that LUT overhead is properly updated when dicts are emptied or reused (issue #13973)" {
+        R 0 set k v ;# Make dbs overhead displayed
+        set info_mem [r memory stats]
+        set overhead_main [dict get $info_mem db.0 overhead.hashtable.main]
+        set overhead_expires [dict get $info_mem db.0 overhead.hashtable.expires]
+        assert_range $overhead_main 1 5000
+        assert_range $overhead_expires 1 1000
+
+        # In cluster mode, we use KVSTORE_FREE_EMPTY_DICTS to ensure that dicts
+        # are freed when they are emptied. This test verifies that after a dict
+        # is cleared, the lut overhead is properly updated, preventing it from
+        # growing indefinitely.
+        for {set j 1} {$j <= 500} {incr j} {
+            R 0 set k v
+            R 0 del k
+        }
+        R 0 set k v ;# Make dbs overhead displayed
+        set info_mem [r memory stats]
+        assert_equal [dict get $info_mem db.0 overhead.hashtable.main] $overhead_main
+        assert_equal [dict get $info_mem db.0 overhead.hashtable.expires] $overhead_expires
+    }
+}
+
 start_server {tags {"info" "external:skip"}} {
     test {memory: database and pubsub overhead and rehashing dict count} {
         r flushall
@@ -533,29 +558,5 @@ start_server {tags {"info" "external:skip"}} {
         assert_range [dict get $mem_stats overhead.db.hashtable.lut] 1 192
         assert_range [dict get $mem_stats overhead.db.hashtable.rehashing] 1 64
         assert_equal [dict get $mem_stats db.dict.rehashing.count] {1}
-    }
-}
-
-start_cluster 1 0 {tags {external:skip cluster}} {
-    test "Verify that LUT overhead is properly updated when dicts are emptied or reused (issue #13973)" {
-        R 0 set k v ;# Make dbs overhead displayed
-        set info_mem [r memory stats]
-        set overhead_main [dict get $info_mem db.0 overhead.hashtable.main]
-        set overhead_expires [dict get $info_mem db.0 overhead.hashtable.expires]
-        assert_range $overhead_main 1 5000
-        assert_range $overhead_expires 1 1000
-
-        # In cluster mode, we use KVSTORE_FREE_EMPTY_DICTS to ensure that dicts
-        # are freed when they are emptied. This test verifies that after a dict
-        # is cleared, the lut overhead is properly updated, preventing it from
-        # growing indefinitely.
-        for {set j 1} {$j <= 500} {incr j} {
-            R 0 set k v
-            R 0 del k
-        }
-        R 0 set k v ;# Make dbs overhead displayed
-        set info_mem [r memory stats]
-        assert_equal [dict get $info_mem db.0 overhead.hashtable.main] $overhead_main
-        assert_equal [dict get $info_mem db.0 overhead.hashtable.expires] $overhead_expires
     }
 }

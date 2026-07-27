@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -355,7 +356,12 @@ int isWatchedKeyExpired(client *c) {
 }
 
 /* "Touch" a key, so that if this key is being WATCHed by some client the
- * next EXEC will fail. */
+ * next EXEC will fail.
+ *
+ * Sanitizer suppression: IO threads also read c->flags, but never modify
+ * it or read the CLIENT_DIRTY_CAS bit, main thread just only modifies
+ * this bit, so there is actually no real data race. */
+REDIS_NO_SANITIZE("thread")
 void touchWatchedKey(redisDb *db, robj *key) {
     list *clients;
     listIter li;
@@ -404,6 +410,7 @@ void touchWatchedKey(redisDb *db, robj *key) {
  * replaced_with: for SWAPDB, the WATCH should be invalidated if
  * the key exists in either of them, and skipped only if it
  * doesn't exist in both. */
+REDIS_NO_SANITIZE("thread")
 void touchAllWatchedKeysInDb(redisDb *emptied, redisDb *replaced_with) {
     listIter li;
     listNode *ln;

@@ -3,8 +3,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -359,7 +360,15 @@ void incrRefCount(robj *o) {
 }
 
 void decrRefCount(robj *o) {
-    if (o->refcount == 1) {
+    if (o->refcount == OBJ_SHARED_REFCOUNT)
+        return; /* Nothing to do: this refcount is immutable. */
+
+    if (unlikely(o->refcount <= 0)) {
+        serverPanic("illegal decrRefCount for object with: type %u, encoding %u, refcount %d",
+            o->type, o->encoding, o->refcount);
+    }
+
+    if (--(o->refcount) == 0) {
         switch(o->type) {
         case OBJ_STRING: freeStringObject(o); break;
         case OBJ_LIST: freeListObject(o); break;
@@ -371,9 +380,6 @@ void decrRefCount(robj *o) {
         default: serverPanic("Unknown object type"); break;
         }
         zfree(o);
-    } else {
-        if (o->refcount <= 0) serverPanic("decrRefCount against refcount <= 0");
-        if (o->refcount != OBJ_SHARED_REFCOUNT) o->refcount--;
     }
 }
 
@@ -680,6 +686,18 @@ robj *tryObjectEncoding(robj *o) {
     return tryObjectEncodingEx(o, 1);
 }
 
+size_t getObjectLength(robj *o) {
+    switch(o->type) {
+        case OBJ_STRING: return stringObjectLen(o);
+        case OBJ_LIST: return listTypeLength(o);
+        case OBJ_SET: return setTypeSize(o);
+        case OBJ_ZSET: return zsetLength(o);
+        case OBJ_HASH: return hashTypeLength(o, 0);
+        case OBJ_STREAM: return streamLength(o);
+        default: return 0;
+    }
+}
+
 /* Get a decoded version of an encoded object (returned as a new object).
  * If the object is already raw-encoded just increment the ref count. */
 robj *getDecodedObject(robj *o) {
@@ -976,7 +994,7 @@ size_t objectComputeSize(robj *key, robj *o, size_t sample_size, int dbid) {
     dict *d;
     dictIterator *di;
     struct dictEntry *de;
-    size_t asize = 0, elesize = 0, samples = 0;
+    size_t asize = 0, elesize = 0, elecount = 0, samples = 0;
 
     if (o->type == OBJ_STRING) {
         if(o->encoding == OBJ_ENCODING_INT) {
@@ -995,9 +1013,10 @@ size_t objectComputeSize(robj *key, robj *o, size_t sample_size, int dbid) {
             asize = sizeof(*o)+sizeof(quicklist);
             do {
                 elesize += sizeof(quicklistNode)+zmalloc_size(node->entry);
+                elecount += node->count;
                 samples++;
             } while ((node = node->next) && samples < sample_size);
-            asize += (double)elesize/samples*ql->len;
+            asize += (double)elesize/elecount*ql->count;
         } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
             asize = sizeof(*o)+zmalloc_size(o->ptr);
         } else {
@@ -1197,6 +1216,9 @@ struct redisMemOverhead *getMemoryOverheadData(void) {
             server.repl_backlog->blocks_index->numnodes * sizeof(raxNode) +
             raxSize(server.repl_backlog->blocks_index) * sizeof(void*);
     }
+
+    mh->replica_fullsync_buffer = server.repl_full_sync_buffer.mem_used;
+    mem_total += mh->replica_fullsync_buffer;
     mem_total += mh->repl_backlog;
     mem_total += mh->clients_slaves;
 
@@ -1218,11 +1240,15 @@ struct redisMemOverhead *getMemoryOverheadData(void) {
     mh->aof_buffer = mem;
     mem_total+=mem;
 
-    mem = evalScriptsMemory();
-    mh->lua_caches = mem;
+    mem = evalScriptsMemoryEngine();
+    mh->eval_caches = mem;
     mem_total+=mem;
-    mh->functions_caches = functionsMemoryOverhead();
+    mh->functions_caches = functionsMemoryEngine();
     mem_total+=mh->functions_caches;
+
+    mh->script_vm = evalScriptsMemoryVM();
+    mh->script_vm += functionsMemoryVM();
+    mem_total+=mh->script_vm;
 
     for (j = 0; j < server.dbnum; j++) {
         redisDb *db = server.db+j;
@@ -1544,7 +1570,7 @@ NULL
     } else if (!strcasecmp(c->argv[1]->ptr,"stats") && c->argc == 2) {
         struct redisMemOverhead *mh = getMemoryOverheadData();
 
-        addReplyMapLen(c,31+mh->num_dbs);
+        addReplyMapLen(c,33+mh->num_dbs);
 
         addReplyBulkCString(c,"peak.allocated");
         addReplyLongLong(c,mh->peak_allocated);
@@ -1557,6 +1583,9 @@ NULL
 
         addReplyBulkCString(c,"replication.backlog");
         addReplyLongLong(c,mh->repl_backlog);
+
+        addReplyBulkCString(c,"replica.fullsync.buffer");
+        addReplyLongLong(c,mh->replica_fullsync_buffer);
 
         addReplyBulkCString(c,"clients.slaves");
         addReplyLongLong(c,mh->clients_slaves);
@@ -1571,10 +1600,13 @@ NULL
         addReplyLongLong(c,mh->aof_buffer);
 
         addReplyBulkCString(c,"lua.caches");
-        addReplyLongLong(c,mh->lua_caches);
+        addReplyLongLong(c,mh->eval_caches);
 
         addReplyBulkCString(c,"functions.caches");
         addReplyLongLong(c,mh->functions_caches);
+
+        addReplyBulkCString(c,"script.VMs");
+        addReplyLongLong(c,mh->script_vm);
 
         for (size_t j = 0; j < mh->num_dbs; j++) {
             char dbname[32];

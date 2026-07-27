@@ -2,8 +2,9 @@
  * Copyright (c) 2021-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 /* This file implements the interface of logging clients' requests and
@@ -86,7 +87,7 @@ static size_t reqresAppendBuffer(client *c, void *buf, size_t len) {
 
 static size_t reqresAppendArg(client *c, char *arg, size_t arg_len) {
     char argv_len_buf[LONG_STR_SIZE];
-    size_t argv_len_buf_len = ll2string(argv_len_buf,sizeof(argv_len_buf),(long)arg_len);
+    size_t argv_len_buf_len = ll2string(argv_len_buf,sizeof(argv_len_buf),(long long)arg_len);
     size_t ret = reqresAppendBuffer(c, argv_len_buf, argv_len_buf_len);
     ret += reqresAppendBuffer(c, "\r\n", 2);
     ret += reqresAppendBuffer(c, arg, arg_len);
@@ -187,7 +188,7 @@ size_t reqresAppendRequest(client *c) {
             ret += reqresAppendArg(c, argv[i]->ptr, sdslen(argv[i]->ptr));
         } else if (argv[i]->encoding == OBJ_ENCODING_INT) {
             char buf[LONG_STR_SIZE];
-            size_t len = ll2string(buf,sizeof(buf),(long)argv[i]->ptr);
+            size_t len = ll2string(buf,sizeof(buf),(long long)(intptr_t)argv[i]->ptr);
             ret += reqresAppendArg(c, buf, len);
         } else {
             serverPanic("Wrong encoding in reqresAppendRequest()");

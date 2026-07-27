@@ -5,8 +5,9 @@
  * Copyright (c) 2024-present, Valkey contributors.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  *
  * Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
  */
@@ -148,10 +149,12 @@ typedef enum {
     CLUSTERMSG_EXT_TYPE_HUMAN_NODENAME,
     CLUSTERMSG_EXT_TYPE_FORGOTTEN_NODE,
     CLUSTERMSG_EXT_TYPE_SHARDID,
+    CLUSTERMSG_EXT_TYPE_INTERNALSECRET,
 } clusterMsgPingtypes;
 
 /* Helper function for making sure extensions are eight byte aligned. */
 #define EIGHT_BYTE_ALIGN(size) ((((size) + 7) / 8) * 8)
+#define CLUSTER_INTERNALSECRETLEN 40      /* sha1 hex length */
 
 typedef struct {
     char hostname[1]; /* The announced hostname, ends with \0. */
@@ -173,6 +176,10 @@ typedef struct {
 } clusterMsgPingExtShardId;
 
 typedef struct {
+    char internal_secret[CLUSTER_INTERNALSECRETLEN]; /* Current shard internal secret */
+} clusterMsgPingExtInternalSecret;
+
+typedef struct {
     uint32_t length; /* Total length of this extension message (including this header) */
     uint16_t type; /* Type of this extension message (see clusterMsgPingExtTypes) */
     uint16_t unused; /* 16 bits of padding to make this structure 8 byte aligned. */
@@ -181,6 +188,7 @@ typedef struct {
         clusterMsgPingExtHumanNodename human_nodename;
         clusterMsgPingExtForgottenNode forgotten_node;
         clusterMsgPingExtShardId shard_id;
+        clusterMsgPingExtInternalSecret internal_secret;
     } ext[]; /* Actual extension information, formatted so that the data is 8
               * byte aligned, regardless of its content. */
 } clusterMsgPingExt;
@@ -224,7 +232,7 @@ typedef struct {
     uint16_t ver;       /* Protocol version, currently set to 1. */
     uint16_t port;      /* Primary port number (TCP or TLS). */
     uint16_t type;      /* Message type */
-    uint16_t count;     /* Only used for some kind of messages. */
+    uint16_t count;     /* Only used for some kinds of messages. */
     uint64_t currentEpoch;  /* The epoch accordingly to the sending node. */
     uint64_t configEpoch;   /* The config epoch if it's a master, or the last
                                epoch advertised by its master if it is a
@@ -251,8 +259,8 @@ typedef struct {
  * especially during cluster rolling upgrades.
  *
  * Therefore, fields in this struct should remain at the same offset from
- * release to release. The static asserts below ensures that incompatible
- * changes in clusterMsg be caught at compile time.
+ * release to release. The static asserts below ensure that incompatible
+ * changes in clusterMsg are caught at compile time.
  */
 
 static_assert(offsetof(clusterMsg, sig) == 0, "unexpected field offset");
@@ -333,6 +341,7 @@ struct clusterState {
     clusterNode *migrating_slots_to[CLUSTER_SLOTS];
     clusterNode *importing_slots_from[CLUSTER_SLOTS];
     clusterNode *slots[CLUSTER_SLOTS];
+    char internal_secret[CLUSTER_INTERNALSECRETLEN];
     /* The following fields are used to take the slave state on elections. */
     mstime_t failover_auth_time; /* Time of previous or next election. */
     int failover_auth_count;    /* Number of votes received so far. */

@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -533,7 +534,7 @@ CallReply *callReplyCreateError(sds reply, void *private_data) {
         sdsfree(reply);
     }
     list *deferred_error_list = listCreate();
-    listSetFreeMethod(deferred_error_list, (void (*)(void*))sdsfree);
+    listSetFreeMethod(deferred_error_list, sdsfreegeneric);
     listAddNodeTail(deferred_error_list, sdsnew(err_buff));
     return callReplyCreate(err_buff, deferred_error_list, private_data);
 }

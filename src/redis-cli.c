@@ -3,8 +3,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifdef _WIN32
@@ -3215,7 +3216,7 @@ static void usage(int err) {
 "  -i <interval>      When -r is used, waits <interval> seconds per command.\n"
 "                     It is possible to specify sub-second times like -i 0.1.\n"
 "                     This interval is also used in --scan and --stat per cycle.\n"
-"                     and in --bigkeys, --memkeys, and --hotkeys per 100 cycles.\n"
+"                     and in --bigkeys, --memkeys, --keystats, and --hotkeys per 100 cycles.\n"
 "  -n <db>            Database number.\n"
 "  -2                 Start session in RESP2 protocol mode.\n"
 "  -3                 Start session in RESP3 protocol mode.\n"
@@ -3278,9 +3279,10 @@ version,tls_usage);
 "  --hotkeys          Sample Redis keys looking for hot keys.\n"
 "                     only works when maxmemory-policy is *lfu.\n"
 "  --scan             List all keys using the SCAN command.\n"
-"  --pattern <pat>    Keys pattern when using the --scan, --bigkeys or --hotkeys\n"
-"                     options (default: *).\n"
-"  --count <count>    Count option when using the --scan, --bigkeys or --hotkeys (default: 10).\n"
+"  --pattern <pat>    Keys pattern when using the --scan, --bigkeys, --memkeys,\n"
+"                     --keystats or --hotkeys options (default: *).\n"
+"  --count <count>    Count option when using the --scan, --bigkeys, --memkeys,\n"
+"                     --keystats or --hotkeys (default: 10).\n"
 "  --quoted-pattern <pat> Same as --pattern, but the specified string can be\n"
 "                         quoted, in order to pass an otherwise non binary-safe string.\n"
 "  --intrinsic-latency <sec> Run a test to measure intrinsic system latency.\n"
@@ -3361,6 +3363,9 @@ static int issueCommandRepeat(int argc, char **argv, long repeat) {
                 config.cluster_reissue_command = 0;
                 return REDIS_ERR;
             }
+            /* Reset dbnum after reconnecting so we can re-select the previous db in cliSelect(). */
+            config.dbnum = 0;
+            cliSelect();
         }
         config.cluster_reissue_command = 0;
         if (config.cluster_send_asking) {
@@ -3788,6 +3793,8 @@ static int evalMode(int argc, char **argv) {
         /* Call it */
         int eval_ldb = config.eval_ldb; /* Save it, may be reverted. */
         retval = issueCommand(argc+3-got_comma, argv2);
+        for (j = 0; j < argc+3-got_comma; j++) sdsfree(argv2[j]);
+        zfree(argv2);
         if (eval_ldb) {
             if (!config.eval_ldb) {
                 /* If the debugging session ended immediately, there was an
@@ -6156,6 +6163,7 @@ static clusterManagerNode *clusterManagerNodeMasterRandom(void) {
     }
     /* Can not be reached */
     assert(0);
+    return NULL;
 }
 
 static int clusterManagerFixSlotsCoverage(char *all_slots) {
@@ -6188,6 +6196,7 @@ static int clusterManagerFixSlotsCoverage(char *all_slots) {
                 if (!clusterManagerCheckRedisReply(n, reply, NULL)) {
                     fixed = -1;
                     if (reply) freeReplyObject(reply);
+                    if (slot_nodes) listRelease(slot_nodes);
                     goto cleanup;
                 }
                 assert(reply->type == REDIS_REPLY_ARRAY);

@@ -3,8 +3,9 @@
 # Copyright (C) 2014-Present, Redis Ltd.
 # All Rights reserved.
 #
-# Licensed under your choice of the Redis Source Available License 2.0
-# (RSALv2) or the Server Side Public License v1 (SSPLv1).
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
 
 # Track cluster configuration as created by create_cluster below
 set ::cluster_master_nodes 0
@@ -95,6 +96,31 @@ proc assert_cluster_state {state} {
         } else {
             fail "Cluster node $id cluster_state:[CI $id cluster_state]"
         }
+    }
+
+    wait_for_secrets_match 50 100
+}
+
+proc num_unique_secrets {} {
+    set secrets [list]
+    foreach_redis_id id {
+        if {[instance_is_killed redis $id]} continue
+        lappend secrets [R $id debug internal_secret]
+    }
+    set num_secrets [llength [lsort -unique $secrets]]
+    return $num_secrets
+}
+
+# Check that cluster nodes agree about "state", or raise an error.
+proc assert_secrets_match {} {
+    assert_equal {1} [num_unique_secrets]
+}
+
+proc wait_for_secrets_match {maxtries delay} {
+    wait_for_condition $maxtries $delay {
+        [num_unique_secrets] eq 1
+    } else {
+        fail "Failed waiting for secrets to sync"
     }
 }
 
@@ -188,9 +214,11 @@ proc cluster_config_consistent {} {
     for {set j 0} {$j < $::cluster_master_nodes + $::cluster_replica_nodes} {incr j} {
         if {$j == 0} {
             set base_cfg [R $j cluster slots]
+            set base_secret [R $j debug internal_secret]
         } else {
             set cfg [R $j cluster slots]
-            if {$cfg != $base_cfg} {
+            set secret [R $j debug internal_secret]
+            if {$cfg != $base_cfg || $secret != $base_secret} {
                 return 0
             }
         }

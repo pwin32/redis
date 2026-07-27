@@ -885,6 +885,62 @@ test {corrupt payload: fuzzer findings - set with duplicate elements causes sdif
     }
 } {} {logreqres:skip} ;# This test violates {"uniqueItems": true}
 
+test {corrupt payload: fuzzer findings - set with invalid length causes smembers to hang} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        # In the past, it generated a broken protocol and left the client hung in smembers
+        r config set sanitize-dump-payload no
+        assert_equal {OK} [r restore _set 0 "\x14\x16\x16\x00\x00\x00\x0c\x00\x81\x61\x02\x81\x62\x02\x81\x63\x02\x01\x01\x02\x01\x03\x01\xff\x0c\x00\x91\x00\x56\x73\xc1\x82\xd5\xbd" replace]
+        assert_encoding listpack _set
+        catch { r SMEMBERS _set } err
+        assert_equal [count_log_message 0 "crashed by signal"] 0
+        assert_equal [count_log_message 0 "ASSERTION FAILED"] 1
+    }
+}
+
+test {corrupt payload: fuzzer findings - set with invalid length causes sscan to hang} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        # In the past, it generated a broken protocol and left the client hung in smembers
+        r config set sanitize-dump-payload no
+        assert_equal {OK} [r restore _set 0 "\x14\x16\x16\x00\x00\x00\x0c\x00\x81\x61\x02\x81\x62\x02\x81\x63\x02\x01\x01\x02\x01\x03\x01\xff\x0c\x00\x91\x00\x56\x73\xc1\x82\xd5\xbd" replace]
+        assert_encoding listpack _set
+        catch { r SSCAN _set 0 } err
+        assert_equal [count_log_message 0 "crashed by signal"] 0
+        assert_equal [count_log_message 0 "ASSERTION FAILED"] 1
+    }
+}
+
+test {corrupt payload: zset listpack encoded with invalid length causes zscan to hang} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        r config set sanitize-dump-payload no
+        assert_equal {OK} [r restore _zset 0 "\x11\x16\x16\x00\x00\x00\x1a\x00\x81\x61\x02\x01\x01\x81\x62\x02\x02\x01\x81\x63\x02\x03\x01\xff\x0c\x00\x81\xa7\xcd\x31\x22\x6c\xef\xf7" replace]
+        assert_encoding listpack _zset
+        catch { r ZSCAN _zset 0 } err
+        assert_equal [count_log_message 0 "crashed by signal"] 0
+        assert_equal [count_log_message 0 "ASSERTION FAILED"] 1
+    }
+}
+
+test {corrupt payload: hash listpack encoded with invalid length causes hscan to hang} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        r config set sanitize-dump-payload no
+        assert_equal {OK} [r restore _hash 0 "\x10\x17\x17\x00\x00\x00\x0e\x00\x82\x66\x31\x03\x82\x76\x31\x03\x82\x66\x32\x03\x82\x76\x32\x03\xff\x0c\x00\xf1\xc5\x36\x92\x29\x6a\x8c\xc5" replace]
+        assert_encoding listpack _hash
+        catch { r HSCAN _hash 0 } err
+        assert_equal [count_log_message 0 "crashed by signal"] 0
+        assert_equal [count_log_message 0 "ASSERTION FAILED"] 1
+    }
+}
+
+test {corrupt payload: fuzzer findings - vector sets with wrong encoding} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        r config set sanitize-dump-payload yes
+        r debug set-skip-checksum-validation 1
+        catch {r restore _key 0 "\x07\x81\xBD\xE7\x2D\xA2\xBB\x1E\xB4\x00\x02\x03\x02\x03\x02\x50\x8F\x02\x00\x05\xC0\x02\x05\x03\x7F\x7F\x7F\x02\x07\x02\x03\x02\x00\x02\x02\x02\x20\x02\x01\x02\x02\x02\x81\x3F\x13\xCD\x3A\x3F\xDD\xB3\xD7\x05\xC0\x01\x05\x03\x7F\x7F\x7F\x02\x0B\x02\x02\x02\x02\x02\x02\x02\x20\x02\x01\x02\x03\x02\x06\x02\x10\x02\x00\x02\x10\x02\x81\x3F\x13\xCD\x3A\x3F\xDD\xB3\xD7\x05\xC0\x00\x05\x03\x7F\x7F\x7F\x02\x07\x02\x01\x02\x00\x02\x02\x02\x20\x02\x02\x02\x03\x02\x81\x3F\x13\xCD\x3A\x3F\xDD\xB3\xD7\x00\x0C\x00\xC6\xA3\x70\x40\x02\x26\xE8\x9B"} err
+        assert_match "*Bad data format*" $err
+        r ping
+    }
+}
+
 test {corrupt payload: zipmap - element wouldn't fit in listpack} {
     # Redis converts legacy zipmap encoded hashes to listpacks.
     # This test creates a zipmap entry with a 1GB value which cannot
@@ -983,5 +1039,5 @@ test {corrupt payload: stream with NACK shared between two consumers} {
         r ping
     }
 }
-} ;# tags
 
+} ;# tags

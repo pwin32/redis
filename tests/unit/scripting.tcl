@@ -2051,20 +2051,15 @@ start_server {tags {"scripting"}} {
         r script flush
         r function flush
 
-        # This is a best-effort test to check we don't leak some resources on
-        # script flush and function flush commands. Non-QFork builds create a
-        # private jemalloc thread cache for each Lua VM; Windows QFork uses the
-        # dedicated Lua arena without that tcache. Run many flushes to verify
-        # memory does not grow while the Lua VM resources are recreated.
+        # This is a best-effort test to check we don't leak resources on script
+        # and function flush. Non-QFork builds create a private jemalloc thread
+        # cache for each Lua VM; Windows QFork uses the dedicated Lua arena
+        # without that tcache. Run many flushes while the VM is recreated.
         if {$::tcl_platform(platform) eq "windows"} {
             after 120 ;# serverCron refreshes allocator statistics every 100 ms.
         }
         set used_memory [s used_memory]
         if {$::tcl_platform(platform) eq "windows"} {
-            # QFork uses MALLOCX_TCACHE_NONE for Lua and its coarse external
-            # heap pages make the all-arena allocator metric fluctuate between
-            # otherwise identical processes. Check the dedicated Lua arena,
-            # which covers the live allocations relevant to this port.
             set allocator_allocated [getInfoProperty [r info debug] allocator_allocated_lua]
         } else {
             set allocator_allocated [s allocator_allocated]
@@ -2285,6 +2280,14 @@ start_server {tags {"scripting"}} {
             } 1 x
 
             r replicaof [srv -1 host] [srv -1 port]
+
+            # To avoid -LOADING reply, wait until replica syncs with master.
+            wait_for_condition 50 100 {
+                [s master_link_status] eq {up}
+            } else {
+                fail "Replica did not sync in time."
+            }
+
             assert_error {EXECABORT Transaction discarded because of: READONLY *} {$rr exec}
             assert_error {READONLY You can't write against a read only replica. script: *} {$rr2 exec}
             $rr close

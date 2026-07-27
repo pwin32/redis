@@ -6,8 +6,9 @@
 # Copyright (C) 2014-Present, Redis Ltd.
 # All Rights reserved.
 #
-# Licensed under your choice of the Redis Source Available License 2.0
-# (RSALv2) or the Server Side Public License v1 (SSPLv1).
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
 
 package require Tcl 8.5
 
@@ -234,7 +235,8 @@ proc stop_instance pid {
         # validates that the process belongs to this test tree before acting.
         catch {kill_proc2 $pid}
     } else {
-        # Node might have been stopped in the test.
+        # Node might have been stopped in the test. Send SIGCONT before
+        # SIGTERM, otherwise shutdown may be slow with ASAN.
         catch {exec kill -SIGCONT $pid}
         catch {exec kill $pid}
     }

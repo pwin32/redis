@@ -30,6 +30,7 @@
 
 #include "fmacros.h"
 #include "fpconv_dtoa.h"
+#include "fast_float_strtod.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -56,6 +57,13 @@
 #include "config.h"
 
 #define UNUSED(x) ((void)(x))
+
+/* Selectively define static_assert. Attempt to avoid include server.h in this file. */
+#ifndef static_assert
+#define static_assert(expr, lit) extern char __static_assert_failure[(expr) ? 1:-1]
+#endif
+
+static_assert(UINTPTR_MAX == 0xffffffffffffffff || UINTPTR_MAX == 0xffffffff, "Unsupported pointer size");
 
 /* Glob-style pattern matching. */
 static int stringmatchlen_impl(const char *pattern, int patternLen,
@@ -105,23 +113,23 @@ static int stringmatchlen_impl(const char *pattern, int patternLen,
 
             pattern++;
             patternLen--;
-            not = pattern[0] == '^';
+            not = patternLen && pattern[0] == '^';
             if (not) {
                 pattern++;
                 patternLen--;
             }
             match = 0;
             while(1) {
-                if (pattern[0] == '\\' && patternLen >= 2) {
+                if (patternLen >= 2 && pattern[0] == '\\') {
                     pattern++;
                     patternLen--;
                     if (pattern[0] == string[0])
                         match = 1;
-                } else if (pattern[0] == ']') {
-                    break;
                 } else if (patternLen == 0) {
                     pattern--;
                     patternLen++;
+                    break;
+                } else if (pattern[0] == ']') {
                     break;
                 } else if (patternLen >= 3 && pattern[1] == '-') {
                     int start = pattern[0];
@@ -182,7 +190,7 @@ static int stringmatchlen_impl(const char *pattern, int patternLen,
         pattern++;
         patternLen--;
         if (stringLen == 0) {
-            while(*pattern == '*') {
+            while(patternLen && *pattern == '*') {
                 pattern++;
                 patternLen--;
             }
@@ -194,6 +202,43 @@ static int stringmatchlen_impl(const char *pattern, int patternLen,
     return 0;
 }
 
+/*
+ * glob-style pattern matching to check if a given pattern fully includes
+ * the prefix of a string. For the match to succeed, the pattern must end with
+ * an unescaped '*' character.
+ *
+ * Returns: 1 if the `pattern` fully matches the `prefixStr`. Returns 0 otherwise.
+ */
+int prefixmatch(const char *pattern, int patternLen,
+                const char *prefixStr, int prefixStrLen, int nocase) {
+    int skipLongerMatches = 0;
+
+    /* Step 1: Verify if the pattern matches the prefix string completely. */
+    if (!stringmatchlen_impl(pattern, patternLen, prefixStr, prefixStrLen, nocase, &skipLongerMatches, 0))
+        return 0;
+
+    /* Step 2: Verify that the pattern ends with an unescaped '*', indicating
+     * it can match any suffix of the string beyond the prefix. This check
+     * remains outside stringmatchlen_impl() to keep its complexity manageable.
+     */
+    if (patternLen == 0 || pattern[patternLen - 1] != '*' )
+        return 0;
+
+    /* Count backward the number of consecutive backslashes preceding the '*'
+     * to determine if the '*' is escaped. */
+    int backslashCount = 0;
+    for (int i = patternLen - 2; i >= 0; i--) {
+        if (pattern[i] == '\\')
+            ++backslashCount;
+        else
+            break; /* Stop counting when a non-backslash character is found. */
+    }
+
+    /* Return 1 if the '*' is not escaped (i.e., even count), 0 otherwise. */
+    return (backslashCount % 2 == 0);
+}
+
+/* Glob-style pattern matching to a string. */
 int stringmatchlen(const char *pattern, int patternLen,
         const char *string, int stringLen, int nocase) {
     int skipLongerMatches = 0;
@@ -619,13 +664,22 @@ int string2ld(const char *s, size_t slen, long double *dp) {
 int string2d(const char *s, size_t slen, double *dp) {
     errno = 0;
     char *eptr;
-    *dp = strtod(s, &eptr);
-    if (slen == 0 ||
-        isspace(((const char*)s)[0]) ||
-        (size_t)(eptr-(char*)s) != slen ||
+    /* Fast path to reject empty strings, or strings starting by space explicitly */
+    if (unlikely(slen == 0 ||
+        isspace(((const char*)s)[0])))
+        return 0;
+    *dp = fast_float_strtod(s, &eptr);
+    /* If `fast_float_strtod` didn't consume full input, try `strtod`
+     * Given fast_float does not support hexadecimal strings representation */
+    if (unlikely((size_t)(eptr - (char*)s) != slen)) {
+        char *fallback_eptr;
+        *dp = strtod(s, &fallback_eptr);
+        if ((size_t)(fallback_eptr - (char*)s) != slen) return 0;
+    }
+    if (unlikely(errno == EINVAL ||
         (errno == ERANGE &&
             (*dp == HUGE_VAL || *dp == -HUGE_VAL || fpclassify(*dp) == FP_ZERO)) ||
-        isnan(*dp))
+        isnan(*dp)))
         return 0;
     return 1;
 }
@@ -1524,6 +1578,63 @@ static void test_string2l(void) {
 #endif
 }
 
+static void test_string2d(void) {
+    char buf[1024];
+    double v;
+
+    /* Valid hexadecimal value. */
+    redis_strlcpy(buf,"0x0p+0",sizeof(buf));
+    assert(string2d(buf,strlen(buf),&v) == 1);
+    assert(v == 0.0);
+
+    redis_strlcpy(buf,"0x1p+0",sizeof(buf));
+    assert(string2d(buf,strlen(buf),&v) == 1);
+    assert(v == 1.0);
+
+    /* Valid floating-point numbers */
+    redis_strlcpy(buf, "1.5", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 1);
+    assert(v == 1.5);
+
+    redis_strlcpy(buf, "-3.14", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 1);
+    assert(v == -3.14);
+
+    redis_strlcpy(buf, "2.0e10", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 1);
+    assert(v == 2.0e10);
+
+    redis_strlcpy(buf, "1e-3", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 1);
+    assert(v == 0.001);
+
+    /* Valid integer */
+    redis_strlcpy(buf, "42", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 1);
+    assert(v == 42.0);
+
+    /* Invalid cases */
+    /* Empty. */
+    redis_strlcpy(buf, "", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 0);
+
+    /* Starting by space. */
+    redis_strlcpy(buf, " 1.23", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 0);
+
+    /* Invalid hexadecimal format. */
+    redis_strlcpy(buf, "0x1.2g", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 0);
+
+    /* Hexadecimal NaN */
+    redis_strlcpy(buf, "0xNan", sizeof(buf));
+    assert(string2d(buf, strlen(buf), &v) == 0);
+
+    /* overflow. */
+    redis_strlcpy(buf,"23456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789",sizeof(buf));
+    assert(string2d(buf,strlen(buf),&v) == 0);
+}
+
 static void test_ll2string(void) {
     char buf[32];
     long long v;
@@ -1682,6 +1793,7 @@ int utilTest(int argc, char **argv, int flags) {
 
     test_string2ll();
     test_string2l();
+    test_string2d();
     test_ll2string();
     test_ld2string();
     test_fixedpoint_d2string();

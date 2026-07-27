@@ -5,6 +5,16 @@
 # current WSL/MSYS2 development environment.
 
 BUILD ?= build/mingw64
+BUILD_BUNDLED_MODULES ?= no
+SKIP_VEC_SETS ?= yes
+
+ifneq ($(BUILD_BUNDLED_MODULES),no)
+$(error Bundled Redis modules are outside the initial Windows core-only port)
+endif
+ifneq ($(SKIP_VEC_SETS),yes)
+$(error Vector Sets are temporarily excluded from the Windows core-only bring-up)
+endif
+
 JEMALLOC_SRC := deps/jemalloc
 JEMALLOC_BUILD := $(BUILD)/jemalloc
 JEMALLOC_ABS_SRC := $(abspath $(JEMALLOC_SRC))
@@ -42,6 +52,7 @@ BASE_INCLUDES := \
 	-Ideps/lua/src \
 	-Ideps/hdr_histogram \
 	-Ideps/fpconv \
+	-Ideps/fast_float \
 	-Ideps/geohash-int \
 	-I$(JEMALLOC_BUILD)/include \
 	-I$(JEMALLOC_SRC)/include
@@ -86,17 +97,17 @@ FDAPI_SYSTEM_REDEFS := \
 	-Dgai_strerrorA=redis_mingw_system_gai_strerrorA \
 	-Dgai_strerrorW=redis_mingw_system_gai_strerrorW
 
-SERVER_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DUSE_JEMALLOC
+SERVER_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu11 -DUSE_JEMALLOC
 SERVER_CXXFLAGS := $(BASE_CXXFLAGS) -std=gnu++11 -DUSE_JEMALLOC -DUSE_STATIC
-TOOL_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DNO_QFORKIMPL
+TOOL_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu11 -DNO_QFORKIMPL
 TOOL_CXXFLAGS := $(BASE_CXXFLAGS) -std=gnu++11 -DNO_QFORKIMPL
-HIREDIS_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu99 -DNO_QFORKIMPL
-LUA_CFLAGS := $(BASE_CFLAGS) -std=gnu99 -DNO_QFORKIMPL
-HDR_HISTOGRAM_CFLAGS := $(BASE_CFLAGS) -std=gnu99 -DNO_QFORKIMPL -DHDR_MALLOC_INCLUDE=\"hdr_redis_malloc.h\"
-TEST_MODULE_CFLAGS := $(OPT) $(WARNINGS) -std=gnu99 -Isrc
+HIREDIS_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu11 -DNO_QFORKIMPL
+LUA_CFLAGS := $(BASE_CFLAGS) -std=gnu11 -DNO_QFORKIMPL
+HDR_HISTOGRAM_CFLAGS := $(BASE_CFLAGS) -std=gnu11 -DNO_QFORKIMPL -DHDR_MALLOC_INCLUDE=\"hdr_redis_malloc.h\"
+TEST_MODULE_CFLAGS := $(OPT) $(WARNINGS) -std=gnu11 -Isrc
 TEST_MODULE_LDFLAGS := -shared -static-libgcc -no-pthread -Wl,--export-all-symbols
 TEST_MODULE_LDLIBS := -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
-TEST_LAUNCHER_CFLAGS := $(OPT) $(WARNINGS) -std=gnu99
+TEST_LAUNCHER_CFLAGS := $(OPT) $(WARNINGS) -std=gnu11
 TEST_LAUNCHER_LDFLAGS := -municode -mwindows
 
 LDFLAGS_COMMON := \
@@ -122,6 +133,7 @@ HIREDIS_HEADERS := $(wildcard deps/hiredis/*.h)
 LUA_HEADERS := $(wildcard deps/lua/src/*.h)
 HDR_HISTOGRAM_HEADERS := $(wildcard deps/hdr_histogram/*.h)
 FPCONV_HEADERS := $(wildcard deps/fpconv/*.h)
+FAST_FLOAT_HEADERS := $(wildcard deps/fast_float/*.h)
 
 SERVER_C_SOURCES := \
 	src/threads_mngr.c \
@@ -140,6 +152,7 @@ SERVER_C_SOURCES := \
 	src/connection.c \
 	src/crc16.c \
 	src/crc64.c \
+	src/crccombine.c \
 	src/crcspeed.c \
 	src/db.c \
 	src/debug.c \
@@ -149,11 +162,13 @@ SERVER_C_SOURCES := \
 	src/endianconv.c \
 	src/evict.c \
 	src/expire.c \
+	src/eventnotifier.c \
 	src/geo.c \
 	src/geohash.c \
 	src/geohash_helper.c \
 	src/hyperloglog.c \
 	src/intset.c \
+	src/iothread.c \
 	src/kvstore.c \
 	src/latency.c \
 	src/lazyfree.c \
@@ -161,6 +176,7 @@ SERVER_C_SOURCES := \
 	src/lolwut.c \
 	src/lolwut5.c \
 	src/lolwut6.c \
+	src/lolwut8.c \
 	src/lzf_c.c \
 	src/lzf_d.c \
 	src/memtest.c \
@@ -285,6 +301,9 @@ HDR_HISTOGRAM_SOURCES := \
 FPCONV_SOURCES := \
 	deps/fpconv/fpconv_dtoa.c
 
+FAST_FLOAT_CXX_SOURCES := \
+	deps/fast_float/fast_float_strtod.cpp
+
 LUA_SOURCES := \
 	deps/lua/src/fpconv.c \
 	deps/lua/src/lapi.c \
@@ -332,6 +351,7 @@ HIREDIS_OBJS := $(addprefix $(BUILD)/hiredis/,$(HIREDIS_SOURCES:.c=.o))
 LUA_OBJS := $(addprefix $(BUILD)/lua/,$(LUA_SOURCES:.c=.o))
 HDR_HISTOGRAM_OBJS := $(addprefix $(BUILD)/hdr_histogram/,$(HDR_HISTOGRAM_SOURCES:.c=.o))
 FPCONV_OBJS := $(addprefix $(BUILD)/fpconv/,$(FPCONV_SOURCES:.c=.o))
+FAST_FLOAT_OBJS := $(addprefix $(BUILD)/fast_float/,$(FAST_FLOAT_CXX_SOURCES:.cpp=.o))
 HIREDIS_TEST_OBJS := \
 	$(BUILD)/hiredis-test/deps/hiredis/test.o \
 	$(BUILD)/hiredis-test/src/adlist.o \
@@ -367,6 +387,7 @@ CLI_SOURCES := \
 	src/cli_commands.c \
 	src/crc16.c \
 	src/crc64.c \
+	src/crccombine.c \
 	src/crcspeed.c \
 	src/dict.c \
 	src/monotonic.c \
@@ -385,6 +406,7 @@ BENCHMARK_SOURCES := \
 	src/cli_common.c \
 	src/crc16.c \
 	src/crc64.c \
+	src/crccombine.c \
 	src/crcspeed.c \
 	src/dict.c \
 	src/monotonic.c \
@@ -417,6 +439,7 @@ HIREDIS_LIB := $(BUILD)/lib/libhiredis.a
 LUA_LIB := $(BUILD)/lib/liblua.a
 JEMALLOC_LIB := $(JEMALLOC_BUILD)/lib/jemalloc.lib
 FPCONV_LIB := $(BUILD)/lib/libfpconv.a
+FAST_FLOAT_LIB := $(BUILD)/lib/libfast_float.a
 REDIS_CHECK_ALIASES := $(BUILD)/redis-check-aof.exe $(BUILD)/redis-check-rdb.exe
 TEST_MODULE_SOURCES := $(sort $(wildcard tests/modules/*.c))
 TEST_MODULES := $(patsubst tests/modules/%.c,$(BUILD)/tests/modules/%.so,$(TEST_MODULE_SOURCES))
@@ -425,7 +448,7 @@ TEST_MODULES := $(patsubst tests/modules/%.c,$(BUILD)/tests/modules/%.so,$(TEST_
 
 all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/redis-test-launcher.exe
 
-deps: $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(JEMALLOC_LIB)
+deps: $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(FAST_FLOAT_LIB) $(JEMALLOC_LIB)
 
 eventlog: $(EVENTLOG_DLL)
 
@@ -471,6 +494,11 @@ $(FPCONV_LIB): $(FPCONV_OBJS)
 	$(AR) rcs $@ $^
 	$(RANLIB) $@
 
+$(FAST_FLOAT_LIB): $(FAST_FLOAT_OBJS)
+	mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+	$(RANLIB) $@
+
 $(HIREDIS_LIB): Makefile.mingw $(HIREDIS_OBJS)
 	mkdir -p $(dir $@)
 	rm -f $@
@@ -489,8 +517,8 @@ $(EVENTLOG_OBJ): $(EVENTLOG_RC) $(EVENTLOG_MESSAGE) Makefile.mingw
 $(EVENTLOG_DLL): Makefile.mingw $(EVENTLOG_OBJ)
 	$(CC) -shared -nostdlib -Wl,--entry,0 -o $@ $(EVENTLOG_OBJ)
 
-$(BUILD)/redis-server.exe: Makefile.mingw $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB)
-	$(CXX) $(LDFLAGS_COMMON) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(LDLIBS_COMMON)
+$(BUILD)/redis-server.exe: Makefile.mingw $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(FAST_FLOAT_LIB)
+	$(CXX) $(LDFLAGS_COMMON) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(FAST_FLOAT_LIB) $(LDLIBS_COMMON)
 
 $(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(LDLIBS_COMMON)
@@ -539,7 +567,11 @@ $(BUILD)/hdr_histogram/%.o: %.c $(HDR_HISTOGRAM_HEADERS)
 
 $(BUILD)/fpconv/%.o: %.c $(FPCONV_HEADERS)
 	mkdir -p $(dir $@)
-	$(CC) $(BASE_CFLAGS) -std=gnu99 -DNO_QFORKIMPL -c $< -o $@
+	$(CC) $(BASE_CFLAGS) -std=gnu11 -DNO_QFORKIMPL -c $< -o $@
+
+$(BUILD)/fast_float/%.o: %.cpp $(FAST_FLOAT_HEADERS)
+	mkdir -p $(dir $@)
+	$(CXX) $(SERVER_CXXFLAGS) -c $< -o $@
 
 $(BUILD)/cli/%.o: %.c src/release.h $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
@@ -574,7 +606,7 @@ $(BUILD)/interop-test/%.o: %.cpp $(REDIS_HEADERS)
 	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/hdr_histogram $(BUILD)/fpconv $(BUILD)/cli $(BUILD)/benchmark
+	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/hdr_histogram $(BUILD)/fpconv $(BUILD)/fast_float $(BUILD)/cli $(BUILD)/benchmark
 	rm -rf $(BUILD)/eventlog $(BUILD)/hiredis-test $(BUILD)/interop-test
 	rm -rf $(BUILD)/tests/modules
 	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe $(BUILD)/redis-test-launcher.exe

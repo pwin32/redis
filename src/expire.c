@@ -5,8 +5,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -36,17 +37,18 @@ static double avg_ttl_factor[16] = {0.98, 0.9604, 0.941192, 0.922368, 0.903921, 
  * to the function to avoid too many gettimeofday() syscalls. */
 int activeExpireCycleTryExpire(redisDb *db, dictEntry *de, long long now) {
     long long t = dictGetSignedIntegerVal(de);
-    if (now > t) {
-        enterExecutionUnit(1, 0);
-        sds key = dictGetKey(de);
-        robj *keyobj = createStringObject(key,sdslen(key));
-        deleteExpiredKeyAndPropagate(db,keyobj);
-        decrRefCount(keyobj);
-        exitExecutionUnit();
-        return 1;
-    } else {
+    if (now < t)
         return 0;
-    }
+
+    enterExecutionUnit(1, 0);
+    sds key = dictGetKey(de);
+    robj *keyobj = createStringObject(key,sdslen(key));
+    deleteExpiredKeyAndPropagate(db,keyobj);
+    decrRefCount(keyobj);
+    exitExecutionUnit();
+    /* Propagate the DEL command */
+    postExecutionUnitOperations();
+    return 1;
 }
 
 /* Try to expire a few timed out keys. The algorithm used is adaptive and
@@ -113,8 +115,6 @@ void expireScanCallback(void *privdata, const dictEntry *const_de) {
     long long ttl  = dictGetSignedIntegerVal(de) - data->now;
     if (activeExpireCycleTryExpire(data->db, de, data->now)) {
         data->expired++;
-        /* Propagate the DEL command */
-        postExecutionUnitOperations();
     }
     if (ttl > 0) {
         /* We want the average TTL of keys yet not expired. */
@@ -465,16 +465,7 @@ void expireSlaveKeys(void) {
             if ((dbids & 1) != 0) {
                 redisDb *db = server.db+dbid;
                 dictEntry *expire = dbFindExpires(db, keyname);
-                int expired = 0;
-
-                if (expire &&
-                    activeExpireCycleTryExpire(server.db+dbid,expire,start))
-                {
-                    expired = 1;
-                    /* Propagate the DEL (writable replicas do not propagate anything to other replicas,
-                     * but they might propagate to AOF) and trigger module hooks. */
-                    postExecutionUnitOperations();
-                }
+                int expired = expire && activeExpireCycleTryExpire(server.db+dbid,expire,start);
 
                 /* If the key was not expired in this DB, we need to set the
                  * corresponding bit in the new bitmap we set as value.

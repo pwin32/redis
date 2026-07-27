@@ -118,6 +118,9 @@ BOOL SetupRedisGlobals(LPVOID redisData, size_t redisDataSize,
     server.master = NULL;
     server.cached_master = NULL;
     server.repl_transfer_s = NULL;
+    server.repl_rdb_transfer_s = NULL;
+    server.repl_rdb_ch_state = REPL_RDB_CH_STATE_NONE;
+    server.repl_main_ch_state = REPL_MAIN_CH_NONE;
     server.module_pipe[0] = -1;
     server.module_pipe[1] = -1;
     server.cluster_config_file_lock_fd = -1;

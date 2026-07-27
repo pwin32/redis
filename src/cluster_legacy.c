@@ -5,8 +5,9 @@
  * Copyright (c) 2024-present, Valkey contributors.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  *
  * Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
  */
@@ -1093,6 +1094,8 @@ void clusterInit(void) {
     clusterUpdateMyselfIp();
     clusterUpdateMyselfHostname();
     clusterUpdateMyselfHumanNodename();
+
+    getRandomHexChars(server.cluster->internal_secret, CLUSTER_INTERNALSECRETLEN);
 }
 
 void clusterInitLast(void) {
@@ -1327,7 +1330,7 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
             return;
         }
 
-        connection *conn = connCreateAccepted(connTypeOfCluster(), cfd, &require_auth);
+        connection *conn = connCreateAccepted(server.el, connTypeOfCluster(), cfd, &require_auth);
 
         /* Make sure connection is not in an error state */
         if (connGetState(conn) != CONN_STATE_ACCEPTING) {
@@ -1642,6 +1645,14 @@ clusterNode *clusterLookupNode(const char *name, int length) {
     sdsfree(s);
     if (de == NULL) return NULL;
     return dictGetVal(de);
+}
+
+const char *clusterGetSecret(size_t *len) {
+    if (!server.cluster) {
+        return NULL;
+    }
+    *len = CLUSTER_INTERNALSECRETLEN;
+    return server.cluster->internal_secret;
 }
 
 /* Get all the nodes in my shard.
@@ -2584,6 +2595,10 @@ uint32_t getShardIdPingExtSize(void) {
     return getAlignedPingExtSize(sizeof(clusterMsgPingExtShardId));
 }
 
+uint32_t getInternalSecretPingExtSize(void) {
+    return getAlignedPingExtSize(sizeof(clusterMsgPingExtInternalSecret));
+}
+
 uint32_t getForgottenNodeExtSize(void) {
     return getAlignedPingExtSize(sizeof(clusterMsgPingExtForgottenNode));
 }
@@ -2675,6 +2690,17 @@ uint32_t writePingExt(clusterMsg *hdr, int gossipcount)  {
     totlen += getShardIdPingExtSize();
     extensions++;
 
+    /* Populate internal secret */
+    if (cursor != NULL) {
+        clusterMsgPingExtInternalSecret *ext = preparePingExt(cursor, CLUSTERMSG_EXT_TYPE_INTERNALSECRET, getInternalSecretPingExtSize());
+        memcpy(ext->internal_secret, server.cluster->internal_secret, CLUSTER_INTERNALSECRETLEN);
+
+        /* Move the write cursor */
+        cursor = nextPingExt(cursor);
+    }
+    totlen += getInternalSecretPingExtSize();
+    extensions++;
+
     if (hdr != NULL) {
         hdr->extensions = htons(extensions);
     }
@@ -2715,6 +2741,11 @@ void clusterProcessPingExtensions(clusterMsg *hdr, clusterLink *link) {
         } else if (type == CLUSTERMSG_EXT_TYPE_SHARDID) {
             clusterMsgPingExtShardId *shardid_ext = (clusterMsgPingExtShardId *) &(ext->ext[0].shard_id);
             ext_shardid = shardid_ext->shard_id;
+        } else if (type == CLUSTERMSG_EXT_TYPE_INTERNALSECRET) {
+            clusterMsgPingExtInternalSecret *internal_secret_ext = (clusterMsgPingExtInternalSecret *) &(ext->ext[0].internal_secret);
+            if (memcmp(server.cluster->internal_secret, internal_secret_ext->internal_secret, CLUSTER_INTERNALSECRETLEN) > 0 ) {
+                memcpy(server.cluster->internal_secret, internal_secret_ext->internal_secret, CLUSTER_INTERNALSECRETLEN);
+            }
         } else {
             /* Unknown type, we will ignore it but log what happened. */
             serverLog(LL_VERBOSE, "Received unknown extension type %d", type);
@@ -4670,7 +4701,7 @@ static int clusterNodeCronHandleReconnect(clusterNode *node, mstime_t handshake_
 
     if (node->link == NULL) {
         clusterLink *link = createClusterLink(node);
-        link->conn = connCreate(connTypeOfCluster());
+        link->conn = connCreate(server.el, connTypeOfCluster());
         connSetPrivateData(link->conn, link);
         if (connConnect(link->conn, node->ip, node->cport, server.bind_source_addr,
                     clusterLinkConnectHandler) == C_ERR) {
@@ -5693,112 +5724,68 @@ void clusterUpdateSlots(client *c, unsigned char *slots, int del) {
     }
 }
 
-/* Add detailed information of a node to the output buffer of the given client. */
-void addNodeDetailsToShardReply(client *c, clusterNode *node) {
-    int reply_count = 0;
-    void *node_replylen = addReplyDeferredLen(c);
-    addReplyBulkCString(c, "id");
-    addReplyBulkCBuffer(c, node->name, CLUSTER_NAMELEN);
-    reply_count++;
-
-    if (node->tcp_port) {
-        addReplyBulkCString(c, "port");
-        addReplyLongLong(c, node->tcp_port);
-        reply_count++;
-    }
-
-    if (node->tls_port) {
-        addReplyBulkCString(c, "tls-port");
-        addReplyLongLong(c, node->tls_port);
-        reply_count++;
-    }
-
-    addReplyBulkCString(c, "ip");
-    addReplyBulkCString(c, node->ip);
-    reply_count++;
-
-    addReplyBulkCString(c, "endpoint");
-    addReplyBulkCString(c, clusterNodePreferredEndpoint(node));
-    reply_count++;
-
-    if (sdslen(node->hostname) != 0) {
-        addReplyBulkCString(c, "hostname");
-        addReplyBulkCBuffer(c, node->hostname, sdslen(node->hostname));
-        reply_count++;
-    }
-
-    long long node_offset;
-    if (node->flags & CLUSTER_NODE_MYSELF) {
-        node_offset = nodeIsSlave(node) ? replicationGetSlaveOffset() : server.master_repl_offset;
-    } else {
-        node_offset = node->repl_offset;
-    }
-
-    addReplyBulkCString(c, "role");
-    addReplyBulkCString(c, nodeIsSlave(node) ? "replica" : "master");
-    reply_count++;
-
-    addReplyBulkCString(c, "replication-offset");
-    addReplyLongLong(c, node_offset);
-    reply_count++;
-
-    addReplyBulkCString(c, "health");
-    const char *health_msg = NULL;
-    if (nodeFailed(node)) {
-        health_msg = "fail";
-    } else if (nodeIsSlave(node) && node_offset == 0) {
-        health_msg = "loading";
-    } else {
-        health_msg = "online";
-    }
-    addReplyBulkCString(c, health_msg);
-    reply_count++;
-
-    setDeferredMapLen(c, node_replylen, reply_count);
+int clusterGetShardCount(void) {
+    return dictSize(server.cluster->shards);
 }
 
-/* Add the shard reply of a single shard based off the given primary node. */
-void addShardReplyForClusterShards(client *c, list *nodes) {
-    serverAssert(listLength(nodes) > 0);
-
-    addReplyMapLen(c, 2);
-    addReplyBulkCString(c, "slots");
-
-    /* Use slot_info_pairs from the primary only */
-    clusterNode *n = clusterGetMasterFromShard(nodes);
-    if (n && n->slot_info_pairs != NULL) {
-        serverAssert((n->slot_info_pairs_count % 2) == 0);
-        addReplyArrayLen(c, n->slot_info_pairs_count);
-        for (int i = 0; i < n->slot_info_pairs_count; i++)
-            addReplyLongLong(c, (unsigned long)n->slot_info_pairs[i]);
-    } else {
-        /* If no slot info pair is provided, the node owns no slots */
-        addReplyArrayLen(c, 0);
-    }
-
-    addReplyBulkCString(c, "nodes");
-    addReplyArrayLen(c, listLength(nodes));
-    listIter li;
-    listRewind(nodes, &li);
-    for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {
-        clusterNode *n = listNodeValue(ln);
-        addNodeDetailsToShardReply(c, n);
-        clusterFreeNodesSlotsInfo(n);
-    }
+void *clusterGetShardIterator(void) {
+    return dictGetSafeIterator(server.cluster->shards);
 }
 
-/* Add to the output buffer of the given client, an array of slot (start, end)
- * pair owned by the shard, also the primary and set of replica(s) along with
- * information about each node. */
-void clusterCommandShards(client *c) {
-    addReplyArrayLen(c, dictSize(server.cluster->shards));
-    /* This call will add slot_info_pairs to all nodes */
-    clusterGenNodesSlotsInfo(0);
-    dictIterator *di = dictGetSafeIterator(server.cluster->shards);
-    for(dictEntry *de = dictNext(di); de != NULL; de = dictNext(di)) {
-        addShardReplyForClusterShards(c, dictGetVal(de));
-    }
-    dictReleaseIterator(di);
+void *clusterNextShardHandle(void *shard_iterator) {
+    dictEntry *de = dictNext(shard_iterator);
+    if(de == NULL) return NULL;
+    return dictGetVal(de);
+}
+
+void clusterFreeShardIterator(void *shard_iterator) {
+    dictReleaseIterator(shard_iterator);
+}
+
+int clusterNodeHasSlotInfo(clusterNode *n) {
+    return n->slot_info_pairs != NULL;
+}
+
+int clusterNodeSlotInfoCount(clusterNode *n) {
+    return n->slot_info_pairs_count;
+}
+
+uint16_t clusterNodeSlotInfoEntry(clusterNode *n, int idx) {
+    return n->slot_info_pairs[idx];
+}
+
+int clusterGetShardNodeCount(void *shard) {
+    return listLength((list*)shard);
+}
+
+void *clusterShardHandleGetNodeIterator(void *shard) {
+    listIter *li = zmalloc(sizeof(listIter));
+    listRewind((list*)shard, li);
+    return li;
+}
+
+void clusterShardNodeIteratorFree(void *node_iterator) {
+    zfree(node_iterator);
+}
+
+clusterNode *clusterShardNodeIteratorNext(void *node_iterator) {
+    listNode *item = listNext((listIter*)node_iterator);
+    if (item == NULL) return NULL;
+    return listNodeValue(item);
+}
+
+clusterNode *clusterShardNodeFirst(void *shard) {
+    listNode *item = listFirst((list*)shard);
+    if (item == NULL) return NULL;
+    return listNodeValue(item);
+}
+
+int clusterNodeTcpPort(clusterNode *node) {
+    return node->tcp_port;
+}
+
+int clusterNodeTlsPort(clusterNode *node) {
+    return node->tls_port;
 }
 
 sds genClusterInfoString(void) {

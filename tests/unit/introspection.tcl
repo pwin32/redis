@@ -6,8 +6,13 @@ start_server {tags {"introspection"}} {
     }
 
     test {CLIENT LIST} {
-        r client list
-    } {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=26 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=*}
+        set client_list [r client list]
+        if {[lindex [r config get io-threads] 1] == 1} {
+            assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=26 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=*} $client_list
+        } else {
+            assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=*} $client_list
+        }
+    }
 
     test {CLIENT LIST with IDs} {
         set myid [r client id]
@@ -16,8 +21,13 @@ start_server {tags {"introspection"}} {
     }
 
     test {CLIENT INFO} {
-        r client info
-    } {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=26 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=*}
+        set client [r client info]
+        if {[lindex [r config get io-threads] 1] == 1} {
+            assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=26 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=*} $client
+        } else {
+            assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=*} $client
+        }
+    }
 
     test {CLIENT KILL with illegal arguments} {
         assert_error "ERR wrong number of arguments for 'client|kill' command" {r client kill}
@@ -86,6 +96,11 @@ start_server {tags {"introspection"}} {
         assert {$connected_clients >= 3}
         set res [r client kill skipme yes]
         assert {$res == $connected_clients - 1}
+        wait_for_condition 1000 10 {
+            [s connected_clients] eq 1
+        } else {
+            fail "Can't kill all clients except the current one"
+        }
 
         # Kill all clients, including `me`
         set rd3 [redis_deferring_client]
@@ -247,7 +262,7 @@ start_server {tags {"introspection"}} {
         r migrate [srv 0 host] [srv 0 port] key 9 5000 AUTH2 user password
         catch {r auth not-real} _
         catch {r auth not-real not-a-password} _
-        
+
         assert_match {*"key"*"9"*"5000"*} [$rd read]
         assert_match {*"key"*"9"*"5000"*"(redacted)"*} [$rd read]
         assert_match {*"key"*"9"*"5000"*"(redacted)"*"(redacted)"*} [$rd read]
@@ -290,46 +305,49 @@ start_server {tags {"introspection"}} {
 
         $rd close
     }
-    
+
     test {MONITOR log blocked command only once} {
-        
+
         # need to reconnect in order to reset the clients state
         reconnect
-        
+
         set rd [redis_deferring_client]
         set bc [redis_deferring_client]
         r del mylist
-        
+
         $rd monitor
         $rd read ; # Discard the OK
-        
+
         $bc blpop mylist 0
+        # make sure the blpop arrives first
+        $bc flush
+        after 100
         wait_for_blocked_clients_count 1
         r lpush mylist 1
         wait_for_blocked_clients_count 0
         r lpush mylist 2
-        
+
         # we expect to see the blpop on the monitor first
         assert_match {*"blpop"*"mylist"*"0"*} [$rd read]
-        
+
         # we scan out all the info commands on the monitor
         set monitor_output [$rd read]
         while { [string match {*"info"*} $monitor_output] } {
             set monitor_output [$rd read]
         }
-        
+
         # we expect to locate the lpush right when the client was unblocked
         assert_match {*"lpush"*"mylist"*"1"*} $monitor_output
-        
+
         # we scan out all the info commands
         set monitor_output [$rd read]
         while { [string match {*"info"*} $monitor_output] } {
             set monitor_output [$rd read]
         }
-        
+
         # we expect to see the next lpush and not duplicate blpop command
         assert_match {*"lpush"*"mylist"*"2"*} $monitor_output
-        
+
         $rd close
         $bc close
     }
@@ -430,7 +448,6 @@ start_server {tags {"introspection"}} {
         set skip_configs {
             rdbchecksum
             daemonize
-            io-threads-do-reads
             tcp-backlog
             always-show-logo
             syslog-enabled
@@ -568,7 +585,7 @@ start_server {tags {"introspection"}} {
             assert_equal [r config get save] {save {}}
         }
     } {} {external:skip}
-    
+
     test {CONFIG SET with multiple args} {
         set some_configs {maxmemory 10000001 repl-backlog-size 10000002 save {3000 5}}
 
@@ -590,7 +607,7 @@ start_server {tags {"introspection"}} {
 
     test {CONFIG SET rollback on set error} {
         # This test passes an invalid percent value to maxmemory-clients which should cause an
-        # input verification failure during the "set" phase before trying to apply the 
+        # input verification failure during the "set" phase before trying to apply the
         # configuration. We want to make sure the correct failure happens and everything
         # is rolled back.
         # backup maxmemory config
@@ -613,7 +630,7 @@ start_server {tags {"introspection"}} {
 
     test {CONFIG SET rollback on apply error} {
         # This test tries to configure a used port number in redis. This is expected
-        # to pass the `CONFIG SET` validity checking implementation but fail on 
+        # to pass the `CONFIG SET` validity checking implementation but fail on
         # actual "apply" of the setting. This will validate that after an "apply"
         # failure we rollback to the previous values.
         proc dummy_accept {chan addr port} {}
@@ -645,8 +662,8 @@ start_server {tags {"introspection"}} {
         set used_port [find_available_port $::baseport $::portcount]
         dict set some_configs port $used_port
 
-        # Run a dummy server on used_port so we know we can't configure redis to 
-        # use it. It's ok for this to fail because that means used_port is invalid 
+        # Run a dummy server on used_port so we know we can't configure redis to
+        # use it. It's ok for this to fail because that means used_port is invalid
         # anyway
         catch {set sockfd [socket -server dummy_accept -myaddr 127.0.0.1 $used_port]} e
         if {$::verbose} { puts "dummy_accept: $e" }
@@ -693,18 +710,18 @@ start_server {tags {"introspection"}} {
 
     test {CONFIG GET multiple args} {
         set res [r config get maxmemory maxmemory* bind *of]
-        
+
         # Verify there are no duplicates in the result
         assert_equal [expr [llength [dict keys $res]]*2] [llength $res]
-        
+
         # Verify we got both name and alias in result
-        assert {[dict exists $res slaveof] && [dict exists $res replicaof]}  
+        assert {[dict exists $res slaveof] && [dict exists $res replicaof]}
 
         # Verify pattern found multiple maxmemory* configs
-        assert {[dict exists $res maxmemory] && [dict exists $res maxmemory-samples] && [dict exists $res maxmemory-clients]}  
+        assert {[dict exists $res maxmemory] && [dict exists $res maxmemory-samples] && [dict exists $res maxmemory-clients]}
 
         # Verify we also got the explicit config
-        assert {[dict exists $res bind]}  
+        assert {[dict exists $res bind]}
     }
 
     test {redis-server command line arguments - error cases} {
@@ -904,3 +921,62 @@ test {CONFIG REWRITE handles alias config properly} {
         assert_equal [r config get hash-max-listpack-entries] {hash-max-listpack-entries 100}
     }
 } {} {external:skip}
+
+test {IO threads client number} {
+    start_server {overrides {io-threads 2} tags {external:skip}} {
+        set iothread_clients [get_io_thread_clients 1]
+        assert_equal $iothread_clients [s connected_clients]
+        assert_equal [get_io_thread_clients 0] 0
+
+        r script debug yes ; # Transfer to main thread
+        assert_equal [get_io_thread_clients 0] 1
+        assert_equal [get_io_thread_clients 1] [expr $iothread_clients - 1]
+
+        set iothread_clients [get_io_thread_clients 1]
+        set rd1 [redis_deferring_client]
+        set rd2 [redis_deferring_client]
+        assert_equal [get_io_thread_clients 1] [expr $iothread_clients + 2]
+        $rd1 close
+        $rd2 close
+        wait_for_condition 1000 10 {
+            [get_io_thread_clients 1] eq $iothread_clients
+        } else {
+            fail "Fail to close clients of io thread 1"
+        }
+        assert_equal [get_io_thread_clients 0] 1
+
+        r script debug no ; # Transfer to io thread
+        assert_equal [get_io_thread_clients 0] 0
+        assert_equal [get_io_thread_clients 1] [expr $iothread_clients + 1]
+    }
+}
+
+test {Clients are evenly distributed among io threads} {
+    start_server {overrides {io-threads 4} tags {external:skip}} {
+        set cur_clients [s connected_clients]
+        assert_equal $cur_clients 1
+        global rdclients
+        for {set i 1} {$i < 9} {incr i} {
+            set rdclients($i) [redis_deferring_client]
+        }
+        for {set i 1} {$i <= 3} {incr i} {
+            assert_equal [get_io_thread_clients $i] 3
+        }
+
+        $rdclients(3) close
+        $rdclients(4) close
+        wait_for_condition 1000 10 {
+            [get_io_thread_clients 1] eq 2 &&
+            [get_io_thread_clients 2] eq 2 &&
+            [get_io_thread_clients 3] eq 3
+        } else {
+            fail "Fail to close clients"
+        }
+
+        set  $rdclients(3) [redis_deferring_client]
+        set  $rdclients(4) [redis_deferring_client]
+        for {set i 1} {$i <= 3} {incr i} {
+            assert_equal [get_io_thread_clients $i] 3
+        }
+    }
+}

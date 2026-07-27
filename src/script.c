@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -200,6 +201,11 @@ int scriptPrepareForRun(scriptRunCtx *run_ctx, client *engine_client, client *ca
             return C_ERR;
         }
 
+        /* Can't run script with 'non-cluster' flag as above when cluster is enabled. */
+        if (script_flags & SCRIPT_FLAG_NO_CLUSTER) {
+            server.stat_cluster_incompatible_ops++;
+        }
+
         if (running_stale && !(script_flags & SCRIPT_FLAG_ALLOW_STALE)) {
             addReplyError(caller, "-MASTERDOWN Link with MASTER is down, "
                              "replica-serve-stale-data is set to 'no' "
@@ -267,6 +273,7 @@ int scriptPrepareForRun(scriptRunCtx *run_ctx, client *engine_client, client *ca
     run_ctx->original_client = caller;
     run_ctx->funcname = funcname;
     run_ctx->slot = caller->slot;
+    run_ctx->cluster_compatibility_check_slot = caller->cluster_compatibility_check_slot;
 
     client *script_client = run_ctx->c;
     client *curr_client = run_ctx->original_client;
@@ -321,6 +328,7 @@ void scriptResetRun(scriptRunCtx *run_ctx) {
     }
 
     run_ctx->slot = -1;
+    run_ctx->cluster_compatibility_check_slot = -2;
 
     preventCommandPropagation(run_ctx->original_client);
 
@@ -539,6 +547,33 @@ static int scriptVerifyClusterState(scriptRunCtx *run_ctx, client *c, client *or
     return C_OK;
 }
 
+static void scriptCheckClusterCompatibility(scriptRunCtx *run_ctx, client *c) {
+    int hashslot = -1;
+
+    /* If we don't need to detect for this script or slot violation already
+     * detected and reported for this script, exit */
+    if (run_ctx->cluster_compatibility_check_slot == -2)  return;
+
+    if (!areCommandKeysInSameSlot(c, &hashslot)) {
+        server.stat_cluster_incompatible_ops++;
+        /* Already found cross slot usage, skip the check for the rest of the script */
+        run_ctx->cluster_compatibility_check_slot = -2;
+    } else {
+        /* Check whether the declared keys and the accessed keys belong to the same slot.
+         * If having SCRIPT_ALLOW_CROSS_SLOT flag, skip this check since it's allowed
+         * in cluster mode, but it may fail when the slot doesn't belong to the node. */
+        if (hashslot != -1 && !(run_ctx->flags & SCRIPT_ALLOW_CROSS_SLOT)) {
+            if (run_ctx->cluster_compatibility_check_slot == -1) {
+                run_ctx->cluster_compatibility_check_slot = hashslot;
+            } else if (run_ctx->cluster_compatibility_check_slot != hashslot) {
+                server.stat_cluster_incompatible_ops++;
+                /* Already found cross slot usage, skip the check for the rest of the script */
+                run_ctx->cluster_compatibility_check_slot = -2;
+            }
+        }
+    }
+}
+
 /* set RESP for a given run_ctx */
 int scriptSetResp(scriptRunCtx *run_ctx, int resp) {
     if (resp != 2 && resp != 3) {
@@ -635,6 +670,8 @@ void scriptCall(scriptRunCtx *run_ctx, sds *err) {
     if (scriptVerifyClusterState(run_ctx, c, run_ctx->original_client, err) != C_OK) {
         goto error;
     }
+
+    scriptCheckClusterCompatibility(run_ctx, c);
 
     int call_flags = CMD_CALL_NONE;
     if (run_ctx->repl_flags & PROPAGATE_AOF) {

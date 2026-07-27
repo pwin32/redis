@@ -3,11 +3,12 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
-
+#include "fast_float_strtod.h"
 #include "server.h"
 #include "pqsort.h" /* Partial qsort for SORT+LIMIT */
 #include <math.h> /* isnan() */
@@ -41,7 +42,7 @@ redisSortOperation *createSortOperation(int type, robj *pattern) {
 robj *lookupKeyByPattern(redisDb *db, robj *pattern, robj *subst) {
     char *p, *f, *k;
     sds spat, ssub;
-    robj *keyobj, *fieldobj = NULL, *o;
+    robj *keyobj, *fieldobj = NULL, *o, *val;
     int prefixlen, sublen, postfixlen, fieldlen;
 
     /* If the pattern is "#" return the substitution object itself in order
@@ -95,7 +96,8 @@ robj *lookupKeyByPattern(redisDb *db, robj *pattern, robj *subst) {
         /* Retrieve value from hash by the field name. The returned object
          * is a new object with refcount already incremented. */
         int isHashDeleted;
-        o = hashTypeGetValueObject(db, o, fieldobj->ptr, HFE_LAZY_EXPIRE, &isHashDeleted);
+        hashTypeGetValueObject(db, o, fieldobj->ptr, HFE_LAZY_EXPIRE, &val, NULL, &isHashDeleted);
+        o = val;
 
         if (isHashDeleted)
             goto noobj;
@@ -229,6 +231,17 @@ void sortCommandGeneric(client *c, int readonly) {
                     syntax_error++;
                     break;
                 }
+
+                /* If the BY pattern slot is not equal with the slot of keys, we will record
+                 * an incompatible behavior as above comments. */
+                if (server.cluster_compatibility_sample_ratio && !server.cluster_enabled &&
+                    SHOULD_CLUSTER_COMPATIBILITY_SAMPLE())
+                {
+                    if (patternHashSlot(sortby->ptr, sdslen(sortby->ptr)) !=
+                        (int)keyHashSlot(c->argv[1]->ptr, sdslen(c->argv[1]->ptr)))
+                        server.stat_cluster_incompatible_ops++;
+                }
+
                 /* If BY is specified with a real pattern, we can't accept
                  * it if no full ACL key access is applied for this command. */
                 if (!user_has_full_key_access) {
@@ -252,6 +265,18 @@ void sortCommandGeneric(client *c, int readonly) {
                 syntax_error++;
                 break;
             }
+
+            /* If the GET pattern slot is not equal with the slot of keys, we will record
+             * an incompatible behavior as above comments. */
+            if (server.cluster_compatibility_sample_ratio && !server.cluster_enabled &&
+                strcmp(c->argv[j+1]->ptr, "#") &&
+                SHOULD_CLUSTER_COMPATIBILITY_SAMPLE())
+            {
+                if (patternHashSlot(c->argv[j+1]->ptr, sdslen(c->argv[j+1]->ptr)) !=
+                    (int)keyHashSlot(c->argv[1]->ptr, sdslen(c->argv[1]->ptr)))
+                    server.stat_cluster_incompatible_ops++;
+            }
+
             if (!user_has_full_key_access) {
                 addReplyError(c,"GET option of SORT denied due to insufficient ACL permissions.");
                 syntax_error++;
@@ -476,7 +501,7 @@ void sortCommandGeneric(client *c, int readonly) {
                 if (sdsEncodedObject(byval)) {
                     char *eptr;
 
-                    vector[j].u.score = strtod(byval->ptr,&eptr);
+                    vector[j].u.score = fast_float_strtod(byval->ptr,&eptr);
                     if (eptr[0] != '\0' || errno == ERANGE ||
                         isnan(vector[j].u.score))
                     {

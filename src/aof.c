@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifdef _WIN32
@@ -72,6 +73,13 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath);
 void aofManifestFreeAndUpdate(aofManifest *am);
 void aof_background_fsync_and_close(int fd);
 
+/* When we call 'startAppendOnly', we will create a temp INCR AOF, and rename
+ * it to the real INCR AOF name when the AOFRW is done, so if want to know the
+ * accurate start offset of the INCR AOF, we need to record it when we create
+ * the temp INCR AOF. This variable is used to record the start offset, and
+ * set the start offset of the real INCR AOF when the AOFRW is done. */
+static long long tempIncAofStartReplOffset = 0;
+
 /* ----------------------------------------------------------------------------
  * AOF Manifest file implementation.
  *
@@ -115,10 +123,15 @@ void aof_background_fsync_and_close(int fd);
 #define AOF_MANIFEST_KEY_FILE_NAME   "file"
 #define AOF_MANIFEST_KEY_FILE_SEQ    "seq"
 #define AOF_MANIFEST_KEY_FILE_TYPE   "type"
+#define AOF_MANIFEST_KEY_FILE_STARTOFFSET "startoffset"
+#define AOF_MANIFEST_KEY_FILE_ENDOFFSET   "endoffset"
 
 /* Create an empty aofInfo. */
 aofInfo *aofInfoCreate(void) {
-    return zcalloc(sizeof(aofInfo));
+    aofInfo *ai = zcalloc(sizeof(aofInfo));
+    ai->start_offset = -1;
+    ai->end_offset = -1;
+    return ai;
 }
 
 /* Free the aofInfo structure (pointed to by ai) and its embedded file_name. */
@@ -135,6 +148,8 @@ aofInfo *aofInfoDup(aofInfo *orig) {
     ai->file_name = sdsdup(orig->file_name);
     ai->file_seq = orig->file_seq;
     ai->file_type = orig->file_type;
+    ai->start_offset = orig->start_offset;
+    ai->end_offset = orig->end_offset;
     return ai;
 }
 
@@ -147,10 +162,19 @@ sds aofInfoFormat(sds buf, aofInfo *ai) {
     if (sdsneedsrepr(ai->file_name))
         filename_repr = sdscatrepr(sdsempty(), ai->file_name, sdslen(ai->file_name));
 
-    sds ret = sdscatprintf(buf, "%s %s %s %lld %s %c\n",
+    sds ret = sdscatprintf(buf, "%s %s %s %lld %s %c",
         AOF_MANIFEST_KEY_FILE_NAME, filename_repr ? filename_repr : ai->file_name,
         AOF_MANIFEST_KEY_FILE_SEQ, ai->file_seq,
         AOF_MANIFEST_KEY_FILE_TYPE, ai->file_type);
+
+    if (ai->start_offset != -1) {
+        ret = sdscatprintf(ret, " %s %lld", AOF_MANIFEST_KEY_FILE_STARTOFFSET, ai->start_offset);
+        if (ai->end_offset != -1) {
+            ret = sdscatprintf(ret, " %s %lld", AOF_MANIFEST_KEY_FILE_ENDOFFSET, ai->end_offset);
+        }
+    }
+
+    ret = sdscatlen(ret, "\n", 1);
     sdsfree(filename_repr);
 
     return ret;
@@ -346,6 +370,10 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath) {
                 ai->file_seq = atoll(argv[i+1]);
             } else if (!strcasecmp(argv[i], AOF_MANIFEST_KEY_FILE_TYPE)) {
                 ai->file_type = (argv[i+1])[0];
+            } else if (!strcasecmp(argv[i], AOF_MANIFEST_KEY_FILE_STARTOFFSET)) {
+                ai->start_offset = atoll(argv[i+1]);
+            } else if (!strcasecmp(argv[i], AOF_MANIFEST_KEY_FILE_ENDOFFSET)) {
+                ai->end_offset = atoll(argv[i+1]);
             }
             /* else if (!strcasecmp(argv[i], AOF_MANIFEST_KEY_OTHER)) {} */
         }
@@ -475,12 +503,13 @@ sds getNewBaseFileNameAndMarkPreAsHistory(aofManifest *am) {
  * for example:
  *  appendonly.aof.1.incr.aof
  */
-sds getNewIncrAofName(aofManifest *am) {
+sds getNewIncrAofName(aofManifest *am, long long start_reploff) {
     aofInfo *ai = aofInfoCreate();
     ai->file_type = AOF_FILE_TYPE_INCR;
     ai->file_name = sdscatprintf(sdsempty(), "%s.%lld%s%s", server.aof_filename,
                         ++am->curr_incr_file_seq, INCR_FILE_SUFFIX, AOF_FORMAT_SUFFIX);
     ai->file_seq = am->curr_incr_file_seq;
+    ai->start_offset = start_reploff;
     listAddNodeTail(am->incr_aof_list, ai);
     am->dirty = 1;
     return ai->file_name;
@@ -498,7 +527,7 @@ sds getLastIncrAofName(aofManifest *am) {
 
     /* If 'incr_aof_list' is empty, just create a new one. */
     if (!listLength(am->incr_aof_list)) {
-        return getNewIncrAofName(am);
+        return getNewIncrAofName(am, server.master_repl_offset);
     }
 
     /* Or return the last one. */
@@ -883,10 +912,11 @@ int openNewIncrAofForAppend(void) {
     if (server.aof_state == AOF_WAIT_REWRITE) {
         /* Use a temporary INCR AOF file to accumulate data during AOF_WAIT_REWRITE. */
         new_aof_name = getTempIncrAofName();
+        tempIncAofStartReplOffset = server.master_repl_offset;
     } else {
         /* Dup a temp aof_manifest to modify. */
         temp_am = aofManifestDup(server.aof_manifest);
-        new_aof_name = sdsdup(getNewIncrAofName(temp_am));
+        new_aof_name = sdsdup(getNewIncrAofName(temp_am, server.master_repl_offset));
     }
     sds new_aof_filepath = makePath(server.aof_dirname, new_aof_name);
 #ifdef _WIN32
@@ -940,6 +970,50 @@ cleanup:
     if (newfd != -1) close(newfd);
     if (temp_am) aofManifestFree(temp_am);
     return C_ERR;
+}
+
+/* When we close gracefully the AOF file, we have the chance to persist the
+ * end replication offset of current INCR AOF. */
+void updateCurIncrAofEndOffset(void) {
+    if (server.aof_state != AOF_ON) return;
+    serverAssert(server.aof_manifest != NULL);
+
+    if (listLength(server.aof_manifest->incr_aof_list) == 0) return;
+    aofInfo *ai = listNodeValue(listLast(server.aof_manifest->incr_aof_list));
+    ai->end_offset = server.master_repl_offset;
+    server.aof_manifest->dirty = 1;
+    /* It doesn't matter if the persistence fails since this information is not
+     * critical, we can get an approximate value by start offset plus file size. */
+    persistAofManifest(server.aof_manifest);
+}
+
+/* After loading AOF data, we need to update the `server.master_repl_offset`
+ * based on the information of the last INCR AOF, to avoid the rollback of
+ * the start offset of new INCR AOF. */
+void updateReplOffsetAndResetEndOffset(void) {
+    if (server.aof_state != AOF_ON) return;
+    serverAssert(server.aof_manifest != NULL);
+
+    /* If the INCR file has an end offset, we directly use it, and clear it
+     * to avoid the next time we load the manifest file, we will use the same
+     * offset, but the real offset may have advanced. */
+    if (listLength(server.aof_manifest->incr_aof_list) == 0) return;
+    aofInfo *ai = listNodeValue(listLast(server.aof_manifest->incr_aof_list));
+    if (ai->end_offset != -1) {
+        server.master_repl_offset = ai->end_offset;
+        ai->end_offset = -1;
+        server.aof_manifest->dirty = 1;
+        /* We must update the end offset of INCR file correctly, otherwise we
+         * may keep wrong information in the manifest file, since we continue
+         * to append data to the same INCR file. */
+        if (persistAofManifest(server.aof_manifest) != AOF_OK)
+            exit(1);
+    } else {
+        /* If the INCR file doesn't have an end offset, we need to calculate
+         * the replication offset by the start offset plus the file size. */
+        server.master_repl_offset = (ai->start_offset == -1 ? 0 : ai->start_offset) +
+                                    getAppendOnlyFileSize(ai->file_name, NULL);
+    }
 }
 
 /* Whether to limit the execution of Background AOF rewrite.
@@ -1055,6 +1129,7 @@ void stopAppendOnly(void) {
             server.aof_last_fsync = server.mstime;
         }
         close(server.aof_fd);
+        updateCurIncrAofEndOffset();
         server.aof_fd = -1;
     }
 
@@ -1119,6 +1194,29 @@ int startAppendOnly(void) {
         server.aof_last_write_status = C_OK;
     }
     return C_OK;
+}
+
+void startAppendOnlyWithRetry(void) {
+    unsigned int tries, max_tries = 10;
+    for (tries = 0; tries < max_tries; ++tries) {
+        if (startAppendOnly() == C_OK)
+            break;
+        serverLog(LL_WARNING, "Failed to enable AOF! Trying it again in one second.");
+        sleep(1);
+    }
+    if (tries == max_tries) {
+        serverLog(LL_WARNING, "FATAL: AOF can't be turned on. Exiting now.");
+        exit(1);
+    }
+}
+
+/* Called after "appendonly" config is changed. */
+void applyAppendOnlyConfig(void) {
+    if (!server.aof_enabled && server.aof_state != AOF_OFF) {
+        stopAppendOnly();
+    } else if (server.aof_enabled && server.aof_state == AOF_OFF) {
+        startAppendOnlyWithRetry();
+    }
 }
 
 /* This is a wrapper to the write syscall in order to retry on short writes
@@ -2624,9 +2722,9 @@ int rewriteAppendOnlyFileBackground(void) {
             serverLog(LL_NOTICE,
                 "Successfully created the temporary AOF base file %s", tmpfile);
             sendChildCowInfo(CHILD_INFO_TYPE_AOF_COW_SIZE, "AOF rewrite");
-            exitFromChild(0);
+            exitFromChild(0, 0);
         } else {
-            exitFromChild(1);
+            exitFromChild(1, 0);
         }
     }
 #endif
@@ -2798,7 +2896,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
             sds temp_incr_aof_name = getTempIncrAofName();
             sds temp_incr_filepath = makePath(server.aof_dirname, temp_incr_aof_name);
             /* Get next new incr aof name. */
-            sds new_incr_filename = getNewIncrAofName(temp_am);
+            sds new_incr_filename = getNewIncrAofName(temp_am, tempIncAofStartReplOffset);
             new_incr_filepath = makePath(server.aof_dirname, new_incr_filename);
             latencyStartMonitor(latency);
             if (rename(temp_incr_filepath, new_incr_filepath) == -1) {

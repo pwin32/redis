@@ -97,7 +97,7 @@ int clusterManualFailoverTimeLimit(void);
 void clusterCommandSlots(client * c);
 void clusterCommandMyId(client *c);
 void clusterCommandMyShardId(client *c);
-void clusterCommandShards(client *c);
+
 sds clusterGenNodeDescription(client *c, clusterNode *node, int tls_primary);
 
 int clusterNodeCoversSlot(clusterNode *n, int slot);
@@ -107,9 +107,7 @@ clusterNode *getMyClusterNode(void);
 char *getMyClusterId(void);
 int getClusterSize(void);
 int getMyShardSlotCount(void);
-int handleDebugClusterCommand(client *c);
 int clusterNodePending(clusterNode  *node);
-int clusterNodeIsMaster(clusterNode *n);
 char **getClusterNodesList(size_t *numnodes);
 int clusterNodeIsMaster(clusterNode *n);
 char *clusterNodeIp(clusterNode *node);
@@ -131,6 +129,7 @@ char *clusterNodeHostname(clusterNode *node);
 const char *clusterNodePreferredEndpoint(clusterNode *n);
 long long clusterNodeReplOffset(clusterNode *node);
 clusterNode *clusterLookupNode(const char *name, int length);
+const char *clusterGetSecret(size_t *len);
 
 /* functions with shared implementations */
 clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot, uint64_t cmd_flags, int *error_code);
@@ -142,4 +141,23 @@ int isValidAuxString(char *s, unsigned int length);
 void migrateCommand(client *c);
 void clusterCommand(client *c);
 ConnectionType *connTypeOfCluster(void);
+
+void clusterGenNodesSlotsInfo(int filter);
+void clusterFreeNodesSlotsInfo(clusterNode *n);
+int clusterNodeSlotInfoCount(clusterNode *n);
+uint16_t clusterNodeSlotInfoEntry(clusterNode *n, int idx);
+int clusterNodeHasSlotInfo(clusterNode *n);
+
+int clusterGetShardCount(void);
+void *clusterGetShardIterator(void);
+void *clusterNextShardHandle(void *shard_iterator);
+void clusterFreeShardIterator(void *shard_iterator);
+int clusterGetShardNodeCount(void *shard);
+void *clusterShardHandleGetNodeIterator(void *shard);
+clusterNode *clusterShardNodeIteratorNext(void *node_iterator);
+void clusterShardNodeIteratorFree(void *node_iterator);
+clusterNode *clusterShardNodeFirst(void *shard);
+
+int clusterNodeTcpPort(clusterNode *node);
+int clusterNodeTlsPort(clusterNode *node);
 #endif /* __CLUSTER_H */

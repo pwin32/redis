@@ -5,8 +5,9 @@
  * Copyright (c) 2006-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifdef __MINGW32__
@@ -64,7 +65,7 @@ extern void serviceStopRequested(void);
 #endif
 #endif
 
-
+#define INITIAL_EVENT 1024
 aeEventLoop *aeCreateEventLoop(int setsize) {
     aeEventLoop *eventLoop;
     int i;
@@ -72,8 +73,9 @@ aeEventLoop *aeCreateEventLoop(int setsize) {
     monotonicInit();    /* just in case the calling app didn't initialize */
 
     if ((eventLoop = zmalloc(sizeof(*eventLoop))) == NULL) goto err;
-    eventLoop->events = zmalloc(sizeof(aeFileEvent)*setsize);
-    eventLoop->fired = zmalloc(sizeof(aeFiredEvent)*setsize);
+    eventLoop->nevents = setsize < INITIAL_EVENT ? setsize : INITIAL_EVENT;
+    eventLoop->events = zmalloc(sizeof(aeFileEvent)*eventLoop->nevents);
+    eventLoop->fired = zmalloc(sizeof(aeFiredEvent)*eventLoop->nevents);
     if (eventLoop->events == NULL || eventLoop->fired == NULL) goto err;
     eventLoop->setsize = setsize;
     eventLoop->timeEventHead = NULL;
@@ -83,10 +85,11 @@ aeEventLoop *aeCreateEventLoop(int setsize) {
     eventLoop->beforesleep = NULL;
     eventLoop->aftersleep = NULL;
     eventLoop->flags = 0;
+    memset(eventLoop->privdata, 0, sizeof(eventLoop->privdata));
     if (aeApiCreate(eventLoop) == -1) goto err;
     /* Events with mask == AE_NONE are not set. So let's initialize the
      * vector with it. */
-    for (i = 0; i < setsize; i++)
+    for (i = 0; i < eventLoop->nevents; i++)
         eventLoop->events[i].mask = AE_NONE;
     return eventLoop;
 
@@ -124,20 +127,19 @@ void aeSetDontWait(aeEventLoop *eventLoop, int noWait) {
  *
  * Otherwise AE_OK is returned and the operation is successful. */
 int aeResizeSetSize(aeEventLoop *eventLoop, int setsize) {
-    int i;
-
     if (setsize == eventLoop->setsize) return AE_OK;
     if (eventLoop->maxfd >= setsize) return AE_ERR;
     if (aeApiResize(eventLoop,setsize) == -1) return AE_ERR;
 
-    eventLoop->events = zrealloc(eventLoop->events,sizeof(aeFileEvent)*setsize);
-    eventLoop->fired = zrealloc(eventLoop->fired,sizeof(aeFiredEvent)*setsize);
     eventLoop->setsize = setsize;
 
-    /* Make sure that if we created new slots, they are initialized with
-     * an AE_NONE mask. */
-    for (i = eventLoop->maxfd+1; i < setsize; i++)
-        eventLoop->events[i].mask = AE_NONE;
+    /* If the current allocated space is larger than the requested size,
+     * we need to shrink it to the requested size. */
+    if (setsize < eventLoop->nevents) {
+        eventLoop->events = zrealloc(eventLoop->events,sizeof(aeFileEvent)*setsize);
+        eventLoop->fired = zrealloc(eventLoop->fired,sizeof(aeFiredEvent)*setsize);
+        eventLoop->nevents = setsize;
+    }
     return AE_OK;
 }
 
@@ -169,6 +171,22 @@ int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         errno = ERANGE;
         return AE_ERR;
     }
+
+    /* Resize the events and fired arrays if the file
+     * descriptor exceeds the current number of events. */
+    if (unlikely(fd >= eventLoop->nevents)) {
+        int newnevents = eventLoop->nevents;
+        newnevents = (newnevents * 2 > fd + 1) ? newnevents * 2 : fd + 1;
+        newnevents = (newnevents > eventLoop->setsize) ? eventLoop->setsize : newnevents;
+        eventLoop->events = zrealloc(eventLoop->events, sizeof(aeFileEvent) * newnevents);
+        eventLoop->fired = zrealloc(eventLoop->fired, sizeof(aeFiredEvent) * newnevents);
+
+        /* Initialize new slots with an AE_NONE mask */
+        for (int i = eventLoop->nevents; i < newnevents; i++)
+            eventLoop->events[i].mask = AE_NONE;
+        eventLoop->nevents = newnevents;
+    }
+
     aeFileEvent *fe = &eventLoop->events[fd];
 
     if (aeApiAddEvent(eventLoop, fd, mask) == -1)

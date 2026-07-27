@@ -3,8 +3,9 @@
  * Copyright (c) 2006-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef __SDS_H
@@ -248,6 +249,7 @@ sds sdsnew(const char *init);
 sds sdsempty(void);
 sds sdsdup(const sds s);
 void sdsfree(sds s);
+void sdsfreegeneric(void *s);
 sds sdsgrowzero(sds s, size_t len);
 sds sdscatlen(sds s, const void *t, size_t len);
 sds sdscat(sds s, const char *t);

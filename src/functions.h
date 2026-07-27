@@ -2,8 +2,9 @@
  * Copyright (c) 2021-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef __FUNCTIONS_H_
@@ -102,8 +103,8 @@ struct functionLibInfo {
 
 int functionsRegisterEngine(const char *engine_name, engine *engine_ctx);
 sds functionsCreateWithLibraryCtx(sds code, int replace, sds* err, functionsLibCtx *lib_ctx, size_t timeout);
-unsigned long functionsMemory(void);
-unsigned long functionsMemoryOverhead(void);
+unsigned long functionsMemoryVM(void);
+unsigned long functionsMemoryEngine(void);
 unsigned long functionsNum(void);
 unsigned long functionsLibNum(void);
 dict* functionsLibGet(void);
