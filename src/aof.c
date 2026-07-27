@@ -221,6 +221,19 @@ sds getTempAofManifestFileName(void) {
                 server.aof_filename, MANIFEST_NAME_SUFFIX);
 }
 
+sds appendAofInfoFromList(sds buf, list *aofList) {
+    listNode *ln;
+    listIter li;
+
+    listRewind(aofList, &li);
+    while ((ln = listNext(&li)) != NULL) {
+        aofInfo *ai = (aofInfo*)ln->value;
+        buf = aofInfoFormat(buf, ai);
+    }
+
+    return buf;
+}
+
 /* Returns the string representation of aofManifest pointed to by am.
  *
  * The string is multiple lines separated by '\n', and each line represents
@@ -240,8 +253,6 @@ sds getAofManifestAsString(aofManifest *am) {
     serverAssert(am != NULL);
 
     sds buf = sdsempty();
-    listNode *ln;
-    listIter li;
 
     /* 1. Add BASE File information, it is always at the beginning
      * of the manifest file. */
@@ -250,18 +261,10 @@ sds getAofManifestAsString(aofManifest *am) {
     }
 
     /* 2. Add HISTORY type AOF information. */
-    listRewind(am->history_aof_list, &li);
-    while ((ln = listNext(&li)) != NULL) {
-        aofInfo *ai = (aofInfo*)ln->value;
-        buf = aofInfoFormat(buf, ai);
-    }
+    buf = appendAofInfoFromList(buf, am->history_aof_list);
 
     /* 3. Add INCR type AOF information. */
-    listRewind(am->incr_aof_list, &li);
-    while ((ln = listNext(&li)) != NULL) {
-        aofInfo *ai = (aofInfo*)ln->value;
-        buf = aofInfoFormat(buf, ai);
-    }
+    buf = appendAofInfoFromList(buf, am->incr_aof_list);
 
     return buf;
 }
@@ -1849,7 +1852,10 @@ cleanup:
     if (fakeClient) freeClient(fakeClient);
     server.current_client = old_cur_client;
     server.executing_client = old_exec_client;
+    int fd = dup(fileno(fp));
     fclose(fp);
+    /* Reclaim page cache memory used by the AOF file in background. */
+    if (fd >= 0) bioCreateCloseJob(fd, 0, 1);
     sdsfree(aof_filepath);
     return ret;
 }
@@ -2118,10 +2124,11 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
         }
     } else if (o->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = o->ptr;
-        dictIterator *di = dictGetIterator(zs->dict);
+        dictIterator di;
         dictEntry *de;
 
-        while((de = dictNext(di)) != NULL) {
+        dictInitIterator(&di, zs->dict);
+        while((de = dictNext(&di)) != NULL) {
             sds ele = dictGetKey(de);
             double *score = dictGetVal(de);
 
@@ -2133,20 +2140,20 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
                     !rioWriteBulkString(r,"ZADD",4) ||
                     !rioWriteBulkObject(r,key)) 
                 {
-                    dictReleaseIterator(di);
+                    dictResetIterator(&di);
                     return 0;
                 }
             }
             if (!rioWriteBulkDouble(r,*score) ||
                 !rioWriteBulkString(r,ele,sdslen(ele)))
             {
-                dictReleaseIterator(di);
+                dictResetIterator(&di);
                 return 0;
             }
             if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
             items--;
         }
-        dictReleaseIterator(di);
+        dictResetIterator(&di);
     } else {
         serverPanic("Unknown sorted zset encoding");
     }
@@ -2450,20 +2457,21 @@ int rewriteModuleObject(rio *r, robj *key, robj *o, int dbid) {
 
 static int rewriteFunctions(rio *aof) {
     dict *functions = functionsLibGet();
-    dictIterator *iter = dictGetIterator(functions);
+    dictIterator iter;
     dictEntry *entry = NULL;
-    while ((entry = dictNext(iter))) {
+    dictInitIterator(&iter, functions);
+    while ((entry = dictNext(&iter))) {
         functionLibInfo *li = dictGetVal(entry);
         if (rioWrite(aof, "*3\r\n", 4) == 0) goto werr;
         char function_load[] = "$8\r\nFUNCTION\r\n$4\r\nLOAD\r\n";
         if (rioWrite(aof, function_load, sizeof(function_load) - 1) == 0) goto werr;
         if (rioWriteBulkString(aof, li->code, sdslen(li->code)) == 0) goto werr;
     }
-    dictReleaseIterator(iter);
+    dictResetIterator(&iter);
     return 1;
 
 werr:
-    dictReleaseIterator(iter);
+    dictResetIterator(&iter);
     return 0;
 }
 
@@ -2495,16 +2503,18 @@ int rewriteAppendOnlyFileRio(rio *aof) {
         kvs_it = kvstoreIteratorInit(db->keys);
         /* Iterate this DB writing every entry */
         while((de = kvstoreIteratorNext(kvs_it)) != NULL) {
-            sds keystr;
-            robj key, *o;
             long long expiretime;
             size_t aof_bytes_before_key = aof->processed_bytes;
 
-            keystr = dictGetKey(de);
-            o = dictGetVal(de);
-            initStaticStringObject(key,keystr);
-
-            expiretime = getExpire(db,&key);
+            /* Get the value object (of type kvobj) */
+            kvobj *o = dictGetKV(de);
+            
+            /* Get the expire time */
+            expiretime = kvobjGetExpire(o);
+            
+            /* Set on stack string object for key */
+            robj key;
+            initStaticStringObject(key, kvobjGetKey(o));
 
             /* Save the key and associated value */
             if (o->type == OBJ_STRING) {

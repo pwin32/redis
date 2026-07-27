@@ -697,10 +697,9 @@ static void tlsHandleEvent(tls_connection *conn, int mask) {
             conn->c.fd, conn->c.state, mask, conn->c.read_handler != NULL, conn->c.write_handler != NULL,
             conn->flags);
 
-    ERR_clear_error();
-
     switch (conn->c.state) {
         case CONN_STATE_CONNECTING:
+            ERR_clear_error();
 #ifdef _WIN32
             conn_error = deferred_error != 0 ? deferred_error :
                          anetGetError(conn->c.fd);
@@ -742,6 +741,7 @@ static void tlsHandleEvent(tls_connection *conn, int mask) {
             conn->c.conn_handler = NULL;
             break;
         case CONN_STATE_ACCEPTING:
+            ERR_clear_error();
             ret = SSL_accept(conn->ssl);
             if (ret <= 0) {
                 WantIOType want = 0;
@@ -1105,6 +1105,7 @@ static int connTLSBlockingConnect(connection *conn_, const char *addr, int port,
      * which means the specified timeout will not be enforced accurately. */
     SSL_set_fd(conn->ssl, conn->c.fd);
     setBlockingTimeout(conn, timeout);
+    ERR_clear_error();
 
     if ((ret = SSL_connect(conn->ssl)) <= 0) {
         conn->c.state = CONN_STATE_ERROR;

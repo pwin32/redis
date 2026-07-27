@@ -1,4 +1,4 @@
-Redis Open Source 8.0 release notes
+Redis Open Source 8.2 release notes
 ===================================
 
 --------------------------------------------------------------------------------
@@ -11,17 +11,99 @@ CRITICAL: There is a critical bug affecting MOST USERS. Upgrade ASAP.
 SECURITY: There are security fixes in the release.
 --------------------------------------------------------------------------------
 
-Starting with v8.0.1, the release notes contain PRs from multiple repositories:
+The release notes contain PRs from multiple repositories:
 
 #n - Redis (https://github.com/redis/redis)
-#QEn = Query Engine (https://github.com/RediSearch/RediSearch)
-#JSn = JSON (https://github.com/RedisJSON/RedisJSON)
-#TSn = Time Series (https://github.com/RedisTimeSeries/RedisTimeSeries)
-#PRn = Probabilistic (https://github.com/RedisBloom/RedisBloom)
+#Qn = Query Engine (https://github.com/RediSearch/RediSearch)
+#Jn = JSON (https://github.com/RedisJSON/RedisJSON)
+#Tn = Time Series (https://github.com/RedisTimeSeries/RedisTimeSeries)
+#Pn = Probabilistic (https://github.com/RedisBloom/RedisBloom)
 
 
 ================================================================================
-Redis 8.0.6    Released Mon 23 Feb 2026 10:00:00 IST
+Redis 8.2.8    Released Thu 23 Jul 2026 22:00:00 IST
+================================================================================
+
+SECURITY: There are security fixes in the release.
+
+### Security fixes
+
+- Use-after-free when loading a stream consumer group via `RESTORE` may lead to Remote Code Execution
+- #P1041 Crafted RESTORE payloads in RedisBloom and TDigest may trigger out-of-bounds writes, potentially leading to remote code execution
+
+### Bug fixes
+
+- #P1019 Replicate `CF.LOADCHUNK` data chunks to prevent silent Cuckoo Filter data loss on failover
+
+================================================================================
+Redis 8.2.7    Released Thu 4 Jun 2026 19:00:00 IST
+================================================================================
+
+Update urgency: `HIGH`: There are critical bugs that may affect a subset of users.
+
+### Bug fixes
+
+- #15175, #Q9262 Redis fails to start on AArch64
+- #14537 `SCAN`: restore original filter order (revert change introduced in 8.2)
+- #14816 setModuleEnumConfig() passing prefixed name to module callbacks
+- #14623 Streams: `XTRIM`/`XADD` with approx mode (`~`) don’t delete entries for `DELREF`/`ACKED` strategies
+- #14552 Streams: Incorrect behavior when using `XDELEX...`ACKED` after `XGROUP DESTROY`
+- #14420 Shutdown blocked client not being properly reset after shutdown cancellation
+- #14415 Potential crash in `lookupKey()` when `executing_client` is NULL
+- #14417 `CLUSTER FORGET` - heap-buffer-overflow
+- #15188 `cluster-announce-ip` rejecting hostnames (regression)
+- #14667, #14886 Potential TCP stalls/deadlocks
+- #Q9484 Shard crash during background index scan of JSON documents with vector fields on Active-Active (CRDT) databases (MOD-15542)
+- #Q9635 Severe latency spikes and shard unresponsiveness when `EXPIRE` or `EXPIREAT` operations run concurrently with queries on large indexes (MOD-14930)
+
+
+================================================================================
+Redis 8.2.6    Released Tue 5 May 2026 16:00:00 IST
+================================================================================
+
+Update urgency: `SECURITY`: There are security fixes in the release.
+
+### Security fixes
+
+- (CVE-2026-23479) Use-After-Free in unblock client flow may lead to Remote Code Execution.
+- (CVE-2026-25243) Invalid memory access in `RESTORE` may lead to Remote Code Execution
+- (CVE-2026-23631) Lua Use-After-Free may lead to remote code execution
+- (CVE-2026-25588) Invalid memory access in `RESTORE` may lead to Remote Code Execution (Time Series)
+- (CVE-2026-25589) Invalid memory access in `RESTORE` may lead to Remote Code Execution (Probabilistic)
+
+### Bug fixes
+
+- `SUBSCRIBE`, `PSUBSCRIBE`, `SSUBSCRIBE`: crash on OOM (RED-167788)
+- `CONFIG SET`: some settings allow invalid characters (RED-167787)
+- `SCRIPT DEBUG`: potential crash on scripts (RED-175507)
+- `VADD`: crash or buffer overflow on large `REDUCE` value (RED-170921)
+- `VSET`: crash on huge allocations (MOD-12678)
+- Potential crash on disconnections and TLS failures (Time Series) (MOD-14850)
+- #Q8743 Crash when many keys receive expirations under heavy TTL activity (MOD-14500)
+- #Q8850 HNSW vector index memory growth under high-churn workloads until shard restart (MOD-13761)
+- #Q9178 Coordinator deadlock under mixed `FT.SEARCH` and `FT.AGGREGATE` load (MOD-14268)
+- #Q9049 `FT.PROFILE` output is inconsistent when a profiled value is missing (MOD-10560)
+- #Q8793 `FT.EXPLAIN` does not lock, causing a race with concurrent index changes (MOD-14461)
+- #Q8600 `FILTER` returns inconsistent results with multiple indexes sharing field aliases (MOD-14063)
+- #Q8662 `FILTER` behavior depends on property order in the expression (MOD-14342)
+- #Q8602 Filter expressions are evaluated for indexes that do not match the document type (MOD-14064)
+- #Q8601 Documents are inconsistently included or excluded depending on the indexing path taken (MOD-13948)
+- #Q8599 `RENAME` notification handler loads the wrong key, causing stale index entries after a rename (MOD-14062)
+- #Q9019 `PERSIST` and `HPERSIST` notifications are not reflected in index expiration tracking (MOD-14800)
+- #Q9081 `FT.SPELLCHECK` treats `PARAMS` placeholders as literal terms instead of resolving them (MOD-10596)
+- #Q8464 GC out-of-memory on replica shards leaves the replica in an inconsistent state (MOD-14066)
+- #Q8888 `FT.CURSOR` enters an infinite loop when the ACL user lacks specific permissions (MOD-14479)
+- #Q9166 Crash on `FT.SEARCH` when topology validation fails (for example, some nodes unreachable) (MOD-14475)
+- #Q8453 `FT.INFO`-style output no longer reports zero-index summary data when no indices exist (MOD-14081)
+- #Q9076 `FT.CREATE` now rejects schema definitions with invalid option combinations at creation time (MOD-14655)
+
+### Metrics
+
+- #Q8235 `FT.PROFILE`: added queue time tracking (MOD-13602)
+
+
+================================================================================
+Redis 8.2.5    Released Mon 23 Feb 2026 10:00:00 IST
 ================================================================================
 
 SECURITY: There is a security fix in the release
@@ -32,14 +114,92 @@ SECURITY: There is a security fix in the release
 
 
 ================================================================================
-Redis 8.0.5    Released Sun 2 Nov 2025 10:00:00 IST
+Redis 8.2.4     Released Sun 8 Feb 2026 9:00:00 IST
 ================================================================================
 
-Update urgency: `HIGH`: There are security fixes in the release.
+Update urgency: `SECURITY`: There are security fixes in the release.
+
+### Security fixes
+
+- #T1837, #J1474 Hide Personally Identifiable Information from server log
 
 ### Bug fixes
 
-- `HGETEX`: missing numfields argument when FIELDS used leading to Redis crash
+- #J1430 Malformed panic log messages (MOD-9365)
+- #P945 Bloom filter: crash on RDB load on large number of filters (MOD-11590)
+- #Q6973 Correct empty string token counting in byteOffset calculations to ensure accurate text position tracking (MOD-11233)
+- #Q6995 Prevent `FT.INFO` command fanout to replicas to reduce unnecessary cluster traffic
+- #Q7034 Correct goto statement handling on RDB load
+- #Q7154 Display Background Indexing OOM warning in `FT.AGGREGATE` when memory limits are approached (MOD-11817)
+- #Q7219 Resolve concurrency issue in Reducer that caused intermittent errors (MOD-12243)
+- #Q7255 Correct `BM25STD` underflow wraparound to prevent incorrect scoring (MOD-12223)
+- #Q7264 Ensure accurate `totalDocsLen` updates to maintain correct document statistics (MOD-12234)
+- #Q7275 Report used memory as unsigned long to prevent overflow (RED-169833)
+- #Q7350 Allow `FT.CREATE` with LeanVec parameters on non-Intel architectures (RED-176382)
+- #Q7384 Reduce index load from RDB temporary memory overhead (MOD-12212)
+- #Q7435 Ensure full profile output on timeout with `RETURN` policy in `FT.PROFILE` (MOD-12320)
+- #Q7446 Remove outdated validation from debug aggregate in cluster mode (MOD-12435)
+- #Q7458 Correct GC regression that caused stability issues (MOD-12538)
+- #Q7459 Prevent potential double-free in Fork GC error path (MOD-12521)
+- #Q7470 Remove draining from Flush callback to avoid blocking
+- #Q7499 Propagate `HGETALL` command in HDT mode (MOD-12662)
+- #Q7534 Reduce number of worker threads asynchronously to prevent performance degradation (MOD-12252, MOD-11658)
+- #Q7554 Handle Coordinator case when `SCORE` is sent alone without extra fields (MOD-12647)
+- #Q7561 Prevent memory corruption when freeing searchRequestCtx on error (MOD-12699)
+- #Q7685 Resolve cursor logical leak that could lead to resource exhaustion (MOD-12807)
+- #Q7710 Add support for `WITHCOUNT` in `FT.AGGREGATE` (MOD-11751)
+- #Q7794 Correctly handle binary data with embedded NULLs to prevent crashes (MOD-13010)
+- #Q7812 Correct SVS GC for no-workers case (MOD-12983)
+- #Q7873 Handle warnings in empty `FT.AGGREGATE` replies in cluster mode (MOD-12640)
+- #Q7886 Remove non-TEXT fields from spec's keys dictionary to prevent incorrect field handling (MOD-13150)
+- #Q7901 Support multiple warnings in reply to prevent warning loss (MOD-13252)
+- #Q8083 Correct `FULLTEXT` field metric count accuracy (MOD-13432)
+- #Q8153 Resolve config registration issue (RED-171841)
+- #Q7371 Validate `search-min-operation-workers` min value correctly (MOD-12383)
+- #Q8151 Correct `FT.PROFILE` shard total profile time calculation (MOD-13735, MOD-13181)
+- #Q7165 (Redis Enterprise only) `FT.DROPINDEX` as touches-arbitrary-keys for proper cluster handling causing crash on A-A (MOD-11090)
+- #Q7023 (Redis Enterprise only) Ensure all `FT.SUG*` commands are hashslot-aware to prevent cluster routing errors (MOD-11756)
+
+### Performance and resource utilization improvements
+
+- #Q7496 Vector search performance improvements (MOD-12011, MOD-12063, MOD-12629, MOD-12346)
+- #Q7694 Use asynchronous jobs in GC for SVS to reduce blocking (MOD-12668)
+
+### Metrics
+
+- #Q7614 Track timeout errors and warnings in info (MOD-12419)
+- #Q7646 Track `maxprefixexpansions` errors and warnings in info (MOD-12417)
+- #Q7957 Persist query warnings across cursor reads (MOD-12984)
+- #Q7341 Rename `FT.PROFILE` counter fields for clarity (MOD-6056)
+- #Q7436 Enhance `FT.PROFILE` with vector search execution details (MOD-12263)
+- #Q7737 Add `Internal cursor reads` metric to cluster `FT.PROFILE` output (MOD-12414)
+- #Q7692 Declare query error struct on `_FT.CURSOR PROFILE` (MOD-12955)
+- #Q7552 Add `active_io_threads` metric (MOD-12069, MOD-12695)
+- #Q7564 Add `active_worker_threads` metric (MOD-12694, MOD-12069)
+- #Q7623 Add `active_coord_threads` metric (MOD-12694, MOD-12069)
+- #Q7626 Add `*_pending_jobs` metrics for job queues (MOD-12069)
+- #Q7672 Add pending workers admin jobs metric (MOD-12069, MOD-12791)
+- #Q7732 Introduce `active_topology_update_threads` metric (MOD-12069, MOD-12790)
+- #Q7759 Extend indexing metrics for better observability (MOD-12070)
+
+### Configuration parameters
+
+- #Q7083 Add default scorer configuration option (MOD-10037)
+
+
+================================================================================
+Redis 8.2.3     Released Sun 2 Nov 2025 16:00:00 IST
+================================================================================
+
+Update urgency: `SECURITY`: There is a security fix in the release.
+
+### Security fixes
+
+- (CVE-2025-62507) Bug in `XACKDEL` may lead to stack overflow and potential RCE
+
+### Bug fixes
+
+- `HGETEX`: A missing `numfields` argument when `FIELDS` is used can lead to Redis crash
 - an overflow in `HyperLogLog` with 2GB+ entries may result in a Redis crash
 - Cuckoo filter - Division by zero in Cuckoo filter insertion
 - Cuckoo filter - Counter overflow
@@ -50,10 +210,10 @@ Update urgency: `HIGH`: There are security fixes in the release.
 
 
 ================================================================================
-Redis 8.0.4    Released Fri 3 Oct 2025 10:00:00 IST
+Redis 8.2.2     Released Fri 3 Oct 2025 10:00:00 IST
 ================================================================================
 
-Update urgency: `SECURITY`: There are security fixes in the release.
+Update urgency: `SECURITY`: There are security fixes in the release
 
 ### Security fixes
 
@@ -65,115 +225,64 @@ Update urgency: `SECURITY`: There are security fixes in the release.
 ### New Features
 
 - #14223 `VSIM`: new `EPSILON` argument to specify maximum distance
+- #Q6867,#Q6845 `SVS-VAMANA`: allow use of `BUILD_INTEL_SVS_OPT` flag for Intel optimisations (MOD-10920)
 
 ### Bug fixes
 
-- #14330 Potential use-after-free after pubsub and Lua defrag
 - #14319 Potential crash on Lua script defrag
-- #14224 `HINCRBYFLOAT` removes field expiration on replica
-- #14164 Prevent `CLIENT UNBLOCK` from unblocking `CLIENT PAUSE`
-- #14165 Endless client blocking for blocking commands
-- #14144 Vector sets - RDB format is not compatible with big endian machines
-- #14163 `EVAL` crash when error table is empty
-- #14143 Gracefully handle short read errors for hashes with TTL during full sync
+- #14323 Potential crash on streams and HFE defrag
+- #14330 Potential use-after-free after pubsub and Lua defrag
+- #14288 `MEMORY USAGE`: fix reported value
+- #14259 `XGROUP CREATE`, `XGROUP SETID`: limit `ENTRIESREAD` value to the number of entries added to the stream
+- #J1374 `JSON.DEL` doesn’t delete all matching object members / array elements (MOD-11032, MOD-11067)
+- #P886  `TDIGEST.CREATE` crashes (OOM) on huge initialization values (MOD-10840)
+- #Q6787 Potential shard restart while reindexing vectors on RDB loading (MOD-11011)
+- #Q6676 Potential crash when using small `CONSTRUCTION_WINDOW_SIZE` on `SVS-VAMANA` (MOD-10771)
+- #Q6701 Potential crash (OOM) in heavy updates due a file descriptor leak (MOD-10975)
+- #Q6723 Potential crash when using ACL rules (MOD-10748)
+- #Q6641 `INFO SEARCH`: `search_used_memory_indexes` vector index memory value incorrect
+- #Q6665 `FT.PROFILE`: more accurate execution duration measurements (MOD-10622)
+
+### Performance and resource utilization
+
+- #Q6648 Improve RESP3 serialization performance (MOD-9687)
+
+### Metrics
+
+- #Q6671 `INFO SEARCH`: new `SVS-VAMANA` metrics
 
 
-================================================================================
-Redis 8.0.3    Released Sun 6 Jul 2025 12:00:00 IST
-================================================================================
+=============================================================
+8.2.1 (v8.2.1)    Committed  Mon 18 Aug 2025 12:00:00 IST
+=============================================================
 
-Update urgency: `SECURITY`: There are security fixes in the release.
-
-### Security fixes
-
-- (CVE-2025-32023) Fix out-of-bounds write in `HyperLogLog` commands
-- (CVE-2025-48367) Retry accepting other connections even if the accepted connection reports an error
-
-### New Features
-
-- #14065 `VSIM`: Add new `WITHATTRIBS` to return the JSON attribute associated with an element
-
-### Bug fixes
-
-- #14085 A short read may lead to an exit() on a replica
-- #14092 db->expires is not defragmented
-
-
-================================================================================
-Redis 8.0.2     Released Tue 27 May 2025 12:00:00 IST
-================================================================================
-
-Update urgency: `SECURITY`: There are security fixes in the release.
-
-### Security fixes
-
-- (CVE-2025-27151) redis-check-aof may lead to stack overflow and potential RCE
-
-### Other general improvements
-
-- #14048 `LOLWUT` for Redis 8
-
-
-================================================================================
-Redis 8.0.1     Released Sun 13 May 2025 16:00:00 IST
-================================================================================
-
-Update urgency: `MODERATE`: No need to upgrade unless there are new features you want to use.
-
-### Performance and resource utilization improvements
-
-- #13959 Vector set - faster `VSIM` `FILTER` parsing
+Update urgency: `MODERATE`: Program an upgrade of the server, but it's not urgent.
 
 ### Bug fixes
 
-- #QE6083 Query Engine - revert default policy `search-on-timeout` to `RETURN`
-- #QE6050 Query Engine - `@__key` on `FT.AGGREGATE` used as reserved field name preventing access to Redis keyspace
-- #QE6077 Query Engine - crash when calling `FT.CURSOR DEL` while retrieving from the CURSOR
+- #14240 `INFO KEYSIZES` - potential incorrect histogram updates on cluster mode with modules
+- #14274 Disable Active Defrag during flushing replica
+- #14276 `XADD` or `XTRIM` can crash the server after loading RDB
+- #Q6601 Potential crash when running `FLUSHDB` (MOD-10681)
 
-### Notes
+### Performance and resource utilization
 
-- Fixed wrong text in the license files
+- Query Engine - LeanVec and LVQ proprietary Intel optimizations were removed from Redis Open Source
+- #Q6621 Fix regression in `INFO` (MOD-10779)
 
+===========================================================
+8.2 GA (v8.2.0)    Released Mon 4 Aug 2025 15:00:00 IST
+===========================================================
 
-=======================================================
-8.0 GA (v8.0.0)    Released Fri 2 May 2025 12:00:00 IST
-=======================================================
+This is the General Availability release of Redis Open Source 8.2.
 
-This is the General Availability release of Redis Open Source 8.0.
+### Major changes compared to 8.0
 
-Redis 8.0 deprecates previous Redis and Redis Stack versions.
-
-Stand alone RediSearch, RedisJSON, RedisTimeSeries, and RedisBloom are no longer needed as they are now part of Redis.
-
-
-### Major changes compared to 7.4.2
-
-- Name change: Redis Community Edition is now Redis Open Source
-- License change: licensed under your choice of
-  - (a) the Redis Source Available License 2.0 (RSALv2); or
-  - (b) the Server Side Public License v1 (SSPLv1); or
-  - (c) the GNU Affero General Public License (AGPLv3)
-- Redis Query engine and 8 new data structures are now an integral part of Redis 8
-  - (1) Redis Query Engine, which now supports both horizontal and vertical scaling for search, query and vector workloads
-  - (2) JSON - a queryable JSON document
-  - (3) Time series
-  - (4-8) Five probabilistic data structures: Bloom filter, Cuckoo filter, Count-min sketch, Top-k, and t-digest
-  - (9) Vector set [beta] - a data structure designed for Vector Similarity Search, inspired by Sorted set
-  - These nine components are included in all binary distributions
-
-  - See instructions in the README.md file on how to build from source with all these components
-  - New configuration file: redis-full.conf - loads Redis with all these components,
-    and contains new configuration parameters for Redis Query engine and the new data structures
-  - New ACL categories: @search, @json, @timeseries, @bloom, @cuckoo, @cms, @topk, @tdigest
-  - Commands are also included in the existing ACL categories (@read, @write, etc.)
-
-- More than 30 performance and resource utilization improvements
-- A new I/O threading implementation which enables throughput increase on multi-core environments
-  (set with `io-threads` configuration parameter)
-- An improved replication mechanism which is more performant and robust
-- New hash commands - `HGETDEL`, `HGETEX`, `HSETEX`
-
-For more details, see the release notes of 8.0-M01, 8.0-M02, 8.0-M03,8.0-M04, and 8.0-RC1
+- Streams - new commands: `XDELEX` and `XACKDEL`; extension to `XADD` and `XTRIM`
+- Bitmap - `BITOP`: new operators: `DIFF`, `DIFF1`, `ANDOR`, and `ONE`
+- Query Engine - new SVS-VAMANA vector index type which supports vector compression
+- More than 15 performance and resource utilization improvements
+- New metrics: per-slot usage metrics, key size distributions for basic data types, and more
 
 ### Binary distributions
 
@@ -183,325 +292,138 @@ For more details, see the release notes of 8.0-M01, 8.0-M02, 8.0-M03,8.0-M04, an
 - Install using RPM - see https://github.com/redis/redis-rpm
 - Install using Debian APT - see https://github.com/redis/redis-debian
 
-### Operating systems we test Redis 8.0 on
 
-- Ubuntu 20.04 (Focal Fossa), 22.04 (Jammy Jellyfish), 24.04 (Noble Numbat)
+### Operating systems we test Redis 8.2 on
+
+- Ubuntu 22.04 (Jammy Jellyfish), 24.04 (Noble Numbat)
 - Rocky Linux 8.10, 9.5
 - AlmaLinux 8.10, 9.5
-- Debian 11 (Bullseye), 12 (Bookworm)
+- Debian 12 (Bookworm)
 - macOS 13 (Ventura), 14 (Sonoma), 15 (Sequoia)
 
-### Supported upgrade paths (by replication or persistence)
+### Security fixes (compared to 8.2-RC1)
 
-- From previous Redis versions, without modules
-- From previous Redis versions with modules (RediSearch, RedisJSON, RedisTimeSeries, RedisBloom)
-- From Redis Stack 7.2 or 7.4
+- (CVE-2025-32023) Fix out-of-bounds write in `HyperLogLog` commands
+- (CVE-2025-48367) Retry accepting other connections even if the accepted connection reports an error
 
-### Security fixes (compared to 8.0-RC1)
+### New Features (compared to 8.2-RC1)
 
+- #14141 Keyspace notifications - new event types:
+  - `OVERWRITTEN` - the value of a key is completely overwritten
+  - `TYPE_CHANGED` - key type change
 
-* (CVE-2025-21605) An unauthenticated client can cause an unlimited growth of output buffers
+### Bug fixes (compared to 8.2-RC1)
 
-### Bug fixes (compared to 8.0-RC1)
+- #14162 Crash when using evport with I/O threads
+- #14163 `EVAL` crash when error table is empty
+- #14144 Vector sets - RDB format is not compatible with big endian machines
+- #14165 Endless client blocking for blocking commands
+- #14164 Prevent `CLIENT UNBLOCK` from unblocking `CLIENT PAUSE`
+- #14216 TTL was not removed by the `SET` command
+- #14224 `HINCRBYFLOAT` removes field expiration on replica
 
-- #13966, #13932 `CLUSTER SLOTS` - TLS port update not reflected in CLUSTER SLOTS
-- #13958 `XTRIM`, `XADD` - incorrect lag due to trimming stream
-- #13931 `HGETEX` - wrong order of keyspace notifications
-- #JS1337 - JSON - `JSON.DEL` emits no `DEL` notification when removing the entire value (MOD-9117)
-- #TS1742 - Time Series - `TS.INFO` - `duplicatePolicy` is `nil` when set to the default value (MOD-5423) (edited)
+### Performance and resource utilization improvements (compared to 8.2-RC1)
 
+- #14200 Store iterators on stack instead of on heap
+- #14144 Vector set - improve RDB loading / RESTORE speed by storing the worst link info 
+- #Q6430 More compression variants for the SVS-VAMANA vector index
+- #Q6535 `SHARD_K_RATIO` parameter - favor network latency over accuracy for KNN vector query in a Redis cluster (unstable feature) (MOD-10359)
 
-==========================================================
-8.0-RC1 (v7.9.240)    Released Mon 7 Apr 2025 10:00:00 IST
-==========================================================
+### Modules API
 
-This is the first Release Candidate of Redis Community Edition 8.0.
+- #14051 `RedisModule_Get*`, `RedisModule_Set*` - allow modules to access Redis configurations
+- #14114 `RM_UnsubscribeFromKeyspaceEvents` - unregister a module from specific keyspace notifications
+
+===========================================================
+8.2-RC1 (v8.1.240)    Committed Thu 3 Jul 2025 20:00:00 IST
+===========================================================
+
+This is the first Release Candidate of Redis Open Source 8.0.
 
 Release Candidates are feature-complete pre-releases. Pre-releases are not suitable for production use.
 
-
 ### Headlines
 
-8.0-RC1 includes a new beta data structure - vector set.
+Redis 8.2 introduces major performance and memory footprint improvements, new commands, and command extensions.
 
-### Distributions
+8.2-RC1 is available as a Docker image and can be downloaded from [Docker Hub](https://hub.docker.com/_/redis). Additional distributions will be introduced in upcoming pre-releases.
 
-- Alpine and Debian Docker images - https://hub.docker.com/_/redis
-- Install using snap - see https://github.com/redis/redis-snap
-- Install using brew - see https://github.com/redis/homebrew-redis
-- Install using RPM and Debian APT - will be added on the GA release
+### Security fixes
+
+- (CVE-2025-27151) redis-check-aof may lead to stack overflow and potential RCE
 
 ### New Features
 
-- #13915 Vector set - a new data structure [beta]:
-  Vector set extends the concept of sorted sets to allow the storage and querying of
-  high-dimensional vector embeddings, enhancing Redis for AI use cases that involve
-  semantic search and recommendation systems. Vector sets complement the existing
-  vector search capability in the Redis Query Engine. The vector set data type is
-  available in beta. We may change, or even break, the features and the API in
-  future versions. We are open to your feedback as you try out this new data type.
-- #13846 Allow detecting incompatibility risks before switching to cluster mode
+- #14130 Streams - new commands: `XDELEX` and `XACKDEL`; extension to `XADD` and `XTRIM`
+- #14039 New command: `CLUSTER SLOT-STATS` - get per-slot usage metrics such as key count, CPU time, and network I/O
+- #14122 `VSIM` - new `IN` operator for filtering expression
+- #Q6329, #Q6329 - Query Engine - new SVS-VAMANA vector index type which supports vector compression (optimized for Intel machines)
 
 ### Bug fixes
 
-- #13895 RDB Channel replication - replica is online after BGSAVE is done
-- #13877 Inconsistency for ShardID in case both master and replica support it
-- #13883 Defrag scan may return nothing when type/encoding changes during it
-- #13863 `RANDOMKEY` - infinite loop during client pause
-- #13853 `SLAVEOF` - crash when clients are blocked on lazy free
-- #13632 `XREAD` returns nil while stream is not empty
+- #14143 Gracefully handle short read errors for hashes with TTL during full sync
+
+### Performance and resource utilization improvements
+
+- #14103 Optimize `BITCOUNT` by introducing prefetching
+- #14121 Optimize `SCAN` by performing expiration checks only on DBs with volatile keys
+- #14140 Optimize expiry check in `scanCallback`
+- #14131 Optimize `LREM`, `LPOS`, `LINSERT`, `ZRANK`, and more by caching `string2ll` results in `quicklistCompare`
+- #14088 Optimize `COPY`, `RENAME`, and `RESTORE` when TTL is used
+- #14074 Reduce the overhead associated with tracking `malloc`’s usable memory
+- #13900 Optimize the client’s cron to avoid blocking the main thread
+- #J1351 JSON - memory footprint improvement by inlining numbers (MOD-9511)
 
 ### Metrics
 
-- #13846 `INFO`: `cluster_incompatible_ops` - number of cluster-incompatible commands
-
-### Configuration parameters
-
-- #13846 `cluster-compatibility-sample-ratio` - sampling ratio (0-100) for checking command compatibility with cluster mode
-
-
-============================================================
-8.0-M04 (v7.9.227)    Committed Sun 16 Mar 2025 11:00:00 IST
-============================================================
-
-This is the fourth Milestone of Redis Community Edition 8.0.
-
-Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
-Once we reach feature-completeness we will release RC1.
-
-### Headlines
-
-8.0-M04 includes 3 new hash commands, performance improvements, and memory defragmentation improvements.
-
-### Distributions
-
-- Alpine and Debian Docker images - https://hub.docker.com/_/redis
-- Install using snap - see https://github.com/redis/redis-snap
-- Install using brew - see https://github.com/redis/homebrew-redis
-- Install using RPM and Debian APT - will be added on the GA release
-
-### New Features
-
-- #13798 Hash - new commands:
-  - `HGETDEL` Get and delete the value of one or more fields of a given hash key
-  - `HGETEX` Get the value of one or more fields of a given hash key, and optionally set their expiration
-  - `HSETEX` Set the value of one or more fields of a given hash key, and optionally set their expiration
-- #13773 Add replication offset to AOF, allowing more robust way to determine which AOF has a more up-to-date data during recovery
-- #13740, #13763 shared secret - new mechanism to allow sending internal commands between nodes
-
-### Bug fixes
-
-- #13804 Overflow on 32-bit systems when calculating idle time for eviction
-- #13793 `WAITAOF` returns prematurely
-- #13800 Remove `DENYOOM` from `HEXPIRE`, `HEXPIREAT`, `HPEXPIRE`, and `HPEXPIREAT`
-- #13632 Streams - wrong behavior of `XREAD +` after last entry
-
-### Modules API
-
-- #13788 `RedisModule_LoadDefaultConfigs` - load module configuration values from redis.conf
-- #13815 `RM_RegisterDefragFunc2` - support for incremental defragmentation of global module data
-- #13816 `RM_DefragRedisModuleDict` - allow modules to defrag `RedisModuleDict`
-- #13774 `RM_GetContextFlags` - add a `REDISMODULE_CTX_FLAGS_DEBUG_ENABLED` flag to execute debug commands
-
-
-### Performance and resource utilization improvements
-
-- #13752 Reduce defrag CPU usage when defragmentation is ineffective
-- #13764 Reduce latency when a command is called consecutively
-- #13787 Optimize parsing data from clients, specifically multi-bulk (array) data
-- #13792 Optimize dictionary lookup by avoiding duplicate key length calculation during comparisons
-- #13796 Optimize expiration checks
-
-
-============================================================
-8.0-M03 (v7.9.226)    Committed Mon 20 Jan 2025 15:00:00 IST
-============================================================
-
-This is the third Milestone of Redis Community Edition 8.0.
-
-Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
-Once we reach feature-completeness we will release RC1.
-
-### Headlines:
-
-8.0-M03 introduces an improved replication mechanism which is more performant and robust, a new I/O threading implementation which enables throughput increase on multi-core environments, and many additional performance improvements. Both Alpine and Debian Docker images are now available on [Docker Hub](https://hub.docker.com/_/redis). A snap and Homebrew distributions are available as well.
-
-
-### Security fixes
-
-- (CVE-2024-46981) Lua script may lead to remote code execution
-- (CVE-2024-51741) Denial-of-service due to malformed ACL selectors
-
-### New Features
-
-- #13695 New I/O threading implementation
-- #13732 New replication mechanism
-
-
-### Bug fixes
-
-- #13653 `MODULE LOADEX` - crash on nonexistent parameter name
-- #13661 `FUNCTION FLUSH` - memory leak when using jemalloc
-- #13626 Memory leak on failed RDB loading
-
-### Other general improvements
-
-- #13639 When `hide-user-data-from-log` is enabled - also print command tokens on crash
-- #13660 Add the Lua VM memory to memory overhead
-
-### New metrics
-
-- #13592 `INFO` - new `KEYSIZES` section includes key size distributions for basic data types
-- #13695 `INFO` - new `Threads` section includes I/O threading metrics
-
-### Modules API
-
-- #13666 `RedisModule_ACLCheckKeyPrefixPermissions` - check access permissions to any key matching a given prefix
-- #13676 `RedisModule_HashFieldMinExpire` - query the minimum expiration time over all the hash’s fields
-- #13676 `RedisModule_HashGet` - new `REDISMODULE_HASH_EXPIRE_TIME` flag - query the field expiration time
-- #13656 `RedisModule_RegisterXXXConfig` - allow registering unprefixed configuration parameters
-
-### Configuration parameters
-
-
-- `replica-full-sync-buffer-limit` - maximum size of accumulated replication stream data on the replica side
-- `io-threads-do-reads` is no longer effective. The new I/O threading implementation always use threads for both reads and writes
-
-### Performance and resource utilization improvements
-
-- #13638 Optimize CRC64 performance
-- #13521 Optimize commands with large argument count - reuse c->argv after command execution
-- #13558 Optimize `PFCOUNT` and `PFMERGE` - SIMD acceleration
-- #13644 Optimize `GET` on high pipeline use-cases
-- #13646 Optimize `EXISTS` - prefetching and branch prediction hints
-- #13652 Optimize `LRANGE` - improve listpack handling and decoding efficiency
-- #13655 Optimize `HSET` - avoid unnecessary hash field creation or deletion
-- #13721 Optimize `LRANGE` and `HGETALL` - refactor client write preparation and handling
-
-
-============================================================
-8.0-M02 (v7.9.225)    Committed Mon 28 Oct 2024 14:00:00 IST
-============================================================
-
-This is the second Milestone of Redis Community Edition 8.0.
-
-Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
-Once we reach feature-completeness we will release RC1.
-
-### Headlines:
-
-8.0-M02 introduces significant performance improvements. Both Alpine and Debian Docker images are now available on [Docker Hub](https://hub.docker.com/_/redis). Additional distributions will be introduced in upcoming pre-releases.
-
-### Supported upgrade paths (by replication or persistence) to 8.0-M02
-
-- From previous Redis versions, without modules
-
-The following upgrade paths (by replication or persistence) to 8.0-M02 are not yet tested and will be introduced in upcoming pre-releases:
-- From previous Redis versions with modules (RediSearch, RedisJSON, RedisTimeSeries, RedisBloom)
-- From Redis Stack 7.2 or 7.4
-
-### Security fixes
-
-- (CVE-2024-31449) Lua library commands may lead to stack overflow and potential RCE.
-- (CVE-2024-31227) Potential Denial-of-service due to malformed ACL selectors.
-- (CVE-2024-31228) Potential Denial-of-service due to unbounded pattern matching.
-
-### Bug fixes
-
-- #13539 Hash: Fix key ref for a hash that no longer has fields with expiration on `RENAME`/`MOVE`/`SWAPDB`/`RESTORE`
-- #13512 Fix `TOUCH` command from a script in no-touch mode
-- #13468 Cluster: Fix cluster node config corruption caused by mixing shard-id and non-shard-id versions
-- #13608 Cluster: Fix `GET #` option in `SORT` command
-
-### Modules API
-
-- #13526 Extend `RedisModule_OpenKey` to read also expired keys and subkeys
-
-### Performance and resource utilization improvements
-
-- #11884 Optimize `ZADD` and `ZRANGE*` commands
-- #13530 Optimize `SSCAN` command in case of listpack or intset encoding
-- #13531 Optimize `HSCAN`/`ZSCAN` command in case of listpack encoding
-- #13520 Optimize commands that heavily rely on bulk/mbulk replies (example of `LRANGE`)
-- #13566 Optimize `ZUNION[STORE]` by avoiding redundant temporary dict usage
-- #13567 Optimize `SUNION`/`SDIFF` commands by avoiding redundant temporary dict usage
-- #11533 Avoid redundant `lpGet` to boost `quicklistCompare`
-- #13412 Reduce redundant call of `prepareClientToWrite` when call `addReply*` continuously
+- #14067 `INFO`: `used_memory_peak_time` - time when `used_memory_peak` was hit
+- #13990 `INFO`:
+  - `master_current_sync_attempts` - number of times the replica attempted to sync to a master since last disconnection
+  - `master_total_sync_attempts` - number of times the replica attempted to sync to a master
+  - `master_link_up_since_seconds` - number of seconds since the link has been up
+  - `total_disconnect_time_sec` - total cumulative time we've been disconnected as a replica
 
 
 ===========================================================
-8.0-M01 (v7.9.224)    Released Thu 12 Sep 2024 10:00:00 IST
+8.2-M01 (v8.1.224)    Released Thu 19 Jun 2024 10:00:00 IST
 ===========================================================
 
-This is the first Milestone of Redis Community Edition 8.0.
+This is the first Milestone of Redis Open Source 8.2.
 
 Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
 Once we reach feature-completeness we will release RC1.
 
 ### Headlines:
 
-Redis 8.0 introduces new data structures: JSON, time series, and 5 probabilistic data structures (previously available as separate Redis modules) and incorporates the enhanced Redis Query Enginer (with vector search).
+Redis 8.2 introduces major performance and memory footprint improvements, and command extensions.
 
-8.0-M01 is available as a Docker image and can be downloaded from [Docker Hub](https://hub.docker.com/_/redis). Additional distributions will be introduced in upcoming pre-releases.
+8.2-M01 is available as a Docker image and can be downloaded from [Docker Hub](https://hub.docker.com/_/redis). Additional distributions will be introduced in upcoming pre-releases.
 
-### Supported upgrade paths (by replication or persistence) to 8.0-M01
+### New Features
 
+- #13898 `BITOP`: new operators: `DIFF`, `DIFF1`, `ANDOR`, and `ONE` (RED-143607)
+- #14065 `VSIM`: Add new `WITHATTRIBS` to return the JSON attribute associated with an element
 
-- From previous Redis versions, without modules
+### Bug fixes (compared to 8.0.2)
 
-The following upgrade paths (by replication or persistence) to 8.0-M01 are not yet tested and will be introduced in upcoming pre-releases:
-- From previous Redis versions with modules (RediSearch, RedisJSON, RedisTimeSeries, RedisBloom)
-- From Redis Stack 7.2 or 7.4
+- #13984 Memory usage and overhead report not updated when emptying or releasing a dict
+- #14081 Cron-based timers run twice as fast when active defrag is enabled
+- #14085 A short read may lead to an exit() on a replica
+- #14092 db->expires is not defragmented
 
-### New Features in binary distributions
+### Performance and resource utilization improvements (compared to 8.0.2)
 
-- 7 new data structures: JSON, Time series, Bloom filter, Cuckoo filter, Count-min sketch, Top-k, t-digest
-- The enhanced Redis Query Engine (with vector search)
+- #13806 Keyspace - unify key and value
+- #13968 Offload memory release of argv and rewrite objects into I/O threads
+- #13969 Make I/O threads and main thread process in parallel and reduce notifications
+- #14017 Improve I/O threads performance by using memory prefetching
+- #J1351 JSON - Reduce memory footprint of numerical values (MOD-9511)
 
-### Potentially breaking changes
+### Metrics
 
-- #12272 `GETRANGE` returns an empty bulk when the negative end index is out of range
-- #12395 Optimize `SCAN` command when matching data type
+- #13944 `CLIENT INFO` and `CLIENT LIST`:
+  - `tot-net-in`: total network bytes read from the client connection
+  - `tot-net-out`: total network bytes sent to the client connection
+  - `tot-cmds`: number of commands executed by the client connection
+- #13907 `INFO`: `sentinel` section - `sentinel_total_tilt` - number of times entering tilt mode
 
-### Bug fixes
-
-- #13510 Fix `RM_RdbLoad` to enable AOF after RDB loading is completed
-- #13489 `ACL CAT` - return module commands
-- #13476 Fix a race condition in the `cache_memory` of `functionsLibCtx`
-- #13473 Fix incorrect lag due to trimming stream via `XTRIM` command
-- #13338 Fix incorrect lag field in `XINFO` when tombstone is after the `last_id` of the consume group
-- #13470 On `HDEL` of last field - update the global hash field expiration data structure
-- #13465 Cluster: Pass extensions to node if extension processing is handled by it
-- #13443 Cluster: Ensure validity of myself when loading cluster config
-- #13422 Cluster: Fix `CLUSTER SHARDS` command returns empty array
-
-### Modules API
-
-- #13509 New API calls: `RM_DefragAllocRaw`, `RM_DefragFreeRaw`, and `RM_RegisterDefragCallbacks` - defrag API to allocate and free raw memory
-
-### Performance and resource utilization improvements
-
-- #13503 Avoid overhead of comparison function pointer calls in listpack `lpFind`
-- #13505 Optimize `STRING` datatype write commands
-- #13499 Optimize `SMEMBERS` command
-- #13494 Optimize `GEO*` commands reply
-- #13490 Optimize `HELLO` command
-- #13488 Optimize client query buffer
-- #12395 Optimize `SCAN` command when matching data type
-- #13529 Optimize `LREM`, `LPOS`, `LINSERT`, and `LINDEX` commands
-- #13516 Optimize `LRANGE` and other commands that perform several writes to client buffers per call
-- #13431 Avoid `used_memory` contention when updating from multiple threads
-
-### Other general improvements
-
-- #13495 Reply `-LOADING` on replica while flushing the db
-
-### CLI tools
-
-- #13411 redis-cli: Fix wrong `dbnum` showed after the client reconnected
-
-### Notes
-
-- No backward compatibility for replication or persistence.
-- Additional distributions, upgrade paths, features, and improvements will be introduced in upcoming pre-releases.
-- With the GA release of 8.0 we will deprecate Redis Stack.

@@ -104,6 +104,7 @@ TOOL_CXXFLAGS := $(BASE_CXXFLAGS) -std=gnu++11 -DNO_QFORKIMPL
 HIREDIS_CFLAGS := $(BASE_CFLAGS) $(FDAPI_SYSTEM_REDEFS) -std=gnu11 -DNO_QFORKIMPL
 LUA_CFLAGS := $(BASE_CFLAGS) -std=gnu11 -DNO_QFORKIMPL
 HDR_HISTOGRAM_CFLAGS := $(BASE_CFLAGS) -std=gnu11 -DNO_QFORKIMPL -DHDR_MALLOC_INCLUDE=\"hdr_redis_malloc.h\"
+FAST_FLOAT_CXXFLAGS := $(SERVER_CXXFLAGS) -DFASTFLOAT_ALLOWS_LEADING_PLUS
 TEST_MODULE_CFLAGS := $(OPT) $(WARNINGS) -std=gnu11 -Isrc
 TEST_MODULE_LDFLAGS := -shared -static-libgcc -no-pthread -Wl,--export-all-symbols
 TEST_MODULE_LDLIBS := -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
@@ -148,6 +149,7 @@ SERVER_C_SOURCES := \
 	src/childinfo.c \
 	src/cluster.c \
 	src/cluster_legacy.c \
+	src/cluster_slot_stats.c \
 	src/config.c \
 	src/connection.c \
 	src/crc16.c \
@@ -179,6 +181,7 @@ SERVER_C_SOURCES := \
 	src/lolwut8.c \
 	src/lzf_c.c \
 	src/lzf_d.c \
+	src/memory_prefetch.c \
 	src/memtest.c \
 	src/module.c \
 	src/monotonic.c \
@@ -571,7 +574,7 @@ $(BUILD)/fpconv/%.o: %.c $(FPCONV_HEADERS)
 
 $(BUILD)/fast_float/%.o: %.cpp $(FAST_FLOAT_HEADERS)
 	mkdir -p $(dir $@)
-	$(CXX) $(SERVER_CXXFLAGS) -c $< -o $@
+	$(CXX) $(FAST_FLOAT_CXXFLAGS) -c $< -o $@
 
 $(BUILD)/cli/%.o: %.c src/release.h $(REDIS_HEADERS)
 	mkdir -p $(dir $@)

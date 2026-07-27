@@ -116,6 +116,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include "hnsw.h"
+#include "vset_config.h"
 
 // We inline directly the expression implementation here so that building
 // the module is trivial.
@@ -132,6 +133,9 @@ static uint64_t VectorSetTypeNextId = 0;
 
 // Default num elements returned by VSIM.
 #define VSET_DEFAULT_COUNT 10
+
+// Maximum allowed vector dimension for input vectors and sets.
+#define VSET_MAX_VECTOR_DIM (1<<16)
 
 /* ========================== Internal data structure  ====================== */
 
@@ -407,6 +411,7 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
         // Must be 4 bytes per component.
         if (vec_raw_len % 4 || vec_raw_len < 4) return NULL;
         *dim = vec_raw_len/4;
+        if (*dim > VSET_MAX_VECTOR_DIM) return NULL;
 
         vec = RedisModule_Alloc(vec_raw_len);
         if (!vec) return NULL;
@@ -416,7 +421,7 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
         if (argc < start_idx + 2) return NULL;  // Need at least the dimension.
         long long vdim; // Vector dimension passed by the user.
         if (RedisModule_StringToLongLong(argv[start_idx+1],&vdim)
-            != REDISMODULE_OK || vdim < 1) return NULL;
+            != REDISMODULE_OK || vdim < 1 || vdim > VSET_MAX_VECTOR_DIM) return NULL;
 
         // Check that all the arguments are available.
         if (argc < start_idx + 2 + vdim) return NULL;
@@ -438,6 +443,12 @@ float *parseVector(RedisModuleString **argv, int argc, int start_idx,
         consumed += vdim + 2;
     } else {
         return NULL;  // Unknown format.
+    }
+
+    // reduce_dim must be <= dim
+    if (reduce_dim && *reduce_dim && *reduce_dim > *dim) {
+        if (vec) RedisModule_Free(vec);
+        return NULL;
     }
 
     if (consumed_args) *consumed_args = consumed;
@@ -636,6 +647,10 @@ int VADD_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         cas = 0;
     }
 
+    if (VSGlobalConfig.forceSingleThreadExec) {
+        cas = 0;
+    }
+
     /* Open/create key */
     RedisModuleKey *key = RedisModule_OpenKey(ctx,argv[1],
         REDISMODULE_READ|REDISMODULE_WRITE);
@@ -815,10 +830,12 @@ void VSIM_execute(RedisModuleCtx *ctx, struct vsetObject *vset,
     if (ef == 0) ef = VSET_DEFAULT_SEARCH_EF;
     if (count > ef) ef = count;
 
+    int slot = hnsw_acquire_read_slot(vset->hnsw);
+    if (ef > vset->hnsw->node_count) ef = vset->hnsw->node_count;
+
     /* Perform search */
     hnswNode **neighbors = RedisModule_Alloc(sizeof(hnswNode*)*ef);
     float *distances = RedisModule_Alloc(sizeof(float)*ef);
-    int slot = hnsw_acquire_read_slot(vset->hnsw);
     unsigned int found;
     if (ground_truth) {
         found = hnsw_ground_truth_with_filter(vset->hnsw, vec, ef, neighbors,
@@ -1070,7 +1087,7 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
             j += 2;
         } else if (!strcasecmp(opt, "EF") && j+1 < argc) {
             if (RedisModule_StringToLongLong(argv[j+1], &ef) !=
-                REDISMODULE_OK || ef <= 0)
+                REDISMODULE_OK || ef <= 0 || ef > 1000000)
             {
                 RedisModule_Free(vec);
                 return RedisModule_ReplyWithError(ctx, "ERR invalid EF");
@@ -1110,9 +1127,9 @@ int VSIM_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
     /* Disable threaded for MULTI/EXEC and Lua, or if explicitly
      * requested by the user via the NOTHREAD option. */
-    if (no_thread || (RedisModule_GetContextFlags(ctx) &
-                      (REDISMODULE_CTX_FLAGS_LUA|
-                       REDISMODULE_CTX_FLAGS_MULTI)))
+    if (no_thread || VSGlobalConfig.forceSingleThreadExec ||
+        (RedisModule_GetContextFlags(ctx) &
+        (REDISMODULE_CTX_FLAGS_LUA | REDISMODULE_CTX_FLAGS_MULTI)))
     {
         threaded_request = 0;
     }
@@ -1776,6 +1793,15 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
     uint32_t quant_type = hnsw_config & 0xff;
     uint32_t hnsw_m = (hnsw_config >> 8) & 0xffff;
 
+    /* Validate dimension loaded from RDB to enforce invariants and
+     * avoid absurd allocations or inconsistent state. */
+    if (dim == 0 || dim > VSET_MAX_VECTOR_DIM) {
+        RedisModule_LogIOError(rdb, "warning",
+            "Invalid vector dimension in RDB: dim=%u (max allowed %u)",
+            (unsigned)dim, (unsigned)VSET_MAX_VECTOR_DIM);
+        return NULL;
+    }
+
     /* Check that the quantization type is correct. Otherwise
      * return ASAP signaling the error. */
     if (quant_type != HNSW_QUANT_NONE &&
@@ -1797,14 +1823,44 @@ void *VectorSetRdbLoad(RedisModuleIO *rdb, int encver) {
         uint32_t input_dim = RedisModule_LoadUnsigned(rdb);
         if (RedisModule_IsIOError(rdb)) goto ioerr;
         uint32_t output_dim = dim;
-        size_t matrix_size = sizeof(float) * input_dim * output_dim;
+
+        /* Sanity check projection dimensions. */
+        if (input_dim == 0 || output_dim == 0 || input_dim > VSET_MAX_VECTOR_DIM || output_dim > input_dim) {
+            RedisModule_LogIOError(rdb, "warning",
+                "Invalid projection matrix dimensions: input_dim=%u, output_dim=%u (max allowed %u)",
+                (unsigned)input_dim, (unsigned)output_dim,
+                (unsigned)VSET_MAX_VECTOR_DIM);
+            goto ioerr;
+        }
+
+        /* Check for overflow in matrix_size = sizeof(float) * input_dim * output_dim. */
+        #if SIZE_MAX == UINT32_MAX
+            uint64_t product = (uint64_t) output_dim * (uint64_t) input_dim * sizeof(float);
+            if (product > SIZE_MAX) {
+                RedisModule_LogIOError(rdb, "warning",
+                    "Projection matrix size overflow (output_dim too large): input_dim=%u, output_dim=%u",
+                    (unsigned)input_dim, (unsigned)output_dim);
+                goto ioerr;
+            }
+        #endif
+
+        size_t matrix_size = sizeof(float) * (size_t)input_dim * (size_t)output_dim;
+
+        /* Load projection matrix as a binary blob and validate length. */
+        size_t blob_len = 0;
+        char *matrix_blob = RedisModule_LoadStringBuffer(rdb, &blob_len);
+        if (matrix_blob == NULL) goto ioerr;
+
+        if (blob_len != matrix_size) {
+            RedisModule_LogIOError(rdb, "warning",
+                "Mismatching projection matrix length: expected=%zu, got=%zu",
+                matrix_size, blob_len);
+            RedisModule_Free(matrix_blob);
+            goto ioerr;
+        }
 
         vset->proj_matrix = RedisModule_Alloc(matrix_size);
         vset->proj_input_size = input_dim;
-
-        // Load projection matrix as a binary blob
-        char *matrix_blob = RedisModule_LoadStringBuffer(rdb, NULL);
-        if (matrix_blob == NULL) goto ioerr;
         memcpy(vset->proj_matrix, matrix_blob, matrix_size);
         RedisModule_Free(matrix_blob);
     }
@@ -2012,6 +2068,28 @@ void VectorSetDigest(RedisModuleDigest *md, void *value) {
     }
 }
 
+// int VectorSets_InitModuleConfig(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+int VectorSets_InitModuleConfig(RedisModuleCtx *ctx) {
+    if (RegisterModuleConfig(ctx) == REDISMODULE_ERR) {
+        RedisModule_Log(ctx, "warning", "Error registering module configuration");
+        return REDISMODULE_ERR;
+    }
+    // Load default values
+    if (RedisModule_LoadDefaultConfigs(ctx) == REDISMODULE_ERR) {
+        RedisModule_Log(ctx, "warning", "Error loading default module configuration");
+        return REDISMODULE_ERR;
+    } else {
+        RedisModule_Log(ctx, "verbose", "Successfully loaded default module configuration");
+    }
+    if (RedisModule_LoadConfigs(ctx) == REDISMODULE_ERR) {
+        RedisModule_Log(ctx, "warning", "Error loading user module configuration");
+        return REDISMODULE_ERR;
+    } else {
+        RedisModule_Log(ctx, "verbose", "Successfully loaded user module configuration");
+    }
+    return REDISMODULE_OK;
+}
+
 /* This function must be present on each Redis module. It is used in order to
  * register the commands into the Redis server. */
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
@@ -2020,6 +2098,10 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 
     if (RedisModule_Init(ctx,"vectorset",1,REDISMODULE_APIVER_1)
         == REDISMODULE_ERR) return REDISMODULE_ERR;
+
+    if (VectorSets_InitModuleConfig(ctx) == REDISMODULE_ERR) {
+        return REDISMODULE_ERR;
+    }
 
     RedisModule_SetModuleOptions(ctx, REDISMODULE_OPTIONS_HANDLE_IO_ERRORS|REDISMODULE_OPTIONS_HANDLE_REPL_ASYNC_LOAD);
 

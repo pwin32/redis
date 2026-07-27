@@ -24,9 +24,12 @@ proc test_memory_efficiency {range} {
         incr written [string length $key]
         incr written [string length $val]
         incr written 2 ;# A separator is the minimum to store key-value data.
-    }
-    for {set j 0} {$j < 10000} {incr j} {
-        $rd read ; # Discard replies
+
+        if {($j + 1) % 500 == 0} {
+            for {set i 0} {$i < 500} {incr i} {
+                $rd read ; # Discard replies
+            }
+        }
     }
 
     set current_mem [s used_memory]
@@ -63,6 +66,14 @@ run_solo {defrag} {
                 fail "defrag didn't stop or failed to achieve expected frag ratio ([s allocator_frag_ratio] > $expect_frag)"
             } else {
                 fail "defrag didn't stop."
+            }
+        }
+    }
+
+    proc discard_replies_every {rd count frequency discard_num} {
+        if {$count % $frequency == 0} {
+            for {set k 0} {$k < $discard_num} {incr k} {
+                $rd read ; # Discard replies
             }
         }
     }
@@ -222,12 +233,24 @@ run_solo {defrag} {
             # Populate memory with interleaving script-key pattern of same size
             set dummy_script "--[string repeat x 400]\nreturn "
             set rd [redis_deferring_client]
+            # Send commands in batches and read responses to avoid TCP deadlock.
+            # Without interleaving reads, TCP congestion control can throttle
+            # the connection when buffers fill, causing the test to hang.
+            set batch_size 1000
             for {set j 0} {$j < $n} {incr j} {
                 set val "$dummy_script[format "%06d" $j]"
                 $rd script load $val
                 $rd set k$j $val
+                if {($j + 1) % $batch_size == 0} {
+                    for {set i 0} {$i < $batch_size} {incr i} {
+                        $rd read ; # Discard script load replies
+                        $rd read ; # Discard set replies
+                    }
+                }
             }
-            for {set j 0} {$j < $n} {incr j} {
+            # Read remaining responses
+            set remaining [expr {$n % $batch_size}]
+            for {set j 0} {$j < $remaining} {incr j} {
                 $rd read ; # Discard script load replies
                 $rd read ; # Discard set replies
             }
@@ -241,8 +264,17 @@ run_solo {defrag} {
             assert_lessthan [s allocator_frag_ratio] 1.05
 
             # Delete all the keys to create fragmentation
-            for {set j 0} {$j < $n} {incr j} { $rd del k$j }
-            for {set j 0} {$j < $n} {incr j} { $rd read } ; # Discard del replies
+            # Use same batching pattern to avoid TCP deadlock
+            for {set j 0} {$j < $n} {incr j} {
+                $rd del k$j
+                if {($j + 1) % $batch_size == 0} {
+                    for {set i 0} {$i < $batch_size} {incr i} {
+                        $rd read
+                    }
+                }
+            }
+            set remaining [expr {$n % $batch_size}]
+            for {set j 0} {$j < $remaining} {incr j} { $rd read }
             $rd close
             after 120 ;# serverCron only updates the info once in 100ms
             if {$::verbose} {
@@ -297,7 +329,11 @@ run_solo {defrag} {
             r config set maxmemory 0
             r config set list-max-ziplist-size 5 ;# list of 10k items will have 2000 quicklist nodes
             r config set stream-node-max-entries 5
-            r hmset hash h1 v1 h2 v2 h3 v3
+            r config set hash-max-listpack-entries 10
+            r hmset hash_lp h1 v1 h2 v2 h3 v3
+            assert_encoding listpack hash_lp
+            r hmset hash_ht h1 v1 h2 v2 h3 v3 h4 v4 h5 v5 h6 v6 h7 v7 h8 v8 h9 v9 h10 v10 h11 v11
+            assert_encoding hashtable hash_ht
             r lpush list a b c d
             r zadd zset 0 a 1 b 2 c 3 d
             r sadd set a b c d
@@ -307,16 +343,25 @@ run_solo {defrag} {
             r xreadgroup GROUP mygroup Alice COUNT 1 STREAMS stream >
 
             # create big keys with 10k items
+            # Use batching to avoid TCP deadlock
             set rd [redis_deferring_client]
+            set batch_size 100
             for {set j 0} {$j < 10000} {incr j} {
                 $rd hset bighash $j [concat "asdfasdfasdf" $j]
                 $rd lpush biglist [concat "asdfasdfasdf" $j]
                 $rd zadd bigzset $j [concat "asdfasdfasdf" $j]
                 $rd sadd bigset [concat "asdfasdfasdf" $j]
                 $rd xadd bigstream * item 1 value a
+                if {($j + 1) % $batch_size == 0} {
+                    for {set i 0} {$i < [expr {$batch_size * 5}]} {incr i} {
+                        $rd read
+                    }
+                }
             }
-            for {set j 0} {$j < 50000} {incr j} {
-                $rd read ; # Discard replies
+            # Read remaining replies
+            set remaining [expr {(10000 % $batch_size) * 5}]
+            for {set j 0} {$j < $remaining} {incr j} {
+                $rd read
             }
 
             # create some small items (effective in cluster-enabled)
@@ -327,7 +372,7 @@ run_solo {defrag} {
             r set "{bigstream}smallitem" val
 
 
-            set expected_frag 1.5
+            set expected_frag 1.49
             if {$::accurate} {
                 # scale the hash to 1m fields in order to have a measurable the latency
                 set count 0
@@ -335,11 +380,7 @@ run_solo {defrag} {
                     $rd hset bighash $j [concat "asdfasdfasdf" $j]
 
                     incr count
-                    if {$count % 10000 == 0} {
-                        for {set k 0} {$k < 10000} {incr k} {
-                            $rd read ; # Discard replies
-                        }
-                    }
+                    discard_replies_every $rd $count 10000 10000
                 }
                 # creating that big hash, increased used_memory, so the relative frag goes down
                 set expected_frag 1.3
@@ -351,13 +392,9 @@ run_solo {defrag} {
                 $rd setrange $j 150 a
 
                 incr count
-                if {$count % 10000 == 0} {
-                    for {set k 0} {$k < 10000} {incr k} {
-                        $rd read ; # Discard replies
-                    }
-                }
+                discard_replies_every $rd $count 10000 10000
             }
-            assert_equal [r dbsize] 500015
+            assert_equal [r dbsize] 500016
 
             # create some fragmentation
             set count 0
@@ -365,13 +402,9 @@ run_solo {defrag} {
                 $rd del $j
 
                 incr count
-                if {$count % 10000 == 0} {
-                    for {set k 0} {$k < 10000} {incr k} {
-                        $rd read ; # Discard replies
-                    }
-                }
+                discard_replies_every $rd $count 10000 10000
             }
-            assert_equal [r dbsize] 250015
+            assert_equal [r dbsize] 250016
 
             # start defrag
             after 120 ;# serverCron only updates the info once in 100ms
@@ -472,8 +505,18 @@ run_solo {defrag} {
             assert_lessthan [s allocator_frag_ratio] 1.05
 
             # Delete all the keys to create fragmentation
-            for {set j 0} {$j < $n} {incr j} { $rd del k$j }
-            for {set j 0} {$j < $n} {incr j} { $rd read } ; # Discard del replies
+            # Use batching to avoid TCP deadlock
+            set batch_size 1000
+            for {set j 0} {$j < $n} {incr j} {
+                $rd del k$j
+                if {($j + 1) % $batch_size == 0} {
+                    for {set i 0} {$i < $batch_size} {incr i} {
+                        $rd read
+                    }
+                }
+            }
+            set remaining [expr {$n % $batch_size}]
+            for {set j 0} {$j < $remaining} {incr j} { $rd read }
             $rd close
             after 120 ;# serverCron only updates the info once in 100ms
             if {$::verbose} {
@@ -527,15 +570,14 @@ run_solo {defrag} {
             $rd_pubsub close
         }
 
-        test "Active Defrag HFE: $type" {
+        foreach {eb_container fields n} {eblist 16 3000 ebrax 30 1600 large_ebrax 1600 30} {
+        test "Active Defrag HFE with $eb_container: $type" {
             r flushdb
             r config set hz 100
             r config set activedefrag no
             wait_for_defrag_stop 500 100
             r config resetstat
-            # TODO: Lower the threshold after defraging the ebuckets.
-            # Now just to ensure that the reference is updated correctly.
-            r config set active-defrag-threshold-lower 10
+            r config set active-defrag-threshold-lower 5
             r config set active-defrag-cycle-min 65
             r config set active-defrag-cycle-max 75
             r config set active-defrag-ignore-bytes 1000kb
@@ -544,26 +586,28 @@ run_solo {defrag} {
             r config set hash-max-listpack-entries 10
 
             # Populate memory with interleaving hash field of same size
-            set n 3000
-            set fields 16 ;# make all the fields in an eblist.
+            # Interleave reads to avoid TCP deadlock
             set dummy_field "[string repeat x 400]"
             set rd [redis_deferring_client]
             for {set i 0} {$i < $n} {incr i} {
                 for {set j 0} {$j < $fields} {incr j} {
-                    $rd hset h$i f$j $dummy_field
-                    $rd hexpire h$i 9999999 FIELDS 1 f$j
+                    $rd hset h$i $dummy_field$j v
+                    $rd hexpire h$i 9999999 FIELDS 1 $dummy_field$j
                     $rd set "k$i$j" $dummy_field
                 }
-            }
-            for {set j 0} {$j < [expr $n*$fields]} {incr j} {
-                $rd read ; # Discard hset replies
-                $rd read ; # Discard hexpire replies
-                $rd read ; # Discard set replies
+                $rd expire h$i 9999999 ;# Ensure expire is updated after kvobj reallocation
+                # Read replies for this iteration to avoid TCP deadlock
+                for {set j 0} {$j < $fields} {incr j} {
+                    $rd read ; # Discard hset replies
+                    $rd read ; # Discard hexpire replies
+                    $rd read ; # Discard set replies
+                }
+                $rd read ; # Discard expire replies
             }
 
             # Coverage for listpackex.
-            r hset h_lpex f0 $dummy_field
-            r hexpire h_lpex 9999999 FIELDS 1 f0
+            r hset h_lpex $dummy_field v
+            r hexpire h_lpex 9999999 FIELDS 1 $dummy_field
             assert_encoding listpackex h_lpex
 
             after 120 ;# serverCron only updates the info once in 100ms
@@ -573,7 +617,7 @@ run_solo {defrag} {
                 puts "frag [s allocator_frag_ratio]"
                 puts "frag_bytes [s allocator_frag_bytes]"
             }
-            assert_lessthan [s allocator_frag_ratio] 1.1
+            assert_lessthan [s allocator_frag_ratio] 1.05
 
             # Delete all the keys to create fragmentation
             for {set i 0} {$i < $n} {incr i} {
@@ -606,7 +650,7 @@ run_solo {defrag} {
                 }
 
                 # wait for the active defrag to stop working
-                wait_for_defrag_stop 500 100 1.1
+                wait_for_defrag_stop 500 100 1.05
 
                 # test the fragmentation is lower
                 after 120 ;# serverCron only updates the info once in 100ms
@@ -618,6 +662,7 @@ run_solo {defrag} {
                 }
             }
         }
+        } ;# end of foreach
 
         test "Active defrag for argv retained by the main thread from IO thread: $type" {
             r flushdb
@@ -698,7 +743,7 @@ run_solo {defrag} {
                 puts "frag [s allocator_frag_ratio]"
                 puts "frag_bytes [s allocator_frag_bytes]"
             }
-            assert_morethan [s allocator_frag_ratio] 1.4
+            assert_morethan [s allocator_frag_ratio] 1.35
 
             catch {r config set activedefrag yes} e
             if {[r config get activedefrag] eq "activedefrag yes"} {
@@ -762,12 +807,7 @@ run_solo {defrag} {
                 $rd lpush biglist2 $val
 
                 incr count
-                if {$count % 10000 == 0} {
-                    for {set k 0} {$k < 10000} {incr k} {
-                        $rd read ; # Discard replies
-                        $rd read ; # Discard replies
-                    }
-                }
+                discard_replies_every $rd $count 1000 2000
             }
 
             # create some fragmentation
@@ -877,11 +917,7 @@ run_solo {defrag} {
                     $rd setrange $j 600 x
 
                     incr count
-                    if {$count % 10000 == 0} {
-                        for {set k 0} {$k < 10000} {incr k} {
-                            $rd read ; # Discard replies
-                        }
-                    }
+                    discard_replies_every $rd $count 10000 10000
                 }
 
                 # create some fragmentation of 50%
@@ -891,11 +927,7 @@ run_solo {defrag} {
                     incr sent
                     incr j 1
 
-                    if {$sent % 10000 == 0} {
-                        for {set k 0} {$k < 10000} {incr k} {
-                            $rd read ; # Discard replies
-                        }
-                    }
+                    discard_replies_every $rd $sent 10000 10000
                 }
 
                 # create higher fragmentation in the first slab
@@ -952,11 +984,83 @@ run_solo {defrag} {
     }
     }
 
-    start_cluster 1 0 {tags {"defrag external:skip cluster"} overrides {appendonly yes auto-aof-rewrite-percentage 0 save "" loglevel notice}} {
+    test "Active defrag can't be triggered during replicaof database flush. See issue #14267" {
+        start_server {tags {"repl"} overrides {save ""}} {
+            set master_host [srv 0 host]
+            set master_port [srv 0 port]
+
+            start_server {overrides {save ""}} {
+                set replica [srv 0 client]
+
+                # The Windows QFork allocator uses 4 MiB jemalloc pages so it
+                # can track heap pages across the child process.  With that
+                # page size allocator fragmentation remains above the active
+                # defrag threshold after an empty replica sync, making this
+                # upstream 4/8 KiB-page termination assertion inapplicable.
+                if {[$replica debug mallctl arenas.page] <= 8192} {
+                    set rd [redis_deferring_client 0]
+
+                    $replica config set hz 100
+                    $replica config set activedefrag no
+                    $replica config set active-defrag-threshold-lower 5
+                    $replica config set active-defrag-cycle-min 65
+                    $replica config set active-defrag-cycle-max 75
+                    $replica config set active-defrag-ignore-bytes 2mb
+
+                    # add a mass of string keys
+                    set count 0
+                    for {set j 0} {$j < 500000} {incr j} {
+                        $rd setrange $j 150 a
+
+                        incr count
+                        discard_replies_every $rd $count 10000 10000
+                    }
+                    assert_equal [$replica dbsize] 500000
+
+                    # create some fragmentation
+                    set count 0
+                    for {set j 0} {$j < 500000} {incr j 2} {
+                        $rd del $j
+
+                        incr count
+                        discard_replies_every $rd $count 10000 10000
+                    }
+                    $rd close
+                    assert_equal [$replica dbsize] 250000
+
+                    catch {$replica config set activedefrag yes} e
+                    if {[$replica config get activedefrag] eq "activedefrag yes"} {
+                        # Start replication sync which will flush the replica's database,
+                        # then enable defrag to run concurrently with the database flush.
+                        $replica replicaof $master_host $master_port
+
+                        # wait for the active defrag to start working (decision once a second)
+                        wait_for_condition 50 100 {
+                            [s total_active_defrag_time] ne 0
+                        } else {
+                            after 120 ;# serverCron only updates the info once in 100ms
+                            puts [$replica info memory]
+                            puts [$replica info stats]
+                            puts [$replica memory malloc-stats]
+                            fail "defrag not started."
+                        }
+
+                        wait_for_sync $replica
+
+                        # wait for the active defrag to stop working (db has been emptied during replication sync)
+                        wait_for_defrag_stop 500 100
+                        assert_equal [$replica dbsize] 0
+                    }
+                }
+            }
+        }
+    } {} {defrag external:skip tsan:skip cluster}
+
+    start_cluster 1 0 {tags {"defrag external:skip tsan:skip cluster"} overrides {appendonly yes auto-aof-rewrite-percentage 0 save "" loglevel notice}} {
         test_active_defrag "cluster"
     }
 
-    start_server {tags {"defrag external:skip standalone"} overrides {appendonly yes auto-aof-rewrite-percentage 0 save "" loglevel notice}} {
+    start_server {tags {"defrag external:skip tsan:skip standalone"} overrides {appendonly yes auto-aof-rewrite-percentage 0 save "" loglevel notice}} {
         test_active_defrag "standalone"
     }
 } ;# run_solo

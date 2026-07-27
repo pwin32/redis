@@ -8,7 +8,7 @@ set backtrace_supported [system_backtrace_supported]
 # recursion, so the upstream recursive-report assertions do not describe the
 # Windows log contract. Native crash-handler coverage remains in the Windows
 # integration checklist and is not silently treated as POSIX-equivalent.
-if {!$::valgrind && $::tcl_platform(platform) ne "windows"} {
+if {!$::valgrind && !$::tsan && $::tcl_platform(platform) ne "windows"} {
     start_server {tags {"modules"}} {
         r module load $testmodule assert
         test {Test module crash when info crashes with an assertion } {

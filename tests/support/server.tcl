@@ -404,7 +404,7 @@ proc ping_server {host port} {
     set retval 0
     if {[catch {
         if {$::tls} {
-            set fd [::tls::socket $host $port] 
+            set fd [::tls::socket $host $port]
         } else {
             set fd [socket $host $port]
         }
@@ -494,6 +494,11 @@ proc tags_acceptable {tags err_return} {
         return 0
     }
 
+    if {$::tsan && [lsearch $tags "tsan:skip"] >= 0} {
+        set err "Not supported under thread sanitizer"
+        return 0
+    }
+
     if {$::tls && [lsearch $tags "tls:skip"] >= 0} {
         set err "Not supported in tls mode"
         return 0
@@ -554,9 +559,13 @@ proc spawn_server {config_file stdout stderr args} {
     } elseif {$::stack_logging && $::tcl_platform(platform) ne "windows"} {
         set pid [exec /usr/bin/env MallocStackLogging=1 MallocLogFile=/tmp/malloc_log.txt {*}$cmd >> $stdout 2>> $stderr &]
     } else {
-        # ASAN_OPTIONS environment variable is for address sanitizer. If a test
-        # tries to allocate huge memory area and expects allocator to return
-        # NULL, address sanitizer throws an error without this setting.
+        # Sanitizer options let allocation-failure tests receive NULL and keep
+        # TSAN from reporting unsupported deadlock/backtrace behavior.
+        set env [list \
+            "ASAN_OPTIONS=allocator_may_return_null=1" \
+            "MSAN_OPTIONS=allocator_may_return_null=1" \
+            "TSAN_OPTIONS=allocator_may_return_null=1,detect_deadlocks=0,suppressions=src/tsan.sup" \
+        ]
         if {$::tcl_platform(platform) eq "windows"} {
             # Tcl's Windows exec path does not expose CREATE_NO_WINDOW, so a
             # CUI redis-server can allocate a console for every test server.
@@ -571,7 +580,7 @@ proc spawn_server {config_file stdout stderr args} {
                 error "hidden Redis launcher returned an invalid PID: $pid"
             }
         } else {
-            set pid [exec /usr/bin/env ASAN_OPTIONS=allocator_may_return_null=1 {*}$cmd >> $stdout 2>> $stderr &]
+            set pid [exec /usr/bin/env {*}$env {*}$cmd >> $stdout 2>> $stderr &]
         }
     }
 
@@ -694,7 +703,7 @@ proc run_external_server_test {code overrides} {
     }
 
     set srv [lpop ::servers]
-    
+
     if {[dict exists $srv "client"]} {
         [dict get $srv "client"] close
     }
@@ -1010,11 +1019,6 @@ proc start_server {options {code undefined}} {
 
         # fetch srv back from the server list, in case it was restarted by restart_server (new PID)
         set srv [lindex $::servers end]
-
-        # Don't do the leak check when no tests were run
-        if {$num_tests == $::num_tests} {
-            dict set srv "skipleaks" 1
-        }
 
         # pop the server object
         set ::servers [lrange $::servers 0 end-1]

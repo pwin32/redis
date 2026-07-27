@@ -48,7 +48,7 @@ start_server {tags {"obuf-limits external:skip logreqres:skip"}} {
         assert {$omem >= 70000 && $omem < 200000}
         $rd1 close
     }
-    
+
     foreach {soft_limit_time wait_for_timeout} {3 yes
                                                 4 no } {
         if $wait_for_timeout {
@@ -158,15 +158,13 @@ start_server {tags {"obuf-limits external:skip logreqres:skip"}} {
         r config set client-output-buffer-limit {normal 100000 0 0}
         set value [string repeat "x" 10000]
         r set bigkey $value
-        set rd1 [redis_deferring_client]
-        set rd2 [redis_deferring_client]
-        $rd2 client setname multicommands
-        assert_equal "OK" [$rd2 read]
+        set rd [redis_deferring_client]
+        $rd client setname multicommands
+        assert_equal "OK" [$rd read]
 
-        # Let redis sleep 1s firstly
-        $rd1 debug sleep 1
-        $rd1 flush
-        after 100
+        set server_pid [s process_id]
+        # Pause the server, so that the client's write will be buffered
+        pause_process $server_pid
 
         # Create a pipeline of commands that will be processed in one socket read.
         # It is important to use one write, in TLS mode independent writes seem
@@ -181,15 +179,23 @@ start_server {tags {"obuf-limits external:skip logreqres:skip"}} {
             # One bigkey is 10k, total response size must be more than 100k
             append buf "get bigkey\r\n"
         }
-        $rd2 write $buf
-        $rd2 flush
-        after 100
+        $rd write $buf
+        $rd flush
 
-        # Reds must wake up if it can send reply
+        # Resume the server to process the pipeline in one go
+        resume_process $server_pid
+        # Make sure the pipeline of commands is processed
+        wait_for_condition 100 10 {
+            [expr {[regexp {calls=(\d+)} [cmdrstat get r] -> calls] ? $calls : 0}] >= 5
+        } else {
+            fail "the pipeline of commands commands is not processed"
+        }
+
+        # Redis must wake up if it can send reply
         assert_equal "PONG" [r ping]
         set clients [r client list]
         assert_no_match "*name=multicommands*" $clients
-        if {[catch {$rd2 rawread} reply]} {
+        if {[catch {$rd rawread} reply]} {
             if {$::tcl_platform(platform) ne "windows" ||
                 ![string match {*I/O error*} $reply]} {
                 error $reply
