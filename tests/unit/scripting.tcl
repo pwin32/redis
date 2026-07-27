@@ -2052,13 +2052,23 @@ start_server {tags {"scripting"}} {
         r function flush
 
         # This is a best-effort test to check we don't leak some resources on
-        # script flush and function flush commands. For lua vm, we create a
-        # jemalloc thread cache. On each script flush command, thread cache is
-        # destroyed and we create a new one. In this test, running script flush
-        # many times to verify there is no increase in the memory usage while
-        # re-creating some of the resources for lua vm.
+        # script flush and function flush commands. Non-QFork builds create a
+        # private jemalloc thread cache for each Lua VM; Windows QFork uses the
+        # dedicated Lua arena without that tcache. Run many flushes to verify
+        # memory does not grow while the Lua VM resources are recreated.
+        if {$::tcl_platform(platform) eq "windows"} {
+            after 120 ;# serverCron refreshes allocator statistics every 100 ms.
+        }
         set used_memory [s used_memory]
-        set allocator_allocated [s allocator_allocated]
+        if {$::tcl_platform(platform) eq "windows"} {
+            # QFork uses MALLOCX_TCACHE_NONE for Lua and its coarse external
+            # heap pages make the all-arena allocator metric fluctuate between
+            # otherwise identical processes. Check the dedicated Lua arena,
+            # which covers the live allocations relevant to this port.
+            set allocator_allocated [getInfoProperty [r info debug] allocator_allocated_lua]
+        } else {
+            set allocator_allocated [s allocator_allocated]
+        }
 
         r multi
         for {set j 1} {$j <= 500} {incr j} {
@@ -2071,8 +2081,17 @@ start_server {tags {"scripting"}} {
         r exec
 
         # Verify used memory is not (much) higher.
-        assert_lessthan [s used_memory] [expr $used_memory*1.5]
-        assert_lessthan [s allocator_allocated] [expr $allocator_allocated*1.5]
+        if {$::tcl_platform(platform) eq "windows"} {
+            after 120 ;# Ensure the post-flush allocator sample is current.
+        }
+        set final_used_memory [s used_memory]
+        if {$::tcl_platform(platform) eq "windows"} {
+            set final_allocator_allocated [getInfoProperty [r info debug] allocator_allocated_lua]
+        } else {
+            set final_allocator_allocated [s allocator_allocated]
+        }
+        assert_lessthan $final_used_memory [expr $used_memory*1.5]
+        assert_lessthan $final_allocator_allocated [expr $allocator_allocated*1.5]
     }
 
     test "Verify Lua performs GC correctly after script loading" {
