@@ -98,6 +98,7 @@ extern "C" {
      * excluded and remain unavailable in the disposable persistence child. */
     typedef struct redisCoreForkData {
         LPVOID configs;
+        LPVOID asmManager;
     } RedisCoreForkData;
 
     /* Keep the QFork control block bounded while allowing the complete 7.2

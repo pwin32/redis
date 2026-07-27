@@ -12,7 +12,7 @@ proc verify_list_edit_reply {reply argv} {
     }
 }
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test {Module list set, get, insert, delete} {
@@ -157,7 +157,7 @@ start_server {tags {"modules"}} {
     test {Module list - KEYSIZES is updated as expected} {
         proc run_cmd_verify_hist {cmd expOutput {retries 1}} {
             proc K {} {return [string map { "db0_distrib_lists_items" "db0_LIST" "# Keysizes" "" " " "" "\n" "" "\r" "" } [r info keysizes] ]}
-            uplevel 1 $cmd    
+            uplevel 1 $cmd
             wait_for_condition 50 $retries {
                 $expOutput eq [K]
             } else { fail "Expected: \n`$expOutput`\n Actual:\n`[K]`.\nFailed after command: $cmd" }
@@ -171,7 +171,7 @@ start_server {tags {"modules"}} {
         run_cmd_verify_hist {r list.insert L1 0 bla} {db0_LIST:2=1}
         run_cmd_verify_hist {r list.delete L1 0} {db0_LIST:1=1}
         run_cmd_verify_hist {r list.delete L1 0} {}
-        
+
 
         # RedisModule_ListSet & RedisModule_ListDelete
         run_cmd_verify_hist {r list.insert L1 0 foo} {db0_LIST:1=1}
@@ -183,11 +183,11 @@ start_server {tags {"modules"}} {
         r debug set-active-expire 0
         run_cmd_verify_hist {r list.insert L1 0 foo} {db0_LIST:1=1}
         run_cmd_verify_hist {r pexpire L1 1} {db0_LIST:1=1}
-        run_cmd_verify_hist {after 5} {db0_LIST:1=1}        
+        run_cmd_verify_hist {after 5} {db0_LIST:1=1}
         r debug set-active-expire 1
         run_cmd_verify_hist {after 5} {} 50
     }
-    
+
     test "Unload the module - list" {
         assert_equal {OK} [r module unload list]
     }
@@ -199,13 +199,13 @@ start_server {tags {"modules"}} {
 # the KEYSIZES histogram remains accurate and that insert & delete was tested.
 set testmodule [redis_test_module list]
 set modules [list loadmodule $testmodule]
-start_cluster 2 2 [list config_lines [list loadmodule $testmodule enable-debug-command yes]] {
+start_cluster 2 2 [list tags {external:skip cluster modules} config_lines [list loadmodule $testmodule enable-debug-command yes]] {
     test "Module list - KEYSIZES is updated correctly in cluster mode" {
         for {set srvid -2} {$srvid <= 0} {incr srvid} {
             set instance [srv $srvid client]
             # Assert consistency after each command
             $instance DEBUG KEYSIZES-HIST-ASSERT 1
-    
+
             for {set i 0} {$i < 50} {incr i} {
                 for {set j 0} {$j < 4} {incr j} {
                     catch {$instance list.insert "list:$i" $j "item:$j"} e

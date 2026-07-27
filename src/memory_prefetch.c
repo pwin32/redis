@@ -161,6 +161,11 @@ static void initBatchInfo(dict **dicts, GetValueDataFunc func) {
             info->state = PREFETCH_DONE;
             continue;
         }
+
+        /* We skip prefetch during loading, so ht_table[0] should never be NULL
+         * when dictSize() > 0 (which only happens mid-dictEmpty via _dictReset). */
+        serverAssert(batch->current_dicts[i]->ht_table[0]);
+
         info->ht_idx = HT_IDX_INVALID;
         info->current_entry = NULL;
         info->current_kv = NULL;
@@ -327,7 +332,7 @@ int determinePrefetchCount(int len) {
  * 2. Prefetch the keys and values for all commands in the current batch from
  *    the main dictionaries. */
 void prefetchCommands(void) {
-    if (!batch) return;
+    if (!batch || server.loading) return;
 
     /* Prefetch argv's for all clients */
     for (size_t i = 0; i < batch->client_count; i++) {
@@ -380,19 +385,32 @@ int addCommandToBatch(client *c) {
         return C_ERR;
     }
 
+    /* Avoid partial prefetching: if the batch already has keys and adding this
+     * client's ready commands would likely exceed the batch size limit, reject
+     * the entire client. This is a conservative estimate using command count as
+     * a proxy for key count to ensure all keys from a client are either fully
+     * prefetched together or not prefetched at all. */
+    if (batch->key_count > 0 &&
+        c->pending_cmds.ready_len + batch->key_count > batch->max_prefetch_size)
+    {
+        return C_ERR;
+    }
+
     batch->clients[batch->client_count++] = c;
 
-    if (likely(c->iolookedcmd)) {
-        /* Get command's keys positions */
-        getKeysResult result = GETKEYS_RESULT_INIT;
-        int num_keys = getKeysFromCommand(c->iolookedcmd, c->argv, c->argc, &result);
-        for (int i = 0; i < num_keys && batch->key_count < batch->max_prefetch_size; i++) {
-            batch->keys[batch->key_count] = c->argv[result.keys[i].pos];
+    pendingCommand *pcmd = c->pending_cmds.head;
+    while (pcmd != NULL) {
+        /* Skip commands that have not been preprocessed, or have errors. */
+        if ((pcmd->flags & PENDING_CMD_FLAG_INCOMPLETE) || !pcmd->cmd || pcmd->read_error) break;
+
+        serverAssert(pcmd->flags & PENDING_CMD_KEYS_RESULT_VALID);
+        for (int i = 0; i < pcmd->keys_result.numkeys && batch->key_count < batch->max_prefetch_size; i++) {
+            batch->keys[batch->key_count] = pcmd->argv[pcmd->keys_result.keys[i].pos];
             batch->keys_dicts[batch->key_count] =
-                kvstoreGetDict(c->db->keys, c->slot > 0 ? c->slot : 0);
+                kvstoreGetDict(c->db->keys, pcmd->slot > 0 ? pcmd->slot : 0);
             batch->key_count++;
         }
-        getKeysFreeResult(&result);
+        pcmd = pcmd->next;
     }
 
     return C_OK;

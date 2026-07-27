@@ -2,7 +2,7 @@ set testmodule [redis_test_module infotest]
 
 test {modules config rewrite} {
 
-    start_server {tags {"modules"}} {
+    start_server {tags {"modules external:skip"}} {
         r module load $testmodule
 
         set modules [lmap x [r module list] {dict get $x name}]

@@ -322,7 +322,7 @@ start_server {tags {"repl external:skip"}} {
 
 foreach mdl {no yes} rdbchannel {no yes} {
     foreach sdl {disabled swapdb} {
-        start_server {tags {"repl external:skip"} overrides {save {}}} {
+        start_server {tags {"repl external:skip debug_defrag:skip"} overrides {save {}}} {
             set master [srv 0 client]
             $master config set repl-diskless-sync $mdl
             $master config set repl-diskless-sync-delay 5
@@ -1589,7 +1589,7 @@ foreach disklessload {disabled on-empty-db} {
                 $replica config set repl-diskless-load $disklessload
 
                 # Populate replica with many keys, master with a few keys.
-                $replica debug populate 2000000
+                $replica debug populate 4000000
                 populate 3 master 10
 
                 # Start the replication process...
@@ -1623,7 +1623,7 @@ foreach disklessload {disabled on-empty-db} {
                 catch {$replica shutdown nosave}
             }
         }
-    } {} {repl external:skip}
+    } {} {repl external:skip debug_defrag:skip}
 }
 
 start_server {tags {"repl external:skip"} overrides {save {}}} {
@@ -1810,10 +1810,9 @@ start_server {tags {"repl external:skip"}} {
             assert {$link_down_since > 0}
             assert {$total_disconnect_time > $link_down_since}
 
-            #  total_disconnect_time did not change after reconnect to real master
+            #  total_disconnect_time_reconnect can be up to 5 seconds more than total_disconnect_time due to reconnection time
             set total_disconnect_time_reconnect [status $slave total_disconnect_time_sec]
-            assert {$total_disconnect_time == $total_disconnect_time_reconnect}
-
+            assert {$total_disconnect_time_reconnect >= $total_disconnect_time && $total_disconnect_time_reconnect <= $total_disconnect_time + 5}
         }
     }
 }
@@ -1985,6 +1984,48 @@ foreach type {script function} {
                 $rd close
                 wait_for_sync $replica
                 assert_equal [$replica ping] "PONG"
+            }
+        }
+    }
+}
+
+if {$::tcl_platform(platform) ne "windows"} {
+    start_server {tags {"repl external:skip"}} {
+        set master [srv 0 client]
+        set master_host [srv 0 host]
+        set master_port [srv 0 port]
+
+        start_server {overrides {io-threads 2}} {
+            set slave [srv 0 client]
+
+            test {prefetchCommands handles NULL argv and keys during RDB replication with IO threads} {
+                # Enable diskless sync to trigger RDB streaming during replication
+                $master config set repl-diskless-sync yes
+                $master config set repl-diskless-sync-delay 0
+
+                # Populate keys in the format key:$i with 128-byte values.
+                $slave debug populate 700000 key 128
+
+                # Force a full resync by resetting the slave.
+                set rd [redis_deferring_client 0]
+                $rd slaveof $master_host $master_port
+
+                # Create a large pipeline command.
+                set batch_size 1000
+                set buf ""
+                for {set i 0} {$i < $batch_size} {incr i} {
+                    append buf [format_command get key:1]
+                }
+
+                # Continuously send pipelined commands so that the replica processes
+                # and prefetches them while it is emptying old data during full sync.
+                set start_time [clock milliseconds]
+                while {[clock milliseconds] - $start_time < 5000} {
+                    $rd write $buf
+                    $rd flush
+                    if {[s 0 master_link_status] eq "up"} break
+                }
+                $rd close
             }
         }
     }

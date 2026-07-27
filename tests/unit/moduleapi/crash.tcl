@@ -9,7 +9,7 @@ set backtrace_supported [system_backtrace_supported]
 # Windows log contract. Native crash-handler coverage remains in the Windows
 # integration checklist and is not silently treated as POSIX-equivalent.
 if {!$::valgrind && !$::tsan && $::tcl_platform(platform) ne "windows"} {
-    start_server {tags {"modules"}} {
+    start_server {tags {"modules external:skip"}} {
         r module load $testmodule assert
         test {Test module crash when info crashes with an assertion } {
             catch {r 0 info modulecrash}
@@ -35,7 +35,7 @@ if {!$::valgrind && !$::tsan && $::tcl_platform(platform) ne "windows"} {
         }
     }
 
-    start_server {tags {"modules"}} {
+    start_server {tags {"modules external:skip"}} {
         r module load $testmodule segfault
         test {Test module crash when info crashes with a segfault} {
             catch {r 0 info modulecrash}
@@ -65,7 +65,7 @@ if {!$::valgrind && !$::tsan && $::tcl_platform(platform) ne "windows"} {
         }
     }
 
-    start_server {tags {"modules"}} {
+    start_server {tags {"modules external:skip"}} {
         r module load $testmodule
 
         # memcheck confuses sanitizer
@@ -87,7 +87,7 @@ if {!$::valgrind && !$::tsan && $::tcl_platform(platform) ne "windows"} {
         }
     }
 
-    start_server {tags {"modules"}} {
+    start_server {tags {"modules external:skip"}} {
         r module load $testmodule
 
         # memcheck confuses sanitizer
@@ -112,7 +112,7 @@ if {!$::valgrind && !$::tsan && $::tcl_platform(platform) ne "windows"} {
         }
     }
 
-    start_server {tags {"modules"}} {
+    start_server {tags {"modules external:skip"}} {
         r module load $testmodule
 
         # memcheck confuses sanitizer

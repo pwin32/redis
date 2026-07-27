@@ -1,6 +1,6 @@
 set testmodule [redis_test_module cmdintrospection]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     # cmdintrospection.xadd mimics XADD with regards to how

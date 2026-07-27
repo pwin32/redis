@@ -128,5 +128,6 @@ size_t functionsGetEngineCacheMemoryForQFork(void);
 void functionsSetQForkState(void *engines_root, void *lib_ctx_root,
                             size_t engine_cache_memory_root);
 #endif
+void createFunctionDumpPayload(rio *payload);
 
 #endif /* __FUNCTIONS_H_ */

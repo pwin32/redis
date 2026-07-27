@@ -1,6 +1,6 @@
 set testmodule [redis_test_module datatype]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     test {DataType: test loadex with invalid config} {
         catch { r module loadex $testmodule CONFIG invalid_config 1 } e
         assert_match {*ERR Error loading the extension*} $e

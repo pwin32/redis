@@ -1,4 +1,4 @@
-tags {modules} {
+tags {modules external:skip cluster} {
 set testmodule [redis_test_module internalsecret]
 
 set modules [list loadmodule $testmodule]

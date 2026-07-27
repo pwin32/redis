@@ -1,6 +1,6 @@
 set testmodule [redis_test_module test_lazyfree]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test "modules allocated memory can be reclaimed in the background" {

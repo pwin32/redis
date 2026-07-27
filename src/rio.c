@@ -486,6 +486,7 @@ static size_t rioConnsetWrite(rio *r, const void *buf, size_t len) {
                         errno = ETIMEDOUT;
 
                     r->io.connset.dst[i].failed = 1;
+                    failed++;
                     break;
                 }
                 n_written += ret;

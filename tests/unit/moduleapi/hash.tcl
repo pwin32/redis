@@ -1,6 +1,6 @@
 set testmodule [redis_test_module hash]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test {Module hash set} {

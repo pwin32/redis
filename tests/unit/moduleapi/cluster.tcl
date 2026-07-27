@@ -10,7 +10,7 @@ set testmodule_blockedclient [redis_test_module blockedclient]
 set testmodule [redis_test_module blockonkeys]
 
 set modules [list loadmodule $testmodule loadmodule $testmodule_nokey loadmodule $testmodule_blockedclient]
-start_cluster 3 0 [list config_lines $modules] {
+start_cluster 3 0 [list tags {external:skip cluster modules} config_lines $modules] {
 
     set node1 [srv 0 client]
     set node2 [srv -1 client]
@@ -53,7 +53,7 @@ start_cluster 3 0 [list config_lines $modules] {
         # verify there are blocked clients on node2
         assert_equal [s -1 blocked_clients]  {1}
 
-        #release client 
+        #release client
         $node2 block.release 0
     }
 
@@ -166,7 +166,7 @@ start_cluster 3 0 [list config_lines $modules] {
 set testmodule_keyspace_events [redis_test_module keyspace_events]
 set testmodule_postnotifications "[redis_test_module postnotifications] with_key_events"
 set modules [list loadmodule $testmodule_keyspace_events loadmodule $testmodule_postnotifications]
-start_cluster 2 2 [list config_lines $modules] {
+start_cluster 2 2 [list tags {external:skip cluster modules} config_lines $modules] {
 
     set master1 [srv 0 client]
     set master2 [srv -1 client]
@@ -223,7 +223,7 @@ start_cluster 2 2 [list config_lines $modules] {
 
 set testmodule [redis_test_module basics]
 set modules [list loadmodule $testmodule]
-start_cluster 3 0 [list config_lines $modules] {
+start_cluster 3 0 [list tags {external:skip cluster modules} config_lines $modules] {
     set node1 [srv 0 client]
     set node2 [srv -1 client]
     set node3 [srv -2 client]

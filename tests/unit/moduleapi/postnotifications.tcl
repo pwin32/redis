@@ -1,6 +1,6 @@
 set testmodule [redis_test_module postnotifications]
 
-tags "modules" {
+tags "modules external:skip" {
     start_server {} {
         r module load $testmodule with_key_events
 
@@ -174,7 +174,7 @@ tags "modules" {
 
 set testmodule2 [redis_test_module keyspace_events]
 
-tags "modules" {
+tags "modules external:skip" {
     start_server {} {
         r module load $testmodule with_key_events
         r module load $testmodule2

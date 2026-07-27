@@ -21,12 +21,15 @@
  */
 
 #include "..\server.h"
+#include "..\cluster_asm.h"
 #include "Win32_Portability.h"
 #include "Win32_QFork.h"
 #include "Win32_QFork_impl.h"
+#include "Win32_RedisLog.h"
 
 void moduleSetForkData(void *data);
 int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi);
+int slotSnapshotSaveRio(int req, rio *rdb, int *error);
 
 size_t RedisSharedForkDataSize(void) {
     return sizeof(shared);
@@ -41,6 +44,7 @@ BOOL RedisCopySharedForkData(void *data, size_t size) {
 void RedisGetCoreForkData(RedisCoreForkData *data) {
     memset(data, 0, sizeof(*data));
     data->configs = configGetQForkData();
+    data->asmManager = asmGetQForkState();
 }
 
 static rdbSaveInfo *copyRdbSaveInfo(rdbSaveInfo *dst, const void *src,
@@ -79,9 +83,14 @@ BOOL SetupRedisGlobals(LPVOID redisData, size_t redisDataSize,
 
     memcpy(&server, redisData, redisDataSize);
     memcpy(&shared, sharedData, sharedDataSize);
+    /* SetupLogging() runs before the QFork child restores the copied server
+     * state, leaving the fresh process at the logger's warning default.
+     * Apply the parent's configured verbosity before persistence code logs. */
+    setLogVerbosityLevel(server.verbosity);
     dictSetHashFunctionSeed(dictHashSeed);
     ACLSetForkData(redisACL);
     configSetQForkData((dict *)redisCore->configs);
+    asmSetQForkState(redisCore->asmManager);
     moduleSetForkData(redisModules);
     zmalloc_set_used_memory(usedMemory);
     crc64_init();
@@ -218,7 +227,10 @@ int do_socketSave(int req, const void *rdb_save_info,
     redisSetCpuAffinity(server.bgsave_cpulist);
 
     rioInitWithFd(&rdb, rdb_pipe_write_fd);
-    retval = rdbSaveRioWithEOFMark(req, &rdb, NULL, rsiptr);
+    if (req & SLAVE_REQ_SLOTS_SNAPSHOT)
+        retval = slotSnapshotSaveRio(req, &rdb, NULL);
+    else
+        retval = rdbSaveRioWithEOFMark(req, &rdb, NULL, rsiptr);
     if (retval == C_OK && rioFlush(&rdb) == 0)
         retval = C_ERR;
     if (retval == C_OK)

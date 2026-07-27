@@ -3,9 +3,15 @@
 # Copyright (C) 2014-Present, Redis Ltd.
 # All Rights reserved.
 #
+# Copyright (c) 2024-present, Valkey contributors.
+# All rights reserved.
+#
 # Licensed under your choice of (a) the Redis Source Available License 2.0
 # (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
 # GNU Affero General Public License v3 (AGPLv3).
+#
+# Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
+#
 
 package require Tcl 8.5
 
@@ -18,103 +24,27 @@ source tests/support/tmpfile.tcl
 source tests/support/test.tcl
 source tests/support/util.tcl
 
+set dir [pwd]
 set ::all_tests {
     windows/aof
     windows/iocp
     windows/regression
-    unit/printver
-    unit/dump
-    unit/auth
-    unit/protocol
-    unit/keyspace
-    unit/scan
-    unit/info
-    unit/info-command
-    unit/type/string
-    unit/type/incr
-    unit/type/list
-    unit/type/list-2
-    unit/type/list-3
-    unit/type/set
-    unit/type/zset
-    unit/type/hash
-    unit/type/hash-field-expire
-    unit/type/stream
-    unit/type/stream-cgroups
-    unit/sort
-    unit/expire
-    unit/other
-    unit/multi
-    unit/quit
-    unit/aofrw
-    unit/acl
-    unit/acl-v2
-    unit/latency-monitor
-    integration/block-repl
-    integration/replication
-    integration/replication-2
-    integration/replication-3
-    integration/replication-4
-    integration/replication-psync
-    integration/replication-buffer
-    integration/shutdown
-    integration/aof
-    integration/aof-race
-    integration/aof-multi-part
-    integration/rdb
-    integration/corrupt-dump
-    integration/corrupt-dump-fuzzer
-    integration/convert-zipmap-hash-on-load
-    integration/convert-ziplist-hash-on-load
-    integration/convert-ziplist-zset-on-load
-    integration/logging
-    integration/psync2
-    integration/psync2-reg
-    integration/psync2-pingoff
-    integration/psync2-master-restart
-    integration/failover
-    integration/redis-cli
-    integration/redis-benchmark
-    integration/dismiss-mem
-    unit/pubsub
-    unit/pubsubshard
-    unit/slowlog
-    unit/scripting
-    unit/functions
-    unit/maxmemory
-    unit/introspection
-    unit/introspection-2
-    unit/limits
-    unit/obuf-limits
-    unit/bitops
-    unit/bitfield
-    unit/geo
-    unit/memefficiency
-    unit/hyperloglog
-    unit/lazyfree
-    unit/wait
-    unit/pause
-    unit/querybuf
-    unit/tls
-    unit/tracking
-    unit/oom-score-adj
-    unit/shutdown
-    unit/networking
-    unit/client-eviction
-    unit/violations
-    unit/replybufsize
-    unit/cluster/announced-endpoints
-    unit/cluster/misc
-    unit/cluster/cli
-    unit/cluster/scripting
-    unit/cluster/hostnames
-    unit/cluster/human-announced-nodename
-    unit/cluster/multi-slot-operations
-    unit/cluster/slot-ownership
-    unit/cluster/links
-    unit/cluster/cluster-response-tls
-    unit/cluster/failure-marking
-    unit/cluster/sharded-pubsub
+}
+
+set test_dirs {
+    unit
+    unit/type
+    unit/moduleapi
+    unit/cluster
+    integration
+}
+
+foreach test_dir $test_dirs {
+    set files [glob -nocomplain $dir/tests/$test_dir/*.tcl]
+
+    foreach file [lsort $files] {
+        lappend ::all_tests $test_dir/[file root [file tail $file]]
+    }
 }
 # Index to the next test to run in the ::all_tests list.
 set ::next_test 0
@@ -163,6 +93,7 @@ set ::ignoredigest 0
 set ::large_memory 0
 set ::log_req_res 0
 set ::force_resp3 0
+set ::debug_defrag 0
 
 # Set to 1 when we are running in client mode. The Redis test uses a
 # server-client model to run tests simultaneously. The server instance
@@ -316,6 +247,10 @@ proc s {args} {
         set args [lrange $args 1 end]
     }
     status [srv $level "client"] [lindex $args 0]
+}
+
+proc S {index field} {
+    getInfoProperty [R $index info] $field
 }
 
 # Get the specified field from the givens instances cluster info output.
@@ -715,6 +650,7 @@ proc print_help_screen {} {
         "--ignore-encoding  Don't validate object encoding."
         "--ignore-digest    Don't use debug digest validations."
         "--large-memory     Run tests using over 100mb."
+        "--debug-defrag     Indicate the test is running against server compiled with DEBUG_DEFRAG option"
         "--help             Print this help screen."
     } "\n"]
 }
@@ -846,6 +782,8 @@ for {set j 0} {$j < [llength $argv]} {incr j} {
         set ::ignoreencoding 1
     } elseif {$opt eq {--ignore-digest}} {
         set ::ignoredigest 1
+    } elseif {$opt eq {--debug-defrag}} {
+        set ::debug_defrag 1
     } elseif {$opt eq {--help}} {
         print_help_screen
         exit 0

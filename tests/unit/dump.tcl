@@ -25,7 +25,7 @@ start_server {tags {"dump"}} {
         assert_range $ttl (2569591501-3000) 2569591501
         r get foo
     } {bar}
-    
+
     test {RESTORE can set an absolute expire} {
         r set foo bar
         set encoded [r dump foo]
@@ -59,9 +59,9 @@ start_server {tags {"dump"}} {
         assert_equal [r get foo] {bar}
         r config set maxmemory-policy noeviction
     } {OK} {needs:config-maxmemory}
-    
+
     test {RESTORE with TTL maintain valid object} {
-        # RESTORE Creates a string with TTL in two steps. The second step potentially 
+        # RESTORE Creates a string with TTL in two steps. The second step potentially
         # reallocates the object. Access the object and verify it is not corrupted
         r del foo
         r set foo bar
@@ -155,7 +155,6 @@ start_server {tags {"dump"}} {
     } {} {needs:repl}
 
     test {RESTORE fail with invalid payload size} {
-        r debug set-skip-checksum-validation 1
         # Payload with mismatched size: claims 0xFFFFFFFFFFFFFFF7 bytes (max uint64 - 8) but provides no data
         # \x00 = String type
         # \x81 = 64-bit length marker
@@ -165,9 +164,8 @@ start_server {tags {"dump"}} {
         set encoded "\x00\x81\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xF7\x0c\x00\x00\x00\x00\x00\x00\x00\x00\x00"
         r del test
         catch {r restore test 0 $encoded} e
-        r debug set-skip-checksum-validation 0
         set e
-    } {*Bad data format*} {needs:debug}
+    } {*Bad data format*}
 
     test {DUMP of non existing key returns nil} {
         r dump nonexisting_key

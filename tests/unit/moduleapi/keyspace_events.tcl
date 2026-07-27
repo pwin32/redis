@@ -1,6 +1,6 @@
 set testmodule [redis_test_module keyspace_events]
 
-tags "modules" {
+tags "modules external:skip" {
     start_server [list overrides [list loadmodule "$testmodule"]] {
 
         # avoid using shared integers, to increase the chance of detection heap issues

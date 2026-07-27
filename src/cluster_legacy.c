@@ -27,6 +27,7 @@
 #include "server.h"
 #include "cluster.h"
 #include "cluster_legacy.h"
+#include "cluster_asm.h"
 #include "cluster_slot_stats.h"
 #include "endianconv.h"
 #include "connection.h"
@@ -95,7 +96,7 @@ const char *clusterGetMessageTypeString(int type);
 void removeChannelsInSlot(unsigned int slot);
 unsigned int countKeysInSlot(unsigned int hashslot);
 unsigned int countChannelsInSlot(unsigned int hashslot);
-unsigned int delKeysInSlot(unsigned int hashslot);
+unsigned int clusterDelKeysInSlot(unsigned int hashslot, int flags);
 void clusterAddNodeToShard(const char *shard_id, clusterNode *node);
 list *clusterLookupNodeListByShardId(const char *shard_id);
 void clusterRemoveNodeFromShard(clusterNode *node);
@@ -1104,7 +1105,6 @@ void clusterInit(void) {
     clusterUpdateMyselfIp();
     clusterUpdateMyselfHostname();
     clusterUpdateMyselfHumanNodename();
-    resetClusterStats();
 
     getRandomHexChars(server.cluster->internal_secret, CLUSTER_INTERNALSECRETLEN);
 }
@@ -1149,6 +1149,7 @@ void clusterReset(int hard) {
 
     /* Turn into master. */
     if (nodeIsSlave(myself)) {
+        asmFinalizeMasterTask();
         clusterSetNodeAsMaster(myself);
         replicationUnsetMaster();
         emptyData(-1,EMPTYDB_NO_FLAGS,NULL);
@@ -1157,6 +1158,10 @@ void clusterReset(int hard) {
     /* Close slots, reset manual failover state. */
     clusterCloseAllSlots();
     resetManualFailover();
+
+    /* Cancel all ASM tasks */
+    clusterAsmCancel(NULL, "CLUSTER RESET");
+    asmCancelTrimJobs();
 
     /* Unassign all the slots. */
     for (j = 0; j < CLUSTER_SLOTS; j++) clusterDelSlot(j);
@@ -1612,7 +1617,8 @@ void clusterAddNode(clusterNode *node) {
  * 2) Remove all the failure reports sent by this node and referenced by
  *    other nodes.
  * 3) Remove the node from the owning shard
- * 4) Free the node with freeClusterNode() that will in turn remove it
+ * 4) Cancel all ASM tasks that involve the node.
+ * 5) Free the node with freeClusterNode() that will in turn remove it
  *    from the hash table and from the list of slaves of its master, if
  *    it is a slave node.
  */
@@ -1644,7 +1650,10 @@ void clusterDelNode(clusterNode *delnode) {
     /* 3) Remove the node from the owning shard */
     clusterRemoveNodeFromShard(delnode);
 
-    /* 4) Free the node, unlinking it from the cluster. */
+    /* 4) Cancel all ASM tasks that involve the node. */
+    clusterAsmCancelByNode(delnode, "node deleted");
+
+    /* 5) Free the node, unlinking it from the cluster. */
     freeClusterNode(delnode);
 }
 
@@ -2445,6 +2454,7 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
         return;
     }
 
+    slotRangeArray *sra = NULL;
     for (j = 0; j < CLUSTER_SLOTS; j++) {
         if (bitmapTestBit(slots,j)) {
             sender_slots++;
@@ -2468,6 +2478,13 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
             if (isSlotUnclaimed(j) ||
                 server.cluster->slots[j]->configEpoch < senderConfigEpoch)
             {
+                /* After completing slot ranges migration, the destination node
+                 * will broadcast a PONG message to all the nodes. We need to
+                 * detect that the slot was moved from us to the sender, and
+                 * call asmNotifyConfigUpdated() to notify the ASM state machine. */
+                if (server.cluster->slots[j] == myself && sender != myself)
+                    sra = slotRangeArrayAppend(sra, j);
+
                 /* Was this slot mine, and still contains keys? Mark it as
                  * a dirty slot. */
                 if (server.cluster->slots[j] == myself &&
@@ -2499,6 +2516,24 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
             bitmapSetBit(server.cluster->owner_not_claiming_slot, j);
         }
     }
+
+    /* Notify ASM about the config update */
+    struct asmTask *asm_task = NULL;
+    if (sra && sra->num_ranges > 0 && server.masterhost == NULL) {
+        sds err = NULL;
+        asm_task = asmLookupTaskBySlotRangeArray(sra);
+        if (!asm_task) {
+            /* If no task was found, it means the config update is not related
+             * to current ASM task, but this node learned about the config
+             * update from cluster protocol, and we need to cancel any
+             * conflicting tasks that overlap with the slot ranges. */
+            clusterAsmCancelBySlotRangeArray(sra, "slots configuration updated");
+        } else if (asmNotifyConfigUpdated(asm_task, &err) != C_OK) {
+            serverLog(LL_WARNING, "ASM config update failed: %s", err);
+            sdsfree(err);
+        }
+    }
+    slotRangeArrayFree(sra);
 
     /* After updating the slots configuration, don't do any actual change
      * in the state of the server if a module disabled Redis Cluster
@@ -2540,7 +2575,7 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
         clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG|
                              CLUSTER_TODO_UPDATE_STATE|
                              CLUSTER_TODO_FSYNC_CONFIG);
-    } else if (dirty_slots_count) {
+    } else if (dirty_slots_count && !asm_task) {
         /* If we are here, we received an update message which removed
          * ownership for certain slots we still have keys about, but still
          * we are serving some slots, so this master node was not demoted to
@@ -2549,7 +2584,7 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
          * In order to maintain a consistent state between keys and slots
          * we need to remove all the keys from the slots we lost. */
         for (j = 0; j < dirty_slots_count; j++)
-            delKeysInSlot(dirty_slots[j]);
+            clusterDelKeysInSlot(dirty_slots[j], 0);
     }
 }
 
@@ -2745,6 +2780,7 @@ void clusterProcessPingExtensions(clusterMsg *hdr, clusterLink *link) {
             if (n && n != myself && !(nodeIsSlave(myself) && myself->slaveof == n)) {
                 sds id = sdsnewlen(forgotten_node_ext->name, CLUSTER_NAMELEN);
                 dictEntry *de = dictAddOrFind(server.cluster->nodes_black_list, id);
+                if (dictGetKey(de) != id) sdsfree(id);
                 uint64_t expire = server.unixtime + ntohu64(forgotten_node_ext->ttl);
                 dictSetUnsignedIntegerVal(de, expire);
                 clusterDelNode(n);
@@ -3342,6 +3378,8 @@ int clusterProcessPacket(clusterLink *link) {
         /* This message is acceptable only if I'm a master and the sender
          * is one of my slaves. */
         if (!sender || sender->slaveof != myself) return 1;
+        /* Cancel all ASM tasks when starting manual failover */
+        clusterAsmCancel(NULL, "manual failover");
         /* Manual failover requested from slaves. Initialize the state
          * accordingly. */
         resetManualFailover();
@@ -4327,6 +4365,9 @@ void clusterFailoverReplaceYourMaster(void) {
 
     /* 5) If there was a manual failover in progress, clear the state. */
     resetManualFailover();
+
+    /* 6) Handle the ASM task from previous master. */
+    asmFinalizeMasterTask();
 }
 
 /* This function is called if we are a slave node and our master serving
@@ -5279,77 +5320,6 @@ void clusterUpdateState(void) {
     }
 }
 
-/* This function is called after the node startup in order to verify that data
- * loaded from disk is in agreement with the cluster configuration:
- *
- * 1) If we find keys about hash slots we have no responsibility for, the
- *    following happens:
- *    A) If no other node is in charge according to the current cluster
- *       configuration, we add these slots to our node.
- *    B) If according to our config other nodes are already in charge for
- *       this slots, we set the slots as IMPORTING from our point of view
- *       in order to justify we have those slots, and in order to make
- *       redis-cli aware of the issue, so that it can try to fix it.
- * 2) If we find data in a DB different than DB0 we return C_ERR to
- *    signal the caller it should quit the server with an error message
- *    or take other actions.
- *
- * The function always returns C_OK even if it will try to correct
- * the error described in "1". However if data is found in DB different
- * from DB0, C_ERR is returned.
- *
- * The function also uses the logging facility in order to warn the user
- * about desynchronizations between the data we have in memory and the
- * cluster configuration. */
-int verifyClusterConfigWithData(void) {
-    int j;
-    int update_config = 0;
-
-    /* Return ASAP if a module disabled cluster redirections. In that case
-     * every master can store keys about every possible hash slot. */
-    if (server.cluster_module_flags & CLUSTER_MODULE_FLAG_NO_REDIRECTION)
-        return C_OK;
-
-    /* If this node is a slave, don't perform the check at all as we
-     * completely depend on the replication stream. */
-    if (nodeIsSlave(myself)) return C_OK;
-
-    /* Make sure we only have keys in DB0. */
-    for (j = 1; j < server.dbnum; j++) {
-        if (kvstoreSize(server.db[j].keys)) return C_ERR;
-    }
-
-    /* Check that all the slots we see populated memory have a corresponding
-     * entry in the cluster table. Otherwise fix the table. */
-    for (j = 0; j < CLUSTER_SLOTS; j++) {
-        if (!countKeysInSlot(j)) continue; /* No keys in this slot. */
-        /* Check if we are assigned to this slot or if we are importing it.
-         * In both cases check the next slot as the configuration makes
-         * sense. */
-        if (server.cluster->slots[j] == myself ||
-            server.cluster->importing_slots_from[j] != NULL) continue;
-
-        /* If we are here data and cluster config don't agree, and we have
-         * slot 'j' populated even if we are not importing it, nor we are
-         * assigned to this slot. Fix this condition. */
-
-        update_config++;
-        /* Case A: slot is unassigned. Take responsibility for it. */
-        if (server.cluster->slots[j] == NULL) {
-            serverLog(LL_NOTICE, "I have keys for unassigned slot %d. "
-                                    "Taking responsibility for it.",j);
-            clusterAddSlot(myself,j);
-        } else {
-            serverLog(LL_NOTICE, "I have keys for slot %d, but the slot is "
-                                    "assigned to another node. "
-                                    "Setting it to importing state.",j);
-            server.cluster->importing_slots_from[j] = server.cluster->slots[j];
-        }
-    }
-    if (update_config) clusterSaveConfigOrDie(1);
-    return C_OK;
-}
-
 /* Remove all the shard channel related information not owned by the current shard. */
 static inline void removeAllNotOwnedShardChannelSubscriptions(void) {
     if (!kvstoreSize(server.pubsubshard_channels)) return;
@@ -5359,6 +5329,33 @@ static inline void removeAllNotOwnedShardChannelSubscriptions(void) {
             removeChannelsInSlot(j);
         }
     }
+}
+
+/* This function is called after the node startup in order to check if there
+ * are any slots that we have keys for, but are assigned to no one. If so,
+ * we take ownership of them. */
+void clusterClaimUnassignedSlots(void) {
+    if (nodeIsSlave(myself)) return;
+
+    int update_config = 0;
+    for (int i = 0; i < CLUSTER_SLOTS; i++) {
+        /* Skip if: no keys, already has an owner, or we are importing it. */
+        if (!countKeysInSlot(i) ||
+            server.cluster->slots[i] != NULL ||
+            server.cluster->importing_slots_from[i] != NULL)
+        {
+            continue;
+        }
+
+        /* If we are here data and cluster config don't agree, and we have
+         * slot 'i' populated even if we are not importing it, nor anyone else
+         * is assigned to it. Fix this condition by taking ownership. */
+        update_config++;
+        serverLog(LL_NOTICE, "I have keys for unassigned slot %d. "
+                             "Taking responsibility for it.", i);
+        clusterAddSlot(myself, i);
+    }
+    if (update_config) clusterSaveConfigOrDie(1);
 }
 
 /* -----------------------------------------------------------------------------
@@ -5371,7 +5368,8 @@ void clusterSetMaster(clusterNode *n) {
     serverAssert(n != myself);
     serverAssert(myself->numslots == 0);
 
-    if (clusterNodeIsMaster(myself)) {
+    int was_master = clusterNodeIsMaster(myself);
+    if (was_master) {
         myself->flags &= ~(CLUSTER_NODE_MASTER|CLUSTER_NODE_MIGRATE_TO);
         myself->flags |= CLUSTER_NODE_SLAVE;
         clusterCloseAllSlots();
@@ -5385,6 +5383,9 @@ void clusterSetMaster(clusterNode *n) {
     replicationSetMaster(n->ip, getNodeDefaultReplicationPort(n));
     removeAllNotOwnedShardChannelSubscriptions();
     resetManualFailover();
+
+    /* Cancel all ASM tasks when switching into slave */
+    if (was_master) clusterAsmCancel(NULL, "switching to replica");
 }
 
 /* -----------------------------------------------------------------------------
@@ -5704,18 +5705,6 @@ const char *clusterGetMessageTypeString(int type) {
     return "unknown";
 }
 
-int getSlotOrReply(client *c, robj *o) {
-    long long slot;
-
-    if (getLongLongFromObject(o,&slot) != C_OK ||
-        slot < 0 || slot >= CLUSTER_SLOTS)
-    {
-        addReplyError(c,"Invalid or out of range slot");
-        return -1;
-    }
-    return (int) slot;
-}
-
 int checkSlotAssignmentsOrReply(client *c, unsigned char *slots, int del, int start_slot, int end_slot) {
     int slot;
     for (slot = start_slot; slot <= end_slot; slot++) {
@@ -5744,6 +5733,9 @@ void clusterUpdateSlots(client *c, unsigned char *slots, int del) {
              * state as now we are the real owner of the slot. */
             if (server.cluster->importing_slots_from[j])
                 server.cluster->importing_slots_from[j] = NULL;
+
+            /* Cancel any ASM task that overlaps with the slot. */
+            clusterAsmCancelBySlot(j, "slots configuration updated");
 
             retval = del ? clusterDelSlot(j) :
                            clusterAddSlot(myself,j);
@@ -5891,6 +5883,8 @@ sds genClusterInfoString(void) {
         "total_cluster_links_buffer_limit_exceeded:%llu\r\n",
         server.cluster->stat_cluster_links_buffer_limit_exceeded);
 
+    info = asmCatInfoString(info);
+
     return info;
 }
 
@@ -5899,39 +5893,6 @@ void removeChannelsInSlot(unsigned int slot) {
     if (countChannelsInSlot(slot) == 0) return;
 
     pubsubShardUnsubscribeAllChannelsInSlot(slot);
-}
-
-/* Remove all the keys in the specified hash slot.
- * The number of removed items is returned. */
-unsigned int delKeysInSlot(unsigned int hashslot) {
-    if (!kvstoreDictSize(server.db->keys, hashslot))
-        return 0;
-
-    unsigned int j = 0;
-
-    kvstoreDictIterator *kvs_di = NULL;
-    dictEntry *de = NULL;
-    kvs_di = kvstoreGetDictSafeIterator(server.db->keys, hashslot);
-    while((de = kvstoreDictIteratorNext(kvs_di)) != NULL) {
-        enterExecutionUnit(1, 0);
-        sds sdskey = kvobjGetKey(dictGetKV(de));
-        robj *key = createStringObject(sdskey, sdslen(sdskey));
-        dbDelete(&server.db[0], key);
-        propagateDeletion(&server.db[0], key, server.lazyfree_lazy_server_del);
-        signalModifiedKey(NULL, &server.db[0], key);
-        /* The keys are not actually logically deleted from the database, just moved to another node.
-         * The modules needs to know that these keys are no longer available locally, so just send the
-         * keyspace notification to the modules, but not to clients. */
-        moduleNotifyKeyspaceEvent(NOTIFY_GENERIC, "del", key, server.db[0].id);
-        exitExecutionUnit();
-        postExecutionUnitOperations();
-        decrRefCount(key);
-        j++;
-        server.dirty++;
-    }
-    kvstoreReleaseDictIterator(kvs_di);
-
-    return j;
 }
 
 /* Get the count of the channels for a given slot. */
@@ -5992,9 +5953,9 @@ int clusterNodeIsMaster(clusterNode *n) {
 }
 
 int handleDebugClusterCommand(client *c) {
-    if (strcasecmp(c->argv[1]->ptr, "CLUSTERLINK") ||
-        strcasecmp(c->argv[2]->ptr, "KILL") ||
-        c->argc != 5) {
+    if (c->argc != 5 ||
+        strcasecmp(c->argv[1]->ptr, "CLUSTERLINK") ||
+        strcasecmp(c->argv[2]->ptr, "KILL")) {
         return 0;
     }
 
@@ -6196,6 +6157,22 @@ int clusterCommandSpecial(client *c) {
         }
 
         if ((slot = getSlotOrReply(c, c->argv[2])) == -1) return 1;
+
+        /* Don't allow legacy slot migration if the slot is in an ASM task. */
+        if (isSlotInAsmTask(slot)) {
+            addReplyErrorFormat(c, "Slot %d is currently in an active atomic slot migration. "
+                "CLUSTER SETSLOT cannot be used at this time. To perform a legacy slot migration "
+                "instead, first cancel the ongoing task with CLUSTER MIGRATION CANCEL", slot);
+            return 1;
+        }
+
+        if (isSlotInTrimJob(slot)) {
+            addReplyErrorFormat(c, "There is a pending trim job for slot %d. "
+                "Most probably, this is due to a failed atomic slot migration. "
+                "CLUSTER SETSLOT cannot be used at this time. "
+                "Please retry later once the trim job is completed.", slot);
+            return 1;
+        }
 
         if (!strcasecmp(c->argv[3]->ptr,"migrating") && c->argc == 5) {
             if (server.cluster->slots[slot] != myself) {
@@ -6560,6 +6537,9 @@ const char **clusterCommandExtendedHelp(void) {
         "LINKS",
         "    Return information about all network links between this node and its peers.",
         "    Output format is an array where each array element is a map containing attributes of a link",
+        "MIGRATION IMPORT <start-slot end-slot [start-slot end-slot ...]> |",
+        "          STATUS [ID <task-id> | ALL] | CANCEL [ID <task-id> | ALL]",
+        "    Start, monitor and cancel slot migration.",
         NULL
     };
 
@@ -6622,4 +6602,50 @@ int clusterAllowFailoverCmd(client *c) {
 
 void clusterPromoteSelfToMaster(void) {
     replicationUnsetMaster();
+    asmFinalizeMasterTask();
+}
+
+int clusterAsmOnEvent(const char *task_id, int event, void *arg) {
+    sds str = NULL;
+
+    slotRangeArray *slots = asmTaskGetSlotRanges(task_id);
+    if (slots) str = slotRangeArrayToString(slots);
+    else if (arg) str = slotRangeArrayToString(arg);
+
+    serverLog(LL_VERBOSE, "Slot migration task %s received event %d for slots: %s",
+                          task_id, event, str ? str : "unknown");
+
+    switch (event) {
+        case ASM_EVENT_TAKEOVER:
+            for (int i = 0; i < slots->num_ranges; i++) {
+                slotRange *sr = &slots->ranges[i];
+                for (int j = sr->start; j <= sr->end; j++) {
+                    clusterDelSlot(j);
+                    clusterAddSlot(myself, j);
+                }
+            }
+            /* New config and Bump new config */
+            clusterBumpConfigEpochWithoutConsensus();
+            clusterSaveConfigOrDie(1);
+            clusterBroadcastPong(CLUSTER_BROADCAST_ALL);
+            clusterAsmProcess(task_id, ASM_EVENT_DONE, NULL, NULL);
+            break;
+        case ASM_EVENT_MIGRATE_FAILED:
+            unpauseActions(PAUSE_DURING_SLOT_HANDOFF);
+            break;
+        case ASM_EVENT_HANDOFF_PREP:
+            pauseActions(PAUSE_DURING_SLOT_HANDOFF,
+                         LLONG_MAX,
+                         PAUSE_ACTIONS_CLIENT_WRITE_SET);
+            clusterAsmProcess(task_id, ASM_EVENT_HANDOFF, NULL, NULL);
+            break;
+        case ASM_EVENT_MIGRATE_COMPLETED:
+            unpauseActions(PAUSE_DURING_SLOT_HANDOFF);
+            break;
+        default:
+            break;
+    }
+
+    sdsfree(str);
+    return C_OK;
 }
