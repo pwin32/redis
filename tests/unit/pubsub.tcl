@@ -1029,7 +1029,6 @@ start_server {tags {"pubsub network"}} {
                 set rd1 [redis_deferring_client]
                 set rd2 [redis_deferring_client]
             }
-
             set base_str [string repeat "a" 2048]
             set success_count 0
             set oom_occurred 0
@@ -1060,7 +1059,6 @@ start_server {tags {"pubsub network"}} {
                 }
                 incr success_count
             }
-
             # Verify we had at least one success and hit OOM
             assert {$success_count > 10}
             assert {$oom_occurred == 1}
@@ -1081,7 +1079,6 @@ start_server {tags {"pubsub network"}} {
             # Set maxmemory to 2MB
             r config set maxmemory 2097152
             r config set maxmemory-policy noeviction
-
             # Create large channel/pattern name: 2MB
             set channel_name [string repeat "a" 2097152]
 
@@ -1103,7 +1100,6 @@ start_server {tags {"pubsub network"}} {
             # Set maxmemory to 5MB
             r config set maxmemory 5242880
             r config set maxmemory-policy noeviction
-
             # Create channel names: first 10KB, second 5MB
             set channel1 [string repeat "a" 10240]
             set channel2 [string repeat "b" 5242880]
@@ -1115,7 +1111,6 @@ start_server {tags {"pubsub network"}} {
             $rd $cmd $channel1
             set reply1 [$rd read]
             assert_equal [list $cmd] [lindex $reply1 0]
-
             # Second subscribe should fail with OOM error (5MB exceeds limit)
             $rd $cmd $channel2
             assert_error "*OOM command not allowed when used memory > 'maxmemory'*" {$rd read}

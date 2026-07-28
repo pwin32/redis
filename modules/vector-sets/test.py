@@ -96,10 +96,10 @@ class TestCase:
         self.error_details = None
         self.test_key = f"test:{self.__class__.__name__.lower()}"
         # Primary Redis instance
-        self.redis = redis.Redis(port=primary_port,db=9)
+        self.redis = redis.Redis(port=primary_port,protocol=2,db=9)
         self.redis3 = redis.Redis(port=primary_port,protocol=3,db=9)
         # Replica Redis instance
-        self.replica = redis.Redis(port=replica_port,db=9)
+        self.replica = redis.Redis(port=replica_port,protocol=2,db=9)
         # Replication status
         self.replication_setup = False
         # Ports
@@ -174,7 +174,8 @@ class TestCase:
 
 def find_test_classes(primary_port, replica_port):
     test_classes = []
-    tests_dir = 'tests'
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    tests_dir = os.path.join(script_dir, 'tests')
 
     if not os.path.exists(tests_dir):
         return []
@@ -285,6 +286,7 @@ def run_tests():
     else:
         if total-skipped-passed > 0:
             print(colored(f"{total-skipped-passed} TESTS FAILED!", "red"))
+            sys.exit(1)
         if skipped > 0:
             print(colored(f"{skipped} TESTS SKIPPED!", "yellow"))
 

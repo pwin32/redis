@@ -28,6 +28,9 @@
 #include "Win32_RedisLog.h"
 
 void moduleSetForkData(void *data);
+size_t keyMetaForkDataSize(void);
+int keyMetaCopyForkData(void *data, size_t size);
+int keyMetaSetForkData(const void *data, size_t size);
 int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi);
 int slotSnapshotSaveRio(int req, rio *rdb, int *error);
 
@@ -41,10 +44,19 @@ BOOL RedisCopySharedForkData(void *data, size_t size) {
     return TRUE;
 }
 
-void RedisGetCoreForkData(RedisCoreForkData *data) {
+BOOL RedisGetCoreForkData(RedisCoreForkData *data) {
     memset(data, 0, sizeof(*data));
     data->configs = configGetQForkData();
     data->asmManager = asmGetQForkState();
+    data->keyMetaDataSize = keyMetaForkDataSize();
+    if (data->keyMetaDataSize > sizeof(data->keyMetaData) ||
+        keyMetaCopyForkData(data->keyMetaData,
+                            data->keyMetaDataSize) != C_OK)
+    {
+        data->keyMetaDataSize = 0;
+        return FALSE;
+    }
+    return TRUE;
 }
 
 static rdbSaveInfo *copyRdbSaveInfo(rdbSaveInfo *dst, const void *src,
@@ -92,6 +104,15 @@ BOOL SetupRedisGlobals(LPVOID redisData, size_t redisDataSize,
     configSetQForkData((dict *)redisCore->configs);
     asmSetQForkState(redisCore->asmManager);
     moduleSetForkData(redisModules);
+    if (keyMetaSetForkData(redisCore->keyMetaData,
+                           redisCore->keyMetaDataSize) != C_OK)
+    {
+        serverLog(LL_WARNING,
+                  "QFork key metadata registry ABI mismatch: got %llu bytes, expected %llu",
+                  (unsigned long long)redisCore->keyMetaDataSize,
+                  (unsigned long long)keyMetaForkDataSize());
+        return FALSE;
+    }
     zmalloc_set_used_memory(usedMemory);
     crc64_init();
     /* QFork children are fresh processes, so executable-image globals are not

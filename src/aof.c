@@ -2044,9 +2044,10 @@ int rioWriteBulkObject(rio *r, robj *obj) {
 int rewriteListObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = listTypeLength(o);
 
-    listTypeIterator *li = listTypeInitIterator(o,0,LIST_TAIL);
+    listTypeIterator li;
     listTypeEntry entry;
-    while (listTypeNext(li,&entry)) {
+    listTypeInitIterator(&li, o, 0, LIST_TAIL);
+    while (listTypeNext(&li, &entry)) {
         if (count == 0) {
             int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ?
                 AOF_REWRITE_ITEMS_PER_CMD : items;
@@ -2054,7 +2055,7 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
                 !rioWriteBulkString(r,"RPUSH",5) ||
                 !rioWriteBulkObject(r,key)) 
             {
-                listTypeReleaseIterator(li);
+                listTypeResetIterator(&li);
                 return 0;
             }
         }
@@ -2065,19 +2066,19 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
         vstr = listTypeGetValue(&entry,&vlen,&lval);
         if (vstr) {
             if (!rioWriteBulkString(r,(char*)vstr,vlen)) {
-                listTypeReleaseIterator(li);
+                listTypeResetIterator(&li);
                 return 0;
             }
         } else {
             if (!rioWriteBulkLongLong(r,lval)) {
-                listTypeReleaseIterator(li);
+                listTypeResetIterator(&li);
                 return 0;
             }
         }
         if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
         items--;
     }
-    listTypeReleaseIterator(li);
+    listTypeResetIterator(&li);
     return 1;
 }
 
@@ -2085,11 +2086,12 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
  * The function returns 0 on error, 1 on success. */
 int rewriteSetObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = setTypeSize(o);
-    setTypeIterator *si = setTypeInitIterator(o);
+    setTypeIterator si;
     char *str;
     size_t len;
     int64_t llval;
-    while (setTypeNext(si, &str, &len, &llval) != -1) {
+    setTypeInitIterator(&si, o);
+    while (setTypeNext(&si, &str, &len, &llval) != -1) {
         if (count == 0) {
             int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ?
                 AOF_REWRITE_ITEMS_PER_CMD : items;
@@ -2097,20 +2099,20 @@ int rewriteSetObject(rio *r, robj *key, robj *o) {
                 !rioWriteBulkString(r,"SADD",4) ||
                 !rioWriteBulkObject(r,key))
             {
-                setTypeReleaseIterator(si);
+                setTypeResetIterator(&si);
                 return 0;
             }
         }
         size_t written = str ?
             rioWriteBulkString(r, str, len) : rioWriteBulkLongLong(r, llval);
         if (!written) {
-            setTypeReleaseIterator(si);
+            setTypeResetIterator(&si);
             return 0;
         }
         if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
         items--;
     }
-    setTypeReleaseIterator(si);
+    setTypeResetIterator(&si);
     return 1;
 }
 
@@ -2164,8 +2166,9 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
 
         dictInitIterator(&di, zs->dict);
         while((de = dictNext(&di)) != NULL) {
-            sds ele = dictGetKey(de);
-            double *score = dictGetVal(de);
+            zskiplistNode *znode = dictGetKey(de);
+            sds ele = zslGetNodeElement(znode);
+            double score = znode->score;
 
             if (count == 0) {
                 int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ?
@@ -2179,7 +2182,7 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
                     return 0;
                 }
             }
-            if (!rioWriteBulkDouble(r,*score) ||
+            if (!rioWriteBulkDouble(r,score) ||
                 !rioWriteBulkString(r,ele,sdslen(ele)))
             {
                 dictResetIterator(&di);
@@ -2228,14 +2231,14 @@ static int rioWriteHashIteratorCursor(rio *r, hashTypeIterator *hi, int what) {
 int rewriteHashObject(rio *r, robj *key, robj *o) {
     int res = 0; /*fail*/
 
-    hashTypeIterator *hi;
+    hashTypeIterator hi;
     long long count = 0, items = hashTypeLength(o, 0);
 
     int isHFE = hashTypeGetMinExpire(o, 0) != EB_EXPIRE_TIME_INVALID;
-    hi = hashTypeInitIterator(o);
+    hashTypeInitIterator(&hi, o);
 
     if (!isHFE) {
-        while (hashTypeNext(hi, 0) != C_ERR) {
+        while (hashTypeNext(&hi, 0) != C_ERR) {
             if (count == 0) {
                 int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ?
                                 AOF_REWRITE_ITEMS_PER_CMD : items;
@@ -2245,31 +2248,31 @@ int rewriteHashObject(rio *r, robj *key, robj *o) {
                     goto reHashEnd;
             }
 
-            if (!rioWriteHashIteratorCursor(r, hi, OBJ_HASH_KEY) ||
-                !rioWriteHashIteratorCursor(r, hi, OBJ_HASH_VALUE))
+            if (!rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_KEY) ||
+                !rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_VALUE))
                 goto reHashEnd;
 
             if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
             items--;
         }
     } else {
-        while (hashTypeNext(hi, 0) != C_ERR) {
+        while (hashTypeNext(&hi, 0) != C_ERR) {
 
             char hmsetCmd[] = "*4\r\n$5\r\nHMSET\r\n";
             if ( (!rioWrite(r, hmsetCmd, sizeof(hmsetCmd) - 1)) ||
                  (!rioWriteBulkObject(r, key)) ||
-                 (!rioWriteHashIteratorCursor(r, hi, OBJ_HASH_KEY)) ||
-                 (!rioWriteHashIteratorCursor(r, hi, OBJ_HASH_VALUE)) )
+                 (!rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_KEY)) ||
+                 (!rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_VALUE)) )
                 goto reHashEnd;
 
-            if (hi->expire_time != EB_EXPIRE_TIME_INVALID) {
+            if (hi.expire_time != EB_EXPIRE_TIME_INVALID) {
                 char cmd[] = "*6\r\n$10\r\nHPEXPIREAT\r\n";
                 if ( (!rioWrite(r, cmd, sizeof(cmd) - 1)) ||
                      (!rioWriteBulkObject(r, key)) ||
-                     (!rioWriteBulkLongLong(r, hi->expire_time)) ||
+                     (!rioWriteBulkLongLong(r, hi.expire_time)) ||
                      (!rioWriteBulkString(r, "FIELDS", 6)) ||
                      (!rioWriteBulkString(r, "1", 1)) ||
-                     (!rioWriteHashIteratorCursor(r, hi, OBJ_HASH_KEY)) )
+                     (!rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_KEY)) )
                     goto reHashEnd;
             }
         }
@@ -2278,7 +2281,7 @@ int rewriteHashObject(rio *r, robj *key, robj *o) {
     res = 1; /* success */
 
 reHashEnd:
-    hashTypeReleaseIterator(hi);
+    hashTypeResetIterator(&hi);
     return res;
 }
 
@@ -2332,17 +2335,31 @@ int rioWriteStreamEmptyConsumer(rio *r, robj *key, const char *groupname, size_t
     return 1;
 }
 
+/* Helper for rewriteStreamObject(): emit the XIDMPRECORD needed to
+ * restore an IDMP entry for the given producer in the context of the
+ * specified key. */
+int rioWriteStreamIdmpEntry(rio *r, robj *key, const char *pid, size_t pid_len, idmpEntry *entry) {
+    /* XIDMPRECORD <key> <pid> <iid> <streamID> */
+    if (rioWriteBulkCount(r,'*',5) == 0) return 0;
+    if (rioWriteBulkString(r,"XIDMPRECORD",11) == 0) return 0;
+    if (rioWriteBulkObject(r,key) == 0) return 0;
+    if (rioWriteBulkString(r,pid,pid_len) == 0) return 0;
+    if (rioWriteBulkString(r,entry->iid,entry->iid_len) == 0) return 0;
+    if (rioWriteBulkStreamID(r,&entry->id) == 0) return 0;
+    return 1;
+}
+
 /* Emit the commands needed to rebuild a stream object.
  * The function returns 0 on error, 1 on success. */
 int rewriteStreamObject(rio *r, robj *key, robj *o) {
     stream *s = o->ptr;
-    streamIterator si;
-    streamIteratorStart(&si,s,NULL,NULL,0);
     streamID id;
-    int64_t numfields;
 
     if (s->length) {
         /* Reconstruct the stream data using XADD commands. */
+        streamIterator si;
+        int64_t numfields;
+        streamIteratorStart(&si,s,NULL,NULL,0);
         while(streamIteratorGetID(&si,&id,&numfields)) {
             /* Emit a two elements array for each item. The first is
              * the ID, the second is an array of field-value pairs. */
@@ -2368,6 +2385,7 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                 }
             }
         }
+        streamIteratorStop(&si);
     } else {
         /* Use the XADD MAXLEN 0 trick to generate an empty stream if
          * the key we are serializing is an empty string, which is possible
@@ -2382,7 +2400,6 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
             !rioWriteBulkString(r,"x",1) ||
             !rioWriteBulkString(r,"y",1))
         {
-            streamIteratorStop(&si);
             return 0;     
         }
     }
@@ -2398,10 +2415,8 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
         !rioWriteBulkString(r,"MAXDELETEDID",12) ||
         !rioWriteBulkStreamID(r,&s->max_deleted_entry_id)) 
     {
-        streamIteratorStop(&si);
         return 0; 
     }
-
 
     /* Create all the stream consumer groups. */
     if (s->cgroups) {
@@ -2421,7 +2436,6 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                 !rioWriteBulkLongLong(r,group->entries_read))
             {
                 raxStop(&ri);
-                streamIteratorStop(&si);
                 return 0;
             }
 
@@ -2440,7 +2454,6 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                     {
                         raxStop(&ri_cons);
                         raxStop(&ri);
-                        streamIteratorStop(&si);
                         return 0;
                     }
                     continue;
@@ -2459,7 +2472,6 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                         raxStop(&ri_pel);
                         raxStop(&ri_cons);
                         raxStop(&ri);
-                        streamIteratorStop(&si);
                         return 0;
                     }
                 }
@@ -2470,7 +2482,46 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
         raxStop(&ri);
     }
 
-    streamIteratorStop(&si);
+    /* Emit XCFGSET to restore per-stream IDMP configuration if it differs
+     * from the server defaults, so that AOF rewrite preserves custom settings. */
+    if (s->idmp_duration != (uint64_t)server.stream_idmp_duration ||
+        s->idmp_max_entries != (uint64_t)server.stream_idmp_maxsize)
+    {
+        if (!rioWriteBulkCount(r,'*',6) ||
+            !rioWriteBulkString(r,"XCFGSET",7) ||
+            !rioWriteBulkObject(r,key) ||
+            !rioWriteBulkString(r,"IDMP-DURATION",13) ||
+            !rioWriteBulkLongLong(r,s->idmp_duration) ||
+            !rioWriteBulkString(r,"IDMP-MAXSIZE",12) ||
+            !rioWriteBulkLongLong(r,s->idmp_max_entries))
+        {
+            return 0;
+        }
+    }
+
+    /* Emit XIDMPRECORD for each IDMP entry. Entries whose stream ID no
+     * longer exists (removed by XDEL/trim) are skipped, since
+     * xidmprecordCommand() rejects references to missing IDs and would
+     * cause AOF replay errors. */
+    if (s->idmp_producers) {
+        raxIterator ri_idmp;
+        raxStart(&ri_idmp,s->idmp_producers);
+        raxSeek(&ri_idmp,"^",NULL,0);
+        while(raxNext(&ri_idmp)) {
+            idmpProducer *producer = ri_idmp.data;
+            for (idmpEntry *entry = producer->idmp_head; entry != NULL; entry = entry->next) {
+                if (!streamEntryExists(s, &entry->id)) continue;
+                if (rioWriteStreamIdmpEntry(r,key,(char*)ri_idmp.key,
+                                            ri_idmp.key_len,entry) == 0)
+                {
+                    raxStop(&ri_idmp);
+                    return 0;
+                }
+            }
+        }
+        raxStop(&ri_idmp);
+    }
+
     return 1;
 }
 
@@ -2481,7 +2532,7 @@ int rewriteModuleObject(rio *r, robj *key, robj *o, int dbid) {
     RedisModuleIO io;
     moduleValue *mv = o->ptr;
     moduleType *mt = mv->type;
-    moduleInitIOContext(io,mt,r,key,dbid);
+    moduleInitIOContext(&io, &mt->entity, r, key, dbid);
     mt->aof_rewrite(&io,key,mv->value);
     if (io.ctx) {
         moduleFreeContext(io.ctx);
@@ -2543,6 +2594,10 @@ int rewriteObject(rio *r, robj *key, robj *o, int dbid, long long expiretime) {
         if (rioWriteBulkLongLong(r,expiretime) == 0) return C_ERR;
     }
 
+    /* If modules metadata is available */
+    if ((getModuleMetaBits(o->metabits)) && (keyMetaOnAof(r, key, o, dbid) == 0))
+        return C_ERR;
+
     return C_OK;
 }
 
@@ -2552,7 +2607,7 @@ int rewriteAppendOnlyFileRio(rio *aof) {
     long key_count = 0;
     long long updated_time = 0;
     unsigned long long skipped = 0;
-    kvstoreIterator *kvs_it = NULL;
+    kvstoreIterator kvs_it;
 
     /* Record timestamp at the beginning of rewriting AOF. */
     if (server.aof_timestamp_enabled) {
@@ -2572,9 +2627,9 @@ int rewriteAppendOnlyFileRio(rio *aof) {
         if (rioWrite(aof,selectcmd,sizeof(selectcmd)-1) == 0) goto werr;
         if (rioWriteBulkLongLong(aof,j) == 0) goto werr;
 
-        kvs_it = kvstoreIteratorInit(db->keys);
+        kvstoreIteratorInit(&kvs_it, db->keys);
         /* Iterate this DB writing every entry */
-        while((de = kvstoreIteratorNext(kvs_it)) != NULL) {
+        while((de = kvstoreIteratorNext(&kvs_it)) != NULL) {
             long long expiretime;
             size_t aof_bytes_before_key = aof->processed_bytes;
 
@@ -2586,7 +2641,7 @@ int rewriteAppendOnlyFileRio(rio *aof) {
 
             /* Skip keys that are being trimmed */
             if (server.cluster_enabled) {
-                int curr_slot = kvstoreIteratorGetCurrentDictIndex(kvs_it);
+                int curr_slot = kvstoreIteratorGetCurrentDictIndex(&kvs_it);
                 if (isSlotInTrimJob(curr_slot)) {
                     skipped++;
                     continue;
@@ -2597,7 +2652,7 @@ int rewriteAppendOnlyFileRio(rio *aof) {
             robj key;
             initStaticStringObject(key, kvobjGetKey(o));
 
-            if (rewriteObject(aof, &key, o, j, expiretime) == C_ERR) goto werr;
+            if (rewriteObject(aof, &key, o, j, expiretime) == C_ERR) goto werr2;
 
             /* In fork child process, we can try to release memory back to the
              * OS and possibly avoid or decrease COW. We give the dismiss
@@ -2620,13 +2675,14 @@ int rewriteAppendOnlyFileRio(rio *aof) {
             if (server.rdb_key_save_delay)
                 debugDelay(server.rdb_key_save_delay);
         }
-        kvstoreIteratorRelease(kvs_it);
+        kvstoreIteratorReset(&kvs_it);
     }
     serverLog(LL_NOTICE, "AOF rewrite done, %ld keys saved, %llu keys skipped.", key_count, skipped);
     return C_OK;
 
+werr2:
+    kvstoreIteratorReset(&kvs_it);
 werr:
-    if (kvs_it) kvstoreIteratorRelease(kvs_it);
     return C_ERR;
 }
 

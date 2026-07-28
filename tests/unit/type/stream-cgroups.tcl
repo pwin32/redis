@@ -1087,7 +1087,7 @@ start_server {
         r XDEL x 103
 
         set reply [r XINFO STREAM x FULL]
-        assert_equal [llength $reply] 18
+        assert_equal [llength $reply] 30
         assert_equal [dict get $reply length] 4
         assert_equal [dict get $reply entries] "{100-0 {a 1}} {101-0 {b 1}} {102-0 {c 1}} {104-0 {f 1}}"
 
@@ -1108,7 +1108,7 @@ start_server {
         assert_equal [lindex [dict get $consumer pending] 1 0] "101-0" ;# second entry in first consumer's PEL
 
         set reply [r XINFO STREAM x FULL COUNT 1]
-        assert_equal [llength $reply] 18
+        assert_equal [llength $reply] 30
         assert_equal [dict get $reply length] 4
         assert_equal [dict get $reply entries] "{100-0 {a 1}}"
     }
@@ -1900,6 +1900,79 @@ start_server {
                     assert_equal [llength $replica_pending] 1
                     set delivery_count [lindex [lindex $replica_pending 0] 3]
                     assert_equal $delivery_count 3
+                }
+            }
+        }
+    }
+
+    start_server {tags {"repl external:skip" "stream"}} {
+        # Verify that XREADGROUP propagates a newly created consumer to
+        # the replica in cases where no XCLAIM is generated (XCLAIM
+        # implicitly creates the consumer, so explicit propagation is
+        # only needed when it is absent).  Two cases are tested:
+        #   1. Without NOACK and no messages to deliver — no XCLAIM at all.
+        #   2. With NOACK and messages delivered — NOACK skips PEL/XCLAIM.
+        test "XREADGROUP propagates new consumer to replica" {
+            set master [srv 0 client]
+            set master_host [srv 0 host]
+            set master_port [srv 0 port]
+
+            start_server {tags {"stream"}} {
+                set replica [srv 0 client]
+
+                $replica replicaof $master_host $master_port
+                wait_for_sync $replica
+
+                $master DEL mystream
+                $master XADD mystream 1-0 f v
+                $master XGROUP CREATE mystream grp 0
+
+                # Consume the only message so the stream has no
+                # new messages pending for delivery.
+                $master XREADGROUP GROUP grp c1 STREAMS mystream >
+                $master XACK mystream grp 1-0
+
+                wait_for_ofs_sync $master $replica
+
+                # Case 1: XREADGROUP without NOACK for a brand-new
+                # consumer when there are NO messages to deliver.
+                # No XCLAIM is generated, so the consumer must be
+                # explicitly propagated.
+                set reply [$master XREADGROUP GROUP grp c2 STREAMS mystream >]
+                assert_equal $reply {}
+
+                set master_consumers [$master XINFO CONSUMERS mystream grp]
+                set master_names [lmap c $master_consumers {dict get $c name}]
+                assert {[lsearch $master_names "c2"] >= 0}
+
+                wait_for_ofs_sync $master $replica
+
+                set replica_consumers [$replica XINFO CONSUMERS mystream grp]
+                set replica_names [lmap c $replica_consumers {dict get $c name}]
+                if {[lsearch $replica_names "c2"] < 0} {
+                    fail "Consumer 'c2' not found on replica (have: $replica_names)"
+                }
+
+                # Case 2: XREADGROUP with NOACK for a brand-new consumer
+                # when a message IS available.  NOACK skips PEL/XCLAIM
+                # entirely, so the consumer must be explicitly propagated
+                # even though messages were delivered.
+                $master XADD mystream 2-0 f v
+                wait_for_ofs_sync $master $replica
+
+                set reply [$master XREADGROUP GROUP grp c3 NOACK STREAMS mystream >]
+                assert {$reply ne {}}
+
+                set master_consumers [$master XINFO CONSUMERS mystream grp]
+                set master_names [lmap c $master_consumers {dict get $c name}]
+                assert {[lsearch $master_names "c3"] >= 0}
+
+                wait_for_ofs_sync $master $replica
+
+                set replica_consumers [$replica XINFO CONSUMERS mystream grp]
+                set replica_names [lmap c $replica_consumers {dict get $c name}]
+                if {[lsearch $replica_names "c3"] < 0} {
+                    fail "Consumer 'c3' not found on replica (have: $replica_names)"
                 }
             }
         }

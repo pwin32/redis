@@ -2,6 +2,9 @@
  * Copyright (c) 2019-Present, Redis Ltd.
  * All rights reserved.
  *
+ * Copyright (c) 2024-present, Valkey contributors.
+ * All rights reserved.
+ *
  * Licensed under your choice of (a) the Redis Source Available License 2.0
  * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
  * GNU Affero General Public License v3 (AGPLv3).
@@ -20,6 +23,7 @@
 
 #include <openssl/conf.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/pem.h>
@@ -53,7 +57,7 @@ static int parseProtocolsConfig(const char *str) {
     if (!str) return REDIS_TLS_PROTO_DEFAULT;
     sds *tokens = sdssplitlen(str, strlen(str), " ", 1, &count);
 
-    if (!tokens) { 
+    if (!tokens) {
         serverLog(LL_WARNING, "Invalid tls-protocols configuration string");
         return -1;
     }
@@ -124,7 +128,7 @@ static void initCryptoLocks(void) {
 
 static void tlsInit(void) {
     /* Enable configuring OpenSSL using the standard openssl.cnf
-     * OPENSSL_config()/OPENSSL_init_crypto() should be the first 
+     * OPENSSL_config()/OPENSSL_init_crypto() should be the first
      * call to the OpenSSL* library.
      *  - OPENSSL_config() should be used for OpenSSL versions < 1.1.0
      *  - OPENSSL_init_crypto() should be used for OpenSSL versions >= 1.1.0
@@ -683,6 +687,57 @@ static int tlsRearmEvents(tls_connection *conn) {
 }
 #endif
 
+static int getCertFieldByName(X509 *cert, const char *field, char *out, size_t outlen) {
+    if (!cert || !field || !out) return 0;
+
+    int nid = -1;
+
+    if (!strcasecmp(field, "CN"))
+        nid = NID_commonName;
+    else if (!strcasecmp(field, "O"))
+        nid = NID_organizationName;
+    /* Add more mappings here as needed */
+
+    if (nid == -1) return 0;
+
+    X509_NAME *subject = X509_get_subject_name(cert);
+    if (!subject) return 0;
+
+    return X509_NAME_get_text_by_NID(subject, nid, out, outlen) > 0;
+}
+
+sds tlsGetPeerUsername(connection *conn_) {
+    tls_connection *conn = (tls_connection *)conn_;
+    if (!conn || !SSL_is_init_finished(conn->ssl)) return NULL;
+
+    /* Find the corresponding field name from the enum mapping */
+    const char *field = NULL;
+    switch (server.tls_ctx_config.client_auth_user) {
+    case TLS_CLIENT_FIELD_CN:
+        field = "CN";
+        break;
+    default:
+        return NULL;
+    }
+
+    if (!field) return NULL;
+
+    X509 *cert = SSL_get_peer_certificate(conn->ssl);
+    if (!cert) return NULL;
+
+    char field_value[256];
+    sds result = NULL;
+
+    if (getCertFieldByName(cert, field, field_value, sizeof(field_value))) {
+        result = sdsnew(field_value);
+    } else {
+        serverLog(LL_NOTICE, "TLS: Failed to extract field '%s' from certificate", field);
+    }
+
+    X509_free(cert);
+    return result;
+}
+
 static void tlsHandleEvent(tls_connection *conn, int mask) {
     int ret, conn_error;
 
@@ -1017,7 +1072,7 @@ static int connTLSWritev(connection *conn_, const struct iovec *iov, int iovcnt)
         if (iov_bytes_len > NET_MAX_WRITES_PER_EVENT) break;
     }
 
-    /* The amount of all buffers is greater than NET_MAX_WRITES_PER_EVENT, 
+    /* The amount of all buffers is greater than NET_MAX_WRITES_PER_EVENT,
      * which is not worth doing so much memory copying to reduce system calls,
      * therefore, invoke connTLSWrite() multiple times to avoid memory copies. */
     if (iov_bytes_len > NET_MAX_WRITES_PER_EVENT) {
@@ -1031,9 +1086,9 @@ static int connTLSWritev(connection *conn_, const struct iovec *iov, int iovcnt)
         return tot_sent;
     }
 
-    /* The amount of all buffers is less than NET_MAX_WRITES_PER_EVENT, 
-     * which is worth doing more memory copies in exchange for fewer system calls, 
-     * so concatenate these scattered buffers into a contiguous piece of memory 
+    /* The amount of all buffers is less than NET_MAX_WRITES_PER_EVENT,
+     * which is worth doing more memory copies in exchange for fewer system calls,
+     * so concatenate these scattered buffers into a contiguous piece of memory
      * and send it away by one call to connTLSWrite(). */
     char buf[iov_bytes_len];
     size_t offset = 0;
@@ -1217,6 +1272,7 @@ static sds connTLSGetPeerCert(connection *conn_) {
     BIO *bio = BIO_new(BIO_s_mem());
     if (bio == NULL || !PEM_write_bio_X509(bio, cert)) {
         if (bio != NULL) BIO_free(bio);
+        X509_free(cert);
         return NULL;
     }
 
@@ -1224,6 +1280,7 @@ static sds connTLSGetPeerCert(connection *conn_) {
     long long bio_len = BIO_get_mem_data(bio, &bio_ptr);
     sds cert_pem = sdsnewlen(bio_ptr, bio_len);
     BIO_free(bio);
+    X509_free(cert);
 
     return cert_pem;
 }
@@ -1277,6 +1334,7 @@ static ConnectionType CT_TLS = {
 
     /* TLS specified methods */
     .get_peer_cert = connTLSGetPeerCert,
+    .get_peer_username = tlsGetPeerUsername,
 };
 
 int RedisRegisterConnectionTypeTLS(void) {

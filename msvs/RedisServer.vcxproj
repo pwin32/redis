@@ -96,7 +96,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <PreprocessorDefinitions>USE_JEMALLOC;_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;_DEBUG;_CONSOLE;__x86_64__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv;..\deps\jemalloc\include;..\deps\jemalloc\include\msvc_compat</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv;$(SolutionDir)..\deps\fast_float;$(SolutionDir)..\deps\xxhash;..\deps\jemalloc\include;..\deps\jemalloc\include\msvc_compat</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard_C>stdc11</LanguageStandard_C>
@@ -124,7 +124,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <PreprocessorDefinitions>USE_JEMALLOC;_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;_DEBUG;_CONSOLE;__x86_64__;%(PreprocessorDefinitions);_WIN32_WINNT=0x0501</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv;..\deps\jemalloc\include;..\deps\jemalloc\include\msvc_compat</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv;$(SolutionDir)..\deps\fast_float;$(SolutionDir)..\deps\xxhash;..\deps\jemalloc\include;..\deps\jemalloc\include\msvc_compat</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard_C>stdc11</LanguageStandard_C>
@@ -146,7 +146,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <PreprocessorDefinitions>USE_JEMALLOC;_OFF_T_DEFINED;WIN32;LACKS_STDLIB_H;NDEBUG;_CONSOLE;__x86_64__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv;$(SolutionDir)..\deps\jemalloc\include;$(SolutionDir)..\deps\jemalloc\include\msvc_compat</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\lua\src;$(SolutionDir);..\deps\hiredis;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv;$(SolutionDir)..\deps\fast_float;$(SolutionDir)..\deps\xxhash;$(SolutionDir)..\deps\jemalloc\include;$(SolutionDir)..\deps\jemalloc\include\msvc_compat</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard_C>stdc11</LanguageStandard_C>
@@ -185,7 +185,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <PreprocessorDefinitions>USE_JEMALLOC;_OFF_T_DEFINED;_WIN32;LACKS_STDLIB_H;NDEBUG;_CONSOLE;__x86_64__;%(PreprocessorDefinitions);_WIN32_WINNT=0x0501</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv;$(SolutionDir)..\deps\jemalloc\include;..\deps\jemalloc\include\msvc_compat</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)..\src;$(SolutionDir)..\deps\lua\src;$(SolutionDir)..\deps\hiredis;$(SolutionDir)..\deps\hdr_histogram;$(SolutionDir)..\deps\fpconv;$(SolutionDir)..\deps\fast_float;$(SolutionDir)..\deps\xxhash;$(SolutionDir)..\deps\jemalloc\include;..\deps\jemalloc\include\msvc_compat</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard_C>stdc11</LanguageStandard_C>
@@ -209,9 +209,15 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\deps\fast_float\fast_float_strtod.cpp">
+      <PreprocessorDefinitions>FASTFLOAT_ALLOWS_LEADING_PLUS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="..\deps\fpconv\fpconv_dtoa.c" />
     <ClCompile Include="..\deps\hdr_histogram\hdr_histogram.c">
       <PreprocessorDefinitions>HDR_MALLOC_INCLUDE=&quot;hdr_redis_malloc.h&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="..\deps\xxhash\xxhash.c">
+      <PreprocessorDefinitions>NO_QFORKIMPL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="..\src\acl.c" />
     <ClCompile Include="..\src\adlist.c" />
@@ -222,12 +228,16 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\bitops.c" />
     <ClCompile Include="..\src\blocked.c" />
     <ClCompile Include="..\src\childinfo.c" />
+    <ClCompile Include="..\src\chk.c" />
     <ClCompile Include="..\src\cluster.c" />
+    <ClCompile Include="..\src\cluster_asm.c" />
     <ClCompile Include="..\src\cluster_legacy.c" />
+    <ClCompile Include="..\src\cluster_slot_stats.c" />
     <ClCompile Include="..\src\config.c" />
     <ClCompile Include="..\src\connection.c" />
     <ClCompile Include="..\src\crc16.c" />
     <ClCompile Include="..\src\crc64.c" />
+    <ClCompile Include="..\src\crccombine.c" />
     <ClCompile Include="..\src\crcspeed.c" />
     <ClCompile Include="..\src\db.c" />
     <ClCompile Include="..\src\debug.c" />
@@ -235,15 +245,22 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\dict.c" />
     <ClCompile Include="..\src\ebuckets.c" />
     <ClCompile Include="..\src\endianconv.c" />
+    <ClCompile Include="..\src\entry.c" />
+    <ClCompile Include="..\src\estore.c" />
     <ClCompile Include="..\src\evict.c" />
     <ClCompile Include="..\src\expire.c" />
+    <ClCompile Include="..\src\eventnotifier.c" />
+    <ClCompile Include="..\src\fwtree.c" />
     <ClCompile Include="..\src\geo.c" />
     <ClCompile Include="..\src\geohash.c" />
     <ClCompile Include="..\src\geohash_helper.c">
       <PreprocessorDefinitions>_USE_MATH_DEFINES;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="..\src\hyperloglog.c" />
+    <ClCompile Include="..\src\hotkeys.c" />
     <ClCompile Include="..\src\intset.c" />
+    <ClCompile Include="..\src\iothread.c" />
+    <ClCompile Include="..\src\keymeta.c" />
     <ClCompile Include="..\src\kvstore.c" />
     <ClCompile Include="..\src\latency.c" />
     <ClCompile Include="..\src\lazyfree.c" />
@@ -253,8 +270,10 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     </ClCompile>
     <ClCompile Include="..\src\lolwut5.c" />
     <ClCompile Include="..\src\lolwut6.c" />
+    <ClCompile Include="..\src\lolwut8.c" />
     <ClCompile Include="..\src\lzf_c.c" />
     <ClCompile Include="..\src\lzf_d.c" />
+    <ClCompile Include="..\src\memory_prefetch.c" />
     <ClCompile Include="..\src\memtest.c" />
     <ClCompile Include="..\src\module.c" />
     <ClCompile Include="..\src\monotonic.c" />
@@ -318,11 +337,14 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\zmalloc.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\deps\fast_float\fast_float.h" />
+    <ClInclude Include="..\deps\fast_float\fast_float_strtod.h" />
     <ClInclude Include="..\deps\fpconv\fpconv_dtoa.h" />
     <ClInclude Include="..\deps\fpconv\fpconv_powers.h" />
     <ClInclude Include="..\deps\hdr_histogram\hdr_atomic.h" />
     <ClInclude Include="..\deps\hdr_histogram\hdr_histogram.h" />
     <ClInclude Include="..\deps\hdr_histogram\hdr_redis_malloc.h" />
+    <ClInclude Include="..\deps\xxhash\xxhash.h" />
     <ClInclude Include="..\src\adlist.h" />
     <ClInclude Include="..\src\ae.h" />
     <ClInclude Include="..\src\anet.h" />
@@ -330,7 +352,9 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\atomicvar.h" />
     <ClInclude Include="..\src\bio.h" />
     <ClInclude Include="..\src\call_reply.h" />
+    <ClInclude Include="..\src\chk.h" />
     <ClInclude Include="..\src\cluster.h" />
+    <ClInclude Include="..\src\cluster_asm.h" />
     <ClInclude Include="..\src\cluster_legacy.h" />
     <ClInclude Include="..\src\config.h" />
     <ClInclude Include="..\src\commands.h" />
@@ -343,6 +367,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\dict.h" />
     <ClInclude Include="..\src\ebuckets.h" />
     <ClInclude Include="..\src\endianconv.h" />
+    <ClInclude Include="..\src\entry.h" />
     <ClInclude Include="..\src\fmacros.h" />
     <ClInclude Include="..\src\fmtargs.h" />
     <ClInclude Include="..\src\functions.h" />
@@ -351,6 +376,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\geohash_helper.h" />
     <ClInclude Include="..\src\help.h" />
     <ClInclude Include="..\src\intset.h" />
+    <ClInclude Include="..\src\keymeta.h" />
     <ClInclude Include="..\src\kvstore.h" />
     <ClInclude Include="..\src\latency.h" />
     <ClInclude Include="..\src\listpack.h" />
@@ -361,6 +387,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\monotonic.h" />
     <ClInclude Include="..\src\mstr.h" />
     <ClInclude Include="..\src\mt19937-64.h" />
+    <ClInclude Include="..\src\object.h" />
     <ClInclude Include="..\src\pqsort.h" />
     <ClInclude Include="..\src\quicklist.h" />
     <ClInclude Include="..\src\rand.h" />

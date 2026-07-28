@@ -122,7 +122,7 @@ size_t moduleCount(void);
 void moduleSetQForkChildReady(int ready);
 size_t RedisSharedForkDataSize(void);
 BOOL RedisCopySharedForkData(void *data, size_t size);
-void RedisGetCoreForkData(RedisCoreForkData *data);
+BOOL RedisGetCoreForkData(RedisCoreForkData *data);
 }
 
 //#define DEBUG_WITH_PROCMON
@@ -2099,7 +2099,8 @@ void CopyForkOperationData(OperationType type, LPVOID redisData, int redisDataSi
         memcpy(&(g_pQForkControl->globalData.redisData), redisData, redisDataSize);
         g_pQForkControl->globalData.redisDataSize = redisDataSize;
         ACLGetForkData(&g_pQForkControl->globalData.acl);
-        RedisGetCoreForkData(&g_pQForkControl->globalData.core);
+        if (!RedisGetCoreForkData(&g_pQForkControl->globalData.core))
+            throw runtime_error("Could not copy global Redis core data.");
         size_t sharedDataSize = RedisSharedForkDataSize();
         if (sharedDataSize > sizeof(g_pQForkControl->globalData.sharedData))
             throw runtime_error("Global Redis shared data too large.");

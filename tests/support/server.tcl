@@ -548,7 +548,10 @@ proc tags {tags code} {
         set ::tags [lrange $::tags 0 end-[llength $tags]]
         return
     }
-    uplevel 1 $code
+    if {[catch {uplevel 1 $code} error]} {
+        set ::tags [lrange $::tags 0 end-[llength $tags]]
+        error $error $::errorInfo
+    }
     set ::tags [lrange $::tags 0 end-[llength $tags]]
 }
 
@@ -762,8 +765,8 @@ proc start_server {options {code undefined}} {
             "tags" {
                 # If we 'tags' contain multiple tags, quoted and separated by spaces,
                 # we want to get rid of the quotes in order to have a proper list
-                set tags [string map { \" "" } $value]
-                set ::tags [concat $::tags $tags]
+                set _tags [string map { \" "" } $value]
+                set tags [concat $tags $_tags]
             }
             "keep_persistence" {
                 set keep_persistence $value
@@ -776,6 +779,7 @@ proc start_server {options {code undefined}} {
             }
         }
     }
+    set ::tags [concat $::tags $tags]
 
     # We skip unwanted tags
     if {![tags_acceptable $::tags err]} {
@@ -934,6 +938,7 @@ proc start_server {options {code undefined}} {
             set err {}
             append err [exec cat $stdout] "\n" [exec cat $stderr]
             start_server_error $config_file $err
+            set ::tags [lrange $::tags 0 end-[llength $tags]]
             return
         }
         set server_started 1
@@ -963,6 +968,7 @@ proc start_server {options {code undefined}} {
     if {$code ne "undefined"} {
         set line [exec head -n1 $stdout]
         if {[string match {*already in use*} $line]} {
+            set ::tags [lrange $::tags 0 end-[llength $tags]]
             error_and_quit $config_file $line
         }
 
@@ -1034,6 +1040,7 @@ proc start_server {options {code undefined}} {
                 send_data_packet $::test_server_fd err [join $details "\n"]
             } else {
                 # Re-raise, let handler up the stack take care of this.
+                set ::tags [lrange $::tags 0 end-[llength $tags]]
                 error $error $backtrace
             }
         } else {

@@ -92,6 +92,8 @@
 #define HAVE_ALLOC_WITH_USIZE
 #endif
 
+#include <time.h>
+
 /* 'noinline' attribute is intended to prevent the `-Wstringop-overread` warning
  * when using gcc-12 later with LTO enabled. It may be removed once the
  * bug[https://gcc.gnu.org/bugzilla/show_bug.cgi?id=96503] is fixed. */
@@ -116,6 +118,8 @@ size_t zmalloc_used_memory(void);
 #ifdef _WIN32
 void zmalloc_set_used_memory(size_t memory);
 #endif
+size_t zmalloc_get_peak_memory(void);
+time_t zmalloc_get_peak_memory_time(void);
 void zmalloc_set_oom_handler(void (*oom_handler)(size_t));
 size_t zmalloc_get_rss(void);
 int zmalloc_get_allocator_info(int refresh_stats, size_t *allocated, size_t *active, size_t *resident,

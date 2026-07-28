@@ -92,6 +92,10 @@ void createDumpPayload(rio *payload, robj *o, robj *key, int dbid, int skip_chec
     /* Serialize the object in an RDB-like format. It consist of an object type
      * byte followed by the serialized object. This is understood by RESTORE. */
     rioInitWithBuffer(payload,sdsempty());
+
+    /* Save key metadata if present without (handles TTL separately via command args) */
+    if (getModuleMetaBits(o->metabits))
+        serverAssert(rdbSaveKeyMetadata(payload, key, o, dbid) != -1);
     serverAssert(rdbSaveObjectType(payload,o));
     serverAssert(rdbSaveObject(payload,o,key,dbid));
 
@@ -240,9 +244,28 @@ void restoreCommand(client *c) {
     }
 
     rioInitWithBuffer(&payload,c->argv[3]->ptr);
-    if (((type = rdbLoadObjectType(&payload)) == -1) ||
-        ((obj = rdbLoadObject(type,&payload,key->ptr,c->db->id,NULL)) == NULL))
+
+    /* Initialize metadata spec to collect metadata+expiry from payload. */
+    KeyMetaSpec keymeta;
+    keyMetaSpecInit(&keymeta);
+
+    /* Compute TTL early so we can add it to metadata spec in correct order */
+    if (ttl) {
+        if (!absttl) ttl+=commandTimeSnapshot();
+        keyMetaSpecAdd(&keymeta, KEY_META_ID_EXPIRE, ttl);
+    }
+
+    /* With metadata, type = RDB_OPCODE_KEY_META. Layout: [<META>,]<TYPE>,<KEY>,<VALUE> */
+    type = rdbLoadType(&payload);
+    if (rdbResolveKeyType(&payload, &type, c->db->id, &keymeta) == -1) {
+        addReplyError(c,"Bad data format");
+        return;
+    }
+
+    /* Load the object */
+    if ((obj = rdbLoadObject(type,&payload,key->ptr,c->db->id,NULL)) == NULL)
     {
+        keyMetaSpecCleanup(&keymeta);
         addReplyError(c,"Bad data format");
         return;
     }
@@ -252,22 +275,25 @@ void restoreCommand(client *c) {
     if (replace)
         deleted = dbDelete(c->db,key);
 
-    if (ttl && !absttl) ttl+=commandTimeSnapshot();
     if (ttl && checkAlreadyExpired(ttl)) {
         if (deleted) {
             robj *aux = server.lazyfree_lazy_server_del ? shared.unlink : shared.del;
             rewriteClientCommandVector(c, 2, aux, key);
-            signalModifiedKey(c,c->db,key);
+            keyModified(c,c->db,key,NULL,1);
             notifyKeyspaceEvent(NOTIFY_GENERIC,"del",key,c->db->id);
             server.dirty++;
         }
+        /* If the expiration time is already elapsed, we skip adding
+         * it to the DB, but we still increment the stats. */
+        server.stat_expiredkeys++;
+        keyMetaSpecCleanup(&keymeta);
         decrRefCount(obj);
         addReply(c, shared.ok);
         return;
     }
 
     /* Create the key and set the TTL if any */
-    kvobj *kv = dbAddInternal(c->db, key, &obj, NULL, ttl ? ttl : -1);
+    kvobj *kv = dbAddInternal(c->db, key, &obj, NULL, &keymeta);
 
     /* If minExpiredField was set, then the object is hash with expiration
      * on fields and need to register it in global HFE DS */
@@ -275,6 +301,14 @@ void restoreCommand(client *c) {
         uint64_t minExpiredField = hashTypeGetMinExpire(kv, 1);
         if (minExpiredField != EB_EXPIRE_TIME_INVALID)
             estoreAdd(c->db->subexpires, getKeySlot(key->ptr), kv, minExpiredField);
+    }
+
+    if (kv->type == OBJ_STREAM) {
+        stream *s = kv->ptr;
+        if (s->idmp_producers != NULL) {
+            if (dictAdd(c->db->stream_idmp_keys, key, NULL) == DICT_OK)
+                incrRefCount(key);
+        }
     }
 
     if (ttl) {
@@ -287,7 +321,7 @@ void restoreCommand(client *c) {
         }
     }
     objectSetLRUOrLFU(kv, lfu_freq, lru_idle, lru_clock, 1000);
-    signalModifiedKey(c,c->db,key);
+    keyModified(c,c->db,key,NULL,1);
     notifyKeyspaceEvent(NOTIFY_GENERIC,"restore",key,c->db->id);
 
     /* If we deleted a key that means REPLACE parameter was passed and the
@@ -660,7 +694,7 @@ void migrateCommand(client *c) {
             if (!copy) {
                 /* No COPY option: remove the local key, signal the change. */
                 dbDelete(c->db,keyArray[j]);
-                signalModifiedKey(c,c->db,keyArray[j]);
+                keyModified(c,c->db,keyArray[j],NULL,1);
                 notifyKeyspaceEvent(NOTIFY_GENERIC,"del",keyArray[j],c->db->id);
                 server.dirty++;
 
@@ -1059,16 +1093,16 @@ void clusterCommand(client *c) {
         unsigned int keys_in_slot = countKeysInSlot(slot);
         unsigned int numkeys = maxkeys > keys_in_slot ? keys_in_slot : maxkeys;
         addReplyArrayLen(c,numkeys);
-        kvstoreDictIterator *kvs_di = NULL;
+        kvstoreDictIterator kvs_di;
         dictEntry *de = NULL;
-        kvs_di = kvstoreGetDictIterator(server.db->keys, slot);
+        kvstoreInitDictIterator(&kvs_di, server.db->keys, slot);
         for (unsigned int i = 0; i < numkeys; i++) {
-            de = kvstoreDictIteratorNext(kvs_di);
+            de = kvstoreDictIteratorNext(&kvs_di);
             serverAssert(de != NULL);
             sds sdskey = kvobjGetKey(dictGetKV(de));
             addReplyBulkCBuffer(c, sdskey, sdslen(sdskey));
         }
-        kvstoreReleaseDictIterator(kvs_di);
+        kvstoreResetDictIterator(&kvs_di);
     } else if ((!strcasecmp(c->argv[1]->ptr,"slaves") ||
                 !strcasecmp(c->argv[1]->ptr,"replicas")) && c->argc == 3) {
         /* CLUSTER SLAVES <NODE ID> */
@@ -1105,15 +1139,13 @@ void clusterCommand(client *c) {
 }
 
 /* Extract slot number from keys in a keys_result structure and return to caller.
- * Returns INVALID_CLUSTER_SLOT if keys belong to different slots (cross-slot error),
- * or if there are no keys.
- */
+ * Returns:
+ *   - The slot number if all keys belong to the same slot
+ *   - INVALID_CLUSTER_SLOT if there are no keys or cluster is disabled
+ *   - CLUSTER_CROSSSLOT if keys belong to different slots (cross-slot error) */
 int extractSlotFromKeysResult(robj **argv, getKeysResult *keys_result) {
-    if (keys_result->numkeys == 0)
+    if (keys_result->numkeys == 0 || !server.cluster_enabled)
         return INVALID_CLUSTER_SLOT;
-
-    if (!server.cluster_enabled)
-        return 0;
 
     int first_slot = INVALID_CLUSTER_SLOT;
     for (int j = 0; j < keys_result->numkeys; j++) {
@@ -1123,7 +1155,7 @@ int extractSlotFromKeysResult(robj **argv, getKeysResult *keys_result) {
         if (first_slot == INVALID_CLUSTER_SLOT)
             first_slot = this_slot;
         else if (first_slot != this_slot) {
-            return INVALID_CLUSTER_SLOT;
+            return CLUSTER_CROSSSLOT;
         }
     }
     return first_slot;
@@ -1679,16 +1711,16 @@ unsigned int clusterDelKeysInSlot(unsigned int hashslot, int by_command) {
     if (!kvstoreDictSize(server.db->keys, (int) hashslot))
         return 0;
 
-    kvstoreDictIterator *kvs_di = NULL;
+    kvstoreDictIterator kvs_di;
     dictEntry *de = NULL;
-    kvs_di = kvstoreGetDictSafeIterator(server.db->keys, (int) hashslot);
-    while((de = kvstoreDictIteratorNext(kvs_di)) != NULL) {
+    kvstoreInitDictSafeIterator(&kvs_di, server.db->keys, (int) hashslot);
+    while((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
         enterExecutionUnit(1, 0);
         sds sdskey = kvobjGetKey(dictGetKV(de));
         robj *key = createStringObject(sdskey, sdslen(sdskey));
         dbDelete(&server.db[0], key);
 
-        signalModifiedKey(NULL, &server.db[0], key);
+        keyModified(NULL, &server.db[0], key, NULL, 1);
         if (by_command) {
             /* Keys are deleted by a command (trimslots), we need to notify the
              * keyspace event. Though, we don't need to propagate the DEL
@@ -1709,7 +1741,7 @@ unsigned int clusterDelKeysInSlot(unsigned int hashslot, int by_command) {
         j++;
         server.dirty++;
     }
-    kvstoreReleaseDictIterator(kvs_di);
+    kvstoreResetDictIterator(&kvs_di);
     return j;
 }
 
@@ -2169,7 +2201,6 @@ void resetClusterStats(void) {
 /* This function is called at server startup in order to initialize cluster data
  * structures that are shared between the different cluster implementations. */
 void clusterCommonInit(void) {
-    server.cluster_slot_stats = zmalloc(CLUSTER_SLOTS*sizeof(clusterSlotStat));
     resetClusterStats();
     asmInit();
 }

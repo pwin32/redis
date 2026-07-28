@@ -137,7 +137,14 @@ proc waitForBgrewriteaof r {
 }
 
 proc wait_for_sync r {
-    wait_for_condition 50 100 {
+    set maxtries 50
+    # tsan adds significant overhead to the execution time, so we increase the
+    # wait time here JIC
+    if {$::tsan} {
+        set maxtries 100
+    }
+
+    wait_for_condition $maxtries 100 {
         [status $r master_link_status] eq "up"
     } else {
         fail "replica didn't sync in time"
@@ -145,6 +152,12 @@ proc wait_for_sync r {
 }
 
 proc wait_replica_online {r {replica_id 0} {maxtries 50} {delay 100}} {
+    # tsan adds significant overhead to the execution time, so we increase the
+    # wait time here JIC
+    if {$::tsan} {
+        set maxtries [expr {$maxtries * 2}]
+    }
+
     wait_for_condition $maxtries $delay {
         [string match "*slave$replica_id:*,state=online*" [$r info replication]]
     } else {
@@ -153,7 +166,13 @@ proc wait_replica_online {r {replica_id 0} {maxtries 50} {delay 100}} {
 }
 
 proc wait_for_ofs_sync {r1 r2} {
-    wait_for_condition 50 100 {
+    set maxtries 50
+    # tsan adds significant overhead to the execution time, so we increase the
+    # wait time here JIC
+    if {$::tsan} {
+        set maxtries 100
+    }
+    wait_for_condition $maxtries 100 {
         [status $r1 master_repl_offset] eq [status $r2 master_repl_offset]
     } else {
         fail "replica offset didn't match in time"
@@ -781,7 +800,22 @@ if {$::tcl_platform(platform) eq "windows"} {
             puts [get_proc_job $pid]
             fail "process was not stopped"
         }
-        exec kill -SIGCONT $pid
+        set max_attempts 10
+        set attempt 0
+        while {($attempt < $max_attempts) && [string match "T*" [get_proc_state $pid]]} {
+            exec kill -SIGCONT $pid
+
+            incr attempt
+            after 100
+        }
+
+        wait_for_condition 50 1000 {
+            [string match "R*" [get_proc_state $pid]] ||
+            [string match "S*" [get_proc_state $pid]]
+        } else {
+            puts [get_proc_job $pid]
+            fail "process was not resumed"
+        }
     }
 }
 
@@ -1061,7 +1095,7 @@ proc wait_for_blocked_clients_count {count {maxtries 100} {delay 10} {idx 0}} {
     wait_for_condition $maxtries $delay  {
         [s $idx blocked_clients] == $count
     } else {
-        fail "Timeout waiting for blocked clients"
+        fail "Timeout waiting for blocked clients (expected $count, actual [s $idx blocked_clients])"
     }
 }
 

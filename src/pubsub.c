@@ -293,7 +293,10 @@ int pubsubUnsubscribeChannel(client *c, robj *channel, int notify, pubsubtype ty
         retval = 1;
         /* Remove the client from the channel -> clients list hash table */
         if (server.cluster_enabled && type.shard) {
-            slot = getKeySlot(channel->ptr);
+            /* Compute the slot from the channel directly instead of using getKeySlot(),
+             * because the unsubscribe may be triggered by a different client, and
+             * getKeySlot() would return the cached slot of that client. */
+            slot = keyHashSlot(channel->ptr, sdslen(channel->ptr));
         }
         de = kvstoreDictFind(*type.serverPubSubChannels, slot, channel);
         serverAssertWithInfo(c,NULL,de != NULL);
@@ -319,9 +322,10 @@ void pubsubShardUnsubscribeAllChannelsInSlot(unsigned int slot) {
     if (!kvstoreDictSize(server.pubsubshard_channels, slot))
         return;
 
-    kvstoreDictIterator *kvs_di = kvstoreGetDictSafeIterator(server.pubsubshard_channels, slot);
     dictEntry *de;
-    while ((de = kvstoreDictIteratorNext(kvs_di)) != NULL) {
+    kvstoreDictIterator kvs_di;
+    kvstoreInitDictSafeIterator(&kvs_di, server.pubsubshard_channels, slot);
+    while ((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
         robj *channel = dictGetKey(de);
         dict *clients = dictGetVal(de);
         /* For each client subscribed to the channel, unsubscribe it. */
@@ -343,7 +347,7 @@ void pubsubShardUnsubscribeAllChannelsInSlot(unsigned int slot) {
         dictResetIterator(&iter);
         kvstoreDictDelete(server.pubsubshard_channels, slot, channel);
     }
-    kvstoreReleaseDictIterator(kvs_di);
+    kvstoreResetDictIterator(&kvs_di);
 }
 
 /* Subscribe a client to a pattern. Returns 1 if the operation succeeded, or 0 if the client was already subscribed to that pattern. */
@@ -482,7 +486,7 @@ int pubsubPublishMessageInternal(robj *channel, robj *message, pubsubtype type) 
         while ((entry = dictNext(&iter)) != NULL) {
             client *c = dictGetKey(entry);
             addReplyPubsubMessage(c,channel,message,*type.messageBulk);
-            if (clusterSlotStatsEnabled())
+            if (clusterSlotStatsEnabled(CLUSTER_SLOT_STATS_NET))
                 clusterSlotStatsAddNetworkBytesOutForShardedPubSubInternalPropagation(c, slot);
             updateClientMemUsageAndBucket(c);
             receivers++;
@@ -694,9 +698,10 @@ void channelList(client *c, sds pat, kvstore *pubsub_channels) {
     for (unsigned int i = 0; i < slot_cnt; i++) {
         if (!kvstoreDictSize(pubsub_channels, i))
             continue;
-        kvstoreDictIterator *kvs_di = kvstoreGetDictIterator(pubsub_channels, i);
         dictEntry *de;
-        while((de = kvstoreDictIteratorNext(kvs_di)) != NULL) {
+        kvstoreDictIterator kvs_di;
+        kvstoreInitDictIterator(&kvs_di, pubsub_channels, i);
+        while((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
             robj *cobj = dictGetKey(de);
             sds channel = cobj->ptr;
 
@@ -707,7 +712,7 @@ void channelList(client *c, sds pat, kvstore *pubsub_channels) {
                 mblen++;
             }
         }
-        kvstoreReleaseDictIterator(kvs_di);
+        kvstoreResetDictIterator(&kvs_di);
     }
     setDeferredArrayLen(c,replylen,mblen);
 }

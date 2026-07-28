@@ -321,7 +321,7 @@ start_server {tags {"repl external:skip"}} {
 }
 
 foreach mdl {no yes} rdbchannel {no yes} {
-    foreach sdl {disabled swapdb} {
+    foreach sdl {disabled swapdb flushdb} {
         start_server {tags {"repl external:skip debug_defrag:skip"} overrides {save {}}} {
             set master [srv 0 client]
             $master config set repl-diskless-sync $mdl
@@ -1325,7 +1325,7 @@ test {Kill rdb child process if its dumping RDB is not useful} {
                 # Slave2 disconnect with master
                 $slave2 slaveof no one
                 # Should kill child
-                wait_for_condition 100 10 {
+                wait_for_condition 1000 10 {
                     [s 0 rdb_bgsave_in_progress] eq 0
                 } else {
                     fail "can't kill rdb child"
@@ -1905,10 +1905,55 @@ start_server {tags {"repl external:skip"}} {
 
             # Connect to an invalid master
             $slave slaveof $master_host 0
-            after 1000
 
             # Expect current sync attempts to increase
-            assert {[status $slave master_current_sync_attempts] >= 2}
+            wait_for_condition 100 50 {
+                [status $slave master_current_sync_attempts] >= 2
+            } else {
+                fail "Timeout waiting for master_current_sync_attempts"
+            }
+        }
+    }
+}
+
+if {$::tcl_platform(platform) ne "windows"} {
+    start_server {tags {"repl external:skip"}} {
+        set master [srv 0 client]
+        set master_host [srv 0 host]
+        set master_port [srv 0 port]
+
+        start_server {overrides {io-threads 2}} {
+            set slave [srv 0 client]
+
+            test {prefetchCommands handles NULL argv and keys during RDB replication with IO threads} {
+                # Enable diskless sync to trigger RDB streaming during replication
+                $master config set repl-diskless-sync yes
+                $master config set repl-diskless-sync-delay 0
+
+                # Populate keys in the format key:$i with 128-byte values.
+                $slave debug populate 700000 key 128
+
+                # Force a full resync by resetting the slave.
+                set rd [redis_deferring_client 0]
+                $rd slaveof $master_host $master_port
+
+                # Create a large pipeline command.
+                set batch_size 1000
+                set buf ""
+                for {set i 0} {$i < $batch_size} {incr i} {
+                    append buf [format_command get key:1]
+                }
+
+                # Continuously send pipelined commands so that the replica processes
+                # and prefetches them while it is emptying old data during full sync.
+                set start_time [clock milliseconds]
+                while {[clock milliseconds] - $start_time < 5000} {
+                    $rd write $buf
+                    $rd flush
+                    if {[s 0 master_link_status] eq "up"} break
+                }
+                $rd close
+            }
         }
     }
 }
@@ -1984,48 +2029,6 @@ foreach type {script function} {
                 $rd close
                 wait_for_sync $replica
                 assert_equal [$replica ping] "PONG"
-            }
-        }
-    }
-}
-
-if {$::tcl_platform(platform) ne "windows"} {
-    start_server {tags {"repl external:skip"}} {
-        set master [srv 0 client]
-        set master_host [srv 0 host]
-        set master_port [srv 0 port]
-
-        start_server {overrides {io-threads 2}} {
-            set slave [srv 0 client]
-
-            test {prefetchCommands handles NULL argv and keys during RDB replication with IO threads} {
-                # Enable diskless sync to trigger RDB streaming during replication
-                $master config set repl-diskless-sync yes
-                $master config set repl-diskless-sync-delay 0
-
-                # Populate keys in the format key:$i with 128-byte values.
-                $slave debug populate 700000 key 128
-
-                # Force a full resync by resetting the slave.
-                set rd [redis_deferring_client 0]
-                $rd slaveof $master_host $master_port
-
-                # Create a large pipeline command.
-                set batch_size 1000
-                set buf ""
-                for {set i 0} {$i < $batch_size} {incr i} {
-                    append buf [format_command get key:1]
-                }
-
-                # Continuously send pipelined commands so that the replica processes
-                # and prefetches them while it is emptying old data during full sync.
-                set start_time [clock milliseconds]
-                while {[clock milliseconds] - $start_time < 5000} {
-                    $rd write $buf
-                    $rd flush
-                    if {[s 0 master_link_status] eq "up"} break
-                }
-                $rd close
             }
         }
     }

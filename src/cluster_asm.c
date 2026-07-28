@@ -557,7 +557,7 @@ size_t asmGetImportInputBufferSize(void) {
     return 0;
 }
 
-size_t asmGetMigrateOutputBufferSize(void) {
+size_t asmGetMigrateOutputMemoryUsage(void) {
     if (!asmManager || listLength(asmManager->tasks) == 0) return 0;
 
     asmTask *task = listNodeValue(listFirst(asmManager->tasks));
@@ -779,12 +779,12 @@ void asmFeedMigrationClient(robj **argv, int argc) {
      *
      * NOTICE: if some keyless commands should be propagated to the destination,
      * we should identify them here and send. */
-    if (slot == GETSLOT_NOKEYS) return;
+    if (slot == INVALID_CLUSTER_SLOT) return;
 
     /* Generally we reject cross-slot commands before executing, but module may
      * replicate this kind of command, so we check again. To guarantee data
      * consistency, we cancel the task if we encounter a cross-slot command. */
-    if (slot == GETSLOT_CROSSSLOT) {
+    if (slot == CLUSTER_CROSSSLOT) {
         /* We cannot cancel the task directly here, since it may lead to a recursive
          * call: asmTaskCancel() --> moduleFireServerEvent() --> moduleFreeContext()
          * --> postExecutionUnitOperations() --> propagateNow(). Even worse, this
@@ -2278,7 +2278,7 @@ int slotSnapshotSaveRio(int req, rio *rdb, int *error) {
     serverAssert(req & SLAVE_REQ_SLOTS_SNAPSHOT);
 
     dictEntry *de;
-    kvstoreDictIterator *kvs_di = NULL;
+    kvstoreDictIterator kvs_di;
 
     if (unlikely(asmDebugIsFailPointActive(ASM_MIGRATE_RDB_CHANNEL, ASM_SEND_BULK_AND_STREAM)))
         rioAbort(rdb); /* Simulate a failure */
@@ -2326,9 +2326,9 @@ int slotSnapshotSaveRio(int req, rio *rdb, int *error) {
             /* Iterate all keys in the slot range */
             for (int k = sr->start; k <= sr->end; k++) {
                 int send_slot_info = 0;
-                kvs_di = kvstoreGetDictIterator(server.db->keys, k);
 
-                while ((de = kvstoreDictIteratorNext(kvs_di)) != NULL) {
+                kvstoreInitDictIterator(&kvs_di, server.db->keys, k);
+                while ((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
                     /* Send slot info before the first key in the slot */
                     if (!send_slot_info) {
                         /* Format slot info */
@@ -2339,28 +2339,27 @@ int slotSnapshotSaveRio(int req, rio *rdb, int *error) {
                         serverAssert(len > 0 && len < (int)sizeof(buf));
 
                         /* Send slot info */
-                        if (rioWriteBulkCount(rdb, '*', 5) == 0) goto werr;
-                        if (rioWriteBulkString(rdb, "CLUSTER", 7) == 0) goto werr;
-                        if (rioWriteBulkString(rdb, "SYNCSLOTS", 9) == 0) goto werr;
-                        if (rioWriteBulkString(rdb, "CONF", 4) == 0) goto werr;
-                        if (rioWriteBulkString(rdb, "SLOT-INFO", 9) == 0) goto werr;
-                        if (rioWriteBulkString(rdb, buf, len) == 0) goto werr;
+                        if (rioWriteBulkCount(rdb, '*', 5) == 0) goto werr2;
+                        if (rioWriteBulkString(rdb, "CLUSTER", 7) == 0) goto werr2;
+                        if (rioWriteBulkString(rdb, "SYNCSLOTS", 9) == 0) goto werr2;
+                        if (rioWriteBulkString(rdb, "CONF", 4) == 0) goto werr2;
+                        if (rioWriteBulkString(rdb, "SLOT-INFO", 9) == 0) goto werr2;
+                        if (rioWriteBulkString(rdb, buf, len) == 0) goto werr2;
                         send_slot_info = 1;
                     }
 
                     /* Save a key-value pair */
                     kvobj *o = dictGetKV(de);
-                    if (slotSnapshotSaveKeyValuePair(rdb, o, db->id) == C_ERR) goto werr;
+                    if (slotSnapshotSaveKeyValuePair(rdb, o, db->id) == C_ERR) goto werr2;
 
                     /* Delay return if required (for testing) */
                     if (unlikely(server.rdb_key_save_delay)) {
                         /* Send buffer to the destination ASAP. */
-                        if (rioFlush(rdb) == 0) goto werr;
+                        if (rioFlush(rdb) == 0) goto werr2;
                         debugDelay(server.rdb_key_save_delay);
                     }
                 }
-                kvstoreReleaseDictIterator(kvs_di);
-                kvs_di = NULL;
+                kvstoreResetDictIterator(&kvs_di);
             }
         }
     }
@@ -2372,8 +2371,9 @@ int slotSnapshotSaveRio(int req, rio *rdb, int *error) {
     if (rioWriteBulkString(rdb, "SNAPSHOT-EOF", 12) == 0) goto werr;
     return C_OK;
 
+werr2:
+    kvstoreResetDictIterator(&kvs_di);
 werr:
-    if (kvs_di) kvstoreReleaseDictIterator(kvs_di);
     if (error) *error = errno;
     return C_ERR;
 }
@@ -2982,13 +2982,14 @@ void asmTriggerBackgroundTrim(slotRangeArray *slots) {
 
     /* Create temp kvstores and estore, move relevant slot dicts/ebuckets into them,
      * and delete them in BIO thread asynchronously. */
-    kvstore *keys = kvstoreCreate(&dbDictType,
+    kvstore *keys = kvstoreCreate(&kvstoreBaseType, &dbDictType,
                                   CLUSTER_SLOT_MASK_BITS,
                                   KVSTORE_ALLOCATE_DICTS_ON_DEMAND);
-    kvstore *expires = kvstoreCreate(&dbExpiresDictType,
+    kvstore *expires = kvstoreCreate(&kvstoreBaseType, &dbExpiresDictType,
                                      CLUSTER_SLOT_MASK_BITS,
                                      KVSTORE_ALLOCATE_DICTS_ON_DEMAND);
     estore *subexpires = estoreCreate(&subexpiresBucketsType, CLUSTER_SLOT_MASK_BITS);
+    dict *stream_idmp_keys = dictCreate(&objectKeyPointerValueDictType);
 
     size_t total_keys = 0;
 
@@ -2998,10 +2999,11 @@ void asmTriggerBackgroundTrim(slotRangeArray *slots) {
             kvstoreMoveDict(server.db[0].keys, keys, slot);
             kvstoreMoveDict(server.db[0].expires, expires, slot);
             estoreMoveEbuckets(server.db[0].subexpires, subexpires, slot);
+            streamMoveIdmpKeys(server.db[0].stream_idmp_keys, stream_idmp_keys, slot);
         }
     }
 
-    emptyDbDataAsync(keys, expires, subexpires);
+    emptyDbDataAsync(keys, expires, subexpires, stream_idmp_keys);
 
     sds str = slotRangeArrayToString(slots);
     serverLog(LL_NOTICE, "Background trim started for slots: %s to trim %zu keys.", str, total_keys);
@@ -3464,7 +3466,7 @@ void asmActiveTrimDeleteKey(redisDb *db, robj *keyobj) {
     if (static_key) keyobj = createStringObject(keyobj->ptr, sdslen(keyobj->ptr));
 
     dbDelete(db, keyobj);
-    signalModifiedKey(NULL, db, keyobj);
+    keyModified(NULL, db, keyobj, NULL, 1);
     /* The keys are not actually logically deleted from the database, just moved
      * to another node. The modules need to know that these keys are no longer
      * available locally, so just send the keyspace notification to the modules,
@@ -3518,8 +3520,9 @@ void asmActiveTrimCycle(void) {
 
     while (!time_exceeded && slot != -1) {
         dictEntry *de;
-        kvstoreDictIterator *kvs_di = kvstoreGetDictSafeIterator(server.db[0].keys, slot);
-        while ((de = kvstoreDictIteratorNext(kvs_di)) != NULL) {
+        kvstoreDictIterator kvs_di;
+        kvstoreInitDictSafeIterator(&kvs_di, server.db[0].keys, slot);
+        while ((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
             kvobj *kv = dictGetKV(de);
             sds sdskey = kvobjGetKey(kv);
 
@@ -3537,7 +3540,7 @@ void asmActiveTrimCycle(void) {
                 break;
             }
         }
-        kvstoreReleaseDictIterator(kvs_di);
+        kvstoreResetDictIterator(&kvs_di);
         if (!time_exceeded) slot = slotRangeArrayNext(asmManager->active_trim_it);
     }
 
@@ -3599,14 +3602,14 @@ int asmModulePropagateBeforeSlotSnapshot(struct redisCommand *cmd, robj **argv, 
 
     /* Crossslot commands are not allowed */
     int slot = getSlotFromCommand(cmd, argv, argc);
-    if (slot == GETSLOT_CROSSSLOT) {
+    if (slot == CLUSTER_CROSSSLOT) {
         errno = ENOTSUP;
         return C_ERR;
     }
 
     /* Allow no-keys commands or if keys are in the slot range. */
     slotRange sr = {slot, slot};
-    if (slot != GETSLOT_NOKEYS && !slotRangeArrayOverlaps(task->slots, &sr)) {
+    if (slot != INVALID_CLUSTER_SLOT && !slotRangeArrayOverlaps(task->slots, &sr)) {
         errno = ERANGE;
         return C_ERR;
     }

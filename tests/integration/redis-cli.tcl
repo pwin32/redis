@@ -877,7 +877,11 @@ start_server {tags {"cli external:skip"}} {
         r save
 
         # kill server and restart
-        exec kill [s process_id]
+        if {$::tcl_platform(platform) eq "windows"} {
+            kill_proc [lindex $::servers end]
+        } else {
+            exec kill [s process_id]
+        }
         wait_for_log_messages 0 {"*Redis is now ready to exit*"} 0 1000 10
         catch {[run_command $fd "ping\x0D"]} err
         restart_server 0 true false 0

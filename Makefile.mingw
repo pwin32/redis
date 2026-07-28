@@ -150,6 +150,7 @@ SERVER_C_SOURCES := \
 	src/bitops.c \
 	src/blocked.c \
 	src/childinfo.c \
+	src/chk.c \
 	src/cluster.c \
 	src/cluster_asm.c \
 	src/cluster_legacy.c \
@@ -166,6 +167,7 @@ SERVER_C_SOURCES := \
 	src/dict.c \
 	src/ebuckets.c \
 	src/endianconv.c \
+	src/entry.c \
 	src/estore.c \
 	src/evict.c \
 	src/expire.c \
@@ -174,8 +176,10 @@ SERVER_C_SOURCES := \
 	src/geohash.c \
 	src/geohash_helper.c \
 	src/hyperloglog.c \
+	src/hotkeys.c \
 	src/intset.c \
 	src/iothread.c \
+	src/keymeta.c \
 	src/kvstore.c \
 	src/latency.c \
 	src/lazyfree.c \

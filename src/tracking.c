@@ -125,7 +125,7 @@ int checkPrefixCollisionsOrReply(client *c, robj **prefixes, size_t numprefix) {
                     "Prefixes for a single client must not overlap.",
                     (unsigned char *)prefixes[i]->ptr,
                     (unsigned char *)prefixes[j]->ptr);
-                return i;
+                return 0;
             }
         }
     }
@@ -359,7 +359,7 @@ void trackingRememberKeyToBroadcast(client *c, char *keyname, size_t keylen) {
     raxStop(&ri);
 }
 
-/* This function is called from signalModifiedKey() or other places in Redis
+/* This function is called from keyModified() or other places in Redis
  * when a key changes value. In the context of keys tracking, our task here is
  * to send a notification to every client that may have keys about such caching
  * slot.
