@@ -2365,8 +2365,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
         # unblock the list
         r LPUSH mylist 1
         wait_for_blocked_clients_count 0
-
-        assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdrstat blpop r]
+        assert_match {*calls=1,*,rejected_calls=0,failed_calls=0*} [cmdrstat blpop r]
 
         $rd close
     }
@@ -2389,8 +2388,7 @@ foreach {pop} {BLPOP BLMPOP_RIGHT} {
 
         # unblock the client on timeout
         r client unblock $id timeout
-
-        assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdrstat blpop r]
+        assert_match {*calls=1,*,rejected_calls=0,failed_calls=0*} [cmdrstat blpop r]
 
         $rd close
     }

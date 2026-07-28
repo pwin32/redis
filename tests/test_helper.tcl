@@ -13,9 +13,9 @@
 # Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
 #
 
-package require Tcl 8.5
+package require Tcl 8.5-10
 
-set tcl_precision 17
+if {$tcl_version < 9.0} { set tcl_precision 17 }
 source tests/support/redis.tcl
 source tests/support/aofmanifest.tcl
 source tests/support/server.tcl
@@ -409,9 +409,11 @@ proc read_from_test_client fd {
 }
 
 proc process_test_client_packet {fd payload} {
+    set payload_bytes $payload
+    set payload [encoding convertfrom utf-8 $payload_bytes]
     if {[catch {set field_count [llength $payload]} list_error] || \
         $field_count != 3} {
-        binary scan $payload H* payload_hex
+        binary scan $payload_bytes H* payload_hex
         error "invalid test-client packet payload ($list_error): $payload_hex"
     }
     foreach {status data elapsed} $payload break
@@ -588,7 +590,7 @@ proc test_client_main server_port {
     send_data_packet $::test_server_fd ready [pid]
     while 1 {
         set bytes [gets $::test_server_fd]
-        set payload [read $::test_server_fd $bytes]
+        set payload [encoding convertfrom utf-8 [read $::test_server_fd $bytes]]
         foreach {cmd data} $payload break
         if {$cmd eq {run}} {
             execute_test_file $data
@@ -603,10 +605,16 @@ proc test_client_main server_port {
 
 proc send_data_packet {fd status data {elapsed 0}} {
     set payload [list $status $data $elapsed]
+    # Convert to UTF-8 bytes before sending so that:
+    # 1. The byte count is accurate (Tcl 9.0 string length returns character
+    #    count, which differs from byte count for non-ASCII Unicode chars).
+    # 2. Characters above U+00FF (not representable in the channel's iso8859-1
+    #    encoding) are safely transmitted as multi-byte UTF-8 sequences.
+    set payload_bytes [encoding convertto utf-8 $payload]
     # Keep the length header and payload in one channel write. Sending the
     # header separately can wake the peer's readable callback before the full
     # payload has arrived, corrupting back-to-back lifecycle notifications.
-    puts -nonewline $fd "[string length $payload]\n$payload"
+    puts -nonewline $fd "[string length $payload_bytes]\n$payload_bytes"
     flush $fd
 }
 

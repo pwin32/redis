@@ -897,7 +897,7 @@ win_error:
     return -1;
 #else
     int pipe_flags = 0;
-#if defined(__linux__) || defined(__FreeBSD__)
+#ifdef HAVE_PIPE2
     /* When possible, try to leverage pipe2() to apply flags that are common to both ends.
      * There is no harm to set O_CLOEXEC to prevent fd leaks. */
     pipe_flags = O_CLOEXEC | (read_flags & write_flags);

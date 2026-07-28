@@ -82,6 +82,7 @@ struct ACLCategoryItem {
     {"list", ACL_CATEGORY_LIST},
     {"hash", ACL_CATEGORY_HASH},
     {"string", ACL_CATEGORY_STRING},
+    {"array", ACL_CATEGORY_ARRAY},
     {"bitmap", ACL_CATEGORY_BITMAP},
     {"hyperloglog", ACL_CATEGORY_HYPERLOGLOG},
     {"geo", ACL_CATEGORY_GEO},
@@ -95,6 +96,9 @@ struct ACLCategoryItem {
     {"connection", ACL_CATEGORY_CONNECTION},
     {"transaction", ACL_CATEGORY_TRANSACTION},
     {"scripting", ACL_CATEGORY_SCRIPTING},
+#ifdef ENABLE_GCRA
+    {"ratelimit", ACL_CATEGORY_RATE_LIMIT},
+#endif
     {NULL,0} /* Terminator. */
 };
 
@@ -2309,15 +2313,15 @@ int ACLLoadConfiguredUsers(void) {
 }
 
 /* This function loads the ACL from the specified filename: every line
- * is validated and should be either empty or in the format used to specify
- * users in the redis.conf configuration or in the ACL file, that is:
+ * is validated and should be either empty, a comment, or in the format
+ * used to specify users in the redis.conf configuration or in the ACL file,
+ * that is:
  *
  *  user <username> ... rules ...
  *
- * Note that this function considers comments starting with '#' as errors
- * because the ACL file is meant to be rewritten, and comments would be
- * lost after the rewrite. Yet empty lines are allowed to avoid being too
- * strict.
+ * Lines starting with '#' are treated as comments and ignored. Note that
+ * comments will be lost after ACL SAVE rewrites the file. Empty lines are
+ * also allowed.
  *
  * One important part of implementing ACL LOAD, that uses this function, is
  * to avoid ending with broken rules if the ACL file is invalid for some
@@ -2369,8 +2373,8 @@ sds ACLLoadFromFile(const char *filename) {
 
         lines[i] = sdstrim(lines[i]," \t\r\n");
 
-        /* Skip blank lines */
-        if (lines[i][0] == '\0') continue;
+        /* Skip blank lines and comments */
+        if (lines[i][0] == '\0' || lines[i][0] == '#') continue;
 
         /* Split into arguments */
         argv = sdssplitlen(lines[i],sdslen(lines[i])," ",1,&argc);

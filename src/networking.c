@@ -45,7 +45,7 @@ static inline int _clientHasPendingRepliesNonSlave(client *c);
 static inline int _writeToClientNonSlave(client *c, ssize_t *nwritten);
 static inline int _writeToClientSlave(client *c, ssize_t *nwritten);
 static pendingCommand *acquirePendingCommand(void);
-static void reclaimPendingCommand(client *c, pendingCommand *pcmd);
+static inline void reclaimPendingCommand(client *c, pendingCommand *pcmd);
 static size_t getClientOutputBufferLogicalSize(client *c);
 
 int ProcessingEventsWhileBlocked = 0; /* See processEventsWhileBlocked(). */
@@ -262,6 +262,10 @@ client *createClient(connection *conn) {
     c->net_input_bytes = 0;
     c->net_output_bytes = 0;
     c->commands_processed = 0;
+    c->last_ts_when_counted_as_active = 0;
+    c->stat_total_read_events = 0;
+    c->stat_avg_pipeline_length_sum = 0;
+    c->stat_avg_pipeline_length_cnt = 0;
     c->task = NULL;
     c->node_id = NULL;
     atomicSet(c->pending_read, 0);
@@ -1208,6 +1212,18 @@ void addReplyLongLongFromStr(client *c, robj *str) {
     addReplyProto(c,"\r\n",2);
 }
 
+/* Reply with unsigned 64-bit value. Uses integer reply when value fits in
+ * signed long long, otherwise big number (RESP3) or bulk string (RESP2). */
+void addReplyUnsignedLongLong(client *c, uint64_t v) {
+    if (v <= (uint64_t)LLONG_MAX) {
+        addReplyLongLong(c, (long long)v);
+    } else {
+        char buf[LONG_STR_SIZE];
+        int len = ull2string(buf, sizeof(buf), v);
+        addReplyBigNum(c, buf, len);
+    }
+}
+
 void addReplyAggregateLen(client *c, long length, int prefix) {
     serverAssert(length >= 0);
     if (_prepareClientToWrite(c) != C_OK) return;
@@ -1765,7 +1781,7 @@ void acceptCommonHandler(connection *conn, int flags, char *ip) {
         char addr[NET_ADDR_STR_LEN] = {0};
         char laddr[NET_ADDR_STR_LEN] = {0};
         connFormatAddr(conn, addr, sizeof(addr), 1);
-        connFormatAddr(conn, laddr, sizeof(addr), 0);
+        connFormatAddr(conn, laddr, sizeof(laddr), 0);
         serverLog(LL_VERBOSE,
                   "Accepted client connection in error state: %s (addr=%s laddr=%s)",
                   connGetLastError(conn), addr, laddr);
@@ -1810,7 +1826,7 @@ void acceptCommonHandler(connection *conn, int flags, char *ip) {
         char addr[NET_ADDR_STR_LEN] = {0};
         char laddr[NET_ADDR_STR_LEN] = {0};
         connFormatAddr(conn, addr, sizeof(addr), 1);
-        connFormatAddr(conn, laddr, sizeof(addr), 0);
+        connFormatAddr(conn, laddr, sizeof(laddr), 0);
         serverLog(LL_WARNING,
                   "Error registering fd event for the new client connection: %s (addr=%s laddr=%s)",
                   connGetLastError(conn), addr, laddr);
@@ -1954,7 +1970,7 @@ void freeClientArgv(client *c) {
     freeClientArgvInternal(c, 1);
 }
 
-void freeClientPendingCommands(client *c, int num_pcmds_to_free) {
+static inline void freeClientPendingCommands(client *c, int num_pcmds_to_free) {
     /* (-1) means free all pending commands */
     if (num_pcmds_to_free == -1)
         num_pcmds_to_free = c->pending_cmds.len;
@@ -3778,6 +3794,14 @@ int isClientReadErrorFatal(client *c) {
  * pending query buffer, already representing a full command, to process.
  * return C_ERR in case the client was freed during the processing */
 int processInputBuffer(client *c) {
+    atomicIncr(server.stat_total_client_process_input_buff_events, 1);
+
+    /* Keep active-client window updates on main-thread paths only (here and
+     * in IO-thread handoff processing) to avoid races with serverCron()
+     * maintenance of the circular slots. */
+    if (c->running_tid == IOTHREAD_MAIN_THREAD_ID)
+        statsUpdateActiveClients(c);
+
     /* We limit the lookahead for unauthenticated connections to 1.
      * This is both to reduce memory overhead, and to prevent errors: AUTH can
      * affect the handling of succeeding commands. Parsing of "large"
@@ -3812,6 +3836,7 @@ int processInputBuffer(client *c) {
         /* Determine if we need to parse more commands from the query buffer.
          * Only parse when there are no ready commands waiting to be processed. */
         const int parse_more = !c->pending_cmds.ready_len;
+        int pending_cmd_before_reading = c->pending_cmds.ready_len;
 
         /* Parse up to lookahead commands only if we don't have enough ready commands */
         while (parse_more && c->pending_cmds.ready_len < lookahead &&
@@ -3865,6 +3890,15 @@ int processInputBuffer(client *c) {
             preprocessCommand(c, pcmd);
             pcmd->flags |= PENDING_CMD_FLAG_PREPROCESSED;
             resetClientQbufState(c);
+        }
+
+        if (c->pending_cmds.ready_len != pending_cmd_before_reading) {
+            int newly_parsed_cmds = c->pending_cmds.ready_len - pending_cmd_before_reading;
+            atomicIncr(server.stat_avg_pipeline_length_sum, newly_parsed_cmds);
+            atomicIncr(server.stat_avg_pipeline_length_cnt, 1);
+
+            c->stat_avg_pipeline_length_sum += newly_parsed_cmds;
+            c->stat_avg_pipeline_length_cnt++;
         }
 
         /* Try to consume the next ready command from the pending command list. */
@@ -3976,6 +4010,8 @@ void readQueryFromClient(connection *conn) {
     }
 
     c->read_error = 0;
+
+    c->stat_total_read_events++;
 
     /* Update the number of reads of io threads on server */
     atomicIncr(server.stat_io_reads_processed[c->running_tid], 1);
@@ -4282,7 +4318,10 @@ sds catClientInfoString(sds s, client *client) {
         " io-thread=%i", client->tid,
         " tot-net-in=%U", client->net_input_bytes,
         " tot-net-out=%U", client->net_output_bytes,
-        " tot-cmds=%U", client->commands_processed));
+        " tot-cmds=%U", client->commands_processed,
+        " read-events=%U", (unsigned long long)client->stat_total_read_events,
+        " avg-pipeline-len-sum=%U", (unsigned long long)client->stat_avg_pipeline_length_sum,
+        " avg-pipeline-len-cnt=%U", (unsigned long long)client->stat_avg_pipeline_length_cnt));
 
     if (paused) resumeIOThread(client->running_tid);
     return ret;
@@ -5862,7 +5901,7 @@ static int tryExpandPendingCommandPool(void) {
  * The shared pool is only used when IO threads are inactive to avoid race conditions
  * between multiple clients. Additionally, pool reuse provides minimal benefit in
  * multi-threaded scenarios, so we only use it in single-threaded mode. */
-static void reclaimPendingCommand(client *c, pendingCommand *pcmd) {
+static inline void reclaimPendingCommand(client *c, pendingCommand *pcmd) {
     if (!server.io_threads_active) {
         /* Try to add to shared pool for reuse if argv isn't too large */
         if (likely(pcmd->argv_len < 64)) {

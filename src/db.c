@@ -13,6 +13,7 @@
  */
 
 #include "server.h"
+#include "vector.h"
 #include "cluster.h"
 #include "atomicvar.h"
 #include "latency.h"
@@ -77,8 +78,7 @@ void updateLRM(robj *o) {
  * represents the number of keys with a size in the range 2^i and 2^(i+1)
  * exclusive. oldLen/newLen must be smaller than 2^48, and if their value
  * equals -1, it means that the key is being created/deleted, respectively. Each
- * data type has its own histogram and it is per database (In addition, there is
- * histogram per slot for future cluster use).
+ * data type has its own histogram and it is maintained per database.
  *
  * Example mapping of key lengths to bins:
  *               [1,2)->1 [2,4)->2 [4,8)->3 [8,16)->4 ...
@@ -86,19 +86,13 @@ void updateLRM(robj *o) {
  * Since strings can be zero length, the histogram also tracks:
  *               [0,1)->0
  */
-void updateSlotHist(keysizesHist kvstoreHist, keysizesHist dictHist, uint32_t type, int64_t oldLen, int64_t newLen) {
+void kvsUpdateHistogram(keysizesHist kvstoreHist, uint32_t type, int64_t oldLen, int64_t newLen) {
     if(unlikely(type >= OBJ_TYPE_BASIC_MAX))
         return;
 
     if (oldLen > 0) {
         int old_bin = log2ceil(oldLen) + 1;
         debugServerAssert(old_bin < MAX_KEYSIZES_BINS);
-        /* If following a key deletion it is last one in slot's dict, then
-         * slot's dict might get released as well. Verify if metadata is not NULL. */
-        if (dictHist) {
-            dictHist[type][old_bin]--;
-            debugServerAssert(dictHist[type][old_bin] >= 0);
-        }
         kvstoreHist[type][old_bin]--;
         debugServerAssert(kvstoreHist[type][old_bin] >= 0);
     } else {
@@ -106,11 +100,6 @@ void updateSlotHist(keysizesHist kvstoreHist, keysizesHist dictHist, uint32_t ty
         if (oldLen == 0) {
             /* Only strings can be empty. Yet, a command flow might temporarily
              * dbAdd() empty collection, and only after add elements. */
-
-            if (dictHist) {
-                dictHist[type][0]--;
-                debugServerAssert(dictHist[type][0] >= 0);
-            }
             kvstoreHist[type][0]--;
             debugServerAssert(kvstoreHist[type][0] >= 0);
         }
@@ -119,31 +108,24 @@ void updateSlotHist(keysizesHist kvstoreHist, keysizesHist dictHist, uint32_t ty
     if (newLen > 0) {
         int new_bin = log2ceil(newLen) + 1;
         debugServerAssert(new_bin < MAX_KEYSIZES_BINS);
-        /* If following a key deletion it is last one in slot's dict, then
-         * slot's dict might get released as well. Verify if metadata is not NULL. */
-        if (dictHist) dictHist[type][new_bin]++;
         kvstoreHist[type][new_bin]++;
     } else {
         /* here, newLen can be either 0 or -1 */
         if (newLen == 0) {
             /* Only strings can be empty. Yet, a command flow might temporarily
              * dbAdd() empty collection, and only after add elements. */
-
-            if (dictHist) dictHist[type][0]++;
             kvstoreHist[type][0]++;
         }
     }
 }
 
-void updateKeysizesHist(redisDb *db, int didx, uint32_t type, int64_t oldLen, int64_t newLen) {
+void updateKeysizesHist(redisDb *db, uint32_t type, int64_t oldLen, int64_t newLen) {
     kvstoreMetadata *kvstoreMeta = kvstoreGetMetadata(db->keys);
-    kvstoreDictMetadata *dictMeta = kvstoreGetDictMeta(db->keys, didx, 0);
-    updateSlotHist(kvstoreMeta->keysizes_hist, dictMeta ? dictMeta->keysizes_hist : NULL, type, oldLen, newLen);
+    kvsUpdateHistogram(kvstoreMeta->keysizes_hist, type, oldLen, newLen);
 }
 
 void updateSlotAllocSize(redisDb *db, int didx, kvobj *kv, int64_t oldsize, int64_t newsize) {
     debugServerAssert(server.memory_tracking_enabled);
-    kvstoreMetadata *kvstoreMeta = kvstoreGetMetadata(db->keys);
     kvstoreDictMetadata *dictMeta = kvstoreGetDictMeta(db->keys, didx, 0);
 
     /* Early return if nothing changed */
@@ -161,7 +143,8 @@ void updateSlotAllocSize(redisDb *db, int didx, kvobj *kv, int64_t oldsize, int6
     }
 
     /* Update allocation size histogram */
-    updateSlotHist(kvstoreMeta->allocsizes_hist, NULL, kv->type, oldsize, newsize);
+    kvstoreMetadata *kvstoreMeta = kvstoreGetMetadata(db->keys);
+    kvsUpdateHistogram(kvstoreMeta->allocsizes_hist, kv->type, oldsize, newsize);
 }
 
 static void dbgAssertHist(kvstore *kvs, keysizesHist hist,
@@ -202,23 +185,21 @@ static void dbgAssertHist(kvstore *kvs, keysizesHist hist,
     }
 }
 
-/* Assert keysizes histogram (For debugging only)
- *
- * Triggered by DEBUG KEYSIZES-HIST-ASSERT 1 and tested after each command.
- */
-void dbgAssertKeysizesHist(redisDb *db) {
+/* Assert keysizes histogram (For debugging only) */
+static void dbgAssertKeysizesHist(redisDb *db) {
     kvstoreMetadata *meta = kvstoreGetMetadata(db->keys);
     dbgAssertHist(db->keys, meta->keysizes_hist, getObjectLength, "dbgAssertKeysizesHist");
-    if (server.memory_tracking_enabled)
-        dbgAssertHist(db->keys, meta->allocsizes_hist, kvobjAllocSize, "dbgAssertAllocsizesHist");
 }
 
-/* Assert per-slot alloc_size (For debugging only)
- *
- * Triggered by DEBUG ALLOCSIZE-SLOTS-ASSERT 1 and tested after each command.
- */
-void dbgAssertAllocSizePerSlot(redisDb *db) {
+/* Assert per-slot alloc_size (For debugging only) */
+static void dbgAssertAllocSizePerSlot(redisDb *db) {
     if (!server.memory_tracking_enabled) return;
+
+    /* Check allocsizes histogram per db */
+    kvstoreMetadata *meta = kvstoreGetMetadata(db->keys);
+    dbgAssertHist(db->keys, meta->allocsizes_hist, kvobjAllocSize, "dbgAssertAllocsizesHist");
+
+    /* Check alloc_size per slot */
     size_t slot_sizes[CLUSTER_SLOTS] = {0};
     dictEntry *de;
     kvstoreIterator kvs_it;
@@ -239,6 +220,30 @@ void dbgAssertAllocSizePerSlot(redisDb *db) {
         serverPanic("dbgAssertAllocSizePerSlot: slot=%d expected=%zu actual=%zu",
                     slot, want, have);
     }
+}
+
+/* Run debug assertions based on server.dbg_assert_flags.
+ *
+ * DBG_ASSERT_KEYSIZES:   Triggered by DEBUG KEYSIZES-HIST-ASSERT 1
+ * DBG_ASSERT_ALLOC_SLOT: Triggered by DEBUG ALLOCSIZE-SLOTS-ASSERT 1
+ */
+void dbgRunAssertions(redisDb *db) {
+    /* Don't assert during nested calls. Intermediate state may be inconsistent. */
+    if (server.execution_nesting) return;
+
+    /* Don't assert during RDB loading. Database may be in inconsistent state. */
+    if (server.loading || server.async_loading) return;
+
+    /* Don't assert during ASM background trim or import.
+     * - During background trim, histogram delta hasn't been applied yet.
+     * - During import, assertions can introduce slowdown and cause ASM tests to fail. */
+    if (asmIsBgTrimRunning() || asmImportInProgress()) return;
+
+    if (server.dbg_assert_flags & DBG_ASSERT_KEYSIZES)
+        dbgAssertKeysizesHist(db);
+
+    if (server.dbg_assert_flags & DBG_ASSERT_ALLOC_SLOT)
+        dbgAssertAllocSizePerSlot(db);
 }
 
 /* Lookup a kvobj for read or write operations, or return NULL if the it is not
@@ -405,7 +410,7 @@ kvobj *lookupKeyWriteOrReply(client *c, robj *key, robj *reply) {
  *
  * link - Optional link to bucket where the key should be added.
  *          On return, get updated, by need, to the inserted key.
- *          
+ *
  * keymeta - Defines metadata to be attached to the key. Including optional
  *           expiration and modules metadata to be copied (REQUIRED).
  */
@@ -439,7 +444,7 @@ kvobj *dbAddInternal(redisDb *db, robj *key, robj **valref, dictEntryLink *link,
 
     signalKeyAsReady(db, key, kv->type);
     notifyKeyspaceEvent(NOTIFY_NEW,"new",key,db->id);
-    updateKeysizesHist(db, slot, kv->type, -1, getObjectLength(kv)); /* add hist */
+    updateKeysizesHist(db, kv->type, -1, getObjectLength(kv)); /* add hist */
     if (server.memory_tracking_enabled)
         updateSlotAllocSize(db, slot, kv, -1, kvobjAllocSize(kv));
     *valref = kv;
@@ -544,7 +549,7 @@ kvobj *dbAddRDBLoad(redisDb *db, sds key, robj **valref, const KeyMetaSpec *keyM
                    keyMetaSpec->numMeta * sizeof(uint64_t));
     }
 
-    updateKeysizesHist(db, slot, kv->type, -1, (int64_t) getObjectLength(kv));
+    updateKeysizesHist(db, kv->type, -1, (int64_t) getObjectLength(kv));
     if (server.memory_tracking_enabled)
         updateSlotAllocSize(db, slot, kv, -1, kvobjAllocSize(kv));
     return *valref = kv;
@@ -568,7 +573,7 @@ kvobj *dbAddRDBLoad(redisDb *db, sds key, robj **valref, const KeyMetaSpec *keyM
  *   update of a value of an existing key (when false).
  * - The `link` is optional, can save lookup, if provided.
  */
-static void dbSetValue(redisDb *db, robj *key, robj **valref, dictEntryLink link, 
+static void dbSetValue(redisDb *db, robj *key, robj **valref, dictEntryLink link,
                        int overwrite, int updateKeySizes, int keepTTL) {
     int freeModuleMeta = 0;
     robj *val = *valref;
@@ -590,7 +595,7 @@ static void dbSetValue(redisDb *db, robj *key, robj **valref, dictEntryLink link
         estoreRemove(db->subexpires, slot, old);
 
     if (old->type == OBJ_STREAM)
-        dictDelete(db->stream_idmp_keys, key);
+        streamKeyRemoved(db, key, old);
 
     long long oldExpire = getExpire(db, key->ptr, old);
 
@@ -674,10 +679,10 @@ static void dbSetValue(redisDb *db, robj *key, robj **valref, dictEntryLink link
     if (updateKeySizes) {
         /* Save one call if old and new are the same type */
         if (oldtype == kvNew->type) {
-            updateKeysizesHist(db, slot, oldtype, oldlen, newlen);
+            updateKeysizesHist(db, oldtype, oldlen, newlen);
         } else {
-            updateKeysizesHist(db, slot, oldtype, oldlen, -1);
-            updateKeysizesHist(db, slot, kvNew->type, -1, newlen);
+            updateKeysizesHist(db, oldtype, oldlen, -1);
+            updateKeysizesHist(db, kvNew->type, -1, newlen);
         }
     }
 
@@ -855,7 +860,7 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
 
         /* If stream with IDMP tracking, remove it from stream_idmp_keys */
         if (type == OBJ_STREAM)
-            dictDelete(db->stream_idmp_keys, key);
+            streamKeyRemoved(db, key, kv);
 
         /* RM_StringDMA may call dbUnshareStringValue which may free kv, so we
          * need to incr to retain kv */
@@ -872,7 +877,7 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
 
         /* Because of dbUnshareStringValue, the val in db may change. */
         kv = dictGetKV(*link);
-        
+
         /* if expirable, delete an entry from the expires dict is not decrRefCount of kvobj */
         if (kvobjGetExpire(kv) != -1)
             kvstoreDictDelete(db->expires, slot, key->ptr);
@@ -888,7 +893,7 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
 
         /* remove key from histogram */
         if(!(flags & DB_FLAG_NO_UPDATE_KEYSIZES))
-            updateKeysizesHist(db, slot, type, oldlen, -1);
+            updateKeysizesHist(db, type, oldlen, -1);
         return 1;
     } else {
         return 0;
@@ -1080,7 +1085,7 @@ redisDb *initTempDb(void) {
         tempDb[i].expires = kvstoreCreate(&kvstoreBaseType, &dbExpiresDictType,
                                           slot_count_bits, flags);
         tempDb[i].subexpires = estoreCreate(&subexpiresBucketsType, slot_count_bits);
-        tempDb[i].stream_idmp_keys = dictCreate(&objectKeyPointerValueDictType);
+        tempDb[i].stream_idmp_keys = dictCreate(&objectKeyNoValueDictType);
     }
 
     return tempDb;
@@ -1114,7 +1119,7 @@ void streamMoveIdmpKeys(dict *src, dict *dst, int slot) {
     while ((de = dictNext(di)) != NULL) {
         robj *key = dictGetKey(de);
         if (calculateKeySlot(key->ptr) == slot) {
-            if (dictAdd(dst, key, dictGetVal(de)) == DICT_OK) {
+            if (dictAddRaw(dst, key, NULL)) {
                 incrRefCount(key);
             }
             dictDelete(src, key);
@@ -1239,17 +1244,54 @@ void flushAllDataAndResetRDB(int flags) {
 #endif
 }
 
-/* CB function on blocking ASYNC FLUSH completion
- *
- * Utilized by commands SFLUSH, FLUSHALL and FLUSHDB.
- */
-void flushallSyncBgDone(uint64_t client_id, void *userdata) {
-    slotRangeArray *slots = userdata;
+/* Block client for blocking ASYNC FLUSH operation (FLUSH*, SFLUSH). */
+void blockClientForAsyncFlush(client *c) {
+    /* measure bg job till completion as elapsed time of flush command */
+    elapsedStart(&c->bstate.lazyfreeStartTime);
+
+    c->bstate.timeout = 0;
+    /* We still need to perform cleanup operations for the command, including
+     * updating the replication offset, so mark this command as pending to
+     * avoid command from being reset during unblock. */
+    c->flags |= CLIENT_PENDING_COMMAND;
+    blockClient(c, BLOCKED_LAZYFREE);
+}
+
+/* CB function on blocking ASYNC FLUSH/TRIM completion.
+ * We will unblock the client and send the proper reply if provided. */
+void kvsAsyncFreeDoneCB(uint64_t client_id, void *userdata) {
+
+    /* If ASM Trim context provided, apply histogram delta */
+    asmTrimCtx *ctx = userdata;
+    if (ctx) {
+        kvstoreMetadata *meta = kvstoreGetMetadata(server.db[0].keys);
+        /* Apply histogram delta only if target_kvstore hasn't changed */
+        if (ctx->target_kvstore == server.db[0].keys && meta) {
+            for (int type = 0; type < MAX_KEYSIZES_TYPES; type++) {
+                for (int bin = 0; bin < MAX_KEYSIZES_BINS; bin++) {
+                    meta->keysizes_hist[type][bin] -= ctx->delta_keysizes_hist[type][bin];
+                    meta->allocsizes_hist[type][bin] -= ctx->delta_allocsizes_hist[type][bin];
+                }
+            }
+        }
+        /* Decrement counter unconditionally to track job completion. If kvstore was
+         * replaced (e.g., by FLUSHALL), the new histogram is already consistent (reset
+         * to 0 for empty DB), so it's safe to resume assertions when counter reaches 0. */
+        asmBgTrimCounterDecr();
+    }
+
+    unblockClientForAsyncFlush(client_id, (ctx) ? ctx->slots : NULL);
+
+    /* Release context and slots */
+    asmTrimCtxRelease(ctx);
+}
+
+/* Unblock client on async flush/trim completion */
+void unblockClientForAsyncFlush(uint64_t client_id, struct slotRangeArray *slots) {
     client *c = lookupClientByID(client_id);
 
     /* Verify that client still exists and being blocked. */
     if (!(c && c->flags & CLIENT_BLOCKED)) {
-        slotRangeArrayFree(slots);
         return;
     }
 
@@ -1262,7 +1304,7 @@ void flushallSyncBgDone(uint64_t client_id, void *userdata) {
 
     /* Only SFLUSH command pass user data pointer. */
     if (slots)
-        replySlotsFlushAndFree(c, slots);
+        replySlotsFlush(c, slots);
     else
         addReply(c, shared.ok);
 
@@ -1289,11 +1331,10 @@ void flushallSyncBgDone(uint64_t client_id, void *userdata) {
  * Return 1 indicates that flush SYNC is actually running in bg as blocking ASYNC
  * Return 0 otherwise
  *
- * slots - provided only by SFLUSH command, otherwise NULL. Will be used on
- *         completion to reply with the slots flush result. Ownership is passed
- *         to the completion job in case of `blocking_async`.
+ * trim_ctx - provided only by SFLUSH command, otherwise NULL. Contains slots to
+ *            be used on completion to reply with the slots flush result.
  */
-int flushCommandCommon(client *c, int type, int flags, slotRangeArray *slots) {
+int flushCommandCommon(client *c, int type, int flags, asmTrimCtx *trim_ctx) {
     int blocking_async = 0; /* Flush SYNC option to run as blocking ASYNC */
 
     /* in case of SYNC, check if we can optimize and run it in bg as blocking ASYNC */
@@ -1304,7 +1345,7 @@ int flushCommandCommon(client *c, int type, int flags, slotRangeArray *slots) {
     }
 
     /* Cancel all ASM tasks that overlap with the given slot ranges. */
-    clusterAsmCancelBySlotRangeArray(slots, c->argv[0]->ptr);
+    clusterAsmCancelBySlotRangeArray(trim_ctx ? trim_ctx->slots : NULL, c->argv[0]->ptr);
 
     if (type == FLUSH_TYPE_ALL)
         flushAllDataAndResetRDB(flags | EMPTYDB_NOFUNCTIONS);
@@ -1319,16 +1360,13 @@ int flushCommandCommon(client *c, int type, int flags, slotRangeArray *slots) {
      * worker's queue. To be called and reply with OK only after all preceding pending
      * lazyfree jobs in queue were processed */
     if (blocking_async) {
-        /* measure bg job till completion as elapsed time of flush command */
-        elapsedStart(&c->bstate.lazyfreeStartTime);
-
-        c->bstate.timeout = 0;
-        /* We still need to perform cleanup operations for the command, including
-         * updating the replication offset, so mark this command as pending to
-         * avoid command from being reset during unblock. */
-        c->flags |= CLIENT_PENDING_COMMAND;
-        blockClient(c,BLOCKED_LAZYFREE);
-        bioCreateCompRq(BIO_WORKER_LAZY_FREE, flushallSyncBgDone, c->id, slots);
+        blockClientForAsyncFlush(c);
+        /* Retain trim_ctx if provided so kvsAsyncFreeDoneCB can release it later */
+        if (trim_ctx) {
+            asmBgTrimCounterIncr();
+            asmTrimCtxRetain(trim_ctx);
+        }
+        bioCreateCompRq(BIO_WORKER_LAZY_FREE, kvsAsyncFreeDoneCB, c->id, trim_ctx);
     }
 
 #if defined(USE_JEMALLOC)
@@ -1369,7 +1407,7 @@ void flushdbCommand(client *c) {
     if (getFlushCommandFlags(c,&flags) == C_ERR) return;
 
     /* If FLUSH SYNC isn't running as blocking async, then reply */
-    if (flushCommandCommon(c, FLUSH_TYPE_DB,flags, NULL) == 0)
+    if (flushCommandCommon(c, FLUSH_TYPE_DB, flags, NULL) == 0)
         addReply(c, shared.ok);
 
 }
@@ -1486,6 +1524,7 @@ void delexCommand(client *c) {
         rewriteClientCommandVector(c, 2, shared.del, key);
         keyModified(c, c->db, key, NULL, 1);
         notifyKeyspaceEvent(NOTIFY_GENERIC, "del", key, c->db->id);
+        KSN_INVALIDATE_KVOBJ(o);
         server.dirty++;
     }
 
@@ -1594,7 +1633,7 @@ void keysCommand(client *c) {
 
 /* Data used by the dict scan callback. */
 typedef struct {
-    list *keys;   /* elements that collect from dict */
+    vec *keys;    /* elements collected from dict */
     robj *o;      /* o must be a hash/set/zset object, NULL means current db */
     long long type; /* the particular type when scan the db */
     sds pattern;  /* pattern string, NULL means no pattern */
@@ -1626,7 +1665,7 @@ void scanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
     UNUSED(plink);
     Entry *hashEntry = NULL;
     scanData *data = (scanData *)privdata;
-    list *keys = data->keys;
+    vec *keys = data->keys;
     robj *o = data->o;
     sds val = NULL;
     void *key = NULL;  /* if OBJ_HASH then key is of type `hfield`. Otherwise, `sds` */
@@ -1650,14 +1689,14 @@ void scanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
     } else {
         keyStr = dictGetKey(de);
     }
-    
+
     /* Filter element if it does not match the pattern. */
     if (data->pattern) {
         if (!stringmatchlen(data->pattern, sdslen(data->pattern), keyStr, sdslen(keyStr), 0)) {
             return;
         }
     }
-    
+
     if (!o) {
         /* Expiration check first - only for database keyspace scanning.
          * Use kv obj to avoid robj creation. */
@@ -1696,8 +1735,8 @@ void scanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
         serverPanic("Type not handled in SCAN callback.");
     }
 
-    listAddNodeTail(keys, key);
-    if (val && !data->no_values) listAddNodeTail(keys, val);
+    vecPush(keys, key);
+    if (val && !data->no_values) vecPush(keys, val);
 }
 
 /* Try to parse a SCAN cursor stored at object 'o':
@@ -1719,7 +1758,11 @@ char *obj_type_name[OBJ_TYPE_MAX] = {
     "zset",
     "hash",
     NULL, /* module type is special */
-    "stream"
+    "stream",
+    "array",
+#ifdef ENABLE_GCRA
+    "gcra"
+#endif
 };
 
 /* Helper function to get type from a string in scan commands */
@@ -1770,7 +1813,6 @@ static int scanShouldSkipDict(dict *d, int didx) {
  * of every element on the Hash. */
 void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
     int i, j;
-    listNode *node;
     long count = 10;
     sds pat = NULL;
     sds typename = NULL;
@@ -1855,18 +1897,13 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         ht = zs->dict;
     }
 
-    list *keys = listCreate();
-    /* Set a free callback for the contents of the collected keys list.
-     * For the main keyspace dict, and when we scan a key that's dict encoded
-     * (we have 'ht'), we don't need to define free method because the strings
-     * in the list are just a shallow copy from the pointer in the dictEntry.
-     * When scanning a key with other encodings (e.g. listpack), we need to
-     * free the temporary strings we add to that list.
-     * The exception to the above is ZSET, where we do allocate temporary
-     * strings even when scanning a dict. */
-    if (o && (!ht || o->type == OBJ_ZSET)) {
-        listSetFreeMethod(keys, sdsfreegeneric);
-    }
+    vec keys;
+    void *keys_stack[256];
+    vecInit(&keys, keys_stack, 256);
+    /* Hash on dict only has pointers to dict entries; other paths allocate
+     * temporary sds that must be released. */
+    if (o && (!ht || o->type == OBJ_ZSET))
+        vecSetFreeMethod(&keys, sdsfreegeneric);
 
     /* For main dictionary scan or data structure using hashtable. */
     if (!o || ht) {
@@ -1890,7 +1927,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
          * 6. data.no_values: to control whether values will be returned or
          * only keys are returned. */
         scanData data = {
-            .keys = keys,
+            .keys = &keys,
             .o = o,
             .type = type,
             .pattern = use_pattern ? pat : NULL,
@@ -1917,7 +1954,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
     } else if (o->type == OBJ_SET) {
         unsigned long array_reply_len = 0;
         void *replylen = NULL;
-        listRelease(keys);
+        vecRelease(&keys);
         char *str;
         char buf[LONG_STR_SIZE];
         size_t len;
@@ -1963,7 +2000,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         unsigned long array_reply_len = 0;
         unsigned char intbuf[LP_INTBUF_SIZE];
         void *replylen = NULL;
-        listRelease(keys);
+        vecRelease(&keys);
 
         /* Reply to the client. */
         addReplyArrayLen(c, 2);
@@ -2014,7 +2051,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         unsigned char intbuf[LP_INTBUF_SIZE];
         void *replylen = NULL;
 
-        listRelease(keys);
+        vecRelease(&keys);
         /* Reply to the client. */
         addReplyArrayLen(c, 2);
         /* Cursor is always 0 given we iterate over all set */
@@ -2060,14 +2097,13 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
     addReplyArrayLen(c, 2);
     addReplyBulkLongLong(c,cursor);
 
-    addReplyArrayLen(c, listLength(keys));
-    while ((node = listFirst(keys)) != NULL) {
-        void *key = listNodeValue(node);
+    addReplyArrayLen(c, vecSize(&keys));
+    for (size_t i = 0; i < vecSize(&keys); i++) {
+        sds key = vecGet(&keys, i);
         addReplyBulkCBuffer(c, key, sdslen(key));
-        listDelNode(keys, node);
     }
 
-    listRelease(keys);
+    vecRelease(&keys);
 }
 
 /* The SCAN command completely relies on scanGenericCommand. */
@@ -2207,17 +2243,14 @@ void renameGenericCommand(client *c, int nx) {
         estoreAdd(c->db->subexpires, getKeySlot(c->argv[2]->ptr), o, minHashExpireTime);
 
     /* Re-register stream IDMP tracking under the new key name. */
-    if (srctype == OBJ_STREAM && ((stream *)o->ptr)->idmp_producers != NULL) {
-        if (dictAdd(c->db->stream_idmp_keys, c->argv[2], NULL) == DICT_OK)
-            incrRefCount(c->argv[2]);
-    }
+    if (srctype == OBJ_STREAM)
+        streamKeyLoaded(c->db, c->argv[2], o);
 
     keyModified(c,c->db,c->argv[1],NULL,1);
-    keyModified(c,c->db,c->argv[2],NULL,1); /* LRM already updated by dbAddInternal */
-    notifyKeyspaceEvent(NOTIFY_GENERIC,"rename_from",
-        c->argv[1],c->db->id);
-    notifyKeyspaceEvent(NOTIFY_GENERIC,"rename_to",
-        c->argv[2],c->db->id);
+    keyModified(c,c->db,c->argv[2],o,1);
+    notifyKeyspaceEvent(NOTIFY_GENERIC, "rename_from", c->argv[1],c->db->id);
+    notifyKeyspaceEvent(NOTIFY_GENERIC, "rename_to", c->argv[2],c->db->id);
+    KSN_INVALIDATE_KVOBJ(o);
     if (overwritten) {
         notifyKeyspaceEvent(NOTIFY_OVERWRITTEN, "overwritten", c->argv[2], c->db->id);
         if (desttype != srctype)
@@ -2307,17 +2340,14 @@ void moveCommand(client *c) {
         estoreAdd(dst->subexpires, slot, kv, hashExpireTime);
 
     /* Register stream IDMP tracking in the destination DB. */
-    if (kv->type == OBJ_STREAM && ((stream *)kv->ptr)->idmp_producers != NULL) {
-        if (dictAdd(dst->stream_idmp_keys, c->argv[1], NULL) == DICT_OK)
-            incrRefCount(c->argv[1]);
-    }
+    if (kv->type == OBJ_STREAM)
+        streamKeyLoaded(dst, c->argv[1], kv);
 
     keyModified(c,src,c->argv[1],NULL,1);
-    keyModified(c,dst,c->argv[1],NULL,1); /* LRM already updated by dbAddInternal */
-    notifyKeyspaceEvent(NOTIFY_GENERIC,
-                "move_from",c->argv[1],src->id);
-    notifyKeyspaceEvent(NOTIFY_GENERIC,
-                "move_to",c->argv[1],dst->id);
+    keyModified(c,dst,c->argv[1],kv,1);
+    notifyKeyspaceEvent(NOTIFY_GENERIC, "move_from", c->argv[1],src->id);
+    notifyKeyspaceEvent(NOTIFY_GENERIC, "move_to", c->argv[1],dst->id);
+    KSN_INVALIDATE_KVOBJ(kv);
 
     server.dirty++;
     addReply(c,shared.cone);
@@ -2407,10 +2437,14 @@ void copyCommand(client *c) {
         case OBJ_ZSET: newobj = zsetDup(o); break;
         case OBJ_HASH: newobj = hashTypeDup(o, &minHashExpire); break;
         case OBJ_STREAM: newobj = streamDup(o); break;
+#ifdef ENABLE_GCRA
+        case OBJ_GCRA: newobj = gcraDup(o); break;
+#endif
         case OBJ_MODULE:
             newobj = moduleTypeDupOrReply(c, key, newkey, dst->id, o);
             if (!newobj) return;
             break;
+        case OBJ_ARRAY: newobj = arrayTypeDup(o); break;
         default:
             addReplyError(c, "unknown type object");
             return;
@@ -2433,17 +2467,13 @@ void copyCommand(client *c) {
         estoreAdd(dst->subexpires, getKeySlot(newkey->ptr), kvCopy, minHashExpire);
 
     /* Register copied stream with IDMP producers for cron-based expiration. */
-    if (kvCopy->type == OBJ_STREAM) {
-        stream *s = kvCopy->ptr;
-        if (s->idmp_producers != NULL) {
-            if (dictAdd(dst->stream_idmp_keys, newkey, NULL) == DICT_OK)
-                incrRefCount(newkey);
-        }
-    }
+    if (kvCopy->type == OBJ_STREAM)
+        streamKeyLoaded(dst, newkey, kvCopy);
 
-    /* OK! key copied. Signal modification (LRM already updated by dbAddInternal) */
-    keyModified(c,dst,c->argv[2],NULL,1);
+    /* OK! key copied. Signal modification */
+    keyModified(c,dst,c->argv[2],kvCopy,1);
     notifyKeyspaceEvent(NOTIFY_GENERIC,"copy_to",c->argv[2],dst->id);
+    KSN_INVALIDATE_KVOBJ(kvCopy);
 
     /* `delete` implies the destination key was overwritten */
     if (delete) {
@@ -2672,7 +2702,7 @@ int removeExpire(redisDb *db, robj *key) {
  * of an user calling a command 'c' is the client, otherwise 'c' is set
  * to NULL. The 'when' parameter is the absolute unix time in milliseconds
  * after which the key will no longer be considered valid.
- * 
+ *
  * Note: It may reallocate kvobj. The returned ref may point to a new object. */
 kvobj *setExpire(client *c, redisDb *db, robj *key, long long when) {
     return setExpireByLink(c,db,key->ptr,when,NULL);
@@ -2914,7 +2944,10 @@ keyStatus expireIfNeeded(redisDb *db, robj *key, kvobj *kv, int flags) {
         if (server.allow_access_trimmed || (flags & EXPIRE_ALLOW_ACCESS_TRIMMED))
             return KEY_VALID;
 
-        return KEY_TRIMMED;
+        /* If the slot is not served by this node, we should not allow access
+         * to the key, we consider it as trimmed. */
+        if (!clusterCanAccessKeysInSlot(getKeySlot(key_name)))
+            return KEY_TRIMMED;
     }
 
     if ((flags & EXPIRE_ALLOW_ACCESS_EXPIRED) ||

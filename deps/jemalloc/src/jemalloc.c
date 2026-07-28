@@ -30,11 +30,15 @@
 /* Data. */
 
 /* Runtime configuration options. */
-const char	*je_malloc_conf
+#ifdef _MSC_VER
+__declspec(selectany) const char *je_malloc_conf = NULL;
+#else
+const char *je_malloc_conf
 #ifndef _WIN32
     JEMALLOC_ATTR(weak)
 #endif
     ;
+#endif
 /*
  * The usual rule is that the closer to runtime you are, the higher priority
  * your configuration settings are (so the jemalloc config options get lower
@@ -52,11 +56,15 @@ const char	*je_malloc_conf
  * We don't actually want this to be widespread, so we'll give it a silly name
  * and not mention it in headers or documentation.
  */
-const char	*je_malloc_conf_2_conf_harder
+#ifdef _MSC_VER
+__declspec(selectany) const char *je_malloc_conf_2_conf_harder = NULL;
+#else
+const char *je_malloc_conf_2_conf_harder
 #ifndef _WIN32
     JEMALLOC_ATTR(weak)
 #endif
     ;
+#endif
 
 bool	opt_abort =
 #ifdef JEMALLOC_DEBUG

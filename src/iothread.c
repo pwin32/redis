@@ -492,6 +492,7 @@ int prefetchIOThreadCommands(IOThread *t) {
         c[i] = listNodeValue(ln);
         redis_prefetch_read(c[i]);
         redis_prefetch_read(&c[i]->pending_cmds);
+        redis_prefetch_read(&c[i]->io_deferred_objects);
     }
     /* Phase 2: Access client data (now likely in cache) and add to batch.
      * Also prefetch additional fields (reply, mem_usage_bucket) that will be
@@ -500,6 +501,7 @@ int prefetchIOThreadCommands(IOThread *t) {
         if (addCommandToBatch(c[i]) == C_ERR) break;
         if (c[i]->reply) redis_prefetch_read(c[i]->reply);
         redis_prefetch_read(&c[i]->mem_usage_bucket);
+        if (c[i]->io_deferred_objects) redis_prefetch_read(c[i]->io_deferred_objects);
         clients++;
     }
     /* Prefetch the commands in the batch. */
@@ -609,6 +611,10 @@ int processClientsFromIOThread(IOThread *t) {
 
         /* Process the pending command and input buffer. */
         if (!isClientReadErrorFatal(c) && c->io_flags & CLIENT_IO_PENDING_COMMAND) {
+            /* IO-thread reads may enqueue one-by-one complete commands that are
+             * executed in main thread without re-entering processInputBuffer().
+             * Account this client as active before processing that handoff path. */
+            statsUpdateActiveClients(c);
             c->flags |= CLIENT_PENDING_COMMAND;
             if (processPendingCommandAndInputBuffer(c) == C_ERR) {
                 /* If the client is no longer valid, it must be freed safely. */
@@ -853,6 +859,8 @@ int IOThreadCron(struct aeEventLoop *eventLoop, long long id, void *clientData) 
  * and IO thread will communicate through event notifier. */
 void *IOThreadMain(void *ptr) {
     IOThread *t = ptr;
+    /* Claim a reserved used_memory accounting slot before any allocation. */
+    zmalloc_register_reserved_slot();
     char thdname[16];
     snprintf(thdname, sizeof(thdname), "io_thd_%d", t->id);
     redis_set_thread_title(thdname);

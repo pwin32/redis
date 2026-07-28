@@ -15,6 +15,10 @@ struct asmTask;
 struct slotRangeArray;
 struct slotRange;
 
+#define ASM_TRIM_METHOD_NONE 0
+#define ASM_TRIM_METHOD_BG 1
+#define ASM_TRIM_METHOD_ACTIVE 2
+
 void asmInit(void);
 void asmBeforeSleep(void);
 void asmCron(void);
@@ -57,4 +61,13 @@ int asmModulePropagateBeforeSlotSnapshot(struct redisCommand *cmd, robj **argv, 
 void *asmGetQForkState(void);
 void asmSetQForkState(void *state);
 #endif
+int asmTrimSlots(struct asmTrimCtx *ctx, uint64_t client_id, int migration_cleanup);
+int asmIsBgTrimRunning(void);
+void asmBgTrimCounterDecr(void);
+void asmBgTrimCounterIncr(void);
+
+/* Context for ASM background trim */
+struct asmTrimCtx *asmTrimCtxCreate(struct slotRangeArray *slots, kvstore *target_kvstore);
+void asmTrimCtxRetain(struct asmTrimCtx *ctx);
+void asmTrimCtxRelease(struct asmTrimCtx *ctx);
 #endif

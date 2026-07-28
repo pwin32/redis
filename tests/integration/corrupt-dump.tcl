@@ -377,6 +377,30 @@ test {corrupt payload: hash empty zipmap} {
     }
 }
 
+test {corrupt payload: hash zipmap with duplicate keys} {
+    # Craft a structurally valid zipmap with duplicate key "a" to trigger the
+    # dictAdd failure path in rdbLoadObject (RDB_TYPE_HASH_ZIPMAP).
+    # This exercises the error-handling branch that must free the listpack
+    # allocated for the zipmap-to-listpack conversion.
+    #
+    # Zipmap layout (12 bytes):
+    #   \x02           zmlen=2
+    #   \x01 a         key "a" (len 1)
+    #   \x01 \x00 b    value "b" (len 1, free 0)
+    #   \x01 a         key "a" again (duplicate!)
+    #   \x01 \x00 d    value "d" (len 1, free 0)
+    #   \xFF           end
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        r config set sanitize-dump-payload yes
+        r debug set-skip-checksum-validation 1
+        catch {
+            r RESTORE _hash 0 "\x09\x0C\x02\x01\x61\x01\x00\x62\x01\x61\x01\x00\x64\xFF\x09\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        } err
+        assert_match "*Bad data format*" $err
+        verify_log_message 0 "*Hash zipmap with dup elements*" 0
+    }
+}
+
 test {corrupt payload: fuzzer findings - NPD in streamIteratorGetID} {
     start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
         r config set sanitize-dump-payload no
@@ -965,6 +989,87 @@ test {corrupt payload: fuzzer findings - vector sets with wrong encoding} {
     }
 }
 
+test {corrupt payload: fuzzer findings - decrRefCount on NULL robj on corrupt KEY_META payload} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
+        r config set sanitize-dump-payload no
+        r debug set-skip-checksum-validation 1
+        catch {r restore key 0 "\xF3\x02\x01\x0D\x00\x54\x23\x3F\xC9\x82\x32\x05\x8D" replace} err
+        assert_match "*Bad data format*" $err
+        r ping
+    }
+}
+
+test {corrupt payload: stream with NACK shared between two consumers} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {
+        r debug set-skip-checksum-validation 1
+        # Payload: stream with entry 1-0, one consumer group (mygroup),
+        # two consumers whose PELs both reference 1-0 (shared NACK).
+        # XACK on one consumer frees the NACK, leaving a dangling
+        # pointer in the other consumer's PEL (use-after-free).
+        catch {r RESTORE mystream 0 "\x1a\x01\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x1d\x1d\x00\x00\x00\x0a\x00\x01\x01\x00\x01\x01\x01\x81\x6b\x02\x00\x01\x02\x01\x00\x01\x00\x01\x81\x76\x02\x04\x01\xff\x01\x01\x00\x01\x00\x00\x00\x01\x01\x07\x6d\x79\x67\x72\x6f\x75\x70\x01\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x64\x42\xb9\x9d\x01\x00\x00\x01\x02\x09\x63\x6f\x6e\x73\x75\x6d\x65\x72\x41\x01\x64\x42\xb9\x9d\x01\x00\x00\x01\x64\x42\xb9\x9d\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x09\x63\x6f\x6e\x73\x75\x6d\x65\x72\x42\x01\x64\x42\xb9\x9d\x01\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x40\x64\x40\x64\x00\x00\x00\x0d\x00\xe7\x12\xf7\xcc\x25\xd5\x0e\x44"} err
+        catch {r XACK mystream mygroup 1-0} _
+        catch {r XREADGROUP GROUP mygroup consumerA COUNT 10 STREAMS mystream 0} _
+        catch {r DEL mystream} _
+        assert_match "*Bad data format*" $err
+        r ping
+    }
+}
+
+test {corrupt payload: stream listpack with wrong deleted count in header} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {
+        r config set sanitize-dump-payload yes
+        r debug set-skip-checksum-validation 1
+        # Payload: stream whose listpack header says deleted_count = 1
+        # but the only entry is live.
+        catch {r RESTORE mystream 0 "\x1A\x01\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x1D\x1D\x00\x00\x00\x0A\x00\x01\x01\x00\x01\x01\x01\x81\x6B\x02\x00\x01\x03\x01\x00\x01\x00\x01\x81\x76\x02\x04\x01\xFF\x01\x01\x00\x01\x00\x00\x00\x01\x00\x40\x64\x40\x64\x00\x00\x00\x0D\x00\xBD\x89\x4D\xF3\x41\xC5\xE0\x8E" REPLACE} err
+        catch {r XREAD COUNT 1 STREAMS mystream $} _
+        assert_match "*Bad data format*" $err
+        r ping
+    }
+}
+
+test {corrupt payload: stream length inconsistent with live entries} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {
+        r debug set-skip-checksum-validation 1
+        # Payload: listpack has master.count=1 (lp_live=1) so the lp_live <= 0
+        # guard passes, but s->length=2 while live_entries accumulates to 1.
+        # Exercises the s->length != live_entries check in rdb.c.
+        catch {r RESTORE mystream 0 "\x1A\x01\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x1D\x1D\x00\x00\x00\x0A\x00\x01\x01\x01\x01\x01\x01\x81\x6B\x02\x00\x01\x03\x01\x00\x01\x00\x01\x81\x76\x02\x04\x01\xFF\x02\x01\x00\x01\x00\x00\x00\x01\x00\x40\x64\x40\x64\x00\x00\x00\x0D\x00\xBD\x89\x4D\xF3\x41\xC5\xE0\x8E" REPLACE} err
+        catch {r XREAD COUNT 1 STREAMS mystream $} _
+        assert_match "*Bad data format*" $err
+        r ping
+    }
+}
+
+test {corrupt payload: stream all-tombstone listpack with zero length} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {
+        r debug set-skip-checksum-validation 1
+        # Payload: listpack has lp_live = 0 (only a tombstone entry) and
+        # s->length = 0. With lp_live rejected only on < 0 this would load
+        # silently into an inconsistent state (raxSize > 0, length = 0);
+        # the <= 0 check rejects it at the listpack header.
+        catch {r RESTORE mystream 0 "\x1A\x01\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x1D\x1D\x00\x00\x00\x0A\x00\x00\x01\x01\x01\x01\x01\x81\x6B\x02\x00\x01\x03\x01\x00\x01\x00\x01\x81\x76\x02\x04\x01\xFF\x00\x01\x00\x01\x00\x00\x00\x01\x00\x40\x64\x40\x64\x00\x00\x00\x0D\x00\xBD\x89\x4D\xF3\x41\xC5\xE0\x8E" REPLACE} err
+        catch {r XREAD COUNT 1 STREAMS mystream $} _
+        assert_match "*Bad data format*" $err
+        r ping
+    }
+}
+
+test {corrupt payload: stream live entry count integer overflow bypasses length check} {
+    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {
+        r config set sanitize-dump-payload no
+        r debug set-skip-checksum-validation 1
+        # Three listpacks whose lp_live counts sum to exactly 2^64, wrapping
+        # live_entries (uint64_t) back to 0.  Stream length is also set to 0, so
+        # without the overflow guard the s->length != live_entries check passes,
+        # silently accepting a structurally broken stream.
+        # (LLONG_MAX + LLONG_MAX + 2 = 2^64 => live_entries wraps to 0)
+        catch {r RESTORE mystream 0 "\x0F\x03\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x11\x11\x00\x00\x00\x01\x00\xF4\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x7F\x09\xFF\x10\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x11\x11\x00\x00\x00\x01\x00\xF4\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x7F\x09\xFF\x10\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x00\x09\x09\x00\x00\x00\x01\x00\x02\x01\xFF\x00\x03\x00\x00\x0A\x00\x00\x00\x00\x00\x00\x00\x00\x00"} err
+        assert_match "*Bad data format*" $err
+        r ping
+    }
+}
+
 test {corrupt payload: zipmap - element wouldn't fit in listpack} {
     # Redis converts legacy zipmap encoded hashes to listpacks.
     # This test creates a zipmap entry with a 1GB value which cannot
@@ -1045,32 +1150,6 @@ test {corrupt payload: stream - duplicated consumer PEL entry} {
         } err
         assert_match "*Bad data format*" $err
         verify_log_message 0 "*Stream consumer PEL entry already has a consumer assigned*" 0
-    }
-}
-
-test {corrupt payload: fuzzer findings - decrRefCount on NULL robj on corrupt KEY_META payload} {
-    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no] ] {
-        r config set sanitize-dump-payload no
-        r debug set-skip-checksum-validation 1
-        catch {r restore key 0 "\xF3\x02\x01\x0D\x00\x54\x23\x3F\xC9\x82\x32\x05\x8D" replace} err
-        assert_match "*Bad data format*" $err
-        r ping
-    }
-}
-
-test {corrupt payload: stream with NACK shared between two consumers} {
-    start_server [list overrides [list loglevel verbose use-exit-on-panic yes crash-memcheck-enabled no]] {
-        r debug set-skip-checksum-validation 1
-        # Payload: stream with entry 1-0, one consumer group (mygroup),
-        # two consumers whose PELs both reference 1-0 (shared NACK).
-        # XACK on one consumer frees the NACK, leaving a dangling
-        # pointer in the other consumer's PEL (use-after-free).
-        catch {r RESTORE mystream 0 "\x1a\x01\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x1d\x1d\x00\x00\x00\x0a\x00\x01\x01\x00\x01\x01\x01\x81\x6b\x02\x00\x01\x02\x01\x00\x01\x00\x01\x81\x76\x02\x04\x01\xff\x01\x01\x00\x01\x00\x00\x00\x01\x01\x07\x6d\x79\x67\x72\x6f\x75\x70\x01\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x64\x42\xb9\x9d\x01\x00\x00\x01\x02\x09\x63\x6f\x6e\x73\x75\x6d\x65\x72\x41\x01\x64\x42\xb9\x9d\x01\x00\x00\x01\x64\x42\xb9\x9d\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x09\x63\x6f\x6e\x73\x75\x6d\x65\x72\x42\x01\x64\x42\xb9\x9d\x01\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x40\x64\x40\x64\x00\x00\x00\x0d\x00\xe7\x12\xf7\xcc\x25\xd5\x0e\x44"} err
-        catch {r XACK mystream mygroup 1-0} _
-        catch {r XREADGROUP GROUP mygroup consumerA COUNT 10 STREAMS mystream 0} _
-        catch {r DEL mystream} _
-        assert_match "*Bad data format*" $err
-        r ping
     }
 }
 
