@@ -21,12 +21,18 @@
  */
 
 #include "..\server.h"
+#include "..\cluster_asm.h"
 #include "Win32_Portability.h"
 #include "Win32_QFork.h"
 #include "Win32_QFork_impl.h"
+#include "Win32_RedisLog.h"
 
 void moduleSetForkData(void *data);
+size_t keyMetaForkDataSize(void);
+int keyMetaCopyForkData(void *data, size_t size);
+int keyMetaSetForkData(const void *data, size_t size);
 int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi);
+int slotSnapshotSaveRio(int req, rio *rdb, int *error);
 
 size_t RedisSharedForkDataSize(void) {
     return sizeof(shared);
@@ -38,9 +44,19 @@ BOOL RedisCopySharedForkData(void *data, size_t size) {
     return TRUE;
 }
 
-void RedisGetCoreForkData(RedisCoreForkData *data) {
+BOOL RedisGetCoreForkData(RedisCoreForkData *data) {
     memset(data, 0, sizeof(*data));
     data->configs = configGetQForkData();
+    data->asmManager = asmGetQForkState();
+    data->keyMetaDataSize = keyMetaForkDataSize();
+    if (data->keyMetaDataSize > sizeof(data->keyMetaData) ||
+        keyMetaCopyForkData(data->keyMetaData,
+                            data->keyMetaDataSize) != C_OK)
+    {
+        data->keyMetaDataSize = 0;
+        return FALSE;
+    }
+    return TRUE;
 }
 
 static rdbSaveInfo *copyRdbSaveInfo(rdbSaveInfo *dst, const void *src,
@@ -79,10 +95,24 @@ BOOL SetupRedisGlobals(LPVOID redisData, size_t redisDataSize,
 
     memcpy(&server, redisData, redisDataSize);
     memcpy(&shared, sharedData, sharedDataSize);
+    /* SetupLogging() runs before the QFork child restores the copied server
+     * state, leaving the fresh process at the logger's warning default.
+     * Apply the parent's configured verbosity before persistence code logs. */
+    setLogVerbosityLevel(server.verbosity);
     dictSetHashFunctionSeed(dictHashSeed);
     ACLSetForkData(redisACL);
     configSetQForkData((dict *)redisCore->configs);
+    asmSetQForkState(redisCore->asmManager);
     moduleSetForkData(redisModules);
+    if (keyMetaSetForkData(redisCore->keyMetaData,
+                           redisCore->keyMetaDataSize) != C_OK)
+    {
+        serverLog(LL_WARNING,
+                  "QFork key metadata registry ABI mismatch: got %llu bytes, expected %llu",
+                  (unsigned long long)redisCore->keyMetaDataSize,
+                  (unsigned long long)keyMetaForkDataSize());
+        return FALSE;
+    }
     zmalloc_set_used_memory(usedMemory);
     crc64_init();
     /* QFork children are fresh processes, so executable-image globals are not
@@ -118,6 +148,9 @@ BOOL SetupRedisGlobals(LPVOID redisData, size_t redisDataSize,
     server.master = NULL;
     server.cached_master = NULL;
     server.repl_transfer_s = NULL;
+    server.repl_rdb_transfer_s = NULL;
+    server.repl_rdb_ch_state = REPL_RDB_CH_STATE_NONE;
+    server.repl_main_ch_state = REPL_MAIN_CH_NONE;
     server.module_pipe[0] = -1;
     server.module_pipe[1] = -1;
     server.cluster_config_file_lock_fd = -1;
@@ -215,7 +248,10 @@ int do_socketSave(int req, const void *rdb_save_info,
     redisSetCpuAffinity(server.bgsave_cpulist);
 
     rioInitWithFd(&rdb, rdb_pipe_write_fd);
-    retval = rdbSaveRioWithEOFMark(req, &rdb, NULL, rsiptr);
+    if (req & SLAVE_REQ_SLOTS_SNAPSHOT)
+        retval = slotSnapshotSaveRio(req, &rdb, NULL);
+    else
+        retval = rdbSaveRioWithEOFMark(req, &rdb, NULL, rsiptr);
     if (retval == C_OK && rioFlush(&rdb) == 0)
         retval = C_ERR;
     if (retval == C_OK)

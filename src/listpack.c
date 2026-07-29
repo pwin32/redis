@@ -7,8 +7,9 @@
  * Copyright (c) 2017-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include <stdint.h>
@@ -122,7 +123,7 @@ static inline void lpAssertValidEntry(unsigned char* lp, size_t lpbytes, unsigne
 #define LISTPACK_MAX_SAFETY_SIZE (1<<30)
 int lpSafeToAdd(unsigned char* lp, size_t add) {
     size_t len = lp? lpGetTotalBytes(lp): 0;
-    if (len + add > LISTPACK_MAX_SAFETY_SIZE)
+    if (add > LISTPACK_MAX_SAFETY_SIZE || len > LISTPACK_MAX_SAFETY_SIZE - add)
         return 0;
     return 1;
 }
@@ -336,20 +337,20 @@ static inline unsigned long lpEncodeBacklen(unsigned char *buf, uint64_t l) {
     if (l <= 127) {
         if (buf) buf[0] = l;
         return 1;
-    } else if (l < 16383) {
+    } else if (l <= 16383) {
         if (buf) {
             buf[0] = l>>7;
             buf[1] = (l&127)|128;
         }
         return 2;
-    } else if (l < 2097151) {
+    } else if (l <= 2097151) {
         if (buf) {
             buf[0] = l>>14;
             buf[1] = ((l>>7)&127)|128;
             buf[2] = (l&127)|128;
         }
         return 3;
-    } else if (l < 268435455) {
+    } else if (l <= 268435455) {
         if (buf) {
             buf[0] = l>>21;
             buf[1] = ((l>>14)&127)|128;
@@ -369,19 +370,67 @@ static inline unsigned long lpEncodeBacklen(unsigned char *buf, uint64_t l) {
     }
 }
 
+/* Calculate the number of bytes required to reverse-encode a variable length
+ * field representing the length of the previous element of size 'l', ranging
+ * from 1 to 5. */
+static inline unsigned long lpEncodeBacklenBytes(uint64_t l) {
+    if (l <= 127) {
+        return 1;
+    } else if (l <= 16383) {
+        return 2;
+    } else if (l <= 2097151) {
+        return 3;
+    } else if (l <= 268435455) {
+        return 4;
+    } else {
+        return 5;
+    }
+}
+
 /* Decode the backlen and returns it. If the encoding looks invalid (more than
- * 5 bytes are used), UINT64_MAX is returned to report the problem. */
+ * 5 bytes are used), UINT64_MAX is returned to report the problem.
+ *
+ * Optimized for the common case: most backlen values fit in one or two bytes
+ * due to listpack size limits. This version avoids a loop and pointer
+ * mutation, reducing overhead in hot paths while keeping the same encoding
+ * semantics.
+ *
+ * Note: the caller guarantees that up to 5 bytes preceding 'p' are readable,
+ * as ensured by listpack invariants. */
 static inline uint64_t lpDecodeBacklen(unsigned char *p) {
-    uint64_t val = 0;
-    uint64_t shift = 0;
-    do {
-        val |= (uint64_t)(p[0] & 127) << shift;
-        if (!(p[0] & 128)) break;
-        shift += 7;
-        p--;
-        if (shift > 28) return UINT64_MAX;
-    } while(1);
-    return val;
+    uint64_t val;
+
+    /* Fast path: single byte (most common for small entries <= 127 bytes) */
+    if (likely(!(p[0] & 128))) {
+        return p[0] & 127;
+    }
+
+    /* Two bytes */
+    val = (uint64_t)(p[0] & 127);
+    if (!(p[-1] & 128)) {
+        return val | ((uint64_t)(p[-1] & 127) << 7);
+    }
+
+    /* Three bytes */
+    val |= (uint64_t)(p[-1] & 127) << 7;
+    if (!(p[-2] & 128)) {
+        return val | ((uint64_t)(p[-2] & 127) << 14);
+    }
+
+    /* Four bytes */
+    val |= (uint64_t)(p[-2] & 127) << 14;
+    if (!(p[-3] & 128)) {
+        return val | ((uint64_t)(p[-3] & 127) << 21);
+    }
+
+    /* Five bytes */
+    val |= (uint64_t)(p[-3] & 127) << 21;
+    if (!(p[-4] & 128)) {
+        return val | ((uint64_t)(p[-4] & 127) << 28);
+    }
+
+    /* Invalid: more than 5 bytes */
+    return UINT64_MAX;
 }
 
 /* Encode the string element pointed by 's' of size 'len' in the target
@@ -431,17 +480,17 @@ static inline uint32_t lpCurrentEncodedSizeUnsafe(unsigned char *p) {
  * This includes just the encoding byte, and the bytes needed to encode the length
  * of the element (excluding the element data itself)
  * If the element encoding is wrong then 0 is returned. */
-static inline uint32_t lpCurrentEncodedSizeBytes(unsigned char *p) {
-    if (LP_ENCODING_IS_7BIT_UINT(p[0])) return 1;
-    if (LP_ENCODING_IS_6BIT_STR(p[0])) return 1;
-    if (LP_ENCODING_IS_13BIT_INT(p[0])) return 1;
-    if (LP_ENCODING_IS_16BIT_INT(p[0])) return 1;
-    if (LP_ENCODING_IS_24BIT_INT(p[0])) return 1;
-    if (LP_ENCODING_IS_32BIT_INT(p[0])) return 1;
-    if (LP_ENCODING_IS_64BIT_INT(p[0])) return 1;
-    if (LP_ENCODING_IS_12BIT_STR(p[0])) return 2;
-    if (LP_ENCODING_IS_32BIT_STR(p[0])) return 5;
-    if (p[0] == LP_EOF) return 1;
+static inline uint32_t lpCurrentEncodedSizeBytes(const unsigned char encoding) {
+    if (LP_ENCODING_IS_7BIT_UINT(encoding)) return 1;
+    if (LP_ENCODING_IS_6BIT_STR(encoding)) return 1;
+    if (LP_ENCODING_IS_13BIT_INT(encoding)) return 1;
+    if (LP_ENCODING_IS_16BIT_INT(encoding)) return 1;
+    if (LP_ENCODING_IS_24BIT_INT(encoding)) return 1;
+    if (LP_ENCODING_IS_32BIT_INT(encoding)) return 1;
+    if (LP_ENCODING_IS_64BIT_INT(encoding)) return 1;
+    if (LP_ENCODING_IS_12BIT_STR(encoding)) return 2;
+    if (LP_ENCODING_IS_32BIT_STR(encoding)) return 5;
+    if (encoding == LP_EOF) return 1;
     return 0;
 }
 
@@ -449,10 +498,19 @@ static inline uint32_t lpCurrentEncodedSizeBytes(unsigned char *p) {
  * function if the current element is the EOF element at the end of the
  * listpack, however, while this function is used to implement lpNext(),
  * it does not return NULL when the EOF element is encountered. */
-unsigned char *lpSkip(unsigned char *p) {
+static inline unsigned char *lpSkip(unsigned char *p) {
     unsigned long entrylen = lpCurrentEncodedSizeUnsafe(p);
-    entrylen += lpEncodeBacklen(NULL,entrylen);
+    entrylen += lpEncodeBacklenBytes(entrylen);
     p += entrylen;
+    return p;
+}
+
+/* This is similar to lpNext() but avoids the inner call to lpBytes when you already know the listpack size. */
+unsigned char *lpNextWithBytes(unsigned char *lp, unsigned char *p, const size_t lpbytes) {
+    assert(p);
+    p = lpSkip(p);
+    if (p[0] == LP_EOF) return NULL;
+    lpAssertValidEntry(lp, lpbytes, p);
     return p;
 }
 
@@ -475,7 +533,7 @@ unsigned char *lpPrev(unsigned char *lp, unsigned char *p) {
     if (p-lp == LP_HDR_SIZE) return NULL;
     p--; /* Seek the first backlen byte of the last element. */
     uint64_t prevlen = lpDecodeBacklen(p);
-    prevlen += lpEncodeBacklen(NULL,prevlen);
+    prevlen += lpEncodeBacklenBytes(prevlen);
     p -= prevlen-1; /* Seek the first byte of the previous entry. */
     lpAssertValidEntry(lp, lpBytes(lp), p);
     return p;
@@ -569,7 +627,7 @@ static inline unsigned char *lpGetWithSize(unsigned char *p, int64_t *count, uns
         if (entry_size) *entry_size = LP_ENCODING_7BIT_UINT_ENTRY_SIZE;
     } else if (LP_ENCODING_IS_6BIT_STR(p[0])) {
         *count = LP_ENCODING_6BIT_STR_LEN(p);
-        if (entry_size) *entry_size = 1 + *count + lpEncodeBacklen(NULL, *count + 1);
+        if (entry_size) *entry_size = 1 + *count + lpEncodeBacklenBytes(*count + 1);
         return p+1;
     } else if (LP_ENCODING_IS_13BIT_INT(p[0])) {
         uval = ((p[0]&0x1f)<<8) | p[1];
@@ -611,11 +669,11 @@ static inline unsigned char *lpGetWithSize(unsigned char *p, int64_t *count, uns
         if (entry_size) *entry_size = LP_ENCODING_64BIT_INT_ENTRY_SIZE;
     } else if (LP_ENCODING_IS_12BIT_STR(p[0])) {
         *count = LP_ENCODING_12BIT_STR_LEN(p);
-        if (entry_size) *entry_size = 2 + *count + lpEncodeBacklen(NULL, *count + 2);
+        if (entry_size) *entry_size = 2 + *count + lpEncodeBacklenBytes(*count + 2);
         return p+2;
     } else if (LP_ENCODING_IS_32BIT_STR(p[0])) {
         *count = LP_ENCODING_32BIT_STR_LEN(p);
-        if (entry_size) *entry_size = 5 + *count + lpEncodeBacklen(NULL, *count + 5);
+        if (entry_size) *entry_size = 5 + *count + lpEncodeBacklenBytes(*count + 5);
         return p+5;
     } else {
         uval = 12345678900000000ULL + p[0];
@@ -647,8 +705,99 @@ static inline unsigned char *lpGetWithSize(unsigned char *p, int64_t *count, uns
     }
 }
 
+/* Return the listpack element pointed by 'p'.
+ *
+ * The function has the same behaviour as lpGetWithSize when 'entry_size' is NULL,
+ * but avoids a lot of unecesarry branching performance penalties. */
+static inline unsigned char *lpGetWithBuf(unsigned char *p, int64_t *count, unsigned char *intbuf) {
+    int64_t val;
+    uint64_t uval, negstart, negmax;
+    assert(p); /* assertion for valgrind (avoid NPD) */
+    const unsigned char encoding = p[0];
+
+    /* string encoding */
+    if (LP_ENCODING_IS_6BIT_STR(encoding)) {
+        *count = LP_ENCODING_6BIT_STR_LEN(p);
+        return p+1;
+    }
+    if (LP_ENCODING_IS_12BIT_STR(encoding)) {
+        *count = LP_ENCODING_12BIT_STR_LEN(p);
+        return p+2;
+    }
+    if (LP_ENCODING_IS_32BIT_STR(encoding)) {
+        *count = LP_ENCODING_32BIT_STR_LEN(p);
+        return p+5;
+    }
+    /* int encoding */
+    if (LP_ENCODING_IS_7BIT_UINT(encoding)) {
+        negstart = UINT64_MAX; /* 7 bit ints are always positive. */
+        negmax = 0;
+        uval = encoding & 0x7f;
+    } else if (LP_ENCODING_IS_13BIT_INT(encoding)) {
+        uval = ((encoding&0x1f)<<8) | p[1];
+        negstart = (uint64_t)1<<12;
+        negmax = 8191;
+    } else if (LP_ENCODING_IS_16BIT_INT(encoding)) {
+        uval = (uint64_t)p[1] |
+               (uint64_t)p[2]<<8;
+        negstart = (uint64_t)1<<15;
+        negmax = UINT16_MAX;
+    } else if (LP_ENCODING_IS_24BIT_INT(encoding)) {
+        uval = (uint64_t)p[1] |
+               (uint64_t)p[2]<<8 |
+               (uint64_t)p[3]<<16;
+        negstart = (uint64_t)1<<23;
+        negmax = UINT32_MAX>>8;
+    } else if (LP_ENCODING_IS_32BIT_INT(encoding)) {
+        uval = (uint64_t)p[1] |
+               (uint64_t)p[2]<<8 |
+               (uint64_t)p[3]<<16 |
+               (uint64_t)p[4]<<24;
+        negstart = (uint64_t)1<<31;
+        negmax = UINT32_MAX;
+    } else if (LP_ENCODING_IS_64BIT_INT(encoding)) {
+        uval = (uint64_t)p[1] |
+               (uint64_t)p[2]<<8 |
+               (uint64_t)p[3]<<16 |
+               (uint64_t)p[4]<<24 |
+               (uint64_t)p[5]<<32 |
+               (uint64_t)p[6]<<40 |
+               (uint64_t)p[7]<<48 |
+               (uint64_t)p[8]<<56;
+        negstart = (uint64_t)1<<63;
+        negmax = UINT64_MAX;
+    } else {
+        uval = 12345678900000000ULL + encoding;
+        negstart = UINT64_MAX;
+        negmax = 0;
+    }
+
+    /* We reach this code path only for integer encodings.
+     * Convert the unsigned value to the signed one using two's complement
+     * rule. */
+    if (uval >= negstart) {
+        /* This three steps conversion should avoid undefined behaviors
+         * in the unsigned -> signed conversion. */
+        uval = negmax-uval;
+        val = uval;
+        val = -val-1;
+    } else {
+        val = uval;
+    }
+
+    /* Return the string representation of the integer or the value itself
+     * depending on intbuf being NULL or not. */
+    if (intbuf) {
+        *count = ll2string((char*)intbuf,LP_INTBUF_SIZE,(long long)val);
+        return intbuf;
+    } else {
+        *count = val;
+        return NULL;
+    }
+}
+
 unsigned char *lpGet(unsigned char *p, int64_t *count, unsigned char *intbuf) {
-    return lpGetWithSize(p, count, intbuf, NULL);
+    return lpGetWithBuf(p, count, intbuf);
 }
 
 /* This is just a wrapper to lpGet() that is able to get entry value directly.
@@ -687,8 +836,8 @@ int lpGetIntegerValue(unsigned char *p, long long *lval) {
  * will be returned. 'user' is passed to this callback.
  * Skip 'skip' entries between every comparison.
  * Returns NULL when the field could not be found. */
-unsigned char *lpFindCb(unsigned char *lp, unsigned char *p,
-                        void *user, lpCmp cmp, unsigned int skip)
+static inline unsigned char *lpFindCbInternal(unsigned char *lp, unsigned char *p,
+                                              void *user, lpCmp cmp, unsigned int skip)
 {
     int skipcnt = 0;
     unsigned char *value;
@@ -707,7 +856,7 @@ unsigned char *lpFindCb(unsigned char *lp, unsigned char *p,
                 assert(p >= lp + LP_HDR_SIZE && p + entry_size < lp + lp_bytes);
             }
 
-            if (cmp(lp, p, user, value, ll) == 0)
+            if (unlikely(cmp(lp, p, user, value, ll) == 0))
                 return p;
 
             /* Reset skip count */
@@ -732,6 +881,12 @@ unsigned char *lpFindCb(unsigned char *lp, unsigned char *p,
     }
 
     return NULL;
+}
+
+unsigned char *lpFindCb(unsigned char *lp, unsigned char *p,
+                        void *user, lpCmp cmp, unsigned int skip)
+{
+    return lpFindCbInternal(lp, p, user, cmp, skip);
 }
 
 struct lpFindArg {
@@ -787,7 +942,7 @@ unsigned char *lpFind(unsigned char *lp, unsigned char *p, unsigned char *s,
         .s = s,
         .slen = slen
     };
-    return lpFindCb(lp, p, &arg, lpFindCmp, skip);
+    return lpFindCbInternal(lp, p, &arg, lpFindCmp, skip);
 }
 
 /* Insert, delete or replace the specified string element 'elestr' of length
@@ -874,7 +1029,7 @@ unsigned char *lpInsert(unsigned char *lp, unsigned char *elestr, unsigned char 
     uint32_t replaced_len  = 0;
     if (where == LP_REPLACE) {
         replaced_len = lpCurrentEncodedSizeUnsafe(p);
-        replaced_len += lpEncodeBacklen(NULL,replaced_len);
+        replaced_len += lpEncodeBacklenBytes(replaced_len);
         ASSERT_INTEGRITY_LEN(lp, p, replaced_len);
     }
 
@@ -1053,7 +1208,10 @@ unsigned char *lpBatchInsert(unsigned char *lp, unsigned char *p, int where,
 
     uint64_t old_listpack_bytes = lpGetTotalBytes(lp);
     uint64_t new_listpack_bytes = old_listpack_bytes + addedlen;
-    if (new_listpack_bytes > UINT32_MAX) return NULL;
+    if (new_listpack_bytes > UINT32_MAX) {
+        if (enc != tmp) lp_free(enc);
+        return NULL;
+    }
 
     /* Store the offset of the element 'p', so that we can obtain its
      * address again after a reallocation. */
@@ -1063,7 +1221,10 @@ unsigned char *lpBatchInsert(unsigned char *lp, unsigned char *p, int where,
     /* Realloc before: we need more room. */
     if (new_listpack_bytes > old_listpack_bytes &&
         new_listpack_bytes > lp_malloc_size(lp)) {
-        if ((lp = lp_realloc(lp,new_listpack_bytes)) == NULL) return NULL;
+        if ((lp = lp_realloc(lp,new_listpack_bytes)) == NULL) {
+            if (enc != tmp) lp_free(enc);
+            return NULL;
+        }
         dst = lp + poff;
     }
 
@@ -1414,7 +1575,7 @@ size_t lpBytes(unsigned char *lp) {
 size_t lpEntrySizeInteger(long long lval) {
     uint64_t enclen;
     lpEncodeIntegerGetType(lval, NULL, &enclen);
-    unsigned long backlen = lpEncodeBacklen(NULL, enclen);
+    unsigned long backlen = lpEncodeBacklenBytes(enclen);
     return enclen + backlen;
 }
 
@@ -1481,6 +1642,7 @@ unsigned char *lpValidateFirst(unsigned char *lp) {
 
 /* Validate the integrity of a single listpack entry and move to the next one.
  * The input argument 'pp' is a reference to the current record and is advanced on exit.
+ *  the data pointed to by 'lp' will not be modified by the function.
  * Returns 1 if valid, 0 if invalid. */
 int lpValidateNext(unsigned char *lp, unsigned char **pp, size_t lpbytes) {
 #define OUT_OF_RANGE(p) ( \
@@ -1500,7 +1662,7 @@ int lpValidateNext(unsigned char *lp, unsigned char **pp, size_t lpbytes) {
     }
 
     /* check that we can read the encoded size */
-    uint32_t lenbytes = lpCurrentEncodedSizeBytes(p);
+    uint32_t lenbytes = lpCurrentEncodedSizeBytes(p[0]);
     if (!lenbytes)
         return 0;
 
@@ -1510,7 +1672,7 @@ int lpValidateNext(unsigned char *lp, unsigned char **pp, size_t lpbytes) {
 
     /* get the entry length and encoded backlen. */
     unsigned long entrylen = lpCurrentEncodedSizeUnsafe(p);
-    unsigned long encodedBacklen = lpEncodeBacklen(NULL,entrylen);
+    unsigned long encodedBacklen = lpEncodeBacklenBytes(entrylen);
     entrylen += encodedBacklen;
 
     /* make sure the entry doesn't reach outside the edge of the listpack */
@@ -1588,7 +1750,8 @@ int lpValidateIntegrity(unsigned char *lp, size_t size, int deep,
 
 /* Compare entry pointer to by 'p' with string 's' of length 'slen'.
  * Return 1 if equal. */
-unsigned int lpCompare(unsigned char *p, unsigned char *s, uint32_t slen) {
+unsigned int lpCompare(unsigned char *p, unsigned char *s, uint32_t slen,
+                       long long *cached_longval, int *cached_valid) {
     unsigned char *value;
     int64_t sz;
     if (p[0] == LP_EOF) return 0;
@@ -1597,12 +1760,25 @@ unsigned int lpCompare(unsigned char *p, unsigned char *s, uint32_t slen) {
     if (value) {
         return (slen == sz) && memcmp(value,s,slen) == 0;
     } else {
+        int64_t sval;
         /* We use lpStringToInt64() to get an integer representation of the
          * string 's' and compare it to 'sval', it's much faster than convert
          * integer to string and comparing. */
-        int64_t sval;
-        if (lpStringToInt64((const char*)s, slen, &sval))
-            return sz == sval;
+        if (cached_valid != NULL) {
+            /* Use caching */
+            if (*cached_valid == 0) {
+                if (lpStringToInt64((const char*)s, slen, (int64_t*)cached_longval)) {
+                    *cached_valid = 1;
+                } else {
+                    *cached_valid = -1;
+                }
+            }
+            return (*cached_valid == 1 && sz == *cached_longval);
+        } else {
+            /* No caching - direct conversion */
+            if (lpStringToInt64((const char*)s, slen, &sval))
+                return sz == sval;
+        }
     }
 
     return 0;
@@ -1613,7 +1789,7 @@ static int uintCompare(const void *a, const void *b) {
     return (*(unsigned int *) a - *(unsigned int *) b);
 }
 
-/* Helper method to store a string into from val or lval into dest */
+/* Helper method to store a string from val or lval into dest */
 static inline void lpSaveValue(unsigned char *val, unsigned int len, int64_t lval, listpackEntry *dest) {
     dest->sval = val;
     dest->slen = len;
@@ -1853,9 +2029,9 @@ void lpRepr(unsigned char *lp) {
         
     p = lpFirst(lp);
     while(p) {
-        uint32_t encoded_size_bytes = lpCurrentEncodedSizeBytes(p);
+        uint32_t encoded_size_bytes = lpCurrentEncodedSizeBytes(p[0]);
         uint32_t encoded_size = lpCurrentEncodedSizeUnsafe(p);
-        unsigned long back_len = lpEncodeBacklen(NULL, encoded_size);
+        unsigned long back_len = lpEncodeBacklenBytes(encoded_size);
         printf(
             "{\n"
                 "\taddr: %p,\n"
@@ -2009,7 +2185,7 @@ static int randstring(char *target, unsigned int min, unsigned int max) {
 }
 
 static void verifyEntry(unsigned char *p, unsigned char *s, size_t slen) {
-    assert(lpCompare(p, s, slen));
+    assert(lpCompare(p, s, slen, NULL, NULL));
 }
 
 static int lpValidation(unsigned char *p, unsigned int head_count, void *userdata) {
@@ -2018,7 +2194,7 @@ static int lpValidation(unsigned char *p, unsigned int head_count, void *userdat
 
     int ret;
     long *count = userdata;
-    ret = lpCompare(p, (unsigned char *)mixlist[*count], strlen(mixlist[*count]));
+    ret = lpCompare(p, (unsigned char *)mixlist[*count], strlen(mixlist[*count]), NULL, NULL);
     (*count)++;
     return ret;
 }
@@ -2409,7 +2585,7 @@ int listpackTest(int argc, char *argv[], int flags) {
         lp = createList();
         p = lpFirst(lp);
         while (p) {
-            if (lpCompare(p, (unsigned char*)"foo", 3)) {
+            if (lpCompare(p, (unsigned char*)"foo", 3, NULL, NULL)) {
                 lp = lpDelete(lp, p, &p);
             } else {
                 p = lpNext(lp, p);
@@ -2467,6 +2643,32 @@ int listpackTest(int argc, char *argv[], int flags) {
         lpFree(lp);
     }
 
+    TEST("Backlen encode/decode at width boundaries") {
+        /* Body lengths where backlen widens; maxima per width must use the
+         * minimum byte count and round-trip (lpEncodeBacklen vs
+         * lpEncodeBacklenBytes and lpDecodeBacklen). */
+        const uint64_t cases[] = {
+            128ULL,
+            16382ULL,
+            16383ULL,
+            16384ULL,
+            2097150ULL,
+            2097151ULL,
+            2097152ULL,
+            268435454ULL,
+            268435455ULL,
+            268435456ULL,
+        };
+        unsigned char enc[LP_MAX_BACKLEN_SIZE];
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            uint64_t enclen = cases[i];
+            unsigned long n = lpEncodeBacklen(NULL, enclen);
+            assert(n == lpEncodeBacklenBytes(enclen));
+            assert(lpEncodeBacklen(enc, enclen) == n);
+            assert(lpDecodeBacklen(enc + n - 1) == enclen);
+        }
+    }
+
     TEST("Create long list and check indices") {
         lp = lpNew(0);
         char buf[32];
@@ -2490,12 +2692,12 @@ int listpackTest(int argc, char *argv[], int flags) {
     TEST("Compare strings with listpack entries") {
         lp = createList();
         p = lpSeek(lp,0);
-        assert(lpCompare(p,(unsigned char*)"hello",5));
-        assert(!lpCompare(p,(unsigned char*)"hella",5));
+        assert(lpCompare(p,(unsigned char*)"hello",5,NULL,NULL));
+        assert(!lpCompare(p,(unsigned char*)"hella",5,NULL,NULL));
 
         p = lpSeek(lp,3);
-        assert(lpCompare(p,(unsigned char*)"1024",4));
-        assert(!lpCompare(p,(unsigned char*)"1025",4));
+        assert(lpCompare(p,(unsigned char*)"1024",4,NULL,NULL));
+        assert(!lpCompare(p,(unsigned char*)"1025",4,NULL,NULL));
         lpFree(lp);
     }
 
@@ -2996,7 +3198,7 @@ int listpackTest(int argc, char *argv[], int flags) {
         for (i = 0; i < iteration; i++) {
             lp = lpNew(0);
             ref = listCreate();
-            listSetFreeMethod(ref,(void (*)(void*))sdsfree);
+            listSetFreeMethod(ref, sdsfreegeneric);
             len = rand() % 256;
 
             /* Create lists */
@@ -3122,7 +3324,7 @@ int listpackTest(int argc, char *argv[], int flags) {
             for (int i = 0; i < 2000; i++) {
                 unsigned char *eptr = lpSeek(lp,0);
                 while (eptr != NULL) {
-                    lpCompare(eptr,(unsigned char*)"nothing",7);
+                    lpCompare(eptr,(unsigned char*)"nothing",7,NULL,NULL);
                     eptr = lpNext(lp,eptr);
                 }
             }
@@ -3134,7 +3336,21 @@ int listpackTest(int argc, char *argv[], int flags) {
             for (int i = 0; i < 2000; i++) {
                 unsigned char *eptr = lpSeek(lp,0);
                 while (eptr != NULL) {
-                    lpCompare(lp, (unsigned char*)"99999", 5);
+                    lpCompare(eptr, (unsigned char*)"99999", 5, NULL, NULL);
+                    eptr = lpNext(lp,eptr);
+                }
+            }
+            printf("Done. usec=%lld\n", usec()-start);
+        }
+
+        TEST("Benchmark lpCompare with number and caching") {
+            unsigned long long start = usec();
+            for (int i = 0; i < 2000; i++) {
+                unsigned char *eptr = lpSeek(lp,0);
+                long long cached_val = 0;
+                int cached_valid = 0;
+                while (eptr != NULL) {
+                    lpCompare(eptr, (unsigned char*)"99999", 5, &cached_val, &cached_valid);
                     eptr = lpNext(lp,eptr);
                 }
             }

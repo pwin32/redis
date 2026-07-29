@@ -1,6 +1,6 @@
 set testmodule [redis_test_module subcommands]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test "Module subcommands via COMMAND" {
@@ -49,6 +49,10 @@ start_server {tags {"modules"}} {
         assert_not_equal [lsearch $commands "subcommands.sub|get_fullname"] -1
 
         assert_equal [lsearch $commands "set"] -1
+    }
+
+    test "Internal container command without subcommand returns missing subcommand error" {
+        assert_error {*missing subcommand*} {r subcommands.internal_container}
     }
 
     test "Unload the module - subcommands" {

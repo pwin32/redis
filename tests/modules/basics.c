@@ -5,8 +5,9 @@
  * Copyright (c) 2016-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "redismodule.h"
@@ -794,6 +795,21 @@ int TestAssertIntegerReply(RedisModuleCtx *ctx, RedisModuleCallReply *reply, lon
     return 1;
 }
 
+/* Replies "yes", "no" otherwise if the context may execute debug commands */
+int TestCanDebug(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    int flags = RedisModule_GetContextFlags(ctx);
+    int allFlags = RedisModule_GetContextFlagsAll();
+    if ((allFlags & REDISMODULE_CTX_FLAGS_DEBUG_ENABLED) &&
+        (flags & REDISMODULE_CTX_FLAGS_DEBUG_ENABLED)) {
+        RedisModule_ReplyWithSimpleString(ctx, "yes");
+    } else {
+        RedisModule_ReplyWithSimpleString(ctx, "no");
+    }
+    return REDISMODULE_OK;
+}
+
 #define T(name,...) \
     do { \
         RedisModule_Log(ctx,"warning","Testing %s", name); \
@@ -802,7 +818,7 @@ int TestAssertIntegerReply(RedisModuleCtx *ctx, RedisModuleCallReply *reply, lon
 
 /* TEST.BASICS -- Run all the tests.
  * Note: it is useful to run these tests from the module rather than TCL
- * since it's easier to check the reply types like that (make a distinction
+ * since it's easier to check the reply types like that make a distinction
  * between 0 and "0", etc. */
 int TestBasics(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
@@ -879,7 +895,7 @@ int TestBasics(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     if (!TestAssertStringReply(ctx,RedisModule_CallReplyArrayElement(reply, 1),"1234",4)) goto fail;
 
     T("foo", "E");
-    if (!TestAssertErrorReply(ctx,reply,"ERR unknown command 'foo', with args beginning with: ",53)) goto fail;
+    if (!TestAssertErrorReply(ctx,reply,"ERR unknown command 'foo'",25)) goto fail;
 
     T("set", "Ec", "x");
     if (!TestAssertErrorReply(ctx,reply,"ERR wrong number of arguments for 'set' command",47)) goto fail;
@@ -1015,6 +1031,10 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 
     if (RedisModule_CreateCommand(ctx,"test.getresp",
         TestGetResp,"readonly",1,1,1) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+
+    if (RedisModule_CreateCommand(ctx,"test.candebug",
+        TestCanDebug,"readonly",1,1,1) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
     RedisModule_SubscribeToKeyspaceEvents(ctx,

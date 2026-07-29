@@ -80,6 +80,23 @@ start_server [list overrides [list "dir" $server_path] keep_persistence true] {
     r del stream
 }
 
+start_server {overrides {loglevel verbose}} {
+    test {RDB load applies RESIZEDB hint to expand hash tables} {
+        # Populate keys and save RDB
+        r flushall sync
+        regexp {db=(\d+)} [r client info] -> dbid
+        # 500 keys with 3600 second expiration, 500 without
+        populate 500 "key1:" 3 0 false 3600
+        populate 500 "key2:" 3 0 false 0
+        r save
+
+        restart_server 0 true false
+
+        # Verify DB resize log message
+        verify_log_message 0 "*DB $dbid resized*1024 key*512 expire*" 0
+    }
+}
+
 # Helper function to start a server and kill it, just to check the error
 # logged.
 set defaults {}
@@ -422,6 +439,38 @@ start_server {} {
         # server is writable again
         r set x y
     } {OK}
+}
+
+start_server {overrides {save "900 1"}} {
+    test "rdb_saves_consecutive_failures metric" {
+        assert_equal [s rdb_saves_consecutive_failures] 0
+
+        # First bgsave failure
+        r config set rdb-key-save-delay 10000000
+        populate 100
+        r bgsave
+        set pid1 [get_child_pid 0]
+        kill_proc2_checked $pid1
+        waitForBgsave r
+
+        assert_equal [s rdb_saves_consecutive_failures] 1
+
+        # Second bgsave failure
+        r bgsave
+        set pid2 [get_child_pid 0]
+        kill_proc2_checked $pid2
+        waitForBgsave r
+
+        assert_equal [s rdb_saves_consecutive_failures] 2
+
+        # Successful bgsave should reset counter
+        r config set rdb-key-save-delay 0
+        r bgsave
+        waitForBgsave r
+
+        # Counter should be reset to 0 after success
+        assert_equal [s rdb_saves_consecutive_failures] 0
+    }
 }
 
 set server_path [tmpdir "server.partial-hfield-exp-test"]

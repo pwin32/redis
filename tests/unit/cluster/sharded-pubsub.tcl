@@ -2,8 +2,9 @@
 # Copyright (c) 2009-Present, Redis Ltd.
 # All rights reserved.
 #
-# Licensed under your choice of the Redis Source Available License 2.0
-# (RSALv2) or the Server Side Public License v1 (SSPLv1).
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
 #
 # Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
 #
@@ -28,7 +29,7 @@ start_cluster 1 1 {tags {external:skip cluster}} {
         $primary MULTI
         $primary SPUBLISH ch1 "hello"
         $primary GET foo
-        catch {[$primary EXEC]} err
+        catch {$primary EXEC} err
         assert_match {CROSSSLOT*} $err
     }
 
@@ -62,5 +63,32 @@ start_cluster 1 1 {tags {external:skip cluster}} {
         assert_match {MOVED*} $err
         catch {[$replica EXEC]} err
         assert_match {EXECABORT*} $err
+    }
+
+    # Regression: shard channel slot must not follow getKeySlot() current_client
+    # cache when CLIENT KILL runs inside another client's EXEC (pubsubUnsubscribeChannel).
+    test {Shard pubsub: CLIENT KILL subscriber inside MULTI/EXEC (cross-slot)} {
+        # SET fixes the transaction client's slot to keyk's slot; the subscriber must
+        # use a shard channel in a different slot so a wrong-slot lookup would fail.
+        set keyk "{06S}k"
+        set channel "{Qi}ch"
+        assert {[R 0 cluster keyslot $channel] != [R 0 cluster keyslot $keyk]}
+
+        set rd_sub [redis_deferring_client]
+        $rd_sub client id
+        set cid [$rd_sub read]
+        $rd_sub ssubscribe $channel
+        $rd_sub read
+
+        $primary multi
+        $primary set $keyk v
+        $primary client kill id $cid
+        set got [$primary exec]
+
+        assert_equal {OK 1} $got
+        assert_equal PONG [$primary ping]
+
+        catch {$rd_sub read}
+        $rd_sub close
     }
 }

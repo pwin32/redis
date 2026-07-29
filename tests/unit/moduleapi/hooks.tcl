@@ -12,7 +12,7 @@ proc set_qfork_probe_key {} {
     $db0 close
 }
 
-tags "modules" {
+tags "modules external:skip" {
     start_server [list overrides [list loadmodule "$testmodule" appendonly yes]] {
         test {Test module aof save on server start from empty} {
             assert {[r hooks.event_count persistence-syncaof-start] == 1}

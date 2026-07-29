@@ -2,8 +2,9 @@
  * Copyright (c) 2021-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 /* This file implements the interface of logging clients' requests and
@@ -86,11 +87,42 @@ static size_t reqresAppendBuffer(client *c, void *buf, size_t len) {
 
 static size_t reqresAppendArg(client *c, char *arg, size_t arg_len) {
     char argv_len_buf[LONG_STR_SIZE];
-    size_t argv_len_buf_len = ll2string(argv_len_buf,sizeof(argv_len_buf),(long)arg_len);
+    size_t argv_len_buf_len = ll2string(argv_len_buf,sizeof(argv_len_buf),(long long)arg_len);
     size_t ret = reqresAppendBuffer(c, argv_len_buf, argv_len_buf_len);
     ret += reqresAppendBuffer(c, "\r\n", 2);
     ret += reqresAppendBuffer(c, arg, arg_len);
     ret += reqresAppendBuffer(c, "\r\n", 2);
+    return ret;
+}
+
+/* Helper function to decode and append encoded buffer content.
+ * Encoded buffers contain payloadHeader structures followed by payloads.
+ * For PLAIN_REPLY: just copy the payload data.
+ * For BULK_STR_REF: expand to "$<len>\r\n<string>\r\n" format. */
+static size_t reqresAppendEncodedBuffer(client *c, char *buf, size_t len) {
+    size_t ret = 0;
+    char *ptr = buf;
+    char *end = buf + len;
+
+    while (ptr < end) {
+        payloadHeader *header = (payloadHeader *)ptr;
+        if (header->payload_type == PLAIN_REPLY) {
+            /* Plain reply data - copy directly */
+            ret += reqresAppendBuffer(c, ptr + sizeof(payloadHeader), header->payload_len);
+        } else {
+            /* BULK_STR_REF - expand to full RESP format */
+            bulkStrRef *str_ref = (bulkStrRef *)(ptr + sizeof(payloadHeader));
+
+            /* Append prefix: "$<len>\r\n" */
+            ret += reqresAppendBuffer(c, str_ref->prefix, str_ref->prefix_cnt);
+            /* Append string content */
+            ret += reqresAppendBuffer(c, str_ref->obj->ptr, sdslen(str_ref->obj->ptr));
+            /* Append trailing CRLF */
+            ret += reqresAppendBuffer(c, str_ref->crlf, 2);
+        }
+        ptr += sizeof(payloadHeader) + header->payload_len;
+    }
+
     return ret;
 }
 
@@ -187,7 +219,7 @@ size_t reqresAppendRequest(client *c) {
             ret += reqresAppendArg(c, argv[i]->ptr, sdslen(argv[i]->ptr));
         } else if (argv[i]->encoding == OBJ_ENCODING_INT) {
             char buf[LONG_STR_SIZE];
-            size_t len = ll2string(buf,sizeof(buf),(long)argv[i]->ptr);
+            size_t len = ll2string(buf,sizeof(buf),(long long)(intptr_t)argv[i]->ptr);
             ret += reqresAppendArg(c, buf, len);
         } else {
             serverPanic("Wrong encoding in reqresAppendRequest()");
@@ -210,7 +242,14 @@ size_t reqresAppendResponse(client *c) {
 
     /* First append the static reply buffer */
     if (c->bufpos > c->reqres.offset.bufpos) {
-        size_t written = reqresAppendBuffer(c, c->buf + c->reqres.offset.bufpos, c->bufpos - c->reqres.offset.bufpos);
+        size_t written;
+        if (!c->buf_encoded) {
+            /* Plain buffer - copy directly */
+            written = reqresAppendBuffer(c, c->buf + c->reqres.offset.bufpos, c->bufpos - c->reqres.offset.bufpos);
+        } else {
+            /* Decode and append encoded buffer */
+            written = reqresAppendEncodedBuffer(c, c->buf + c->reqres.offset.bufpos, c->bufpos - c->reqres.offset.bufpos);
+        }
         ret += written;
     }
 
@@ -231,7 +270,7 @@ size_t reqresAppendResponse(client *c) {
         clientReplyBlock *o;
         listRewind(c->reply, &iter);
         while ((curr = listNext(&iter)) != NULL) {
-            size_t written;
+            size_t written = 0;
 
             /* Skip nodes we had already processed */
             if (i < c->reqres.offset.last_node.index) {
@@ -243,16 +282,30 @@ size_t reqresAppendResponse(client *c) {
                 i++;
                 continue;
             }
-            if (i == c->reqres.offset.last_node.index) {
-                /* Write the potentially incomplete node, which had data from
-                 * before the current command started */
-                written = reqresAppendBuffer(c,
-                                             o->buf + c->reqres.offset.last_node.used,
-                                             o->used - c->reqres.offset.last_node.used);
+
+            if (!o->buf_encoded) {
+                if (i == c->reqres.offset.last_node.index) {
+                    /* Write the potentially incomplete node, which had data from
+                     * before the current command started */
+                    written = reqresAppendBuffer(c, o->buf + c->reqres.offset.last_node.used,
+                                                 o->used - c->reqres.offset.last_node.used);
+                } else {
+                    /* New node */
+                    written = reqresAppendBuffer(c, o->buf, o->used);
+                }
             } else {
-                /* New node */
-                written = reqresAppendBuffer(c, o->buf, o->used);
+                /* Encoded buffer - decode and append */
+                if (i == c->reqres.offset.last_node.index) {
+                    /* Write the potentially incomplete node, which had data from
+                     * before the current command started */
+                    written = reqresAppendEncodedBuffer(c, o->buf + c->reqres.offset.last_node.used,
+                                                        o->used - c->reqres.offset.last_node.used);
+                } else {
+                    /* New node */
+                    written = reqresAppendEncodedBuffer(c, o->buf, o->used);
+                }
             }
+
             ret += written;
             i++;
         }

@@ -5,8 +5,9 @@
  * Copyright (c) 2020-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #define _BSD_SOURCE
@@ -28,6 +29,11 @@ RedisModuleDict *module_event_log = NULL;
 /** Counts how many deleted KSN we got on keys with a prefix of "count_dels_" **/
 static size_t dels = 0;
 
+/* Subkey notification log */
+#define SUBKEY_LOG_MAX 256
+static char subkey_log[SUBKEY_LOG_MAX][512];
+static int subkey_log_count = 0;
+
 static int KeySpace_NotificationLoaded(RedisModuleCtx *ctx, int type, const char *event, RedisModuleString *key){
     REDISMODULE_NOT_USED(ctx);
     REDISMODULE_NOT_USED(type);
@@ -44,8 +50,10 @@ static int KeySpace_NotificationLoaded(RedisModuleCtx *ctx, int type, const char
     return REDISMODULE_OK;
 }
 
+static long long callback_call_count = 0;
 static int KeySpace_NotificationGeneric(RedisModuleCtx *ctx, int type, const char *event, RedisModuleString *key) {
     REDISMODULE_NOT_USED(type);
+    callback_call_count++;
     const char *key_str = RedisModule_StringPtrLen(key, NULL);
     if (strncmp(key_str, "count_dels_", 11) == 0 && strcmp(event, "del") == 0) {
         if (RedisModule_GetContextFlags(ctx) & REDISMODULE_CTX_FLAGS_MASTER) {
@@ -295,6 +303,153 @@ static int cmdGetDels(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     return RedisModule_ReplyWithLongLong(ctx, dels);
 }
 
+/* Subkey notification callback */
+static void KeySpace_NotificationSubkeys(RedisModuleCtx *ctx, int type, const char *event,
+                                          RedisModuleString *key, RedisModuleString **subkeys, int count) {
+    REDISMODULE_NOT_USED(ctx);
+    REDISMODULE_NOT_USED(type);
+
+    if (subkey_log_count >= SUBKEY_LOG_MAX) return;
+
+    const char *key_str = RedisModule_StringPtrLen(key, NULL);
+
+    /* Format: "<event> <key> <count> <subkey1> <subkey2> ..." or "<event> <key> 0" */
+    char buf[512];
+    int off = snprintf(buf, sizeof(buf), "%s %s %d", event, key_str, count);
+    for (int i = 0; i < count && (size_t)off < sizeof(buf) - 1; i++) {
+        const char *sk = RedisModule_StringPtrLen(subkeys[i], NULL);
+        off += snprintf(buf + off, sizeof(buf) - off, " %s", sk);
+    }
+    snprintf(subkey_log[subkey_log_count], sizeof(subkey_log[0]), "%s", buf);
+    subkey_log_count++;
+}
+
+/* keyspace.get_subkey_events — return all logged subkey events as an array */
+static int cmdGetSubkeyEvents(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    RedisModule_ReplyWithArray(ctx, subkey_log_count);
+    for (int i = 0; i < subkey_log_count; i++) {
+        RedisModule_ReplyWithCString(ctx, subkey_log[i]);
+    }
+    return REDISMODULE_OK;
+}
+
+/* keyspace.reset_subkey_events — clear the log */
+static int cmdResetSubkeyEvents(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    subkey_log_count = 0;
+    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
+
+/* keyspace.notify_with_subkeys <key> <subkey1> [subkey2 ...] — trigger a module subkey notification */
+static int cmdNotifyWithSubkeys(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    if (argc < 3) return RedisModule_WrongArity(ctx);
+
+    RedisModuleString *key = argv[1];
+    RedisModuleString **subkeys = &argv[2];
+    int count = argc - 2;
+
+    RedisModule_NotifyKeyspaceEventWithSubkeys(ctx, REDISMODULE_NOTIFY_HASH, "module_subkey_event", key, subkeys, count);
+    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
+
+/* keyspace.subscribe_subkeys — subscribe with NONE flag (all events) */
+static int cmdSubscribeSubkeys(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    if (RedisModule_SubscribeToKeyspaceEventsWithSubkeys(ctx, REDISMODULE_NOTIFY_HASH | REDISMODULE_NOTIFY_GENERIC,
+                                                         REDISMODULE_NOTIFY_FLAG_NONE, KeySpace_NotificationSubkeys) != REDISMODULE_OK) {
+        return RedisModule_ReplyWithError(ctx, "ERR subscribe failed");
+    }
+    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
+
+/* keyspace.unsubscribe_subkeys — unsubscribe the subkey callback */
+static int cmdUnsubscribeSubkeys(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    if (RedisModule_UnsubscribeFromKeyspaceEventsWithSubkeys(ctx, REDISMODULE_NOTIFY_HASH | REDISMODULE_NOTIFY_GENERIC,
+                                                             REDISMODULE_NOTIFY_FLAG_NONE, KeySpace_NotificationSubkeys) != REDISMODULE_OK) {
+        return RedisModule_ReplyWithError(ctx, "ERR unsubscribe failed");
+    }
+    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
+
+/* keyspace.subscribe_require_subkeys — subscribe with SUBKEYS_REQUIRED flag */
+static int cmdSubscribeRequireSubkeys(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    if (RedisModule_SubscribeToKeyspaceEventsWithSubkeys(ctx, REDISMODULE_NOTIFY_HASH | REDISMODULE_NOTIFY_GENERIC,
+                                                         REDISMODULE_NOTIFY_FLAG_SUBKEYS_REQUIRED,
+                                                         KeySpace_NotificationSubkeys) != REDISMODULE_OK) {
+        return RedisModule_ReplyWithError(ctx, "ERR subscribe failed");
+    }
+    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
+
+/* keyspace.unsubscribe_require_subkeys — unsubscribe the SUBKEYS_REQUIRED callback */
+static int cmdUnsubscribeRequireSubkeys(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    if (RedisModule_UnsubscribeFromKeyspaceEventsWithSubkeys(ctx, REDISMODULE_NOTIFY_HASH | REDISMODULE_NOTIFY_GENERIC,
+                                                             REDISMODULE_NOTIFY_FLAG_SUBKEYS_REQUIRED,
+                                                             KeySpace_NotificationSubkeys) != REDISMODULE_OK) {
+        return RedisModule_ReplyWithError(ctx, "ERR unsubscribe failed");
+    }
+    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
+
+static RedisModuleNotificationFunc get_callback_for_event(int event_mask) {
+    switch(event_mask) {
+    case REDISMODULE_NOTIFY_LOADED:
+        return KeySpace_NotificationLoaded;
+    case REDISMODULE_NOTIFY_GENERIC:
+        return KeySpace_NotificationGeneric;
+    case REDISMODULE_NOTIFY_EXPIRED:
+        return KeySpace_NotificationExpired;
+    case REDISMODULE_NOTIFY_MODULE:
+        return KeySpace_NotificationModule;
+    case REDISMODULE_NOTIFY_KEY_MISS:
+        return KeySpace_NotificationModuleKeyMiss;
+    case REDISMODULE_NOTIFY_STRING:
+        // We have two callbacks for STRING events in your OnLoad,
+        // For simplicity, pick the first:
+        return KeySpace_NotificationModuleString;
+    default:
+        return NULL;
+    }
+}
+
+int GetCallbackCountCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    RedisModule_ReplyWithLongLong(ctx, callback_call_count);
+    return REDISMODULE_OK;
+}
+
+static int CmdUnsub(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    if (argc != 2) {
+        return RedisModule_WrongArity(ctx);
+    }
+
+    long long event_mask;
+    if (RedisModule_StringToLongLong(argv[1], &event_mask) != REDISMODULE_OK) {
+        return RedisModule_ReplyWithError(ctx, "ERR invalid event mask");
+    }
+
+    RedisModuleNotificationFunc cb = get_callback_for_event((int)event_mask);
+    if (cb == NULL) {
+        return RedisModule_ReplyWithError(ctx, "ERR unknown event mask");
+    }
+
+    if (RedisModule_UnsubscribeFromKeyspaceEvents(ctx, (int)event_mask, cb) != REDISMODULE_OK) {
+        return RedisModule_ReplyWithError(ctx, "ERR unsubscribe failed");
+    }
+
+    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
 /* This function must be present on each Redis module. It is used in order to
  * register the commands into the Redis server. */
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
@@ -356,17 +511,17 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
                                   "write", 0, 0, 0) == REDISMODULE_ERR){
         return REDISMODULE_ERR;
     }
-    
+
     if (RedisModule_CreateCommand(ctx, "keyspace.incr_case1", cmdIncrCase1,
                                   "write", 0, 0, 0) == REDISMODULE_ERR){
         return REDISMODULE_ERR;
     }
-    
+
     if (RedisModule_CreateCommand(ctx, "keyspace.incr_case2", cmdIncrCase2,
                                   "write", 0, 0, 0) == REDISMODULE_ERR){
         return REDISMODULE_ERR;
     }
-    
+
     if (RedisModule_CreateCommand(ctx, "keyspace.incr_case3", cmdIncrCase3,
                                   "write", 0, 0, 0) == REDISMODULE_ERR){
         return REDISMODULE_ERR;
@@ -379,6 +534,42 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
 
     if (RedisModule_CreateCommand(ctx, "keyspace.get_dels", cmdGetDels,
                                   "readonly", 0, 0, 0) == REDISMODULE_ERR){
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.unsubscribe", CmdUnsub, "write", 0, 0, 0) == REDISMODULE_ERR){
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.callback_count", GetCallbackCountCommand, "", 0, 0, 0)== REDISMODULE_ERR){
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.subscribe_subkeys", cmdSubscribeSubkeys, "", 0, 0, 0) == REDISMODULE_ERR) {
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.unsubscribe_subkeys", cmdUnsubscribeSubkeys, "", 0, 0, 0) == REDISMODULE_ERR) {
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.get_subkey_events", cmdGetSubkeyEvents, "readonly", 0, 0, 0) == REDISMODULE_ERR) {
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.reset_subkey_events", cmdResetSubkeyEvents, "", 0, 0, 0) == REDISMODULE_ERR) {
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.notify_with_subkeys", cmdNotifyWithSubkeys, "write", 0, 0, 0) == REDISMODULE_ERR) {
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.subscribe_require_subkeys", cmdSubscribeRequireSubkeys, "", 0, 0, 0) == REDISMODULE_ERR) {
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(ctx, "keyspace.unsubscribe_require_subkeys", cmdUnsubscribeRequireSubkeys, "", 0, 0, 0) == REDISMODULE_ERR) {
         return REDISMODULE_ERR;
     }
 

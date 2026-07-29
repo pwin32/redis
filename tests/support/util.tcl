@@ -1,3 +1,17 @@
+#
+# Copyright (c) 2009-Present, Redis Ltd.
+# All rights reserved.
+#
+# Copyright (c) 2024-present, Valkey contributors.
+# All rights reserved.
+#
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
+#
+# Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
+#
+
 if {![info exists ::test_null_device]} {
     if {$::tcl_platform(platform) eq "windows"} {
         set ::test_null_device "NUL"
@@ -64,14 +78,19 @@ proc sanitizer_errors_from_file {filename} {
     set lines [split [exec cat $filename] "\n"]
 
     foreach line $lines {
-        # Ignore huge allocation warnings
+        # Ignore huge allocation warnings for both ASan and MSan
         if ([string match {*WARNING: AddressSanitizer failed to allocate*} $line]) {
+            continue
+        }
+
+        if ([string match {*WARNING: MemorySanitizer failed to allocate*} $line]) {
             continue
         }
 
         # GCC UBSAN output does not contain 'Sanitizer' but 'runtime error'.
         if {[string match {*runtime error*} $line] ||
-            [string match {*Sanitizer*} $line]} {
+            [string match {*Sanitizer*} $line] ||
+            [string match {*<jemalloc>:*size mismatch*} $line]} {
             return $log
         }
     }
@@ -119,23 +138,42 @@ proc waitForBgrewriteaof r {
 }
 
 proc wait_for_sync r {
-    wait_for_condition 50 100 {
+    set maxtries 50
+    # tsan adds significant overhead to the execution time, so we increase the
+    # wait time here JIC
+    if {$::tsan} {
+        set maxtries 100
+    }
+
+    wait_for_condition $maxtries 100 {
         [status $r master_link_status] eq "up"
     } else {
         fail "replica didn't sync in time"
     }
 }
 
-proc wait_replica_online r {
-    wait_for_condition 50 100 {
-        [string match "*slave0:*,state=online*" [$r info replication]]
+proc wait_replica_online {r {replica_id 0} {maxtries 50} {delay 100}} {
+    # tsan adds significant overhead to the execution time, so we increase the
+    # wait time here JIC
+    if {$::tsan} {
+        set maxtries [expr {$maxtries * 2}]
+    }
+
+    wait_for_condition $maxtries $delay {
+        [string match "*slave$replica_id:*,state=online*" [$r info replication]]
     } else {
-        fail "replica didn't online in time"
+        fail "replica $replica_id did not become online in time"
     }
 }
 
 proc wait_for_ofs_sync {r1 r2} {
-    wait_for_condition 50 100 {
+    set maxtries 50
+    # tsan adds significant overhead to the execution time, so we increase the
+    # wait time here JIC
+    if {$::tsan} {
+        set maxtries 100
+    }
+    wait_for_condition $maxtries 100 {
         [status $r1 master_repl_offset] eq [status $r2 master_repl_offset]
     } else {
         fail "replica offset didn't match in time"
@@ -573,10 +611,13 @@ proc find_valgrind_errors {stderr on_termination} {
 }
 
 # Execute a background process writing random data for the specified number
-# of seconds to the specified Redis instance.
-proc start_write_load {host port seconds} {
+# of seconds to the specified Redis instance. If key is omitted, a random key
+# is used for every SET command.
+# ignore_error_reply (default 0): set non-zero in cluster slot-migration tests to tolerate
+# MOVED/ASK replies while draining pipelined writes in the load helper.
+proc start_write_load {host port seconds {key ""} {size 0} {sleep 0} {ignore_error_reply 0}} {
     set tclsh [info nameofexecutable]
-    exec $tclsh tests/helpers/gen_write_load.tcl $host $port $seconds $::tls &
+    exec $tclsh tests/helpers/gen_write_load.tcl $host $port $seconds $::tls $key $size $sleep $ignore_error_reply &
 }
 
 # Stop a process generating write load executed with start_write_load.
@@ -592,7 +633,7 @@ proc wait_load_handlers_disconnected {{level 0}} {
     }
 }
 
-proc K { x y } { set x } 
+proc K { x y } { set x }
 
 # Shuffle a list with Fisher-Yates algorithm.
 proc lshuffle {list} {
@@ -685,6 +726,26 @@ proc process_is_alive pid {
     }
 }
 
+proc get_system_name {} {
+    return [string tolower [exec uname -s]]
+}
+
+proc get_proc_state {pid} {
+    if {[get_system_name] eq {sunos}} {
+        return [exec ps -o s= -p $pid]
+    } else {
+        return [exec ps -o state= -p $pid]
+    }
+}
+
+proc get_proc_job {pid} {
+    if {[get_system_name] eq {sunos}} {
+        return [exec ps -l -p $pid]
+    } else {
+        return [exec ps j $pid]
+    }
+}
+
 proc get_qfork_child_pid {idx} {
     if {$::tcl_platform(platform) eq "windows"} {
         set parent_pid [srv $idx pid]
@@ -725,18 +786,39 @@ if {$::tcl_platform(platform) eq "windows"} {
         windows_control_process Resume $pid
     }
 } else {
-    proc pause_process pid {
+    proc pause_process {pid} {
         exec kill -SIGSTOP $pid
         wait_for_condition 50 100 {
-            [string match {*T*} [lindex [exec ps j $pid] 16]]
+            [string match "T*" [get_proc_state $pid]]
         } else {
-            puts [exec ps j $pid]
+            puts [get_proc_job $pid]
             fail "process didn't stop"
         }
     }
 
-    proc resume_process pid {
-        exec kill -SIGCONT $pid
+    proc resume_process {pid} {
+        wait_for_condition 50 1000 {
+            [string match "T*" [get_proc_state $pid]]
+        } else {
+            puts [get_proc_job $pid]
+            fail "process was not stopped"
+        }
+        set max_attempts 10
+        set attempt 0
+        while {($attempt < $max_attempts) && [string match "T*" [get_proc_state $pid]]} {
+            exec kill -SIGCONT $pid
+
+            incr attempt
+            after 100
+        }
+
+        wait_for_condition 50 1000 {
+            [string match "R*" [get_proc_state $pid]] ||
+            [string match "S*" [get_proc_state $pid]]
+        } else {
+            puts [get_proc_job $pid]
+            fail "process was not resumed"
+        }
     }
 }
 
@@ -758,7 +840,17 @@ proc latencyrstat_percentiles {cmd r} {
     }
 }
 
-proc generate_fuzzy_traffic_on_key {key duration} {
+proc get_io_thread_clients {id {client r}} {
+    set pattern "io_thread_$id:clients=(\[0-9\]+)"
+    set info [$client info threads]
+    if {[regexp $pattern $info _ value]} {
+        return $value
+    } else {
+        return -1
+    }
+}
+
+proc generate_fuzzy_traffic_on_key {key type duration} {
     # Commands per type, blocking commands removed
     # TODO: extract these from COMMAND DOCS, and improve to include other types
     set string_commands {APPEND BITCOUNT BITFIELD BITOP BITPOS DECR DECRBY GET GETBIT GETRANGE GETSET INCR INCRBY INCRBYFLOAT MGET MSET MSETNX PSETEX SET SETBIT SETEX SETNX SETRANGE LCS STRLEN}
@@ -766,10 +858,15 @@ proc generate_fuzzy_traffic_on_key {key duration} {
     set zset_commands {ZADD ZCARD ZCOUNT ZINCRBY ZINTERSTORE ZLEXCOUNT ZPOPMAX ZPOPMIN ZRANGE ZRANGEBYLEX ZRANGEBYSCORE ZRANK ZREM ZREMRANGEBYLEX ZREMRANGEBYRANK ZREMRANGEBYSCORE ZREVRANGE ZREVRANGEBYLEX ZREVRANGEBYSCORE ZREVRANK ZSCAN ZSCORE ZUNIONSTORE ZRANDMEMBER}
     set list_commands {LINDEX LINSERT LLEN LPOP LPOS LPUSH LPUSHX LRANGE LREM LSET LTRIM RPOP RPOPLPUSH RPUSH RPUSHX}
     set set_commands {SADD SCARD SDIFF SDIFFSTORE SINTER SINTERSTORE SISMEMBER SMEMBERS SMOVE SPOP SRANDMEMBER SREM SSCAN SUNION SUNIONSTORE}
-    set stream_commands {XACK XADD XCLAIM XDEL XGROUP XINFO XLEN XPENDING XRANGE XREAD XREADGROUP XREVRANGE XTRIM}
-    set commands [dict create string $string_commands hash $hash_commands zset $zset_commands list $list_commands set $set_commands stream $stream_commands]
+    set stream_commands {XACK XADD XCLAIM XDEL XGROUP XINFO XLEN XPENDING XRANGE XREAD XREADGROUP XREVRANGE XTRIM XDELEX XACKDEL XNACK}
+    set vset_commands {VADD VREM}
+    set array_commands {ARSET ARGET ARDEL ARCOUNT ARMSET ARMGET ARGETRANGE ARDELRANGE ARINFO}
+    set commands [dict create string $string_commands hash $hash_commands zset $zset_commands list $list_commands set $set_commands stream $stream_commands vectorset $vset_commands array $array_commands]
+if 0 {
+    set gcra_commands {GCRA}
+    dict set commands gcra $gcra_commands
+}
 
-    set type [r type $key]
     set cmds [dict get $commands $type]
     set start_time [clock seconds]
     set sent {}
@@ -818,6 +915,61 @@ proc generate_fuzzy_traffic_on_key {key duration} {
             lappend cmd [randomValue]
             incr i 4
         }
+        if {$cmd == "VADD"} {
+            lappend cmd $key
+            lappend cmd VALUES 3 1 1 1
+            lappend cmd [randomValue]
+            incr i 7
+        }
+        if {$cmd == "VREM"} {
+            lappend cmd $key
+            lappend cmd [randomValue]
+            incr i 2
+        }
+        # Array commands need integer indices
+        if {$cmd == "ARSET"} {
+            lappend cmd $key
+            lappend cmd [randomInt 100000]  ;# index
+            lappend cmd [randomValue]       ;# value
+            incr i 3
+        }
+        if {$cmd == "ARGET" || $cmd == "ARDEL"} {
+            lappend cmd $key
+            lappend cmd [randomInt 100000]  ;# index
+            incr i 2
+        }
+        if {$cmd == "ARCOUNT" || $cmd == "ARINFO"} {
+            lappend cmd $key
+            incr i 1
+        }
+        if {$cmd == "ARMSET"} {
+            lappend cmd $key
+            # Add 2-4 index/value pairs
+            set npairs [expr {int(rand() * 3) + 2}]
+            for {set p 0} {$p < $npairs} {incr p} {
+                lappend cmd [randomInt 100000]
+                lappend cmd [randomValue]
+            }
+            incr i [expr {1 + $npairs * 2}]
+        }
+        if {$cmd == "ARMGET"} {
+            lappend cmd $key
+            # Add 2-4 indices
+            set nidx [expr {int(rand() * 3) + 2}]
+            for {set p 0} {$p < $nidx} {incr p} {
+                lappend cmd [randomInt 100000]
+            }
+            incr i [expr {1 + $nidx}]
+        }
+        if {$cmd == "ARGETRANGE" || $cmd == "ARDELRANGE"} {
+            lappend cmd $key
+            set idx1 [randomInt 100000]
+            set idx2 [expr {$idx1 + [randomInt 1000]}]
+            lappend cmd $idx1
+            lappend cmd $idx2
+            incr i 3
+        }
+
         for {} {$i < $arity} {incr i} {
             if {$i == $firstkey || $i == $lastkey} {
                 lappend cmd $key
@@ -994,7 +1146,7 @@ proc wait_for_blocked_clients_count {count {maxtries 100} {delay 10} {idx 0}} {
     wait_for_condition $maxtries $delay  {
         [s $idx blocked_clients] == $count
     } else {
-        fail "Timeout waiting for blocked clients"
+        fail "Timeout waiting for blocked clients (expected $count, actual [s $idx blocked_clients])"
     }
 }
 
@@ -1174,6 +1326,15 @@ proc memory_usage {key} {
     return $usage
 }
 
+# Test if the server supports the specified command.
+proc server_has_command {cmd_wanted} {
+    set lowercase_commands {}
+    foreach cmd [r command list] {
+        lappend lowercase_commands [string tolower $cmd]
+    }
+    expr {[lsearch $lowercase_commands [string tolower $cmd_wanted]] != -1}
+}
+
 # forward compatibility, lmap missing in TCL 8.5
 proc lmap args {
     set body [lindex $args end]
@@ -1205,7 +1366,13 @@ proc format_command {args} {
 }
 # Returns whether or not the system supports stack traces
 proc system_backtrace_supported {} {
-    set system_name [string tolower [exec uname -s]]
+    # Thread sanitizer reports backtrace_symbols_fd() as
+    # signal-unsafe since it allocates memory
+    if {$::tsan} {
+        return 0
+    }
+
+    set system_name [get_system_name]
     if {$system_name eq {darwin}} {
         return 1
     } elseif {$system_name ne {linux}} {

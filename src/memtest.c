@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 #ifdef _WIN32
 #include "Win32_Interop/Win32_Portability.h"
@@ -41,16 +42,6 @@
 #else
 #define ULONG_ONEZERO 0xaaaaaaaaaaaaaaaaUL
 #define ULONG_ZEROONE 0x5555555555555555UL
-#endif
-
-#if defined(__has_attribute)
-#if __has_attribute(no_sanitize)
-#define NO_SANITIZE(sanitizer) __attribute__((no_sanitize(sanitizer)))
-#endif
-#endif
-
-#if !defined(NO_SANITIZE)
-#define NO_SANITIZE(sanitizer)
 #endif
 
 #ifdef _WIN32
@@ -283,7 +274,7 @@ int memtest_test(uintptr_t *m, size_t bytes, int passes, int interactive) {
  * the cache. */
 #define MEMTEST_DECACHE_SIZE (1024*8)
 
-NO_SANITIZE("undefined")
+REDIS_NO_SANITIZE("undefined")
 int memtest_preserving_test(void *memory, size_t bytes, int passes) {
     uintptr_t *m = memory;
     uintptr_t backup[MEMTEST_BACKUP_WORDS];

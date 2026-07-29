@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifdef _WIN32
@@ -16,6 +17,7 @@
 #include "bio.h"
 #include "rio.h"
 #include "functions.h"
+#include "cluster_asm.h"
 
 #include <signal.h>
 #include <fcntl.h>
@@ -72,6 +74,13 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath);
 void aofManifestFreeAndUpdate(aofManifest *am);
 void aof_background_fsync_and_close(int fd);
 
+/* When we call 'startAppendOnly', we will create a temp INCR AOF, and rename
+ * it to the real INCR AOF name when the AOFRW is done, so if want to know the
+ * accurate start offset of the INCR AOF, we need to record it when we create
+ * the temp INCR AOF. This variable is used to record the start offset, and
+ * set the start offset of the real INCR AOF when the AOFRW is done. */
+static long long tempIncAofStartReplOffset = 0;
+
 /* ----------------------------------------------------------------------------
  * AOF Manifest file implementation.
  *
@@ -115,10 +124,15 @@ void aof_background_fsync_and_close(int fd);
 #define AOF_MANIFEST_KEY_FILE_NAME   "file"
 #define AOF_MANIFEST_KEY_FILE_SEQ    "seq"
 #define AOF_MANIFEST_KEY_FILE_TYPE   "type"
+#define AOF_MANIFEST_KEY_FILE_STARTOFFSET "startoffset"
+#define AOF_MANIFEST_KEY_FILE_ENDOFFSET   "endoffset"
 
 /* Create an empty aofInfo. */
 aofInfo *aofInfoCreate(void) {
-    return zcalloc(sizeof(aofInfo));
+    aofInfo *ai = zcalloc(sizeof(aofInfo));
+    ai->start_offset = -1;
+    ai->end_offset = -1;
+    return ai;
 }
 
 /* Free the aofInfo structure (pointed to by ai) and its embedded file_name. */
@@ -135,6 +149,8 @@ aofInfo *aofInfoDup(aofInfo *orig) {
     ai->file_name = sdsdup(orig->file_name);
     ai->file_seq = orig->file_seq;
     ai->file_type = orig->file_type;
+    ai->start_offset = orig->start_offset;
+    ai->end_offset = orig->end_offset;
     return ai;
 }
 
@@ -147,10 +163,19 @@ sds aofInfoFormat(sds buf, aofInfo *ai) {
     if (sdsneedsrepr(ai->file_name))
         filename_repr = sdscatrepr(sdsempty(), ai->file_name, sdslen(ai->file_name));
 
-    sds ret = sdscatprintf(buf, "%s %s %s %lld %s %c\n",
+    sds ret = sdscatprintf(buf, "%s %s %s %lld %s %c",
         AOF_MANIFEST_KEY_FILE_NAME, filename_repr ? filename_repr : ai->file_name,
         AOF_MANIFEST_KEY_FILE_SEQ, ai->file_seq,
         AOF_MANIFEST_KEY_FILE_TYPE, ai->file_type);
+
+    if (ai->start_offset != -1) {
+        ret = sdscatprintf(ret, " %s %lld", AOF_MANIFEST_KEY_FILE_STARTOFFSET, ai->start_offset);
+        if (ai->end_offset != -1) {
+            ret = sdscatprintf(ret, " %s %lld", AOF_MANIFEST_KEY_FILE_ENDOFFSET, ai->end_offset);
+        }
+    }
+
+    ret = sdscatlen(ret, "\n", 1);
     sdsfree(filename_repr);
 
     return ret;
@@ -197,6 +222,19 @@ sds getTempAofManifestFileName(void) {
                 server.aof_filename, MANIFEST_NAME_SUFFIX);
 }
 
+sds appendAofInfoFromList(sds buf, list *aofList) {
+    listNode *ln;
+    listIter li;
+
+    listRewind(aofList, &li);
+    while ((ln = listNext(&li)) != NULL) {
+        aofInfo *ai = (aofInfo*)ln->value;
+        buf = aofInfoFormat(buf, ai);
+    }
+
+    return buf;
+}
+
 /* Returns the string representation of aofManifest pointed to by am.
  *
  * The string is multiple lines separated by '\n', and each line represents
@@ -216,8 +254,6 @@ sds getAofManifestAsString(aofManifest *am) {
     serverAssert(am != NULL);
 
     sds buf = sdsempty();
-    listNode *ln;
-    listIter li;
 
     /* 1. Add BASE File information, it is always at the beginning
      * of the manifest file. */
@@ -226,18 +262,10 @@ sds getAofManifestAsString(aofManifest *am) {
     }
 
     /* 2. Add HISTORY type AOF information. */
-    listRewind(am->history_aof_list, &li);
-    while ((ln = listNext(&li)) != NULL) {
-        aofInfo *ai = (aofInfo*)ln->value;
-        buf = aofInfoFormat(buf, ai);
-    }
+    buf = appendAofInfoFromList(buf, am->history_aof_list);
 
     /* 3. Add INCR type AOF information. */
-    listRewind(am->incr_aof_list, &li);
-    while ((ln = listNext(&li)) != NULL) {
-        aofInfo *ai = (aofInfo*)ln->value;
-        buf = aofInfoFormat(buf, ai);
-    }
+    buf = appendAofInfoFromList(buf, am->incr_aof_list);
 
     return buf;
 }
@@ -346,6 +374,10 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath) {
                 ai->file_seq = atoll(argv[i+1]);
             } else if (!strcasecmp(argv[i], AOF_MANIFEST_KEY_FILE_TYPE)) {
                 ai->file_type = (argv[i+1])[0];
+            } else if (!strcasecmp(argv[i], AOF_MANIFEST_KEY_FILE_STARTOFFSET)) {
+                ai->start_offset = atoll(argv[i+1]);
+            } else if (!strcasecmp(argv[i], AOF_MANIFEST_KEY_FILE_ENDOFFSET)) {
+                ai->end_offset = atoll(argv[i+1]);
             }
             /* else if (!strcasecmp(argv[i], AOF_MANIFEST_KEY_OTHER)) {} */
         }
@@ -475,12 +507,13 @@ sds getNewBaseFileNameAndMarkPreAsHistory(aofManifest *am) {
  * for example:
  *  appendonly.aof.1.incr.aof
  */
-sds getNewIncrAofName(aofManifest *am) {
+sds getNewIncrAofName(aofManifest *am, long long start_reploff) {
     aofInfo *ai = aofInfoCreate();
     ai->file_type = AOF_FILE_TYPE_INCR;
     ai->file_name = sdscatprintf(sdsempty(), "%s.%lld%s%s", server.aof_filename,
                         ++am->curr_incr_file_seq, INCR_FILE_SUFFIX, AOF_FORMAT_SUFFIX);
     ai->file_seq = am->curr_incr_file_seq;
+    ai->start_offset = start_reploff;
     listAddNodeTail(am->incr_aof_list, ai);
     am->dirty = 1;
     return ai->file_name;
@@ -498,7 +531,7 @@ sds getLastIncrAofName(aofManifest *am) {
 
     /* If 'incr_aof_list' is empty, just create a new one. */
     if (!listLength(am->incr_aof_list)) {
-        return getNewIncrAofName(am);
+        return getNewIncrAofName(am, server.master_repl_offset);
     }
 
     /* Or return the last one. */
@@ -883,10 +916,11 @@ int openNewIncrAofForAppend(void) {
     if (server.aof_state == AOF_WAIT_REWRITE) {
         /* Use a temporary INCR AOF file to accumulate data during AOF_WAIT_REWRITE. */
         new_aof_name = getTempIncrAofName();
+        tempIncAofStartReplOffset = server.master_repl_offset;
     } else {
         /* Dup a temp aof_manifest to modify. */
         temp_am = aofManifestDup(server.aof_manifest);
-        new_aof_name = sdsdup(getNewIncrAofName(temp_am));
+        new_aof_name = sdsdup(getNewIncrAofName(temp_am, server.master_repl_offset));
     }
     sds new_aof_filepath = makePath(server.aof_dirname, new_aof_name);
 #ifdef _WIN32
@@ -940,6 +974,50 @@ cleanup:
     if (newfd != -1) close(newfd);
     if (temp_am) aofManifestFree(temp_am);
     return C_ERR;
+}
+
+/* When we close gracefully the AOF file, we have the chance to persist the
+ * end replication offset of current INCR AOF. */
+void updateCurIncrAofEndOffset(void) {
+    if (server.aof_state != AOF_ON) return;
+    serverAssert(server.aof_manifest != NULL);
+
+    if (listLength(server.aof_manifest->incr_aof_list) == 0) return;
+    aofInfo *ai = listNodeValue(listLast(server.aof_manifest->incr_aof_list));
+    ai->end_offset = server.master_repl_offset;
+    server.aof_manifest->dirty = 1;
+    /* It doesn't matter if the persistence fails since this information is not
+     * critical, we can get an approximate value by start offset plus file size. */
+    persistAofManifest(server.aof_manifest);
+}
+
+/* After loading AOF data, we need to update the `server.master_repl_offset`
+ * based on the information of the last INCR AOF, to avoid the rollback of
+ * the start offset of new INCR AOF. */
+void updateReplOffsetAndResetEndOffset(void) {
+    if (server.aof_state != AOF_ON) return;
+    serverAssert(server.aof_manifest != NULL);
+
+    /* If the INCR file has an end offset, we directly use it, and clear it
+     * to avoid the next time we load the manifest file, we will use the same
+     * offset, but the real offset may have advanced. */
+    if (listLength(server.aof_manifest->incr_aof_list) == 0) return;
+    aofInfo *ai = listNodeValue(listLast(server.aof_manifest->incr_aof_list));
+    if (ai->end_offset != -1) {
+        server.master_repl_offset = ai->end_offset;
+        ai->end_offset = -1;
+        server.aof_manifest->dirty = 1;
+        /* We must update the end offset of INCR file correctly, otherwise we
+         * may keep wrong information in the manifest file, since we continue
+         * to append data to the same INCR file. */
+        if (persistAofManifest(server.aof_manifest) != AOF_OK)
+            exit(1);
+    } else {
+        /* If the INCR file doesn't have an end offset, we need to calculate
+         * the replication offset by the start offset plus the file size. */
+        server.master_repl_offset = (ai->start_offset == -1 ? 0 : ai->start_offset) +
+                                    getAppendOnlyFileSize(ai->file_name, NULL);
+    }
 }
 
 /* Whether to limit the execution of Background AOF rewrite.
@@ -1055,6 +1133,7 @@ void stopAppendOnly(void) {
             server.aof_last_fsync = server.mstime;
         }
         close(server.aof_fd);
+        updateCurIncrAofEndOffset();
         server.aof_fd = -1;
     }
 
@@ -1119,6 +1198,29 @@ int startAppendOnly(void) {
         server.aof_last_write_status = C_OK;
     }
     return C_OK;
+}
+
+void startAppendOnlyWithRetry(void) {
+    unsigned int tries, max_tries = 10;
+    for (tries = 0; tries < max_tries; ++tries) {
+        if (startAppendOnly() == C_OK)
+            break;
+        serverLog(LL_WARNING, "Failed to enable AOF! Trying it again in one second.");
+        sleep(1);
+    }
+    if (tries == max_tries) {
+        serverLog(LL_WARNING, "FATAL: AOF can't be turned on. Exiting now.");
+        exit(1);
+    }
+}
+
+/* Called after "appendonly" config is changed. */
+void applyAppendOnlyConfig(void) {
+    if (!server.aof_enabled && server.aof_state != AOF_OFF) {
+        stopAppendOnly();
+    } else if (server.aof_enabled && server.aof_state == AOF_OFF) {
+        startAppendOnlyWithRetry();
+    }
 }
 
 /* This is a wrapper to the write syscall in order to retry on short writes
@@ -1497,6 +1599,29 @@ struct client *createAOFClient(void) {
     return c;
 }
 
+static int truncateAppendOnlyFile(char *filename, off_t valid_up_to) {
+    if (valid_up_to == -1) {
+        serverLog(LL_WARNING,"Last valid command offset is invalid");
+        return 0;
+    }
+
+    if (truncate(filename, valid_up_to) == -1) {
+        serverLog(LL_WARNING,"Error truncating the AOF file %s: %s",
+            filename, strerror(errno));
+        return 0;
+    }
+
+    /* Make sure the AOF file descriptor points to the end of the
+     * file after the truncate call. */
+    if (server.aof_fd != -1 && lseek(server.aof_fd, 0, SEEK_END) == -1) {
+        serverLog(LL_WARNING,"Can't seek the end of the AOF file %s: %s",
+            filename, strerror(errno));
+        return 0;
+    }
+
+    return 1; /* Success */
+}
+
 /* Replay an append log file. On success AOF_OK or AOF_TRUNCATED is returned,
  * otherwise, one of the following is returned:
  * AOF_OPEN_ERR: Failed to open the AOF file.
@@ -1663,12 +1788,24 @@ int loadSingleAppendOnlyFile(char *filename) {
         if (fakeClient->flags & CLIENT_MULTI &&
             fakeClient->cmd->proc != execCommand)
         {
+            /* queueMultiCommand requires a pendingCommand, so we create a "fake" one here
+             * for it to consume */
+            pendingCommand *pcmd = zmalloc(sizeof(pendingCommand));
+            initPendingCommand(pcmd);
+            addPendingCommand(&fakeClient->pending_cmds, pcmd);
+
+            pcmd->argc = argc;
+            pcmd->argv_len = argc;
+            pcmd->argv = argv;
+            pcmd->cmd = cmd;
+
             /* Note: we don't have to attempt calling evalGetCommandFlags,
              * since this is AOF, the checks in processCommand are not made
              * anyway.*/
             queueMultiCommand(fakeClient, cmd->flags);
         } else {
             cmd->proc(fakeClient);
+            fakeClient->all_argv_len_sum = 0; /* Otherwise no one cleans this up and we reach cleanup with it non-zero */
         }
 
         /* The fake client should not have a reply */
@@ -1681,7 +1818,7 @@ int loadSingleAppendOnlyFile(char *filename) {
         /* Clean up. Command code may have changed argv/argc so we use the
          * argv/argc of the client instead of the local variables. */
         freeClientArgv(fakeClient);
-        if (server.aof_load_truncated) valid_up_to = ftello(fp);
+        if (server.aof_load_truncated || server.aof_load_corrupt_tail_max_size) valid_up_to = ftello(fp);
         if (server.key_load_delay)
             debugDelay(server.key_load_delay);
     }
@@ -1714,25 +1851,10 @@ uxeof: /* Unexpected AOF end of file. */
         serverLog(LL_WARNING,"!!! Warning: short read while loading the AOF file %s!!!", filename);
         serverLog(LL_WARNING,"!!! Truncating the AOF %s at offset %llu !!!",
             filename, (unsigned long long) valid_up_to);
-        if (valid_up_to == -1 || truncate(aof_filepath,valid_up_to) == -1) {
-            if (valid_up_to == -1) {
-                serverLog(LL_WARNING,"Last valid command offset is invalid");
-            } else {
-                serverLog(LL_WARNING,"Error truncating the AOF file %s: %s",
-                    filename, strerror(errno));
-            }
-        } else {
-            /* Make sure the AOF file descriptor points to the end of the
-             * file after the truncate call. */
-            if (server.aof_fd != -1 && lseek(server.aof_fd,0,SEEK_END) == -1) {
-                serverLog(LL_WARNING,"Can't seek the end of the AOF file %s: %s",
-                    filename, strerror(errno));
-            } else {
-                serverLog(LL_WARNING,
-                    "AOF %s loaded anyway because aof-load-truncated is enabled", filename);
-                ret = AOF_TRUNCATED;
-                goto loaded_ok;
-            }
+        if (truncateAppendOnlyFile(aof_filepath, valid_up_to)) {
+            serverLog(LL_WARNING, "AOF %s loaded anyway because aof-load-truncated is enabled", aof_filepath);
+            ret = AOF_TRUNCATED;
+            goto loaded_ok;
         }
     }
     serverLog(LL_WARNING, "Unexpected end of file reading the append only file %s. You can: "
@@ -1742,8 +1864,22 @@ uxeof: /* Unexpected AOF end of file. */
     goto cleanup;
 
 fmterr: /* Format error. */
-    serverLog(LL_WARNING, "Bad file format reading the append only file %s: "
-        "make a backup of your AOF file, then use ./redis-check-aof --fix <filename.manifest>", filename);
+    /* fmterr may be caused by accidentally machine shutdown, so if the broken tail
+     * is less than a specified size, try to recover it automatically */
+    if (server.aof_load_corrupt_tail_max_size && sb.st_size - valid_up_to < server.aof_load_corrupt_tail_max_size) {
+        serverLog(LL_WARNING,"!!! Warning: corrupt AOF file tail!!!");
+        serverLog(LL_WARNING,"!!! Truncating the AOF %s at offset %llu (remaining %llu) !!!",
+            aof_filepath, (unsigned long long) valid_up_to, (unsigned long long) sb.st_size - valid_up_to);
+        if (truncateAppendOnlyFile(aof_filepath, valid_up_to)) {
+            serverLog(LL_WARNING, "AOF %s loaded anyway because aof-load-corrupt-tail-max-size is enabled", aof_filepath);
+            ret = AOF_BROKEN_RECOVERED;
+            goto loaded_ok;
+        }
+    }
+    serverLog(LL_WARNING, "Bad file format reading the append only file %s at offset %llu. \
+         make a backup of your AOF file, then use ./redis-check-aof --fix <filename.manifest>. \
+         Alternatively you can set the 'aof-load-corrupt-tail-max-size' configuration option to %llu and restart the server.",
+         aof_filepath, (unsigned long long)valid_up_to, (unsigned long long) sb.st_size - valid_up_to);
     ret = AOF_FAILED;
     /* fall through to cleanup. */
 
@@ -1751,7 +1887,10 @@ cleanup:
     if (fakeClient) freeClient(fakeClient);
     server.current_client = old_cur_client;
     server.executing_client = old_exec_client;
+    int fd = dup(fileno(fp));
     fclose(fp);
+    /* Reclaim page cache memory used by the AOF file in background. */
+    if (fd >= 0) bioCreateCloseJob(fd, 0, 1);
     sdsfree(aof_filepath);
     return ret;
 }
@@ -1814,13 +1953,13 @@ int loadAppendOnlyFiles(aofManifest *am) {
         last_file = ++aof_num == total_num;
         start = ustime();
         ret = loadSingleAppendOnlyFile(aof_name);
-        if (ret == AOF_OK || (ret == AOF_TRUNCATED && last_file)) {
+        if (ret == AOF_OK || ((ret == AOF_TRUNCATED || ret == AOF_BROKEN_RECOVERED) && last_file)) {
             serverLog(LL_NOTICE, "DB loaded from base file %s: %.3f seconds",
                 aof_name, (float)(ustime()-start)/1000000);
         }
 
         /* If the truncated file is not the last file, we consider this to be a fatal error. */
-        if (ret == AOF_TRUNCATED && !last_file) {
+        if ((ret == AOF_TRUNCATED || ret == AOF_BROKEN_RECOVERED) && !last_file) {
             ret = AOF_FAILED;
             serverLog(LL_WARNING, "Fatal error: the truncated file is not the last file");
         }
@@ -1844,7 +1983,7 @@ int loadAppendOnlyFiles(aofManifest *am) {
             last_file = ++aof_num == total_num;
             start = ustime();
             ret = loadSingleAppendOnlyFile(aof_name);
-            if (ret == AOF_OK || (ret == AOF_TRUNCATED && last_file)) {
+            if (ret == AOF_OK || ((ret == AOF_TRUNCATED || ret == AOF_BROKEN_RECOVERED) && last_file)) {
                 serverLog(LL_NOTICE, "DB loaded from incr file %s: %.3f seconds",
                     aof_name, (float)(ustime()-start)/1000000);
             }
@@ -1854,7 +1993,7 @@ int loadAppendOnlyFiles(aofManifest *am) {
             if (ret == AOF_EMPTY) ret = AOF_OK;
 
             /* If the truncated file is not the last file, we consider this to be a fatal error. */
-            if (ret == AOF_TRUNCATED && !last_file) {
+            if ((ret == AOF_TRUNCATED || ret == AOF_BROKEN_RECOVERED) && !last_file) {
                 ret = AOF_FAILED;
                 serverLog(LL_WARNING, "Fatal error: the truncated file is not the last file");
             }
@@ -1905,9 +2044,10 @@ int rioWriteBulkObject(rio *r, robj *obj) {
 int rewriteListObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = listTypeLength(o);
 
-    listTypeIterator *li = listTypeInitIterator(o,0,LIST_TAIL);
+    listTypeIterator li;
     listTypeEntry entry;
-    while (listTypeNext(li,&entry)) {
+    listTypeInitIterator(&li, o, 0, LIST_TAIL);
+    while (listTypeNext(&li, &entry)) {
         if (count == 0) {
             int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ?
                 AOF_REWRITE_ITEMS_PER_CMD : items;
@@ -1915,7 +2055,7 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
                 !rioWriteBulkString(r,"RPUSH",5) ||
                 !rioWriteBulkObject(r,key)) 
             {
-                listTypeReleaseIterator(li);
+                listTypeResetIterator(&li);
                 return 0;
             }
         }
@@ -1926,19 +2066,19 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
         vstr = listTypeGetValue(&entry,&vlen,&lval);
         if (vstr) {
             if (!rioWriteBulkString(r,(char*)vstr,vlen)) {
-                listTypeReleaseIterator(li);
+                listTypeResetIterator(&li);
                 return 0;
             }
         } else {
             if (!rioWriteBulkLongLong(r,lval)) {
-                listTypeReleaseIterator(li);
+                listTypeResetIterator(&li);
                 return 0;
             }
         }
         if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
         items--;
     }
-    listTypeReleaseIterator(li);
+    listTypeResetIterator(&li);
     return 1;
 }
 
@@ -1946,11 +2086,12 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
  * The function returns 0 on error, 1 on success. */
 int rewriteSetObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = setTypeSize(o);
-    setTypeIterator *si = setTypeInitIterator(o);
+    setTypeIterator si;
     char *str;
     size_t len;
     int64_t llval;
-    while (setTypeNext(si, &str, &len, &llval) != -1) {
+    setTypeInitIterator(&si, o);
+    while (setTypeNext(&si, &str, &len, &llval) != -1) {
         if (count == 0) {
             int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ?
                 AOF_REWRITE_ITEMS_PER_CMD : items;
@@ -1958,20 +2099,20 @@ int rewriteSetObject(rio *r, robj *key, robj *o) {
                 !rioWriteBulkString(r,"SADD",4) ||
                 !rioWriteBulkObject(r,key))
             {
-                setTypeReleaseIterator(si);
+                setTypeResetIterator(&si);
                 return 0;
             }
         }
         size_t written = str ?
             rioWriteBulkString(r, str, len) : rioWriteBulkLongLong(r, llval);
         if (!written) {
-            setTypeReleaseIterator(si);
+            setTypeResetIterator(&si);
             return 0;
         }
         if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
         items--;
     }
-    setTypeReleaseIterator(si);
+    setTypeResetIterator(&si);
     return 1;
 }
 
@@ -2020,12 +2161,14 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
         }
     } else if (o->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = o->ptr;
-        dictIterator *di = dictGetIterator(zs->dict);
+        dictIterator di;
         dictEntry *de;
 
-        while((de = dictNext(di)) != NULL) {
-            sds ele = dictGetKey(de);
-            double *score = dictGetVal(de);
+        dictInitIterator(&di, zs->dict);
+        while((de = dictNext(&di)) != NULL) {
+            zskiplistNode *znode = dictGetKey(de);
+            sds ele = zslGetNodeElement(znode);
+            double score = znode->score;
 
             if (count == 0) {
                 int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ?
@@ -2035,20 +2178,20 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
                     !rioWriteBulkString(r,"ZADD",4) ||
                     !rioWriteBulkObject(r,key)) 
                 {
-                    dictReleaseIterator(di);
+                    dictResetIterator(&di);
                     return 0;
                 }
             }
-            if (!rioWriteBulkDouble(r,*score) ||
+            if (!rioWriteBulkDouble(r,score) ||
                 !rioWriteBulkString(r,ele,sdslen(ele)))
             {
-                dictReleaseIterator(di);
+                dictResetIterator(&di);
                 return 0;
             }
             if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
             items--;
         }
-        dictReleaseIterator(di);
+        dictResetIterator(&di);
     } else {
         serverPanic("Unknown sorted zset encoding");
     }
@@ -2088,14 +2231,14 @@ static int rioWriteHashIteratorCursor(rio *r, hashTypeIterator *hi, int what) {
 int rewriteHashObject(rio *r, robj *key, robj *o) {
     int res = 0; /*fail*/
 
-    hashTypeIterator *hi;
+    hashTypeIterator hi;
     long long count = 0, items = hashTypeLength(o, 0);
 
     int isHFE = hashTypeGetMinExpire(o, 0) != EB_EXPIRE_TIME_INVALID;
-    hi = hashTypeInitIterator(o);
+    hashTypeInitIterator(&hi, o);
 
     if (!isHFE) {
-        while (hashTypeNext(hi, 0) != C_ERR) {
+        while (hashTypeNext(&hi, 0) != C_ERR) {
             if (count == 0) {
                 int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ?
                                 AOF_REWRITE_ITEMS_PER_CMD : items;
@@ -2105,31 +2248,31 @@ int rewriteHashObject(rio *r, robj *key, robj *o) {
                     goto reHashEnd;
             }
 
-            if (!rioWriteHashIteratorCursor(r, hi, OBJ_HASH_KEY) ||
-                !rioWriteHashIteratorCursor(r, hi, OBJ_HASH_VALUE))
+            if (!rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_KEY) ||
+                !rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_VALUE))
                 goto reHashEnd;
 
             if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
             items--;
         }
     } else {
-        while (hashTypeNext(hi, 0) != C_ERR) {
+        while (hashTypeNext(&hi, 0) != C_ERR) {
 
             char hmsetCmd[] = "*4\r\n$5\r\nHMSET\r\n";
             if ( (!rioWrite(r, hmsetCmd, sizeof(hmsetCmd) - 1)) ||
                  (!rioWriteBulkObject(r, key)) ||
-                 (!rioWriteHashIteratorCursor(r, hi, OBJ_HASH_KEY)) ||
-                 (!rioWriteHashIteratorCursor(r, hi, OBJ_HASH_VALUE)) )
+                 (!rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_KEY)) ||
+                 (!rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_VALUE)) )
                 goto reHashEnd;
 
-            if (hi->expire_time != EB_EXPIRE_TIME_INVALID) {
+            if (hi.expire_time != EB_EXPIRE_TIME_INVALID) {
                 char cmd[] = "*6\r\n$10\r\nHPEXPIREAT\r\n";
                 if ( (!rioWrite(r, cmd, sizeof(cmd) - 1)) ||
                      (!rioWriteBulkObject(r, key)) ||
-                     (!rioWriteBulkLongLong(r, hi->expire_time)) ||
+                     (!rioWriteBulkLongLong(r, hi.expire_time)) ||
                      (!rioWriteBulkString(r, "FIELDS", 6)) ||
                      (!rioWriteBulkString(r, "1", 1)) ||
-                     (!rioWriteHashIteratorCursor(r, hi, OBJ_HASH_KEY)) )
+                     (!rioWriteHashIteratorCursor(r, &hi, OBJ_HASH_KEY)) )
                     goto reHashEnd;
             }
         }
@@ -2138,7 +2281,7 @@ int rewriteHashObject(rio *r, robj *key, robj *o) {
     res = 1; /* success */
 
 reHashEnd:
-    hashTypeReleaseIterator(hi);
+    hashTypeResetIterator(&hi);
     return res;
 }
 
@@ -2178,6 +2321,35 @@ int rioWriteStreamPendingEntry(rio *r, robj *key, const char *groupname, size_t 
     return 1;
 }
 
+/* Helper for rewriteStreamObject(): emit a single XNACK FORCE command that
+ * reconstructs one or more NACKed (unowned) PEL entries sharing the same
+ * delivery_count. `ids` points to an array of `count` streamIDs (at most
+ * AOF_REWRITE_ITEMS_PER_CMD). Returns 0 on error, 1 on success. */
+int rioWriteStreamNackedEntries(rio *r, robj *key, const char *groupname,
+                                size_t groupname_len, streamID *ids,
+                                int count, uint64_t delivery_count) {
+    serverAssert(count > 0 && count <= AOF_REWRITE_ITEMS_PER_CMD);
+
+    /* XNACK <key> <group> FAIL IDS <n> <id..> RETRYCOUNT <cnt> FORCE
+     * 6 fixed tokens before IDs + count IDs + 3 fixed tokens after. */
+    if (rioWriteBulkCount(r,'*',6+count+3) == 0) return 0;
+    if (rioWriteBulkString(r,"XNACK",5) == 0) return 0;
+    if (rioWriteBulkObject(r,key) == 0) return 0;
+    if (rioWriteBulkString(r,groupname,groupname_len) == 0) return 0;
+    if (rioWriteBulkString(r,"FAIL",4) == 0) return 0;
+    if (rioWriteBulkString(r,"IDS",3) == 0) return 0;
+    if (rioWriteBulkLongLong(r,count) == 0) return 0;
+
+    for (int i = 0; i < count; i++) {
+        if (rioWriteBulkStreamID(r,&ids[i]) == 0) return 0;
+    }
+
+    if (rioWriteBulkString(r,"RETRYCOUNT",10) == 0) return 0;
+    if (rioWriteBulkLongLong(r,delivery_count) == 0) return 0;
+    if (rioWriteBulkString(r,"FORCE",5) == 0) return 0;
+    return 1;
+}
+
 /* Helper for rewriteStreamObject(): emit the XGROUP CREATECONSUMER is
  * needed in order to create consumers that do not have any pending entries.
  * All this in the context of the specified key and group. */
@@ -2192,17 +2364,31 @@ int rioWriteStreamEmptyConsumer(rio *r, robj *key, const char *groupname, size_t
     return 1;
 }
 
+/* Helper for rewriteStreamObject(): emit the XIDMPRECORD needed to
+ * restore an IDMP entry for the given producer in the context of the
+ * specified key. */
+int rioWriteStreamIdmpEntry(rio *r, robj *key, const char *pid, size_t pid_len, idmpEntry *entry) {
+    /* XIDMPRECORD <key> <pid> <iid> <streamID> */
+    if (rioWriteBulkCount(r,'*',5) == 0) return 0;
+    if (rioWriteBulkString(r,"XIDMPRECORD",11) == 0) return 0;
+    if (rioWriteBulkObject(r,key) == 0) return 0;
+    if (rioWriteBulkString(r,pid,pid_len) == 0) return 0;
+    if (rioWriteBulkString(r,entry->iid,entry->iid_len) == 0) return 0;
+    if (rioWriteBulkStreamID(r,&entry->id) == 0) return 0;
+    return 1;
+}
+
 /* Emit the commands needed to rebuild a stream object.
  * The function returns 0 on error, 1 on success. */
 int rewriteStreamObject(rio *r, robj *key, robj *o) {
     stream *s = o->ptr;
-    streamIterator si;
-    streamIteratorStart(&si,s,NULL,NULL,0);
     streamID id;
-    int64_t numfields;
 
     if (s->length) {
         /* Reconstruct the stream data using XADD commands. */
+        streamIterator si;
+        int64_t numfields;
+        streamIteratorStart(&si,s,NULL,NULL,0);
         while(streamIteratorGetID(&si,&id,&numfields)) {
             /* Emit a two elements array for each item. The first is
              * the ID, the second is an array of field-value pairs. */
@@ -2228,6 +2414,7 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                 }
             }
         }
+        streamIteratorStop(&si);
     } else {
         /* Use the XADD MAXLEN 0 trick to generate an empty stream if
          * the key we are serializing is an empty string, which is possible
@@ -2242,7 +2429,6 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
             !rioWriteBulkString(r,"x",1) ||
             !rioWriteBulkString(r,"y",1))
         {
-            streamIteratorStop(&si);
             return 0;     
         }
     }
@@ -2258,10 +2444,8 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
         !rioWriteBulkString(r,"MAXDELETEDID",12) ||
         !rioWriteBulkStreamID(r,&s->max_deleted_entry_id)) 
     {
-        streamIteratorStop(&si);
         return 0; 
     }
-
 
     /* Create all the stream consumer groups. */
     if (s->cgroups) {
@@ -2281,7 +2465,6 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                 !rioWriteBulkLongLong(r,group->entries_read))
             {
                 raxStop(&ri);
-                streamIteratorStop(&si);
                 return 0;
             }
 
@@ -2300,7 +2483,6 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                     {
                         raxStop(&ri_cons);
                         raxStop(&ri);
-                        streamIteratorStop(&si);
                         return 0;
                     }
                     continue;
@@ -2319,20 +2501,109 @@ int rewriteStreamObject(rio *r, robj *key, robj *o) {
                         raxStop(&ri_pel);
                         raxStop(&ri_cons);
                         raxStop(&ri);
-                        streamIteratorStop(&si);
                         return 0;
                     }
                 }
                 raxStop(&ri_pel);
             }
             raxStop(&ri_cons);
+
+            /* Emit XNACK FORCE for NACKed (unowned) entries from the
+             * NACK zone of the PEL time-ordered list
+             * (pel_time_head..pel_nack_tail). Consecutive entries with
+             * the same delivery_count are batched into a single command.
+             *
+             * nack_stop is the first node outside the NACK zone (or NULL
+             * when the zone extends to the end of the PEL). When
+             * pel_nack_tail is NULL (no NACKed entries) the guard below
+             * skips the whole block. */
+            streamNACK *nack_end = group->pel_nack_tail;
+            if (nack_end != NULL) {
+                streamID batch_ids[AOF_REWRITE_ITEMS_PER_CMD];
+                streamNACK *nack_stop = nack_end->pel_next;
+                streamNACK *nack = group->pel_time_head;
+                int batch_count = 0;
+                uint64_t batch_dc = 0;
+                while (nack && nack != nack_stop) {
+                    if (batch_count == 0) batch_dc = nack->delivery_count;
+                    batch_ids[batch_count++] = nack->id;
+                    streamNACK *next = nack->pel_next;
+                    if (batch_count >= AOF_REWRITE_ITEMS_PER_CMD ||
+                        !next || next == nack_stop ||
+                        next->delivery_count != batch_dc)
+                    {
+                        if (rioWriteStreamNackedEntries(r,key,(char*)ri.key,
+                                                        ri.key_len,batch_ids,
+                                                        batch_count,batch_dc) == 0)
+                        {
+                            raxStop(&ri);
+                            return 0;
+                        }
+                        batch_count = 0;
+                    }
+                    nack = next;
+                }
+            }
         }
         raxStop(&ri);
     }
 
-    streamIteratorStop(&si);
+    /* Emit XCFGSET to restore per-stream IDMP configuration if it differs
+     * from the server defaults, so that AOF rewrite preserves custom settings. */
+    if (s->idmp_duration != (uint64_t)server.stream_idmp_duration ||
+        s->idmp_max_entries != (uint64_t)server.stream_idmp_maxsize)
+    {
+        if (!rioWriteBulkCount(r,'*',6) ||
+            !rioWriteBulkString(r,"XCFGSET",7) ||
+            !rioWriteBulkObject(r,key) ||
+            !rioWriteBulkString(r,"IDMP-DURATION",13) ||
+            !rioWriteBulkLongLong(r,s->idmp_duration) ||
+            !rioWriteBulkString(r,"IDMP-MAXSIZE",12) ||
+            !rioWriteBulkLongLong(r,s->idmp_max_entries))
+        {
+            return 0;
+        }
+    }
+
+    /* Emit XIDMPRECORD for each IDMP entry. Entries whose stream ID no
+     * longer exists (removed by XDEL/trim) are skipped, since
+     * xidmprecordCommand() rejects references to missing IDs and would
+     * cause AOF replay errors. */
+    if (s->idmp_producers) {
+        raxIterator ri_idmp;
+        raxStart(&ri_idmp,s->idmp_producers);
+        raxSeek(&ri_idmp,"^",NULL,0);
+        while(raxNext(&ri_idmp)) {
+            idmpProducer *producer = ri_idmp.data;
+            for (idmpEntry *entry = producer->idmp_head; entry != NULL; entry = entry->next) {
+                if (!streamEntryExists(s, &entry->id)) continue;
+                if (rioWriteStreamIdmpEntry(r,key,(char*)ri_idmp.key,
+                                            ri_idmp.key_len,entry) == 0)
+                {
+                    raxStop(&ri_idmp);
+                    return 0;
+                }
+            }
+        }
+        raxStop(&ri_idmp);
+    }
+
     return 1;
 }
+
+#ifdef ENABLE_GCRA
+int rewriteGCRAObject(rio *r, robj *key, robj *o) {
+    long long val;
+    getLongLongFromGCRAObject(o, &val);
+
+    /* GCRASETVALUE <key> <tat> */
+    if (rioWriteBulkCount(r,'*',3) == 0) return 0;
+    if (rioWriteBulkString(r,"GCRASETVALUE",12) == 0) return 0;
+    if (rioWriteBulkObject(r,key) == 0) return 0;
+    if (rioWriteBulkLongLong(r,val) == 0) return 0;
+    return 1;
+}
+#endif
 
 /* Call the module type callback in order to rewrite a data type
  * that is exported by a module and is not handled by Redis itself.
@@ -2341,7 +2612,7 @@ int rewriteModuleObject(rio *r, robj *key, robj *o, int dbid) {
     RedisModuleIO io;
     moduleValue *mv = o->ptr;
     moduleType *mt = mv->type;
-    moduleInitIOContext(io,mt,r,key,dbid);
+    moduleInitIOContext(&io, &mt->entity, r, key, dbid);
     mt->aof_rewrite(&io,key,mv->value);
     if (io.ctx) {
         moduleFreeContext(io.ctx);
@@ -2352,21 +2623,178 @@ int rewriteModuleObject(rio *r, robj *key, robj *o, int dbid) {
 
 static int rewriteFunctions(rio *aof) {
     dict *functions = functionsLibGet();
-    dictIterator *iter = dictGetIterator(functions);
+    dictIterator iter;
     dictEntry *entry = NULL;
-    while ((entry = dictNext(iter))) {
+    dictInitIterator(&iter, functions);
+    while ((entry = dictNext(&iter))) {
         functionLibInfo *li = dictGetVal(entry);
         if (rioWrite(aof, "*3\r\n", 4) == 0) goto werr;
         char function_load[] = "$8\r\nFUNCTION\r\n$4\r\nLOAD\r\n";
         if (rioWrite(aof, function_load, sizeof(function_load) - 1) == 0) goto werr;
         if (rioWriteBulkString(aof, li->code, sdslen(li->code)) == 0) goto werr;
     }
-    dictReleaseIterator(iter);
+    dictResetIterator(&iter);
     return 1;
 
 werr:
-    dictReleaseIterator(iter);
+    dictResetIterator(&iter);
     return 0;
+}
+
+/* Write unsigned 64-bit integer as bulk string.
+ * Unlike rioWriteBulkLongLong which uses signed representation,
+ * this correctly handles values >= 2^63 (e.g., array indices). */
+static int rioWriteBulkUnsignedLongLong(rio *r, uint64_t value) {
+    char buf[24];
+    int len = ull2string(buf, sizeof(buf), value);
+    return rioWriteBulkString(r, buf, len);
+}
+
+/* Helper to emit a single array element for AOF rewrite.
+ * Returns 0 on error, 1 on success. Updates count and items. */
+static int aofEmitArrayElement(rio *r, robj *key, uint64_t idx, void *v,
+                               long long *count, long long *items) {
+    if (*count == 0) {
+        int cmd_items = (*items > AOF_REWRITE_ITEMS_PER_CMD/2) ?
+            AOF_REWRITE_ITEMS_PER_CMD/2 : *items;  /* pairs of idx+val */
+        if (!rioWriteBulkCount(r,'*',2+cmd_items*2) ||
+            !rioWriteBulkString(r,"ARMSET",6) ||
+            !rioWriteBulkObject(r,key))
+        {
+            return 0;
+        }
+    }
+
+    /* Write index (unsigned to handle indices >= 2^63) */
+    if (!rioWriteBulkUnsignedLongLong(r, idx)) return 0;
+
+    /* Write value - inline types use scratch space, arString aliases directly. */
+    char buf[AR_INLINE_BUFSIZE];
+    size_t len;
+    const char *data = arDecode(v, buf, sizeof(buf), &len);
+    if (!rioWriteBulkString(r, data, len)) return 0;
+
+    if (++(*count) == AOF_REWRITE_ITEMS_PER_CMD/2) *count = 0;
+    (*items)--;
+    return 1;
+}
+
+/* Helper to emit all elements from a slice for AOF rewrite. */
+static int aofEmitSliceElements(rio *r, robj *key, arSlice *s, uint64_t slice_id,
+                                uint32_t slice_size, long long *count, long long *items) {
+    if (s->encoding == AR_SLICE_DENSE) {
+        for (uint32_t i = 0; i < s->layout.dense.winsize; i++) {
+            void *v = s->layout.dense.items[i];
+            if (arIsEmpty(v)) continue;
+            uint64_t idx = arMakeIdx(slice_id, s->layout.dense.offset + i, slice_size);
+            if (!aofEmitArrayElement(r, key, idx, v, count, items)) return 0;
+        }
+    } else {
+        /* Sparse slice */
+        uint16_t *offsets = s->layout.sparse.offsets;
+        void **values = s->layout.sparse.values;
+        for (uint32_t i = 0; i < s->count; i++) {
+            uint64_t idx = arMakeIdx(slice_id, offsets[i], slice_size);
+            if (!aofEmitArrayElement(r, key, idx, values[i], count, items)) return 0;
+        }
+    }
+    return 1;
+}
+
+/* Emit the commands needed to rebuild an array object.
+ * The function returns 0 on error, 1 on success. */
+int rewriteArrayObject(rio *r, robj *key, robj *o) {
+    redisArray *ar = o->ptr;
+    long long count = 0, items = ar->count;
+    if (items == 0) return 1;
+
+    /* Iterate through all slices, handling both flat directory mode and
+     * superdir mode. This mirrors the iteration logic in rdb.c. */
+    if (ar->superdir) {
+        /* Superdir mode: iterate through blocks */
+        for (uint32_t bi = 0; bi < ar->sdir_len; bi++) {
+            arSDirEntry *e = ar->superdir + bi;
+            uint64_t block_base = e->block_id * AR_SUPER_BLOCK_SLOTS;
+
+            for (uint32_t si = 0; si < AR_SUPER_BLOCK_SLOTS; si++) {
+                arSlice *s = e->slots[si];
+                if (!s) continue;
+                uint64_t slice_id = block_base + si;
+                if (!aofEmitSliceElements(r, key, s, slice_id, ar->slice_size,
+                                          &count, &items)) return 0;
+            }
+        }
+    } else {
+        /* Flat directory mode */
+        for (uint64_t slice_id = 0; slice_id <= ar->dir_highest_used && slice_id < ar->dir_alloc; slice_id++) {
+            arSlice *s = ar->dir[slice_id];
+            if (!s) continue;
+            if (!aofEmitSliceElements(r, key, s, slice_id, ar->slice_size,
+                                      &count, &items)) return 0;
+        }
+    }
+
+    /* If insert_idx is set, emit ARSEEK command to restore it.
+     * When insert_idx == UINT64_MAX-1, we emit ARSEEK UINT64_MAX which
+     * correctly sets insert_idx back to UINT64_MAX-1 (terminal state). */
+    if (ar->insert_idx != AR_INSERT_IDX_NONE) {
+        /* ARSEEK key insert_idx+1 (ARSEEK sets position for next insert) */
+        if (!rioWriteBulkCount(r,'*',3) ||
+            !rioWriteBulkString(r,"ARSEEK",6) ||
+            !rioWriteBulkObject(r,key) ||
+            !rioWriteBulkUnsignedLongLong(r, ar->insert_idx + 1))
+        {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+int rewriteObject(rio *r, robj *key, robj *o, int dbid, long long expiretime) {
+    /* Save the key and associated value */
+    if (o->type == OBJ_STRING) {
+        /* Emit a SET command */
+        static const char cmd[]="*3\r\n$3\r\nSET\r\n";
+        if (rioWrite(r,cmd,sizeof(cmd)-1) == 0) return C_ERR;
+        /* Key and value */
+        if (rioWriteBulkObject(r,key) == 0) return C_ERR;
+        if (rioWriteBulkObject(r,o) == 0) return C_ERR;
+    } else if (o->type == OBJ_LIST) {
+        if (rewriteListObject(r,key,o) == 0) return C_ERR;
+    } else if (o->type == OBJ_SET) {
+        if (rewriteSetObject(r,key,o) == 0) return C_ERR;
+    } else if (o->type == OBJ_ZSET) {
+        if (rewriteSortedSetObject(r,key,o) == 0) return C_ERR;
+    } else if (o->type == OBJ_HASH) {
+        if (rewriteHashObject(r,key,o) == 0) return C_ERR;
+    } else if (o->type == OBJ_STREAM) {
+        if (rewriteStreamObject(r,key,o) == 0) return C_ERR;
+#ifdef ENABLE_GCRA
+    } else if (o->type == OBJ_GCRA) {
+        if (rewriteGCRAObject(r,key,o) == 0) return C_ERR;
+#endif
+    } else if (o->type == OBJ_ARRAY) {
+        if (rewriteArrayObject(r,key,o) == 0) return C_ERR;
+    } else if (o->type == OBJ_MODULE) {
+        if (rewriteModuleObject(r,key,o,dbid) == 0) return C_ERR;
+    } else {
+        serverPanic("Unknown object type");
+    }
+
+    /* Save the expire time */
+    if (expiretime != -1) {
+        static const char cmd[]="*3\r\n$9\r\nPEXPIREAT\r\n";
+        if (rioWrite(r,cmd,sizeof(cmd)-1) == 0) return C_ERR;
+        if (rioWriteBulkObject(r,key) == 0) return C_ERR;
+        if (rioWriteBulkLongLong(r,expiretime) == 0) return C_ERR;
+    }
+
+    /* If modules metadata is available */
+    if ((getModuleMetaBits(o->metabits)) && (keyMetaOnAof(r, key, o, dbid) == 0))
+        return C_ERR;
+
+    return C_OK;
 }
 
 int rewriteAppendOnlyFileRio(rio *aof) {
@@ -2374,7 +2802,8 @@ int rewriteAppendOnlyFileRio(rio *aof) {
     int j;
     long key_count = 0;
     long long updated_time = 0;
-    kvstoreIterator *kvs_it = NULL;
+    unsigned long long skipped = 0;
+    kvstoreIterator kvs_it;
 
     /* Record timestamp at the beginning of rewriting AOF. */
     if (server.aof_timestamp_enabled) {
@@ -2394,57 +2823,46 @@ int rewriteAppendOnlyFileRio(rio *aof) {
         if (rioWrite(aof,selectcmd,sizeof(selectcmd)-1) == 0) goto werr;
         if (rioWriteBulkLongLong(aof,j) == 0) goto werr;
 
-        kvs_it = kvstoreIteratorInit(db->keys);
+        kvstoreIteratorInit(&kvs_it, db->keys);
+        int last_slot = -1;
         /* Iterate this DB writing every entry */
-        while((de = kvstoreIteratorNext(kvs_it)) != NULL) {
-            sds keystr;
-            robj key, *o;
+        while((de = kvstoreIteratorNext(&kvs_it)) != NULL) {
             long long expiretime;
             size_t aof_bytes_before_key = aof->processed_bytes;
+            int curr_slot = kvstoreIteratorGetCurrentDictIndex(&kvs_it);
 
-            keystr = dictGetKey(de);
-            o = dictGetVal(de);
-            initStaticStringObject(key,keystr);
-
-            expiretime = getExpire(db,&key);
-
-            /* Save the key and associated value */
-            if (o->type == OBJ_STRING) {
-                /* Emit a SET command */
-                char cmd[]="*3\r\n$3\r\nSET\r\n";
-                if (rioWrite(aof,cmd,sizeof(cmd)-1) == 0) goto werr;
-                /* Key and value */
-                if (rioWriteBulkObject(aof,&key) == 0) goto werr;
-                if (rioWriteBulkObject(aof,o) == 0) goto werr;
-            } else if (o->type == OBJ_LIST) {
-                if (rewriteListObject(aof,&key,o) == 0) goto werr;
-            } else if (o->type == OBJ_SET) {
-                if (rewriteSetObject(aof,&key,o) == 0) goto werr;
-            } else if (o->type == OBJ_ZSET) {
-                if (rewriteSortedSetObject(aof,&key,o) == 0) goto werr;
-            } else if (o->type == OBJ_HASH) {
-                if (rewriteHashObject(aof,&key,o) == 0) goto werr;
-            } else if (o->type == OBJ_STREAM) {
-                if (rewriteStreamObject(aof,&key,o) == 0) goto werr;
-            } else if (o->type == OBJ_MODULE) {
-                if (rewriteModuleObject(aof,&key,o,j) == 0) goto werr;
-            } else {
-                serverPanic("Unknown object type");
+            /* In cluster mode, dismiss bucket arrays of the previous slot
+             * which won't be accessed again, to avoid CoW. */
+            if (server.cluster_enabled && curr_slot != last_slot) {
+                if (server.in_fork_child && last_slot != -1)
+                    dismissDictBucketsMemory(kvstoreGetDict(db->keys, last_slot));
+                last_slot = curr_slot;
             }
+
+            /* Get the value object (of type kvobj) */
+            kvobj *o = dictGetKV(de);
+            
+            /* Get the expire time */
+            expiretime = kvobjGetExpire(o);
+
+            /* Skip keys that are being trimmed */
+            if (server.cluster_enabled && isSlotInTrimJob(curr_slot)) {
+                skipped++;
+                continue;
+            }
+            
+            /* Set on stack string object for key */
+            robj key;
+            initStaticStringObject(key, kvobjGetKey(o));
+
+            if (rewriteObject(aof, &key, o, j, expiretime) == C_ERR) goto werr2;
 
             /* In fork child process, we can try to release memory back to the
              * OS and possibly avoid or decrease COW. We give the dismiss
              * mechanism a hint about an estimated size of the object we stored. */
             size_t dump_size = aof->processed_bytes - aof_bytes_before_key;
-            if (server.in_fork_child) dismissObject(o, dump_size);
-
-            /* Save the expire time */
-            if (expiretime != -1) {
-                char cmd[]="*3\r\n$9\r\nPEXPIREAT\r\n";
-                if (rioWrite(aof,cmd,sizeof(cmd)-1) == 0) goto werr;
-                if (rioWriteBulkObject(aof,&key) == 0) goto werr;
-                if (rioWriteBulkLongLong(aof,expiretime) == 0) goto werr;
-            }
+            if (server.in_fork_child && dump_size > server.page_size/2)
+                dismissObject(o, dump_size);
 
             /* Update info every 1 second (approximately).
              * in order to avoid calling mstime() on each iteration, we will
@@ -2461,12 +2879,18 @@ int rewriteAppendOnlyFileRio(rio *aof) {
             if (server.rdb_key_save_delay)
                 debugDelay(server.rdb_key_save_delay);
         }
-        kvstoreIteratorRelease(kvs_it);
+        kvstoreIteratorReset(&kvs_it);
+
+        /* Dismiss bucket arrays of kvstore in standalone mode. */
+        if (server.in_fork_child && !server.cluster_enabled)
+            dismissKvstoreBucketsMemory(db->keys);
     }
+    serverLog(LL_NOTICE, "AOF rewrite done, %ld keys saved, %llu keys skipped.", key_count, skipped);
     return C_OK;
 
+werr2:
+    kvstoreIteratorReset(&kvs_it);
 werr:
-    if (kvs_it) kvstoreIteratorRelease(kvs_it);
     return C_ERR;
 }
 
@@ -2624,9 +3048,9 @@ int rewriteAppendOnlyFileBackground(void) {
             serverLog(LL_NOTICE,
                 "Successfully created the temporary AOF base file %s", tmpfile);
             sendChildCowInfo(CHILD_INFO_TYPE_AOF_COW_SIZE, "AOF rewrite");
-            exitFromChild(0);
+            exitFromChild(0, 0);
         } else {
-            exitFromChild(1);
+            exitFromChild(1, 0);
         }
     }
 #endif
@@ -2798,7 +3222,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
             sds temp_incr_aof_name = getTempIncrAofName();
             sds temp_incr_filepath = makePath(server.aof_dirname, temp_incr_aof_name);
             /* Get next new incr aof name. */
-            sds new_incr_filename = getNewIncrAofName(temp_am);
+            sds new_incr_filename = getNewIncrAofName(temp_am, tempIncAofStartReplOffset);
             new_incr_filepath = makePath(server.aof_dirname, new_incr_filename);
             latencyStartMonitor(latency);
             if (rename(temp_incr_filepath, new_incr_filepath) == -1) {

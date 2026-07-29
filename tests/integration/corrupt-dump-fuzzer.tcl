@@ -15,6 +15,10 @@ if { ! [ catch {
 
 proc generate_collections {suffix elements} {
     set rd [redis_deferring_client]
+    set numcmd 8  ;# base commands including array
+    set has_vsets [server_has_command vadd]
+    if {$has_vsets} {incr numcmd}
+
     for {set j 0} {$j < $elements} {incr j} {
         # add both string values and integers
         if {$j % 2 == 0} {set val $j} else {set val "_$j"}
@@ -25,8 +29,20 @@ proc generate_collections {suffix elements} {
         $rd zadd zset$suffix $j $val
         $rd sadd set$suffix $val
         $rd xadd stream$suffix * item 1 value $val
+        # Array with sparse indices and mixed value types (int, float, string)
+        set idx [expr {$j * 100 + int(rand() * 50)}]  ;# sparse indices
+        if {$j % 3 == 0} {
+            $rd arset array$suffix $idx $j  ;# integer value
+        } elseif {$j % 3 == 1} {
+            $rd arset array$suffix $idx [format "%.5f" [expr {rand() * 1000}]]  ;# float value
+        } else {
+            $rd arset array$suffix $idx "str_$val"  ;# string value
+        }
+        if {$has_vsets} {
+            $rd vadd vset$suffix VALUES 3 1 1 1 $j
+        }
     }
-    for {set j 0} {$j < $elements * 7} {incr j} {
+    for {set j 0} {$j < $elements * $numcmd} {incr j} {
         $rd read ; # Discard replies
     }
     $rd close
@@ -52,6 +68,9 @@ proc generate_types {} {
     # create other non-collection types
     r incr int
     r set string str
+if 0 {
+    r gcra gcra 10 5 60000
+}
 
     # create bigger objects with 10 items (more than a single ziplist / listpack)
     generate_collections big 10
@@ -122,6 +141,7 @@ foreach sanitize_dump {no yes} {
                 set restore_failed false
                 set report_and_restart false
                 set sent {}
+                set expired_subkeys [s expired_subkeys]
                 # RESTORE can fail, but hopefully not terminate
                 if { [catch { r restore "_$k" 0 $dump REPLACE } err] } {
                     set restore_failed true
@@ -137,7 +157,13 @@ foreach sanitize_dump {no yes} {
                         }
                     }
                 } else {
-                    r ping ;# an attempt to check if the server didn't terminate (this will throw an error that will terminate the tests)
+                    # an attempt to check if the server didn't terminate (this will throw an error that will terminate the tests)
+                    if { [catch { r ping } err] } {
+                        set msg "Server crashed after RESTORE with payload: $printable_dump"
+                        write_log_line 0 $msg
+                        puts $msg
+                        error $err
+                    }
                 }
 
                 set print_commands false
@@ -145,7 +171,17 @@ foreach sanitize_dump {no yes} {
                     # if RESTORE didn't fail or terminate, run some random traffic on the new key
                     incr stat_successful_restore
                     if { [ catch {
-                        set sent [generate_fuzzy_traffic_on_key "_$k" 1] ;# traffic for 1 second
+                        set type [r type "_$k"]
+                        if {$type eq {none}} {
+                            # The key has been removed due to expiration.
+                            # Ensure the server didn't terminate during expiration and verify
+                            # expire stats to confirm the key was removed due to expiration.
+                            r ping
+                            assert_morethan [s expired_subkeys] $expired_subkeys
+                        } else {
+                            set sent [generate_fuzzy_traffic_on_key "_$k" $type 1] ;# traffic for 1 second
+                        }
+
                         incr stat_traffic_commands_sent [llength $sent]
                         r del "_$k" ;# in case the server terminated, here's where we'll detect it.
                         if {$dbsize != [r dbsize]} {
@@ -182,7 +218,7 @@ foreach sanitize_dump {no yes} {
                                 dump_server_log $srv
                             }
 
-                            puts "Server crashed (by signal: $by_signal), with payload: $printable_dump"
+                            puts "Server crashed (by signal: $by_signal, err: $err), with payload: $printable_dump"
                             set print_commands true
                         }
                     }

@@ -525,12 +525,15 @@ int test_malloc_api(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 }
 
 int test_keyslot(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    /* Static check of the ClusterKeySlot + ClusterCanonicalKeyNameInSlot
+    /* Static check of the ClusterKeySlot + ClusterKeySlotC + ClusterCanonicalKeyNameInSlot
      * round-trip for all slots. */
     for (unsigned int slot = 0; slot < 16384; slot++) {
         const char *tag = RedisModule_ClusterCanonicalKeyNameInSlot(slot);
         RedisModuleString *key = RedisModule_CreateStringPrintf(ctx, "x{%s}y", tag);
         assert(slot == RedisModule_ClusterKeySlot(key));
+        size_t len;
+        const char *key_c = RedisModule_StringPtrLen(key, &len);
+        assert(slot == RedisModule_ClusterKeySlotC(key_c, len));
         RedisModule_FreeString(ctx, key);
     }
     if (argc != 2){
@@ -538,6 +541,24 @@ int test_keyslot(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     }
     unsigned int slot = RedisModule_ClusterKeySlot(argv[1]);
     return RedisModule_ReplyWithLongLong(ctx, slot);
+}
+
+int only_reply_ok(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
+    return REDISMODULE_OK;
+}
+
+/* Test command for RM_SignalModifiedKey. */
+int test_signalmodifiedkey(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    if (argc != 2) return RedisModule_WrongArity(ctx);
+
+    /* Manually signal that the key was modified */
+    RedisModule_SignalModifiedKey(ctx, argv[1]);
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
+    return REDISMODULE_OK;
 }
 
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
@@ -606,6 +627,15 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     if (RedisModule_CreateCommand(ctx, "test.malloc_api", test_malloc_api,"", 0, 0, 0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
     if (RedisModule_CreateCommand(ctx, "test.keyslot", test_keyslot, "", 0, 0, 0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+    if (RedisModule_CreateCommand(ctx, "test.incompatible_cluster_cmd", only_reply_ok, "", 1, -1, 2) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+    if (RedisModule_CreateCommand(ctx, "test.no_cluster_cmd", NULL, "no-cluster", 0, 0, 0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+    RedisModuleCommand *parent = RedisModule_GetCommand(ctx, "test.no_cluster_cmd");
+    if (RedisModule_CreateSubcommand(parent, "set", only_reply_ok, "no-cluster", 0, 0, 0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+    if (RedisModule_CreateCommand(ctx, "test.signalmodifiedkey", test_signalmodifiedkey, "write", 1, 1, 1) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
     return REDISMODULE_OK;

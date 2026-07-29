@@ -1,6 +1,6 @@
 set testmodule [redis_test_module blockedclient]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test {Locked GIL acquisition} {
@@ -130,7 +130,12 @@ foreach call_type {nested normal} {
         $rd flush
 
         # make sure we get BUSY error, and that we didn't get it too early
-        assert_error {*BUSY Slow module operation*} {r ping}
+        wait_for_condition 50 100 {
+            ([catch {r ping} reply] == 1) &&
+            ([string match {*BUSY Slow module operation*} $reply])
+        } else {
+            fail "Failed waiting for busy slow response"
+        }
         assert_morethan_equal [expr [clock clicks -milliseconds]-$start] $busy_time_limit
 
         # abort the blocking operation
@@ -155,7 +160,9 @@ foreach call_type {nested normal} {
 
         # make sure we didn't get BUSY error, it simply blocked till the command was done
         r ping
-        assert_morethan_equal [expr [clock clicks -milliseconds]-$start] 200
+        # The command blocks for 200ms, allow 1-2ms clock skew (1%)
+        # to accommodate differences between using of monotonic timer and ustime
+        assert_morethan_equal [expr [clock clicks -milliseconds]-$start] 198
         $rd read
 
         $rd close
@@ -222,7 +229,7 @@ foreach call_type {nested normal} {
         r config resetstat
 
         # simple module command that replies with string error
-        assert_error "ERR unknown command 'hgetalllll', with args beginning with:" {r do_rm_call hgetalllll}
+        assert_error "ERR unknown command 'hgetalllll'" {r do_rm_call hgetalllll}
         assert_equal [errorrstat ERR r] {count=1}
 
         # simple module command that replies with string error
@@ -241,22 +248,22 @@ foreach call_type {nested normal} {
         # RM_Call that propagates an error
         assert_error "WRONGTYPE*" {r do_rm_call hgetall x}
         assert_equal [errorrstat WRONGTYPE r] {count=1}
-        assert_match {*calls=1,*,rejected_calls=0,failed_calls=1} [cmdrstat hgetall r]
+        assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdrstat hgetall r]
 
         # RM_Call from bg thread that propagates an error
         assert_error "WRONGTYPE*" {r do_bg_rm_call hgetall x}
         assert_equal [errorrstat WRONGTYPE r] {count=2}
-        assert_match {*calls=2,*,rejected_calls=0,failed_calls=2} [cmdrstat hgetall r]
+        assert_match {*calls=2,*,rejected_calls=0,failed_calls=2*} [cmdrstat hgetall r]
 
         assert_equal [s total_error_replies] 6
-        assert_match {*calls=5,*,rejected_calls=0,failed_calls=4} [cmdrstat do_rm_call r]
-        assert_match {*calls=2,*,rejected_calls=0,failed_calls=2} [cmdrstat do_bg_rm_call r]
+        assert_match {*calls=5,*,rejected_calls=0,failed_calls=4*} [cmdrstat do_rm_call r]
+        assert_match {*calls=2,*,rejected_calls=0,failed_calls=2*} [cmdrstat do_bg_rm_call r]
     }
 
     set master [srv 0 client]
     set master_host [srv 0 host]
     set master_port [srv 0 port]
-    start_server [list overrides [list loadmodule "$testmodule"]] {
+    start_server [list overrides [list loadmodule "$testmodule"] tags {"external:skip"}] {
         set replica [srv 0 client]
         set replica_host [srv 0 host]
         set replica_port [srv 0 port]

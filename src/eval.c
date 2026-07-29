@@ -2,8 +2,9 @@
  * Copyright (c) 2011-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -93,7 +94,7 @@ struct ldbState {
  * bodies in order to obtain the Lua function name, and in the implementation
  * of redis.sha1().
  *
- * 'digest' should point to a 41 bytes buffer: 40 for SHA1 converted into an
+ * 'digest' should point to a 41 bytes buffer: 40 for SHA1 converted into a
  * hexadecimal number, plus 1 byte for null term. */
 void sha1hex(char *digest, char *script, size_t len) {
     SHA1_CTX ctx;
@@ -741,7 +742,7 @@ NULL
     }
 }
 
-unsigned long evalMemory(void) {
+unsigned long evalScriptsMemoryVM(void) {
     return luaMemory(lctx.lua);
 }
 
@@ -749,7 +750,7 @@ dict* evalScriptsDict(void) {
     return lctx.lua_scripts;
 }
 
-unsigned long evalScriptsMemory(void) {
+unsigned long evalScriptsMemoryEngine(void) {
     return lctx.lua_scripts_mem +
             dictMemUsage(lctx.lua_scripts) +
             dictSize(lctx.lua_scripts) * sizeof(luaScript) +
@@ -765,7 +766,7 @@ void ldbInit(void) {
     ldb.conn = NULL;
     ldb.active = 0;
     ldb.logs = listCreate();
-    listSetFreeMethod(ldb.logs,(void (*)(void*))sdsfree);
+    listSetFreeMethod(ldb.logs, sdsfreegeneric);
     ldb.children = listCreate();
     ldb.src = NULL;
     ldb.lines = 0;
@@ -936,7 +937,7 @@ void ldbEndSession(client *c) {
     if (ldb.forked) {
         writeToClient(c,0);
         serverLog(LL_NOTICE,"Lua debugging session child exiting");
-        exitFromChild(0);
+        exitFromChild(0, 0);
     } else {
         serverLog(LL_NOTICE,
             "Redis synchronous debugging eval session ended");
@@ -1039,7 +1040,7 @@ int ldbDelBreakpoint(int line) {
     for (j = 0; j < ldb.bpcount; j++) {
         if (ldb.bp[j] == line) {
             ldb.bpcount--;
-            memmove(ldb.bp+j,ldb.bp+j+1,ldb.bpcount-j);
+            memmove(ldb.bp+j,ldb.bp+j+1,(ldb.bpcount-j) * sizeof(int));
             return 1;
         }
     }

@@ -5,8 +5,9 @@
 # Copyright (c) 2024-present, Valkey contributors.
 # All rights reserved.
 #
-# Licensed under your choice of the Redis Source Available License 2.0
-# (RSALv2) or the Server Side Public License v1 (SSPLv1).
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
 #
 # Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
 #
@@ -120,7 +121,7 @@ start_server {tags {"info" "external:skip"}} {
             catch {r auth k} e
             assert_match {ERR AUTH*} $e
             assert_match {*count=1*} [errorstat ERR]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1} [cmdstat auth]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat auth]
             assert_equal [s total_error_replies] 1
             r config resetstat
             assert_match {} [errorstat ERR]
@@ -136,15 +137,15 @@ start_server {tags {"info" "external:skip"}} {
             catch {r exec} e
             assert_match {ERR AUTH*} $e
             assert_match {*count=1*} [errorstat ERR]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdstat set]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1} [cmdstat auth]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdstat exec]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=0*} [cmdstat set]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat auth]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=0*} [cmdstat exec]
             assert_equal [s total_error_replies] 1
 
             # MULTI/EXEC command errors should still be pinpointed to him
             catch {r exec} e
             assert_match {ERR EXEC without MULTI} $e
-            assert_match {*calls=2,*,rejected_calls=0,failed_calls=1} [cmdstat exec]
+            assert_match {*calls=2,*,rejected_calls=0,failed_calls=1*} [cmdstat exec]
             assert_match {*count=2*} [errorstat ERR]
             assert_equal [s total_error_replies] 2
         }
@@ -155,13 +156,13 @@ start_server {tags {"info" "external:skip"}} {
             assert_equal [s total_error_replies] 0
             catch {r eval {redis.pcall('XGROUP', 'CREATECONSUMER', 's1', 'mygroup', 'consumer') return } 0} e
             assert_match {*count=1*} [errorstat ERR]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1} [cmdstat xgroup\\|createconsumer]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdstat eval]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat xgroup\\|createconsumer]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=0*} [cmdstat eval]
 
             # EVAL command errors should still be pinpointed to him
             catch {r eval a} e
             assert_match {ERR wrong*} $e
-            assert_match {*calls=1,*,rejected_calls=1,failed_calls=0} [cmdstat eval]
+            assert_match {*calls=1,*,rejected_calls=1,failed_calls=0*} [cmdstat eval]
             assert_match {*count=2*} [errorstat ERR]
             assert_equal [s total_error_replies] 2
         }
@@ -173,7 +174,7 @@ start_server {tags {"info" "external:skip"}} {
             catch {r evalsha NotValidShaSUM 0} e
             assert_match {NOSCRIPT*} $e
             assert_match {*count=1*} [errorstat NOSCRIPT]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1} [cmdstat evalsha]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat evalsha]
             assert_equal [s total_error_replies] 1
             r config resetstat
             assert_match {} [errorstat NOSCRIPT]
@@ -187,7 +188,7 @@ start_server {tags {"info" "external:skip"}} {
             catch {r XGROUP CREATECONSUMER mystream mygroup consumer} e
             assert_match {NOGROUP*} $e
             assert_match {*count=1*} [errorstat NOGROUP]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1} [cmdstat xgroup\\|createconsumer]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat xgroup\\|createconsumer]
             r config resetstat
             assert_match {} [errorstat NOGROUP]
         }
@@ -216,9 +217,9 @@ start_server {tags {"info" "external:skip"}} {
             assert_match {*count=1*} [errorstat ERR]
             assert_match {*count=1*} [errorstat EXECABORT]
             assert_equal [s total_error_replies] 2
-            assert_match {*calls=0,*,rejected_calls=1,failed_calls=0} [cmdstat set]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=0} [cmdstat multi]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1} [cmdstat exec]
+            assert_match {*calls=0,*,rejected_calls=1,failed_calls=0*} [cmdstat set]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=0*} [cmdstat multi]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat exec]
             assert_equal [s total_error_replies] 2
             r config resetstat
             assert_match {} [errorstat ERR]
@@ -231,11 +232,11 @@ start_server {tags {"info" "external:skip"}} {
             catch {r set k} e
             assert_match {ERR wrong number of arguments for 'set' command} $e
             assert_match {*count=1*} [errorstat ERR]
-            assert_match {*calls=0,*,rejected_calls=1,failed_calls=0} [cmdstat set]
+            assert_match {*calls=0,*,rejected_calls=1,failed_calls=0*} [cmdstat set]
             # ensure that after a rejected command, valid ones are counted properly
             r set k1 v1
             r set k2 v2
-            assert_match {calls=2,*,rejected_calls=1,failed_calls=0} [cmdstat set]
+            assert_match {calls=2,*,rejected_calls=1,failed_calls=0*} [cmdstat set]
             assert_equal [s total_error_replies] 1
         }
 
@@ -247,7 +248,7 @@ start_server {tags {"info" "external:skip"}} {
             catch {r set a b} e
             assert_match {OOM*} $e
             assert_match {*count=1*} [errorstat OOM]
-            assert_match {*calls=0,*,rejected_calls=1,failed_calls=0} [cmdstat set]
+            assert_match {*calls=0,*,rejected_calls=1,failed_calls=0*} [cmdstat set]
             assert_equal [s total_error_replies] 1
             r config resetstat
             assert_match {} [errorstat OOM]
@@ -263,7 +264,7 @@ start_server {tags {"info" "external:skip"}} {
             catch {r set a b} e
             assert_match {NOPERM*} $e
             assert_match {*count=1*} [errorstat NOPERM]
-            assert_match {*calls=0,*,rejected_calls=1,failed_calls=0} [cmdstat set]
+            assert_match {*calls=0,*,rejected_calls=1,failed_calls=0*} [cmdstat set]
             assert_equal [s total_error_replies] 1
             r config resetstat
             assert_match {} [errorstat NOPERM]
@@ -282,7 +283,7 @@ start_server {tags {"info" "external:skip"}} {
             r client unblock $rd_id error
             assert_error {UNBLOCKED*} {$rd read}
             assert_match {*count=1*} [errorstat UNBLOCKED]
-            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1} [cmdstat blpop]
+            assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat blpop]
             assert_equal [s total_error_replies] 1
             $rd close
         }
@@ -323,17 +324,31 @@ start_server {tags {"info" "external:skip"}} {
             set cmd_sum2 [getInfoProperty $info2 eventloop_duration_cmd_sum]
             if {$::verbose} { puts "eventloop metrics cycle1: $cycle1, cycle2: $cycle2" }
             assert_morethan $cycle2 $cycle1
-            assert_lessthan $cycle2 [expr $cycle1+10] ;# we expect 2 or 3 cycles here, but allow some tolerance
+            # The IOCP backend can complete many short poll cycles while the
+            # Windows message/event plumbing is active, so the POSIX cycle
+            # count ceiling is not meaningful there.
+            if {$::tcl_platform(platform) ne "windows"} {
+                assert_lessthan $cycle2 [expr $cycle1+10] ;# we expect 2 or 3 cycles here, but allow some tolerance
+            }
             if {$::verbose} { puts "eventloop metrics el_sum1: $el_sum1, el_sum2: $el_sum2" }
             assert_morethan $el_sum2 $el_sum1
-            assert_lessthan $el_sum2 [expr $el_sum1+30000] ;# we expect roughly 100ms here, but allow some tolerance
+            assert_lessthan $el_sum2 [expr $el_sum1+100000] ;# we expect roughly 100ms here, but allow some tolerance
             if {$::verbose} { puts "eventloop metrics cmd_sum1: $cmd_sum1, cmd_sum2: $cmd_sum2" }
             assert_morethan $cmd_sum2 $cmd_sum1
             assert_lessthan $cmd_sum2 [expr $cmd_sum1+15000] ;# we expect about tens of ms here, but allow some tolerance
-        }
+        } {} {debug_defrag:skip}
 
         test {stats: instantaneous metrics} {
             r config resetstat
+
+            set multiplier 1
+            if {[r config get io-threads] > 1} {
+                # the IO threads also have clients cron job now, and default hz is 10,
+                # so the IO thread that have the current client will trigger the main
+                # thread to run clients cron job, that will also count as a cron tick
+                set multiplier 2
+            }
+
             set retries 0
             for {set retries 1} {$retries < 4} {incr retries} {
                 after 1600 ;# hz is 10, wait for 16 cron tick so that sample array is fulfilled
@@ -344,12 +359,12 @@ start_server {tags {"info" "external:skip"}} {
             assert_lessthan $retries 4
             if {$::verbose} { puts "instantaneous metrics instantaneous_eventloop_cycles_per_sec: $value" }
             assert_morethan $value 0
-            assert_lessthan $value [expr $retries*15] ;# default hz is 10
+            assert_lessthan $value [expr $retries*15*$multiplier] ;# default hz is 10
             set value [s instantaneous_eventloop_duration_usec]
             if {$::verbose} { puts "instantaneous metrics instantaneous_eventloop_duration_usec: $value" }
             assert_morethan $value 0
             assert_lessthan $value [expr $retries*22000] ;# default hz is 10, so duration < 1000 / 10, allow some tolerance
-        }
+        } {} {debug_defrag:skip}
 
         test {stats: debug metrics} {
             # make sure debug info is hidden
@@ -497,42 +512,204 @@ start_server {tags {"info" "external:skip"}} {
             $r2 close
             wait_for_watched_clients_count 0
         }
+
+        test {clients: active_clients} {
+            set info [r info clients]
+            set ac [getInfoProperty $info active_clients]
+            # The test connection just ran a command, so at least 1 client is active
+            assert_morethan_equal $ac 1
+
+            # Create additional clients and make them active
+            set r2 [redis_client]
+            set r3 [redis_client]
+            $r2 ping
+            $r3 ping
+
+            # Within the 512ms window, all 3 clients should be counted
+            set info [r info clients]
+            set ac [getInfoProperty $info active_clients]
+            assert_morethan_equal $ac 3
+
+            # After the window expires (512ms), idle clients should drop off
+            wait_for_condition 20 100 {
+                [getInfoProperty [r info clients] active_clients] <= 1
+            } else {
+                fail "active_clients did not drop after window expired"
+            }
+
+            $r2 close
+            $r3 close
+        }
+
+        test {stats: client processing and pipeline metrics} {
+            set info1 [r info stats]
+            set proc_events1 [getInfoProperty $info1 total_client_processing_events]
+            set cycles1 [getInfoProperty $info1 eventloop_cycles_with_clients_processing]
+            set plsum1 [getInfoProperty $info1 avg_pipeline_length_sum]
+            set plcnt1 [getInfoProperty $info1 avg_pipeline_length_cnt]
+
+            # Issue several commands
+            r ping
+            r ping
+            r ping
+
+            set info2 [r info stats]
+            set proc_events2 [getInfoProperty $info2 total_client_processing_events]
+            set cycles2 [getInfoProperty $info2 eventloop_cycles_with_clients_processing]
+            set plsum2 [getInfoProperty $info2 avg_pipeline_length_sum]
+            set plcnt2 [getInfoProperty $info2 avg_pipeline_length_cnt]
+            set plavg2 [getInfoProperty $info2 avg_pipeline_length]
+
+            # processInputBuffer was called for 3 PINGs + the INFO call = at least 4
+            assert_morethan_equal [expr {$proc_events2 - $proc_events1}] 4
+
+            # At least one eventloop cycle processed client input
+            assert_morethan $cycles2 $cycles1
+
+            # Cycles with clients can never exceed total processInputBuffer calls
+            assert_morethan_equal $proc_events2 $cycles2
+
+            # Pipeline sum and cnt increased (3 PINGs + INFO, each batch of 1)
+            assert_morethan_equal [expr {$plsum2 - $plsum1}] 4
+            assert_morethan_equal [expr {$plcnt2 - $plcnt1}] 4
+
+            # Average pipeline length is a valid positive number
+            assert_morethan $plavg2 0
+        }
+
+        test {stats: client processing metrics reset with CONFIG RESETSTAT} {
+            # Build up meaningful counter values
+            for {set i 0} {$i < 20} {incr i} { r ping }
+
+            set info_before [r info stats]
+            set proc_before [getInfoProperty $info_before total_client_processing_events]
+            set cycles_before [getInfoProperty $info_before eventloop_cycles_with_clients_processing]
+            set plsum_before [getInfoProperty $info_before avg_pipeline_length_sum]
+            set plcnt_before [getInfoProperty $info_before avg_pipeline_length_cnt]
+
+            # Verify counters are meaningfully large before resetting
+            assert_morethan $proc_before 10
+            assert_morethan $cycles_before 0
+            assert_morethan $plsum_before 10
+            assert_morethan $plcnt_before 10
+
+            r config resetstat
+
+            set info_after [r info stats]
+            set proc_after [getInfoProperty $info_after total_client_processing_events]
+            set cycles_after [getInfoProperty $info_after eventloop_cycles_with_clients_processing]
+            set plsum_after [getInfoProperty $info_after avg_pipeline_length_sum]
+            set plcnt_after [getInfoProperty $info_after avg_pipeline_length_cnt]
+
+            # Counters should be near zero (only RESETSTAT + INFO ran after reset)
+            assert_lessthan_equal $proc_after 3
+            assert_lessthan_equal $cycles_after 3
+            assert_lessthan_equal $plsum_after 3
+            assert_lessthan_equal $plcnt_after 3
+        }
+    }
+}
+
+if {$::tcl_platform(platform) ne "windows"} {
+    start_server {tags {"info" "external:skip"} overrides {io-threads 4 io-threads-do-reads yes}} {
+        test {clients: active_clients with io-thread one-by-one commands} {
+            r config resetstat
+
+            set clients {}
+            set clients_num 16
+            for {set i 0} {$i < $clients_num} {incr i} {
+                lappend clients [redis_client]
+            }
+
+            # Run request/response (non-pipelined) traffic on many clients.
+            for {set round 0} {$round < 5} {incr round} {
+                set i 0
+                foreach c $clients {
+                    $c set key:$round:$i value
+                    incr i
+                }
+            }
+
+            # We are still within the 512ms active-client window.
+            set info [r info clients]
+            set ac [getInfoProperty $info active_clients]
+
+            foreach c $clients {
+                $c close
+            }
+
+            # The query client itself is active; additional active clients should
+            # also be counted. If this is <= 1, IO-thread one-by-one traffic was
+            # likely missed by active-client accounting.
+            assert_morethan_equal $ac 2
+        }
     }
 }
 
 start_server {tags {"info" "external:skip"}} {
     test {memory: database and pubsub overhead and rehashing dict count} {
         r flushall
+
+        # Better not set ht0_size to 4 since there is a probability that all
+        # keys will end up in the same bucket and rehashing will ended instantly.
+        set ht0_size [expr 1 << 3]
+        # ht1 size is twice the size of ht0
+        set ht1_size [expr $ht0_size << 1]
+
+        populate [expr $ht0_size - 1]
+
+        # Verify rehashing is not ongoing
+        wait_for_condition 100 10 {
+            [dict get [r memory stats] db.dict.rehashing.count] == 0
+        } else {
+            fail "Rehashing did not finish in time"
+        }
+
+        # Verify the info reflects steady state
         set info_mem [r info memory]
         set mem_stats [r memory stats]
         assert_equal [getInfoProperty $info_mem mem_overhead_db_hashtable_rehashing] {0}
-        assert_equal [dict get $mem_stats overhead.db.hashtable.lut] {0}
+        set ptr_size [expr {[s arch_bits] == 32 ? 4 : 8}]
+        assert_equal [dict get $mem_stats overhead.db.hashtable.lut] [expr $ht0_size * $ptr_size]
         assert_equal [dict get $mem_stats overhead.db.hashtable.rehashing] {0}
         assert_equal [dict get $mem_stats db.dict.rehashing.count] {0}
-        # Initial dict expand is not rehashing
-        r set a b
-        set info_mem [r info memory]
-        set mem_stats [r memory stats]
-        assert_equal [getInfoProperty $info_mem mem_overhead_db_hashtable_rehashing] {0}
-        assert_range [dict get $mem_stats overhead.db.hashtable.lut] 1 64
-        assert_equal [dict get $mem_stats overhead.db.hashtable.rehashing] {0}
-        assert_equal [dict get $mem_stats db.dict.rehashing.count] {0}
-        # set 4 more keys to trigger rehashing
+
+        # Set 2 more keys to trigger rehashing
         # get the info within a transaction to make sure the rehashing is not completed
         r multi
-        r set b c
-        r set c d
-        r set d e
-        r set e f
+        r set this_will_reach_max_load_factor 1
+        r set this_must_be_rehashed 1
         r info memory
         r memory stats
         set res [r exec]
-        set info_mem [lindex $res 4]
-        set mem_stats [lindex $res 5]
-        assert_range [getInfoProperty $info_mem mem_overhead_db_hashtable_rehashing] 1 64
-        assert_range [dict get $mem_stats overhead.db.hashtable.lut] 1 192
-        assert_range [dict get $mem_stats overhead.db.hashtable.rehashing] 1 64
+        set info_mem [lindex $res 2]
+        set mem_stats [lindex $res 3]
+
+        # Verify the info reflects rehashing state
+        assert_range [getInfoProperty $info_mem mem_overhead_db_hashtable_rehashing] 1 [expr $ht0_size * $ptr_size]
+        assert_equal [dict get $mem_stats overhead.db.hashtable.lut] [expr ($ht0_size + $ht1_size) * $ptr_size]
+        assert_equal [dict get $mem_stats overhead.db.hashtable.rehashing] [expr $ht0_size * $ptr_size]
         assert_equal [dict get $mem_stats db.dict.rehashing.count] {1}
+    }
+
+    test {memory: used_memory_peak_time is updated when used_memory_peak is updated} {
+        r flushall
+
+        # Add a large string to trigger memory peak tracking
+        set time_before_add_large_str [clock seconds]
+        r set large_str [string repeat "a" 1000000]
+        assert {[s used_memory_peak_time] >= $time_before_add_large_str}
+
+        r del large_str
+
+        # Note: this info command must be called after the del operation to ensure
+        # the peak memory measurement isn't affected by the info command itself
+        # potentially increasing peak memory.
+        set peak_value [s used_memory_peak]
+
+        # Add a small string, which cannot exceed the previous peak value
+        r set small_str [string repeat "a" 1000]
+        assert {[s used_memory_peak] == $peak_value}
     }
 }
 

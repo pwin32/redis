@@ -199,7 +199,7 @@ start_server {tags {"keyspace"}} {
             r select 9
             assert_equal [list foobar 2 foobar 1] [format $res]
         }
-    } 
+    }
 
     test {COPY for string does not replace an existing key without REPLACE option} {
         r set mykey2{t} hello
@@ -272,7 +272,7 @@ foreach {type large} [array get largevalue] {
 }
 
     foreach type {intset listpack hashtable} {
-        test {COPY basic usage for $type set} {
+        test "COPY basic usage for $type set" {
             r del set1{t} newset1{t}
             r sadd set1{t} 1 2 3
             if {$type ne "intset"} {
@@ -514,6 +514,7 @@ foreach {type large} [array get largevalue] {
         r SET [string repeat "a" 50000] 1
         r KEYS [string repeat "*?" 50000]
     } {}
+
     test {Coverage: basic SWAPDB test and unhappy path} {
        r flushall
        r select 0

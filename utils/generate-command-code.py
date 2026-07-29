@@ -34,6 +34,8 @@ GROUPS = {
     "geo": "COMMAND_GROUP_GEO",
     "stream": "COMMAND_GROUP_STREAM",
     "bitmap": "COMMAND_GROUP_BITMAP",
+    "array": "COMMAND_GROUP_ARRAY",
+    "rate_limit": "COMMAND_GROUP_RATE_LIMIT",
 }
 
 
@@ -517,6 +519,11 @@ class Subcommand(Command):
 
 
 def create_command(name, desc):
+    flags = desc.get("command_flags")
+    if flags and "EXPERIMENTAL" in flags:
+        print("Command %s is experimental, skipping..." % name)
+        return
+
     if desc.get("container"):
         cmd = Subcommand(name.upper(), desc)
         subcommands.setdefault(desc["container"].upper(), {})[name] = cmd
@@ -597,7 +604,11 @@ const char *COMMAND_GROUP_STR[] = {
     "geo",
     "stream",
     "bitmap",
-    "module"
+    "array",
+    "module",
+#ifdef ENABLE_GCRA
+    "rate_limit"
+#endif
 };
 
 const char *commandGroupStr(int index) {

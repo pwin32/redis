@@ -3,8 +3,9 @@
  * Copyright (c) 2019-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -124,7 +125,7 @@ int checkPrefixCollisionsOrReply(client *c, robj **prefixes, size_t numprefix) {
                     "Prefixes for a single client must not overlap.",
                     (unsigned char *)prefixes[i]->ptr,
                     (unsigned char *)prefixes[j]->ptr);
-                return i;
+                return 0;
             }
         }
     }
@@ -199,6 +200,13 @@ void enableTracking(client *c, uint64_t redirect_to, uint64_t options, robj **pr
  * that should receive an invalidation message with certain groups of keys
  * are modified. */
 void trackingRememberKeys(client *tracking, client *executing) {
+    /* Shard channels are treated as special keys for client
+     * library to rely on `COMMAND` command to discover the node
+     * to connect to. These channels don't need to be tracked. */
+    if (executing->cmd->flags & CMD_PUBSUB) {
+        return;
+    }
+
     /* Return if we are in optin/out mode and the right CACHING command
      * was/wasn't given in order to modify the default behavior. */
     uint64_t optin = tracking->flags & CLIENT_TRACKING_OPTIN;
@@ -210,12 +218,6 @@ void trackingRememberKeys(client *tracking, client *executing) {
     int numkeys = getKeysFromCommand(executing->cmd,executing->argv,executing->argc,&result);
     if (!numkeys) {
         getKeysFreeResult(&result);
-        return;
-    }
-    /* Shard channels are treated as special keys for client
-     * library to rely on `COMMAND` command to discover the node
-     * to connect to. These channels doesn't need to be tracked. */
-    if (executing->cmd->flags & CMD_PUBSUB) {
         return;
     }
 
@@ -253,6 +255,7 @@ void trackingRememberKeys(client *tracking, client *executing) {
  * - Following a flush command, to send a single RESP NULL to indicate
  *   that all keys are now invalid. */
 void sendTrackingMessage(client *c, char *keyname, size_t keylen, int proto) {
+    int paused = 0;
     uint64_t old_flags = c->flags;
     c->flags |= CLIENT_PUSHING;
 
@@ -282,6 +285,11 @@ void sendTrackingMessage(client *c, char *keyname, size_t keylen, int proto) {
         if (!(old_flags & CLIENT_PUSHING)) c->flags &= ~CLIENT_PUSHING;
         c = redir;
         using_redirection = 1;
+        /* Start to touch another client data. */
+        if (c->running_tid != IOTHREAD_MAIN_THREAD_ID) {
+            pauseIOThread(c->running_tid);
+            paused = 1;
+        }
         old_flags = c->flags;
         c->flags |= CLIENT_PUSHING;
     }
@@ -303,7 +311,7 @@ void sendTrackingMessage(client *c, char *keyname, size_t keylen, int proto) {
          * it since RESP2 does not support push messages in the same
          * connection. */
         if (!(old_flags & CLIENT_PUSHING)) c->flags &= ~CLIENT_PUSHING;
-        return;
+        goto done;
     }
 
     /* Send the "value" part, which is the array of keys. */
@@ -315,6 +323,17 @@ void sendTrackingMessage(client *c, char *keyname, size_t keylen, int proto) {
     }
     updateClientMemUsageAndBucket(c);
     if (!(old_flags & CLIENT_PUSHING)) c->flags &= ~CLIENT_PUSHING;
+
+done:
+    if (paused) {
+        if (clientHasPendingReplies(c)) {
+            serverAssert(!(c->flags & CLIENT_PENDING_WRITE));
+            /* Actually we install write handler of client which is in IO thread
+             * event loop, it is safe since the io thread is paused */
+            connSetWriteHandler(c->conn, sendReplyToClient);
+        }
+        resumeIOThread(c->running_tid);
+    }
 }
 
 /* This function is called when a key is modified in Redis and in the case
@@ -341,7 +360,7 @@ void trackingRememberKeyToBroadcast(client *c, char *keyname, size_t keylen) {
     raxStop(&ri);
 }
 
-/* This function is called from signalModifiedKey() or other places in Redis
+/* This function is called from keyModified() or other places in Redis
  * when a key changes value. In the context of keys tracking, our task here is
  * to send a notification to every client that may have keys about such caching
  * slot.

@@ -1,6 +1,6 @@
 set testmodule [redis_test_module scan]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test {Module scan keyspace} {
@@ -61,9 +61,9 @@ start_server {tags {"modules"}} {
         r hmset hh f1 v1 f2 v2 f3 v3
         r hpexpire hh 1 fields 3 f1 f2 f3
         after 10
+        assert_equal [r scan.scan_key hh] {}
         r debug set-active-expire 1
-        lsort [r scan.scan_key hh]
-    } {} {needs:debug}
+    } {OK} {needs:debug}
 
     test {Module scan zset listpack} {
         r zadd zz 1 f1 2 f2

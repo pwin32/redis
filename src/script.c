@@ -2,13 +2,20 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Copyright (c) 2024-present, Valkey contributors.
+ * All rights reserved.
+ *
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
+ *
+ * Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
  */
 
 #include "server.h"
 #include "script.h"
 #include "cluster.h"
+#include "cluster_slot_stats.h"
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -31,7 +38,22 @@ static void exitScriptTimedoutMode(scriptRunCtx *run_ctx) {
     run_ctx->flags &= ~SCRIPT_TIMEDOUT;
     blockingOperationEnds();
     /* if we are a replica and we have an active master, set it for continue processing */
-    if (server.masterhost && server.master) queueClientForReprocessing(server.master);
+    if (server.masterhost && server.master) {
+        /* Master running in IO thread needs to be sent to main thread so that
+         * it can process any pending commands ASAP without waiting for the next
+         * read.
+         * We don't queue the client for reprocessing in this case as it will
+         * create contention with main thread when it deals with unblocked
+         * clients - see comment above queueClientForReprocessing. */
+        if (server.master->running_tid != IOTHREAD_MAIN_THREAD_ID) {
+            pauseIOThread(server.master->tid);
+            enqueuePendingClientsToMainThread(server.master, 0);
+            resumeIOThread(server.master->tid);
+            return;
+        }
+
+        queueClientForReprocessing(server.master);
+    }
 }
 
 static void enterScriptTimedoutMode(scriptRunCtx *run_ctx) {
@@ -200,6 +222,11 @@ int scriptPrepareForRun(scriptRunCtx *run_ctx, client *engine_client, client *ca
             return C_ERR;
         }
 
+        /* Can't run script with 'non-cluster' flag as above when cluster is enabled. */
+        if (script_flags & SCRIPT_FLAG_NO_CLUSTER) {
+            server.stat_cluster_incompatible_ops++;
+        }
+
         if (running_stale && !(script_flags & SCRIPT_FLAG_ALLOW_STALE)) {
             addReplyError(caller, "-MASTERDOWN Link with MASTER is down, "
                              "replica-serve-stale-data is set to 'no' "
@@ -267,6 +294,7 @@ int scriptPrepareForRun(scriptRunCtx *run_ctx, client *engine_client, client *ca
     run_ctx->original_client = caller;
     run_ctx->funcname = funcname;
     run_ctx->slot = caller->slot;
+    run_ctx->cluster_compatibility_check_slot = caller->cluster_compatibility_check_slot;
 
     client *script_client = run_ctx->c;
     client *curr_client = run_ctx->original_client;
@@ -321,6 +349,7 @@ void scriptResetRun(scriptRunCtx *run_ctx) {
     }
 
     run_ctx->slot = -1;
+    run_ctx->cluster_compatibility_check_slot = -2;
 
     preventCommandPropagation(run_ctx->original_client);
 
@@ -490,7 +519,7 @@ static int scriptVerifyClusterState(scriptRunCtx *run_ctx, client *c, client *or
     c->flags |= original_c->flags & (CLIENT_READONLY | CLIENT_ASKING);
     const uint64_t cmd_flags = getCommandFlags(c);
     int hashslot = -1;
-    if (getNodeByQuery(c, c->cmd, c->argv, c->argc, &hashslot, cmd_flags, &error_code) != getMyClusterNode()) {
+    if (getNodeByQuery(c, c->cmd, c->argv, c->argc, &hashslot, NULL, 0, cmd_flags, &error_code) != getMyClusterNode()) {
         if (error_code == CLUSTER_REDIR_DOWN_RO_STATE) {
             *err = sdsnew(
                     "Script attempted to execute a write command while the "
@@ -512,6 +541,8 @@ static int scriptVerifyClusterState(scriptRunCtx *run_ctx, client *c, client *or
                              c->cmd->fullname);
         } else if (error_code == CLUSTER_REDIR_DOWN_UNBOUND) {
             *err = sdsnew("Script attempted to access a slot not served");
+        } else if (error_code == CLUSTER_REDIR_TRIMMING) {
+            *err = sdsnew("Script attempted to access a slot being trimmed");
         } else {
             /* error_code == CLUSTER_REDIR_MOVED || error_code == CLUSTER_REDIR_ASK */
             *err = sdsnew("Script attempted to access a non local key in a "
@@ -537,6 +568,33 @@ static int scriptVerifyClusterState(scriptRunCtx *run_ctx, client *c, client *or
     original_c->slot = hashslot;
 
     return C_OK;
+}
+
+static void scriptCheckClusterCompatibility(scriptRunCtx *run_ctx, client *c) {
+    int hashslot = -1;
+
+    /* If we don't need to detect for this script or slot violation already
+     * detected and reported for this script, exit */
+    if (run_ctx->cluster_compatibility_check_slot == -2)  return;
+
+    if (!areCommandKeysInSameSlot(c, &hashslot)) {
+        server.stat_cluster_incompatible_ops++;
+        /* Already found cross slot usage, skip the check for the rest of the script */
+        run_ctx->cluster_compatibility_check_slot = -2;
+    } else {
+        /* Check whether the declared keys and the accessed keys belong to the same slot.
+         * If having SCRIPT_ALLOW_CROSS_SLOT flag, skip this check since it's allowed
+         * in cluster mode, but it may fail when the slot doesn't belong to the node. */
+        if (hashslot != -1 && !(run_ctx->flags & SCRIPT_ALLOW_CROSS_SLOT)) {
+            if (run_ctx->cluster_compatibility_check_slot == -1) {
+                run_ctx->cluster_compatibility_check_slot = hashslot;
+            } else if (run_ctx->cluster_compatibility_check_slot != hashslot) {
+                server.stat_cluster_incompatible_ops++;
+                /* Already found cross slot usage, skip the check for the rest of the script */
+                run_ctx->cluster_compatibility_check_slot = -2;
+            }
+        }
+    }
 }
 
 /* set RESP for a given run_ctx */
@@ -636,6 +694,8 @@ void scriptCall(scriptRunCtx *run_ctx, sds *err) {
         goto error;
     }
 
+    scriptCheckClusterCompatibility(run_ctx, c);
+
     int call_flags = CMD_CALL_NONE;
     if (run_ctx->repl_flags & PROPAGATE_AOF) {
         call_flags |= CMD_CALL_PROPAGATE_AOF;
@@ -645,6 +705,7 @@ void scriptCall(scriptRunCtx *run_ctx, sds *err) {
     }
     call(c, call_flags);
     serverAssert((c->flags & CLIENT_BLOCKED) == 0);
+    clusterSlotStatsInvalidateSlotIfApplicable(run_ctx);
     return;
 
 error:

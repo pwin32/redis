@@ -96,8 +96,12 @@ extern "C" {
     /* Core roots that are initialized outside redisServer and point into the
      * mapped Redis heap. Process-local runtimes such as Lua are deliberately
      * excluded and remain unavailable in the disposable persistence child. */
+#define REDIS_QFORK_MAX_KEYMETA_DATA_SIZE (4 * 1024)
     typedef struct redisCoreForkData {
         LPVOID configs;
+        LPVOID asmManager;
+        size_t keyMetaDataSize;
+        BYTE keyMetaData[REDIS_QFORK_MAX_KEYMETA_DATA_SIZE];
     } RedisCoreForkData;
 
     /* Keep the QFork control block bounded while allowing the complete 7.2

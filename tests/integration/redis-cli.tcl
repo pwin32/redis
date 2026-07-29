@@ -6,6 +6,9 @@ if {$::singledb} {
     set ::dbnum 9
 }
 
+file delete ./.rediscli_history_test
+set ::env(REDISCLI_HISTFILE) ".rediscli_history_test"
+
 start_server {tags {"cli"}} {
     proc open_cli {{opts ""} {infile ""}} {
         if { $opts == "" } {
@@ -96,10 +99,8 @@ start_server {tags {"cli"}} {
         set _ [format_output [read_cli $fd]]
     }
 
-    file delete ./.rediscli_history_test
     proc test_interactive_cli_with_prompt {name code} {
         set ::env(FAKETTY_WITH_PROMPT) 1
-        set ::env(REDISCLI_HISTFILE) ".rediscli_history_test"
         test_interactive_cli $name $code
         unset ::env(FAKETTY_WITH_PROMPT)
     }
@@ -679,6 +680,9 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
         r flushdb
         r function flush
 
+        if {!$::external} {
+            set lines [count_log_lines 0]
+        }
         set dir [lindex [r config get dir] 1]
         if {$::tcl_platform(platform) eq "windows"} {
             # Avoid Tcl list re-parsing backslashes in --rdb paths (for
@@ -695,6 +699,12 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
         }
         catch {run_cli {*}$args} output
         assert_match {*Transfer finished with success*} $output
+
+        # If server enabled diskless sync, it should transfer the RDB by RDB channel
+        # since server will automatically apply this optimization for rdb-only.
+        if {[r config get repl-diskless-sync] == "yes" && !$::external} {
+            verify_log_message 0 "*replicas sockets (rdb-channel)*" $lines
+        }
 
         file delete "$dir/dump.rdb"
         file rename "$dir/cli.rdb" "$dir/dump.rdb"
@@ -850,4 +860,53 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
         assert_equal 3 [exec {*}$cmdline ZCARD new_zset]
         assert_equal "a\n1\nb\n2\nc\n3" [exec {*}$cmdline ZRANGE new_zset 0 -1 WITHSCORES]
     }
+
+    test "Send eval command by using --eval option" {
+        set tmpfile [write_tmpfile {return ARGV[1]}]
+        set cmdline [rediscli [srv host] [srv port]]
+        assert_equal "foo" [exec {*}$cmdline --eval $tmpfile , foo]
+    }
 }
+
+start_server {tags {"cli external:skip"}} {
+    test_interactive_cli_with_prompt "db_num showed in redis-cli after reconnected" {
+        run_command $fd "select 0\x0D"
+        run_command $fd "set a zoo-0\x0D"
+        run_command $fd "select 6\x0D"
+        run_command $fd "set a zoo-6\x0D"
+        r save
+
+        # kill server and restart
+        if {$::tcl_platform(platform) eq "windows"} {
+            kill_proc [lindex $::servers end]
+        } else {
+            exec kill [s process_id]
+        }
+        wait_for_log_messages 0 {"*Redis is now ready to exit*"} 0 1000 10
+        catch {[run_command $fd "ping\x0D"]} err
+        restart_server 0 true false 0
+
+        # redis-cli should show '[6]' after reconnected and return 'zoo-6'
+        write_cli $fd "GET a\x0D"
+        after 100
+        set result [format_output [read_cli $fd]]
+        set regex {not connected> GET a.*"zoo-6".*127\.0\.0\.1:[0-9]*\[6\]>}
+        assert_equal 1 [regexp $regex $result]
+    }
+}
+
+start_server {tags {"cli external:skip"}} {
+    test "keystats on empty database should not produce garbage stats" {
+        # On an empty DB the keystats histogram has total_count = 0. Verify hdr_mean(), hdr_stddev(),
+        # and the percentile calculation handle this gracefully.
+        set cmd [rediscli [srv host] [srv port] [list --keystats]]
+        catch {exec {*}$cmd 2>@1} result
+        assert_match "*Scanning the entire keyspace*" $result
+
+        # The "Note:" line with Mean/StdDeviation is only printed when displayKeyStatsSizeDist()
+        # compute stats. When keysize_histogram->total_count == 0, it should be skipped entirely.
+        assert_match "*No key size samples collected*" $result
+    }
+}
+
+file delete ./.rediscli_history_test

@@ -10,7 +10,7 @@
  *
  * In the future we'll either continue implementing new things we need or
  * we'll switch to libeio. However there are probably long term uses for this
- * file as we may want to put here Redis specific background tasks.
+ * file as we may want to put Redis specific background tasks here.
  *
  * DESIGN
  * ------
@@ -39,8 +39,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -86,6 +87,7 @@ static int job_comp_pipe[2];   /* Pipe used to awake the event loop */
 typedef struct bio_comp_item {
     comp_fn *func;    /* callback after completion job will be processed  */
     uint64_t arg;     /* user data to be passed to the function */
+    void *ptr;        /* user pointer to be passed to the function */
 } bio_comp_item;
 
 /* This structure represents a background Job. It is only used locally to this
@@ -115,6 +117,7 @@ typedef union bio_job {
         int type; /* header */
         comp_fn *fn; /* callback. Handover to main thread to cb as notify for job completion */
         uint64_t arg; /* callback arguments */
+        void *ptr; /* callback pointer */
     } comp_rq;
 } bio_job;
 
@@ -172,8 +175,9 @@ void bioInit(void) {
      * responsible for. */
     for (j = 0; j < BIO_WORKER_NUM; j++) {
         void *arg = (void*)(PORT_ULONG) j;
-        if (pthread_create(&thread,&attr,bioProcessBackgroundJobs,arg) != 0) {
-            serverLog(LL_WARNING, "Fatal: Can't initialize Background Jobs. Error message: %s", strerror(errno));
+        int err = pthread_create(&thread,&attr,bioProcessBackgroundJobs,arg);
+        if (err) {
+            serverLog(LL_WARNING, "Fatal: Can't initialize Background Jobs. Error message: %s", strerror(err));
             exit(1);
         }
         bio_threads[j] = thread;
@@ -205,7 +209,7 @@ void bioCreateLazyFreeJob(lazy_free_fn free_fn, int arg_count, ...) {
     bioSubmitJob(BIO_LAZY_FREE, job);
 }
 
-void bioCreateCompRq(bio_worker_t assigned_worker, comp_fn *func, uint64_t user_data) {
+void bioCreateCompRq(bio_worker_t assigned_worker, comp_fn *func, uint64_t user_data, void *user_ptr) {
     int type;
     switch (assigned_worker) {
         case BIO_WORKER_CLOSE_FILE:
@@ -224,6 +228,7 @@ void bioCreateCompRq(bio_worker_t assigned_worker, comp_fn *func, uint64_t user_
     bio_job *job = zmalloc(sizeof(*job));
     job->comp_rq.fn = func;
     job->comp_rq.arg = user_data;
+    job->comp_rq.ptr = user_ptr;
     bioSubmitJob(type, job);
 }
 
@@ -274,9 +279,10 @@ void *bioProcessBackgroundJobs(void *arg) {
      * receive the watchdog signal. */
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGALRM);
-    if (pthread_sigmask(SIG_BLOCK, &sigset, NULL))
+    int err = pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+    if (err)
         serverLog(LL_WARNING,
-            "Warning: can't mask SIGALRM in bio.c thread: %s", strerror(errno));
+            "Warning: can't mask SIGALRM in bio.c thread: %s", strerror(err));
 
     while(1) {
         listNode *ln;
@@ -357,6 +363,7 @@ void *bioProcessBackgroundJobs(void *arg) {
             bio_comp_item *comp_rsp = zmalloc(sizeof(bio_comp_item));
             comp_rsp->func = job->comp_rq.fn;
             comp_rsp->arg = job->comp_rq.arg;
+            comp_rsp->ptr = job->comp_rq.ptr;
 
             /* just write it to completion job responses */
             pthread_mutex_lock(&bio_mutex_comp);
@@ -477,7 +484,7 @@ void bioPipeReadJobCompList(aeEventLoop *el, int fd, void *privdata, int mask) {
         listNode *ln = listFirst(tmp_list);
         bio_comp_item *rsp = ln->value;
         listDelNode(tmp_list, ln);
-        rsp->func(rsp->arg);
+        rsp->func(rsp->arg, rsp->ptr);
         zfree(rsp);
     }
     listRelease(tmp_list);

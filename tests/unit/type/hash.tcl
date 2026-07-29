@@ -43,7 +43,7 @@ start_server {tags {"hash"}} {
         create_hash myhash $contents
         assert_encoding $type myhash
 
-        # coverage for objectComputeSize
+        # coverage for kvobjComputeSize
         assert_morethan [memory_usage myhash] 0
 
         test "HRANDFIELD - $type" {
@@ -371,6 +371,7 @@ start_server {tags {"hash"}} {
         assert_error "WRONGTYPE Operation against a key*" {r hsetnx wrongtype field1 val1}
         assert_error "WRONGTYPE Operation against a key*" {r hlen wrongtype}
         assert_error "WRONGTYPE Operation against a key*" {r hscan wrongtype 0}
+        assert_error "WRONGTYPE Operation against a key*" {r hgetdel wrongtype fields 1 a}
     }
 
     test {HMGET - small hash} {
@@ -710,6 +711,89 @@ start_server {tags {"hash"}} {
         r config set hash-max-listpack-value $original_max_value
     }
 
+    test {HGETDEL input validation} {
+        r del key1
+        assert_error "*wrong number of arguments*" {r hgetdel}
+        assert_error "*wrong number of arguments*" {r hgetdel key1}
+        assert_error "*wrong number of arguments*" {r hgetdel key1 FIELDS}
+        assert_error "*wrong number of arguments*" {r hgetdel key1 FIELDS 0}
+        assert_error "*wrong number of arguments*" {r hgetdel key1 FIELDX}
+        assert_error "*argument FIELDS is missing*" {r hgetdel key1 XFIELDX 1 a}
+        assert_error "*numfields*parameter*must match*number of arguments*" {r hgetdel key1 FIELDS 2 a}
+        assert_error "*numfields*parameter*must match*number of arguments*" {r hgetdel key1 FIELDS 2 a b c}
+        assert_error "*Number of fields must be a positive integer*" {r hgetdel key1 FIELDS 0 a}
+        assert_error "*Number of fields must be a positive integer*" {r hgetdel key1 FIELDS -1 a}
+        assert_error "*Number of fields must be a positive integer*" {r hgetdel key1 FIELDS b a}
+        assert_error "*Number of fields must be a positive integer*" {r hgetdel key1 FIELDS 9223372036854775808 a}
+    }
+
+    foreach type {listpack ht} {
+        set orig_config [lindex [r config get hash-max-listpack-entries] 1]
+        r del key1
+
+        if {$type == "listpack"} {
+            r config set hash-max-listpack-entries $orig_config
+            r hset key1 f1 1 f2 2 f3 3 strfield strval
+            assert_encoding listpack key1
+        } else {
+            r config set hash-max-listpack-entries 0
+            r hset key1 f1 1 f2 2 f3 3 strfield strval
+            assert_encoding hashtable key1
+        }
+
+        test {HGETDEL basic test} {
+            r del key1
+            r hset key1 f1 1 f2 2 f3 3 strfield strval
+            assert_equal [r hgetdel key1 fields 1 f2] 2
+            assert_equal [r hlen key1] 3
+            assert_equal [r hget key1 f1] 1
+            assert_equal [r hget key1 f2] ""
+            assert_equal [r hget key1 f3] 3
+            assert_equal [r hget key1 strfield] strval
+
+            assert_equal [r hgetdel key1 fields 1 f1] 1
+            assert_equal [lsort [r hgetall key1]] [lsort "f3 3 strfield strval"]
+            assert_equal [r hgetdel key1 fields 1 f3] 3
+            assert_equal [r hgetdel key1 fields 1 strfield] strval
+            assert_equal [r hgetall key1] ""
+            assert_equal [r exists key1] 0
+        }
+
+        test {HGETDEL test with non existing fields} {
+             r del key1
+             r hset key1 f1 1 f2 2 f3 3
+             assert_equal [r hgetdel key1 fields 4 x1 x2 x3 x4] "{} {} {} {}"
+             assert_equal [r hgetdel key1 fields 4 x1 x2 f3 x4] "{} {} 3 {}"
+             assert_equal [lsort [r hgetall key1]] [lsort "f1 1 f2 2"]
+             assert_equal [r hgetdel key1 fields 3 f1 f2 f3] "1 2 {}"
+             assert_equal [r hgetdel key1 fields 3 f1 f2 f3] "{} {} {}"
+        }
+
+        r config set hash-max-listpack-entries $orig_config
+    }
+
+    test {HGETDEL propagated as HDEL command to replica} {
+        set repl [attach_to_replication_stream]
+        r hset key1 f1 v1 f2 v2 f3 v3 f4 v4 f5 v5
+        r hgetdel key1 fields 1 f1
+        r hgetdel key1 fields 2 f2 f3
+
+        # make sure non-existing fields are not replicated
+        r hgetdel key1 fields 2 f7 f8
+
+        # delete more
+        r hgetdel key1 fields 3 f4 f5 f6
+
+        assert_replication_stream $repl {
+            {select *}
+            {hset key1 f1 v1 f2 v2 f3 v3 f4 v4 f5 v5}
+            {hdel key1 f1}
+            {hdel key1 f2 f3}
+            {hdel key1 f4 f5 f6}
+        }
+        close_replication_stream $repl
+    } {} {needs:repl}
+
     test {Hash ziplist regression test for large keys} {
         r hset hash kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk a
         r hset hash kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk b
@@ -855,6 +939,18 @@ start_server {tags {"hash"}} {
         set k [dict remove $k ZIP_STR_32B]
         set _ $k
     } {ZIP_INT_8B 127 ZIP_INT_16B 32767 ZIP_INT_32B 2147483647 ZIP_INT_64B 9223372036854775808 ZIP_INT_IMM_MIN 0 ZIP_INT_IMM_MAX 12}
+
+    test {KEYS command return expired keys when allow_access_expired is 1} {
+        r flushall
+        r debug set-allow-access-expired 1
+        r debug set-active-expire 0
+        r set key1 value1
+        r pexpire key1 1
+        after 2
+        assert_equal {key1} [r keys *]
+        r debug set-allow-access-expired 0
+        r debug set-active-expire 1
+    } {OK} {needs:debug}
 
     # On some platforms strtold("+inf") with valgrind returns a non-inf result
     if {!$::valgrind} {

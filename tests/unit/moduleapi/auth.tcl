@@ -1,6 +1,6 @@
 set testmodule [redis_test_module auth]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test {Modules can create a user that can be authenticated} {

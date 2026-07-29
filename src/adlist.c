@@ -3,8 +3,9 @@
  * Copyright (c) 2006-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 #ifdef _WIN32
 #include "Win32_Interop/Win32_Portability.h"
@@ -62,6 +63,11 @@ void listRelease(list *list)
         return;
     listEmpty(list);
     zfree(list);
+}
+
+/* Generic version of listRelease. */
+void listReleaseGeneric(void *list) {
+    listRelease((struct list*)list);
 }
 
 /* Add a new node to the list, to head, containing the specified 'value'
@@ -193,22 +199,13 @@ void listUnlinkNode(list *list, listNode *node) {
  * call to listNext() will return the next element of the list.
  *
  * This function can't fail. */
-listIter *listGetIterator(list *list, int direction)
+void listInitIterator(listIter *iter, list *list, int direction)
 {
-    listIter *iter;
-
-    if ((iter = zmalloc(sizeof(*iter))) == NULL) return NULL;
     if (direction == AL_START_HEAD)
         iter->next = list->head;
     else
         iter->next = list->tail;
     iter->direction = direction;
-    return iter;
-}
-
-/* Release the iterator memory */
-void listReleaseIterator(listIter *iter) {
-    zfree(iter);
 }
 
 /* Create an iterator in the list private iterator structure */

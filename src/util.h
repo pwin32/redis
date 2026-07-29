@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef __REDIS_UTIL_H
@@ -36,6 +37,8 @@ typedef enum {
     LD_STR_HEX       /* %La */
 } ld2string_mode;
 
+int prefixmatch(const char *pattern, int patternLen, const char *prefixStr,
+                int prefixStrLen, int nocase);
 int stringmatchlen(const char *p, int plen, const char *s, int slen, int nocase);
 int stringmatch(const char *p, const char *s, int nocase);
 int stringmatchlen_fuzz_test(void);
@@ -80,6 +83,52 @@ int snprintf_async_signal_safe(char *to, size_t n, const char *fmt, ...);
 #endif
 size_t redis_strlcpy(char *dst, const char *src, size_t dsize);
 size_t redis_strlcat(char *dst, const char *src, size_t dsize);
+
+/* to keep it opt without conditions Works only for: 0 < x < 2^63 */
+static inline int log2ceil(size_t x) {
+#if UINTPTR_MAX == 0xffffffffffffffff
+    return  63 - __builtin_clzll(x);
+#else
+    return 31 - __builtin_clz(x);
+#endif
+}
+
+/* Return the smallest power of 2 >= count (e.g. 5 -> 8, 8 -> 8). */
+static inline int nearestNextPowerOf2(unsigned int count) {
+    if (count <= 1) return 1;
+    return 1 << (32 - __builtin_clz(count-1));
+}
+
+/* Check for __builtin_add_overflow() */
+#ifndef __has_builtin
+#define __has_builtin(x) 0
+#endif
+#if __has_builtin(__builtin_add_overflow) || (defined(__GNUC__) && __GNUC__ >= 5)
+#define add_overflow_ll(a, b, res) __builtin_add_overflow((a), (b), (res))
+#define sub_overflow_ll(a, b, res) __builtin_sub_overflow((a), (b), (res))
+#else
+#include <limits.h>
+static inline int add_overflow_ll(long long a, long long b, long long *res) {
+    if ((b > 0 && a > LLONG_MAX - b) || (b < 0 && a < LLONG_MIN - b)) {
+        *res = (long long)((unsigned long long)a + (unsigned long long)b);
+        return 1;
+    }
+    *res = a + b;
+    return 0;
+}
+static inline int sub_overflow_ll(long long a, long long b, long long *res) {
+    if ((b < 0 && a > LLONG_MAX + b) || (b > 0 && a < LLONG_MIN + b)) {
+        *res = (long long)((unsigned long long)a - (unsigned long long)b);
+        return 1;
+    }
+    *res = a - b;
+    return 0;
+}
+#endif
+
+#ifndef static_assert
+#define static_assert(expr, lit) extern char __static_assert_failure[(expr) ? 1:-1]
+#endif
 
 #ifdef REDIS_TEST
 int utilTest(int argc, char **argv, int flags);

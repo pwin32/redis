@@ -2,7 +2,7 @@ set testmodule [redis_test_module blockedclient]
 set testmodule2 [redis_test_module postnotifications]
 set testmodule3 [redis_test_module blockonkeys]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test {Locked GIL acquisition from async RM_Call} {
@@ -222,7 +222,7 @@ start_server {tags {"modules"}} {
     }
 }
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test {Test basic replication stream on unblock handler} {
@@ -299,7 +299,7 @@ start_server {tags {"modules"}} {
     }
 }
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
     r module load $testmodule2
 
@@ -416,7 +416,7 @@ start_server {tags {"modules"}} {
     }
 }
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
     r module load $testmodule3
 

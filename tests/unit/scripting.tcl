@@ -411,6 +411,65 @@ start_server {tags {"scripting"}} {
         } 0
     } {a b}
 
+    test {EVAL - JSON empty array decoding} {
+        # Default behavior
+        assert_equal "{}" [run_script {
+            return cjson.encode(cjson.decode('[]'))
+        } 0]
+        assert_equal "{}" [run_script {
+            cjson.decode_array_with_array_mt(false)
+            return cjson.encode(cjson.decode('[]'))
+        } 0]
+        assert_equal "{\"item\":{}}" [run_script {
+            cjson.decode_array_with_array_mt(false)
+            return cjson.encode(cjson.decode('{"item": []}'))
+        } 0]
+
+        # With array metatable
+        assert_equal "\[\]" [run_script {
+            cjson.decode_array_with_array_mt(true)
+            return cjson.encode(cjson.decode('[]'))
+        } 0]
+        assert_equal "{\"item\":\[\]}" [run_script {
+            cjson.decode_array_with_array_mt(true)
+            return cjson.encode(cjson.decode('{"item": []}'))
+        } 0]
+    }
+
+    test {EVAL - JSON empty array decoding after element removal} {
+        # Default: emptied array becomes object
+        assert_equal "{}" [run_script {
+            cjson.decode_array_with_array_mt(false)
+            local t = cjson.decode('[1, 2]')
+            -- emptying the array
+            t[1] = nil
+            t[2] = nil
+            return cjson.encode(t)
+        } 0]
+
+        # With array metatable: emptied array stays array
+        assert_equal "\[\]" [run_script {
+            cjson.decode_array_with_array_mt(true)
+            local t = cjson.decode('[1, 2]')
+            -- emptying the array
+            t[1] = nil
+            t[2] = nil
+            return cjson.encode(t)
+        } 0]
+    }
+
+    test {EVAL - cjson array metatable modification should be readonly} {
+        catch {
+            run_script {
+                cjson.decode_array_with_array_mt(true)
+                local t = cjson.decode('[]')
+                getmetatable(t).__is_cjson_array = function() return 1 end
+                return cjson.encode(t)
+            } 0
+        } e
+        set _ $e
+    } {*Attempt to modify a readonly table*}
+
     test {EVAL - JSON smoke test} {
         run_script {
             local some_map = {
@@ -2051,20 +2110,15 @@ start_server {tags {"scripting"}} {
         r script flush
         r function flush
 
-        # This is a best-effort test to check we don't leak some resources on
-        # script flush and function flush commands. Non-QFork builds create a
-        # private jemalloc thread cache for each Lua VM; Windows QFork uses the
-        # dedicated Lua arena without that tcache. Run many flushes to verify
-        # memory does not grow while the Lua VM resources are recreated.
+        # This is a best-effort test to check we don't leak resources on script
+        # and function flush. Non-QFork builds create a private jemalloc thread
+        # cache for each Lua VM; Windows QFork uses the dedicated Lua arena
+        # without that tcache. Run many flushes while the VM is recreated.
         if {$::tcl_platform(platform) eq "windows"} {
             after 120 ;# serverCron refreshes allocator statistics every 100 ms.
         }
         set used_memory [s used_memory]
         if {$::tcl_platform(platform) eq "windows"} {
-            # QFork uses MALLOCX_TCACHE_NONE for Lua and its coarse external
-            # heap pages make the all-arena allocator metric fluctuate between
-            # otherwise identical processes. Check the dedicated Lua arena,
-            # which covers the live allocations relevant to this port.
             set allocator_allocated [getInfoProperty [r info debug] allocator_allocated_lua]
         } else {
             set allocator_allocated [s allocator_allocated]
@@ -2111,7 +2165,7 @@ start_server {tags {"scripting"}} {
         } else {
             assert_lessthan [s used_memory_vm_functions] 14500000
         }
-    }
+    } {} {debug_defrag:skip}
 }
 } ;# foreach is_eval
 
@@ -2285,6 +2339,14 @@ start_server {tags {"scripting"}} {
             } 1 x
 
             r replicaof [srv -1 host] [srv -1 port]
+
+            # To avoid -LOADING reply, wait until replica syncs with master.
+            wait_for_condition 50 100 {
+                [s master_link_status] eq {up}
+            } else {
+                fail "Replica did not sync in time."
+            }
+
             assert_error {EXECABORT Transaction discarded because of: READONLY *} {$rr exec}
             assert_error {READONLY You can't write against a read only replica. script: *} {$rr2 exec}
             $rr close
@@ -2644,5 +2706,17 @@ start_server {tags {"scripting"}} {
         assert_error {ERR unknown error script: *} {
             r eval "error({})" 0
         }
+    }
+}
+
+start_server {tags {"scripting"}} {
+    test "Wrong arity EVAL in acl_check_cmd returns error not crash" {
+        r acl setuser bob on {>123} {+@scripting} {+set} {~x*}
+        assert_equal [r auth bob 123] {OK}
+        # Must be the first Lua call in this server instance
+        catch {run_script {
+            return redis.acl_check_cmd('eval','script')
+        } 0} e
+        assert_match {*Wrong number of args*} $e
     }
 }

@@ -3,8 +3,9 @@
  * Copyright (c) 2019-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef __REDIS_CONNECTION_H
@@ -74,8 +75,8 @@ typedef struct ConnectionType {
     int (*listen)(connListener *listener);
 
     /* create/shutdown/close connection */
-    connection* (*conn_create)(void);
-    connection* (*conn_create_accepted)(int fd, void *priv);
+    connection* (*conn_create)(struct aeEventLoop *el);
+    connection* (*conn_create_accepted)(struct aeEventLoop *el, int fd, void *priv);
     void (*shutdown)(struct connection *conn);
     /* Shut down only the application write side while retaining the
      * connection object for a delayed, graceful close. */
@@ -98,12 +99,19 @@ typedef struct ConnectionType {
     ssize_t (*sync_read)(struct connection *conn, char *ptr, ssize_t size, long long timeout);
     ssize_t (*sync_readline)(struct connection *conn, char *ptr, ssize_t size, long long timeout);
 
+    /* event loop */
+    void (*unbind_event_loop)(struct connection *conn);
+    int (*rebind_event_loop)(struct connection *conn, aeEventLoop *el);
+
     /* pending data */
-    int (*has_pending_data)(void);
-    int (*process_pending_data)(void);
+    int (*has_pending_data)(struct aeEventLoop *el);
+    int (*process_pending_data)(struct aeEventLoop *el);
 
     /* TLS specified methods */
     sds (*get_peer_cert)(struct connection *conn);
+
+    /* Get peer username based on connection type */
+    sds (*get_peer_username)(connection *conn);
 } ConnectionType;
 
 struct connection {
@@ -115,6 +123,7 @@ struct connection {
     short int refs;
     unsigned short int iovcnt;
     void *private_data;
+    struct aeEventLoop *el;
     ConnectionCallbackFunc conn_handler;
     ConnectionCallbackFunc write_handler;
     ConnectionCallbackFunc read_handler;
@@ -345,6 +354,28 @@ static inline int connHasReadHandler(connection *conn) {
     return conn->read_handler != NULL;
 }
 
+/* Returns true if the connection is bound to an event loop */
+static inline int connHasEventLoop(connection *conn) {
+    return conn->el != NULL;
+}
+
+/* Unbind the current event loop from the connection, so that it can be
+ * rebind to a different event loop in the future. */
+static inline void connUnbindEventLoop(connection *conn) {
+    if (conn->el == NULL) return;
+    connSetReadHandler(conn, NULL);
+    connSetWriteHandler(conn, NULL);
+    if (conn->type->unbind_event_loop)
+        conn->type->unbind_event_loop(conn);
+    conn->el = NULL;
+}
+
+/* Rebind the connection to another event loop, read/write handlers must not
+ * be installed in the current event loop */
+static inline int connRebindEventLoop(connection *conn, aeEventLoop *el) {
+    return conn->type->rebind_event_loop(conn, el);
+}
+
 /* Associate a private data pointer with the connection */
 static inline void connSetPrivateData(connection *conn, void *data) {
     conn->private_data = data;
@@ -383,6 +414,14 @@ static inline sds connGetPeerCert(connection *conn) {
     return NULL;
 }
 
+/* Get Peer username based on connection type */
+static inline sds connGetPeerUsername(connection *conn) {
+    if (conn->type && conn->type->get_peer_username) {
+        return conn->type->get_peer_username(conn);
+    }
+    return NULL;
+}
+
 /* Initialize the redis connection framework */
 int connTypeInitialize(void);
 
@@ -405,14 +444,14 @@ ConnectionType *connectionTypeUnix(void);
 int connectionIndexByType(const char *typename);
 
 /* Create a connection of specified type */
-static inline connection *connCreate(ConnectionType *ct) {
-    return ct->conn_create();
+static inline connection *connCreate(struct aeEventLoop *el, ConnectionType *ct) {
+    return ct->conn_create(el);
 }
 
 /* Create an accepted connection of specified type.
  * priv is connection type specified argument */
-static inline connection *connCreateAccepted(ConnectionType *ct, int fd, void *priv) {
-    return ct->conn_create_accepted(fd, priv);
+static inline connection *connCreateAccepted(struct aeEventLoop *el, ConnectionType *ct, int fd, void *priv) {
+    return ct->conn_create_accepted(el, fd, priv);
 }
 
 /* Configure a connection type. A typical case is to configure TLS.
@@ -426,10 +465,10 @@ static inline int connTypeConfigure(ConnectionType *ct, void *priv, int reconfig
 void connTypeCleanupAll(void);
 
 /* Test all the connection type has pending data or not. */
-int connTypeHasPendingData(void);
+int connTypeHasPendingData(struct aeEventLoop *el);
 
 /* walk all the connection types and process pending data for each connection type */
-int connTypeProcessPendingData(void);
+int connTypeProcessPendingData(struct aeEventLoop *el);
 
 /* Listen on an initialized listener */
 static inline int connListen(connListener *listener) {

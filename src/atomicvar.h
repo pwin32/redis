@@ -11,6 +11,7 @@
  * atomicSet(var,value)  -- Set the atomic counter value
  * atomicGetWithSync(var,value)  -- 'atomicGet' with inter-thread synchronization
  * atomicSetWithSync(var,value)  -- 'atomicSet' with inter-thread synchronization
+ * atomicCompareExchange(type,var,expected_var,desired)  --  Compare and exchange (CAS) operation
  *
  * Atomic operations on flags.
  * Flag type can be int, long, long long or their unsigned counterparts.
@@ -32,7 +33,7 @@
  * (if the flag was 0 -> set to 1, if it's already 1 -> do nothing, but the final result is that the flag is set),
  * and also it has a full barrier (__sync_lock_test_and_set has acquire barrier).
  *
- * NOTE2: Unlike other atomic type, which aren't guaranteed to be lock free, c11 atmoic_flag does.
+ * NOTE2: Unlike other atomic type, which aren't guaranteed to be lock free, c11 atomic_flag does.
  * To check whether a type is lock free, atomic_is_lock_free() can be used.
  * It can be considered to limit the flag type to atomic_flag to improve performance.
  *
@@ -49,8 +50,9 @@
  * Copyright (c) 2015-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef _WIN32
@@ -173,6 +175,8 @@ static __forceinline void redisAtomicStore(
 } while(0)
 #define atomicSetWithSync(var,value) \
     atomic_store_explicit(&var,value,memory_order_seq_cst)
+#define atomicCompareExchange(type,var,expected_var,desired) \
+    atomic_compare_exchange_weak_explicit(&var,&expected_var,desired,memory_order_relaxed,memory_order_relaxed)
 #define atomicFlagGetSet(var,oldvalue_var) \
     oldvalue_var = atomic_exchange_explicit(&var,1,memory_order_relaxed)
 #define REDIS_ATOMIC_API "c11-builtin"
@@ -198,6 +202,8 @@ static __forceinline void redisAtomicStore(
 } while(0)
 #define atomicSetWithSync(var,value) \
     __atomic_store_n(&var,value,__ATOMIC_SEQ_CST)
+#define atomicCompareExchange(type,var,expected_var,desired) \
+    __atomic_compare_exchange_n(&var,&expected_var,desired,1,__ATOMIC_RELAXED,__ATOMIC_RELAXED)
 #define atomicFlagGetSet(var,oldvalue_var) \
     oldvalue_var = __atomic_exchange_n(&var,1,__ATOMIC_RELAXED)
 #define REDIS_ATOMIC_API "atomic-builtin"
@@ -227,6 +233,12 @@ static __forceinline void redisAtomicStore(
     ANNOTATE_HAPPENS_BEFORE(&var);  \
     while(!__sync_bool_compare_and_swap(&var,var,value,__sync_synchronize)); \
 } while(0)
+#define atomicCompareExchange(type,var,expected_var,desired) ({ \
+    type _old = __sync_val_compare_and_swap(&var,expected_var,desired); \
+    int _success = (_old == expected_var); \
+    if (!_success) expected_var = _old; \
+    _success; \
+})
 #define atomicFlagGetSet(var,oldvalue_var) \
     oldvalue_var = __sync_val_compare_and_swap(&var,0,1)
 #define REDIS_ATOMIC_API "sync-builtin"
@@ -235,4 +247,23 @@ static __forceinline void redisAtomicStore(
 #error "Unable to determine atomic operations for your platform"
 
 #endif
+
+/* atomicIncrGetSingleWriter(var, delta, newvalue_var)
+ *
+ * Adds `delta` to `var` and writes the resulting value to `newvalue_var`.
+ * Same end result as atomicIncrGet() but implemented as load+add+store instead
+ * of an atomic read-modify-write. This avoids the `lock` prefix on x86
+ * (~20-40 cycles vs ~2-3 for plain load+store).
+ *
+ * SAFETY: the caller MUST guarantee that no other thread ever writes to `var`
+ * (no atomicIncr, no atomicSet, no other call to this macro from a different
+ * thread). Concurrent writers cause silent lost updates. Readers on other
+ * threads using atomicGet are fine: they will observe either the pre or
+ * post update value. */
+#define atomicIncrGetSingleWriter(var, delta, newvalue_var) do { \
+    atomicGet((var), (newvalue_var)); \
+    (newvalue_var) += (delta); \
+    atomicSet((var), (newvalue_var)); \
+} while(0)
+
 #endif /* __ATOMIC_VAR_H */

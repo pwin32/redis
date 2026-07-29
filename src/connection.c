@@ -47,6 +47,7 @@ int connTypeRegister(ConnectionType *ct) {
         }
     }
 
+    serverAssert(type < CONN_TYPE_MAX);
     serverLog(LL_VERBOSE, "Connection type %s registered", typename);
     connTypes[type] = ct;
 
@@ -158,14 +159,14 @@ void connTypeCleanupAll(void) {
 }
 
 /* walk all the connection types until has pending data */
-int connTypeHasPendingData(void) {
+int connTypeHasPendingData(struct aeEventLoop *el) {
     ConnectionType *ct;
     int type;
     int ret = 0;
 
     for (type = 0; type < CONN_TYPE_MAX; type++) {
         ct = connTypes[type];
-        if (ct && ct->has_pending_data && (ret = ct->has_pending_data())) {
+        if (ct && ct->has_pending_data && (ret = ct->has_pending_data(el))) {
             return ret;
         }
     }
@@ -174,7 +175,7 @@ int connTypeHasPendingData(void) {
 }
 
 /* walk all the connection types and process pending data for each connection type */
-int connTypeProcessPendingData(void) {
+int connTypeProcessPendingData(struct aeEventLoop *el) {
     ConnectionType *ct;
     int type;
     int ret = 0;
@@ -182,7 +183,7 @@ int connTypeProcessPendingData(void) {
     for (type = 0; type < CONN_TYPE_MAX; type++) {
         ct = connTypes[type];
         if (ct && ct->process_pending_data) {
-            ret += ct->process_pending_data();
+            ret += ct->process_pending_data(el);
         }
     }
 

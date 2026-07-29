@@ -5,8 +5,9 @@
  * Copyright (c) 2024-present, Valkey contributors.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  *
  * Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
  */
@@ -960,7 +961,7 @@ static int luaRedisGenericCommand(lua_State *lua, int raise_error) {
         ldbLogRedisReply(reply);
 
     if (reply != c->buf) sdsfree(reply);
-    c->reply_bytes = 0;
+    c->reply_bytes = c->reply_bytes_shared = c->reply_bytes_unshared = 0;
 
 cleanup:
     /* Clean up. Command code may have changed argv/argc so we use the
@@ -969,7 +970,8 @@ cleanup:
     c->argc = c->argv_len = 0;
     c->user = NULL;
     c->argv = NULL;
-    resetClient(c);
+    c->all_argv_len_sum = 0;
+    resetClient(c, 1);
     inuse--;
 
     if (raise_error) {
@@ -1127,9 +1129,12 @@ static int luaRedisAclCheckCmdPermissionsCommand(lua_State *lua) {
     if ((cmd = lookupCommand(argv, argc)) == NULL) {
         luaPushError(lua, "Invalid command passed to redis.acl_check_cmd()");
         raise_error = 1;
+    } else if (!commandCheckArity(cmd, argc, NULL)) {
+        luaPushError(lua, "Wrong number of args for redis.acl_check_cmd()");
+        raise_error = 1;
     } else {
         int keyidxptr;
-        if (ACLCheckAllUserCommandPerm(rctx->original_client->user, cmd, argv, argc, &keyidxptr) != ACL_OK) {
+        if (ACLCheckAllUserCommandPerm(rctx->original_client->user, cmd, argv, argc, NULL, &keyidxptr) != ACL_OK) {
             lua_pushboolean(lua, 0);
         } else {
             lua_pushboolean(lua, 1);
@@ -1326,7 +1331,7 @@ static int luaNewIndexAllowList(lua_State *lua) {
             }
         }
         if (!*c && !deprecated) {
-            serverLog(LL_WARNING, "A key '%s' was added to Lua globals which is not on the globals allow list nor listed on the deny list.", variable_name);
+            serverLog(LL_WARNING, "A key '%s' was added to Lua globals which is not on the globals allow list nor listed on the deny list.", redactLogCstr(variable_name));
         }
     } else {
         lua_rawset(lua, -3);

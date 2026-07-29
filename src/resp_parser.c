@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 /* ----------------------------------------------------------------------------------------
@@ -34,6 +35,7 @@
  * ----------------------------------------------------------------------------------------
  */
 
+#include "fast_float_strtod.h"
 #include "resp_parser.h"
 #include "server.h"
 
@@ -126,13 +128,10 @@ static int parseDouble(ReplyParser *parser, void *p_ctx) {
     const char *proto = parser->curr_location;
     char *p = strchr(proto+1,'\r');
     parser->curr_location = p + 2; /* for \r\n */
-    char buf[MAX_LONG_DOUBLE_CHARS+1];
     size_t len = p-proto-1;
     double d;
     if (len <= MAX_LONG_DOUBLE_CHARS) {
-        memcpy(buf,proto+1,len);
-        buf[len] = '\0';
-        d = strtod(buf,NULL); /* We expect a valid representation. */
+        d = fast_float_strtod(proto+1,len,NULL); /* We expect a valid representation. */
     } else {
         d = 0;
     }

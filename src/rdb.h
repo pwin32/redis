@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef __RDB_H
@@ -17,7 +18,7 @@
 
 /* The current RDB version. When the format changes in a way that is no longer
  * backward compatible this number gets incremented. */
-#define RDB_VERSION 12
+#define RDB_VERSION 14
 
 /* Defines related to the dump file format. To store 32 bits lengths for short
  * keys requires a lot of space, so we check the most significant 2 bits of
@@ -77,12 +78,23 @@
 #define RDB_TYPE_HASH_LISTPACK_EX_PRE_GA 23   /* Hash LP with HFEs. Doesn't attach min TTL at start (7.4 RC) */
 #define RDB_TYPE_HASH_METADATA 24             /* Hash with HFEs. Attach min TTL at start */
 #define RDB_TYPE_HASH_LISTPACK_EX 25          /* Hash LP with HFEs. Attach min TTL at start */
+#define RDB_TYPE_STREAM_LISTPACKS_4 26        /* Stream with IDMP support */
+#define RDB_TYPE_STREAM_LISTPACKS_5 27        /* Stream with XNACK support (NACKed entries) */
+#define RDB_TYPE_ARRAY 28                     /* Array data type */
+#ifdef ENABLE_GCRA
+#define RDB_TYPE_GCRA 29                      /* GCRA object */
+#endif
 /* NOTE: WHEN ADDING NEW RDB TYPE, UPDATE rdbIsObjectType(), and rdb_type_string[] */
 
 /* Test if a type is an object type. */
-#define rdbIsObjectType(t) (((t) >= 0 && (t) <= 7) || ((t) >= 9 && (t) <= 25))
+#ifdef ENABLE_GCRA
+#define rdbIsObjectType(t) (((t) >= 0 && (t) <= 7) || ((t) >= 9 && (t) <= 29))
+#else
+#define rdbIsObjectType(t) (((t) >= 0 && (t) <= 7) || ((t) >= 9 && (t) <= 28))
+#endif
 
 /* Special RDB opcodes (saved/loaded with rdbSaveType/rdbLoadType). */
+#define RDB_OPCODE_KEY_META   243   /* Key metadata (module metadata classes). */
 #define RDB_OPCODE_SLOT_INFO  244   /* Individual slot info, such as slot id and size (cluster mode only). */
 #define RDB_OPCODE_FUNCTION2  245   /* function library data */
 #define RDB_OPCODE_FUNCTION_PRE_GA   246   /* old function library data for 7.0 rc1 and rc2 */
@@ -109,8 +121,6 @@
 #define RDB_LOAD_ENC      (1<<0)
 #define RDB_LOAD_PLAIN    (1<<1)
 #define RDB_LOAD_SDS      (1<<2)
-#define RDB_LOAD_HFLD     (1<<3)
-#define RDB_LOAD_HFLD_TTL (1<<4)
 
 /* flags on the purpose of rdb save or load */
 #define RDBFLAGS_NONE 0                 /* No special RDB loading or saving. */
@@ -130,12 +140,15 @@ int rdbSaveType(rio *rdb, unsigned char type);
 int rdbLoadType(rio *rdb);
 time_t rdbLoadTime(rio *rdb);
 int rdbSaveLen(rio *rdb, uint64_t len);
+ssize_t rdbSaveSignedInteger(rio *rdb, int64_t val);
+int64_t rdbLoadSignedInteger(rio *rdb, int rdbver);
 ssize_t rdbSaveMillisecondTime(rio *rdb, long long t);
 long long rdbLoadMillisecondTime(rio *rdb, int rdbver);
 uint64_t rdbLoadLen(rio *rdb, int *isencoded);
 int rdbLoadLenByRef(rio *rdb, int *isencoded, uint64_t *lenptr);
 int rdbSaveObjectType(rio *rdb, robj *o);
 int rdbLoadObjectType(rio *rdb);
+int rdbLoadWithEmptyFunc(char *filename, rdbSaveInfo *rsi, int rdbflags, void (*emptyDbFunc)(void));
 int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags);
 int rdbSaveBackground(int req, char *filename, rdbSaveInfo *rsi, int rdbflags);
 int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi);
@@ -148,7 +161,8 @@ robj *rdbLoadObject(int rdbtype, rio *rdb, sds key, int dbid, int *error);
 void backgroundSaveDoneHandler(int exitcode, int bysignal);
 int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime,int dbid);
 ssize_t rdbSaveSingleModuleAux(rio *rdb, int when, moduleType *mt);
-robj *rdbLoadCheckModuleValue(rio *rdb, char *modulename);
+robj *rdbLoadCheckModuleValue(rio *rdb, char *modulename, int null_on_error);
+int rdbResolveKeyType(rio *rdb, int *type, int dbid, KeyMetaSpec *keymeta);
 robj *rdbLoadStringObject(rio *rdb);
 ssize_t rdbSaveStringObject(rio *rdb, robj *obj);
 ssize_t rdbSaveRawString(rio *rdb, unsigned char *s, size_t len);

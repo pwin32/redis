@@ -1,7 +1,7 @@
 set testmodule [redis_test_module moduleconfigs]
 set testmoduletwo [redis_test_module moduleconfigstwo]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
     test {Config get commands work} {
         # Make sure config get module config works
@@ -13,6 +13,17 @@ start_server {tags {"modules"}} {
         assert_equal [r config get moduleconfigs.enum] "moduleconfigs.enum one"
         assert_equal [r config get moduleconfigs.flags] "moduleconfigs.flags {one two}"
         assert_equal [r config get moduleconfigs.numeric] "moduleconfigs.numeric -1"
+
+        # Check un-prefixed and aliased configuration
+        assert_equal [r config get unprefix-bool] "unprefix-bool yes"
+        assert_equal [r config get unprefix-noalias-bool] "unprefix-noalias-bool yes"
+        assert_equal [r config get unprefix-bool-alias] "unprefix-bool-alias yes"
+        assert_equal [r config get unprefix.numeric] "unprefix.numeric -1"
+        assert_equal [r config get unprefix.numeric-alias] "unprefix.numeric-alias -1"
+        assert_equal [r config get unprefix-string] "unprefix-string {secret unprefix}"
+        assert_equal [r config get unprefix.string-alias] "unprefix.string-alias {secret unprefix}"
+        assert_equal [r config get unprefix-enum] "unprefix-enum one"
+        assert_equal [r config get unprefix-enum-alias] "unprefix-enum-alias one"
     }
 
     test {Config set commands work} {
@@ -34,6 +45,25 @@ start_server {tags {"modules"}} {
         assert_equal [r config get moduleconfigs.flags] "moduleconfigs.flags two"
         r config set moduleconfigs.numeric -2
         assert_equal [r config get moduleconfigs.numeric] "moduleconfigs.numeric -2"
+
+        # Check un-prefixed and aliased configuration
+        r config set unprefix-bool no
+        assert_equal [r config get unprefix-bool] "unprefix-bool no"
+        assert_equal [r config get unprefix-bool-alias] "unprefix-bool-alias no"
+        r config set unprefix-bool-alias yes
+        assert_equal [r config get unprefix-bool] "unprefix-bool yes"
+        assert_equal [r config get unprefix-bool-alias] "unprefix-bool-alias yes"
+        r config set unprefix.numeric 5
+        assert_equal [r config get unprefix.numeric] "unprefix.numeric 5"
+        assert_equal [r config get unprefix.numeric-alias] "unprefix.numeric-alias 5"
+        r config set unprefix.numeric-alias 6
+        assert_equal [r config get unprefix.numeric] "unprefix.numeric 6"
+        r config set unprefix.string-alias "blabla"
+        assert_equal [r config get unprefix-string] "unprefix-string blabla"
+        assert_equal [r config get unprefix.string-alias] "unprefix.string-alias blabla"
+        r config set unprefix-enum two
+        assert_equal [r config get unprefix-enum] "unprefix-enum two"
+        assert_equal [r config get unprefix-enum-alias] "unprefix-enum-alias two"
     }
 
     test {Config set commands enum flags} {
@@ -60,7 +90,7 @@ start_server {tags {"modules"}} {
         catch {[r config set moduleconfigs.string rejectisfreed]} e
         assert_match {*Cannot set string to 'rejectisfreed'*} $e
     }
-    
+
     test {Numeric limits work properly} {
         # Configs over/under the limit shouldn't be allowed, and memory configs should only take memory values
         catch {[r config set moduleconfigs.memory_numeric 200gb]} e
@@ -93,11 +123,30 @@ start_server {tags {"modules"}} {
         assert_equal [r config get moduleconfigs.enum] "moduleconfigs.enum one"
         assert_equal [r config get moduleconfigs.flags] "moduleconfigs.flags {one two}"
         assert_equal [r config get moduleconfigs.numeric] "moduleconfigs.numeric -1"
+
+        # Check un-prefixed and aliased configuration
+        assert_equal [r config get unprefix-bool] "unprefix-bool yes"
+        assert_equal [r config get unprefix-bool-alias] "unprefix-bool-alias yes"
+        assert_equal [r config get unprefix.numeric] "unprefix.numeric -1"
+        assert_equal [r config get unprefix.numeric-alias] "unprefix.numeric-alias -1"
+        assert_equal [r config get unprefix-string] "unprefix-string {secret unprefix}"
+        assert_equal [r config get unprefix.string-alias] "unprefix.string-alias {secret unprefix}"
+        assert_equal [r config get unprefix-enum] "unprefix-enum one"
+        assert_equal [r config get unprefix-enum-alias] "unprefix-enum-alias one"
+
+
         r module unload moduleconfigs
     }
 
     test {test loadex functionality} {
-        r module loadex $testmodule CONFIG moduleconfigs.mutable_bool no CONFIG moduleconfigs.immutable_bool yes CONFIG moduleconfigs.memory_numeric 2mb CONFIG moduleconfigs.string tclortickle
+        r module loadex $testmodule CONFIG moduleconfigs.mutable_bool no \
+                                    CONFIG moduleconfigs.immutable_bool yes \
+                                    CONFIG moduleconfigs.memory_numeric 2mb \
+                                    CONFIG moduleconfigs.string tclortickle \
+                                    CONFIG unprefix-bool no \
+                                    CONFIG unprefix.numeric-alias 123 \
+                                    CONFIG unprefix-string abc_def \
+
         assert_not_equal [lsearch [lmap x [r module list] {dict get $x name}] moduleconfigs] -1
         assert_equal [r config get moduleconfigs.mutable_bool] "moduleconfigs.mutable_bool no"
         assert_equal [r config get moduleconfigs.immutable_bool] "moduleconfigs.immutable_bool yes"
@@ -107,6 +156,18 @@ start_server {tags {"modules"}} {
         assert_equal [r config get moduleconfigs.enum] "moduleconfigs.enum one"
         assert_equal [r config get moduleconfigs.flags] "moduleconfigs.flags {one two}"
         assert_equal [r config get moduleconfigs.numeric] "moduleconfigs.numeric -1"
+
+        # Check un-prefixed and aliased configuration
+        assert_equal [r config get unprefix-bool] "unprefix-bool no"
+        assert_equal [r config get unprefix-bool-alias] "unprefix-bool-alias no"
+        assert_equal [r config get unprefix.numeric] "unprefix.numeric 123"
+        assert_equal [r config get unprefix.numeric-alias] "unprefix.numeric-alias 123"
+        assert_equal [r config get unprefix-string] "unprefix-string abc_def"
+        assert_equal [r config get unprefix.string-alias] "unprefix.string-alias abc_def"
+        assert_equal [r config get unprefix-enum] "unprefix-enum one"
+        assert_equal [r config get unprefix-enum-alias] "unprefix-enum-alias one"
+
+
     }
 
     test {apply function works} {
@@ -121,8 +182,18 @@ start_server {tags {"modules"}} {
     }
 
     test {test double config argument to loadex} {
-        r module loadex $testmodule CONFIG moduleconfigs.mutable_bool yes CONFIG moduleconfigs.mutable_bool no
+        r module loadex $testmodule CONFIG moduleconfigs.mutable_bool yes \
+                                    CONFIG moduleconfigs.mutable_bool no \
+                                    CONFIG unprefix.numeric-alias 1 \
+                                    CONFIG unprefix.numeric-alias 2 \
+                                    CONFIG unprefix-string blabla
+
         assert_equal [r config get moduleconfigs.mutable_bool] "moduleconfigs.mutable_bool no"
+        # Check un-prefixed and aliased configuration
+        assert_equal [r config get unprefix.numeric-alias] "unprefix.numeric-alias 2"
+        assert_equal [r config get unprefix.numeric] "unprefix.numeric 2"
+        assert_equal [r config get unprefix-string] "unprefix-string blabla"
+        assert_equal [r config get unprefix.string-alias] "unprefix.string-alias blabla"
         r module unload moduleconfigs
     }
 
@@ -156,6 +227,9 @@ start_server {tags {"modules"}} {
         assert_match {*ERR*} $e
         assert_equal [r config get configs.test] "configs.test yes"
         r module unload configs
+        # Verify config name and its alias being used together gets failed
+        catch {[r module loadex $testmodule CONFIG unprefix.numeric 1 CONFIG unprefix.numeric-alias 1]}
+        assert_match {*ERR*} $e
     }
 
     test {test config rewrite with dynamic load} {
@@ -167,6 +241,10 @@ start_server {tags {"modules"}} {
         r config set moduleconfigs.memory_numeric 750
         r config set moduleconfigs.enum two
         r config set moduleconfigs.flags "four two"
+        r config set unprefix-bool-alias no
+        r config set unprefix.numeric 456
+        r config set unprefix.string-alias "unprefix"
+        r config set unprefix-enum two
         r config rewrite
         restart_server 0 true false
         # Ensure configs we rewrote are present and that the conf file is readable
@@ -176,6 +254,17 @@ start_server {tags {"modules"}} {
         assert_equal [r config get moduleconfigs.enum] "moduleconfigs.enum two"
         assert_equal [r config get moduleconfigs.flags] "moduleconfigs.flags {two four}"
         assert_equal [r config get moduleconfigs.numeric] "moduleconfigs.numeric -1"
+
+        # Check unprefixed configuration and alias
+        assert_equal [r config get unprefix-bool] "unprefix-bool no"
+        assert_equal [r config get unprefix-bool-alias] "unprefix-bool-alias no"
+        assert_equal [r config get unprefix.numeric] "unprefix.numeric 456"
+        assert_equal [r config get unprefix.numeric-alias] "unprefix.numeric-alias 456"
+        assert_equal [r config get unprefix-string] "unprefix-string unprefix"
+        assert_equal [r config get unprefix.string-alias] "unprefix.string-alias unprefix"
+        assert_equal [r config get unprefix-enum] "unprefix-enum two"
+        assert_equal [r config get unprefix-enum-alias] "unprefix-enum-alias two"
+
         r module unload moduleconfigs
     }
 
@@ -221,19 +310,19 @@ start_server {tags {"modules"}} {
     }
     test {startup moduleconfigs} {
         # No loadmodule directive
-        set err [redis_server_startup_error --moduleconfigs.string "hello"]
+        catch {redis_server_startup_error --moduleconfigs.string "hello"} err
         assert_match {*Module Configuration detected without loadmodule directive or no ApplyConfig call: aborting*} $err
 
         # Bad config value
-        set err [redis_server_startup_error --loadmodule "$testmodule" --moduleconfigs.string "rejectisfreed"]
+        catch {redis_server_startup_error --loadmodule "$testmodule" --moduleconfigs.string "rejectisfreed"} err
         assert_match {*Issue during loading of configuration moduleconfigs.string : Cannot set string to 'rejectisfreed'*} $err
 
         # missing LoadConfigs call
-        set err [redis_server_startup_error --loadmodule "$testmodule" noload --moduleconfigs.string "hello"]
-        assert_match {*Module Configurations were not set, likely a missing LoadConfigs call. Unloading the module.*} $err
+        catch {redis_server_startup_error --loadmodule "$testmodule" noload --moduleconfigs.string "hello"} err
+        assert_match {*Module Configurations were not set, missing LoadConfigs call. Unloading the module.*} $err
 
         # successful
-        start_server [list overrides [list loadmodule "$testmodule" moduleconfigs.string "bootedup" moduleconfigs.enum two moduleconfigs.flags "two four"]] {
+        start_server [list overrides [list loadmodule "$testmodule" moduleconfigs.string "bootedup" moduleconfigs.enum two moduleconfigs.flags "two four"] tags {"external:skip"}] {
             assert_equal [r config get moduleconfigs.string] "moduleconfigs.string bootedup"
             assert_equal [r config get moduleconfigs.mutable_bool] "moduleconfigs.mutable_bool yes"
             assert_equal [r config get moduleconfigs.immutable_bool] "moduleconfigs.immutable_bool no"
@@ -241,6 +330,56 @@ start_server {tags {"modules"}} {
             assert_equal [r config get moduleconfigs.flags] "moduleconfigs.flags {two four}"
             assert_equal [r config get moduleconfigs.numeric] "moduleconfigs.numeric -1"
             assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 1024"
+
+            # Check un-prefixed and aliased configuration
+            assert_equal [r config get unprefix-bool] "unprefix-bool yes"
+            assert_equal [r config get unprefix-bool-alias] "unprefix-bool-alias yes"
+            assert_equal [r config get unprefix.numeric] "unprefix.numeric -1"
+            assert_equal [r config get unprefix.numeric-alias] "unprefix.numeric-alias -1"
+            assert_equal [r config get unprefix-string] "unprefix-string {secret unprefix}"
+            assert_equal [r config get unprefix.string-alias] "unprefix.string-alias {secret unprefix}"
+            assert_equal [r config get unprefix-enum] "unprefix-enum one"
+            assert_equal [r config get unprefix-enum-alias] "unprefix-enum-alias one"
         }
+    }
+
+    test {loadmodule CONFIG values take precedence over module loadex ARGS values} {
+        # Load module with conflicting CONFIG and ARGS values
+        r module loadex $testmodule \
+            CONFIG moduleconfigs.string goo \
+            CONFIG moduleconfigs.memory_numeric 2mb \
+            ARGS override-default
+
+        # Verify CONFIG values took precedence over the values that override-default would have caused the module to set
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string goo"
+        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 2097152"
+
+        r module unload moduleconfigs
+    }
+
+    # Test: Ensure that modified configuration values from ARGS are correctly written to the config file
+    test {Modified ARGS values are persisted after config rewrite when set through CONFIG commands} {
+        # Load module with non-default ARGS values
+        r module loadex $testmodule ARGS override-default
+
+        # Verify the initial values were overwritten
+        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 123"
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string foo"
+
+        # Set new values to simulate user configuration changes
+        r config set moduleconfigs.memory_numeric 1mb
+        r config set moduleconfigs.string "modified_value"
+
+        # Verify that the changes took effect
+        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 1048576"
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string modified_value"
+
+        # Perform a config rewrite
+        r config rewrite
+
+        restart_server 0 true false
+        assert_equal [r config get moduleconfigs.memory_numeric] "moduleconfigs.memory_numeric 1048576"
+        assert_equal [r config get moduleconfigs.string] "moduleconfigs.string modified_value"
+        r module unload moduleconfigs
     }
 }

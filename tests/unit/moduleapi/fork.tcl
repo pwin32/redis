@@ -1,6 +1,6 @@
 set testmodule [redis_test_module fork]
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     if {$::tcl_platform(platform) eq "windows"} {

@@ -29,10 +29,19 @@
                 "replication.backlog": {
                     "type": "integer"
                 },
+                "replica.fullsync.buffer": {
+                    "type": "integer"
+                },
                 "clients.slaves": {
                     "type": "integer"
                 },
                 "clients.normal": {
+                    "type": "integer"
+                },
+                "clients.normal.shared": {
+                    "type": "integer"
+                },
+                "clients.normal.unshared": {
                     "type": "integer"
                 },
                 "cluster.links": {
@@ -42,6 +51,9 @@
                     "type": "integer"
                 },
                 "lua.caches": {
+                    "type": "integer"
+                },
+                "script.VMs": {
                     "type": "integer"
                 },
                 "functions.caches": {

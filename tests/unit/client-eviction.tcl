@@ -108,7 +108,11 @@ start_server {} {
             $rr write [join [list "*1\r\n\$$maxmemory_clients_actual\r\n" [string repeat v $maxmemory_clients_actual]] ""]
             $rr flush
         } e
-        assert {![client_exists $cname]}
+        wait_for_condition 100 10 {
+            ![client_exists $cname]
+        } else {
+            fail "Failed to evict client"
+        }
         $rr close
 
         # Restore settings
@@ -360,6 +364,13 @@ start_server {} {
         resume_process $server_pid
         r ping ;# make sure a full event loop cycle is processed before issuing CLIENT LIST
 
+        # wait for get commands to be processed
+        wait_for_condition 100 10 {
+            [expr {[regexp {calls=(\d+)} [cmdrstat get r] -> calls] ? $calls : 0}] >= 2
+        } else {
+            fail "get did not arrive"
+        }
+
         # Validate obuf-clients were disconnected (because of obuf limit)
         catch {client_field obuf-client1 name} e
         assert_match {no client named obuf-client1 found*} $e
@@ -367,7 +378,9 @@ start_server {} {
         assert_match {no client named obuf-client2 found*} $e
 
         # Validate qbuf-client is still connected and wasn't evicted
-        assert_equal [client_field qbuf-client name] {qbuf-client}
+        if {[lindex [r config get io-threads] 1] == 1} {
+            assert_equal [client_field qbuf-client name] {qbuf-client}
+        }
 
         $rr1 close
         $rr2 close
@@ -376,6 +389,7 @@ start_server {} {
 }
 
 start_server {} {
+
     test "decrease maxmemory-clients causes client eviction" {
         set maxmemory_clients [mb 4]
         set client_count 10
@@ -404,8 +418,11 @@ start_server {} {
 
         # Decrease maxmemory_clients and expect client eviction
         r config set maxmemory-clients [expr $maxmemory_clients / 2]
-        set connected_clients [llength [lsearch -all [split [string trim [r client list]] "\r\n"] *name=client*]]
-        assert {$connected_clients > 0 && $connected_clients < $client_count}
+        wait_for_condition 200 10 {
+            [llength [regexp -all -inline {name=client} [r client list]]] < $client_count
+        } else {
+            fail "Failed to evict clients"
+        }
 
         foreach rr $rrs {$rr close}
     }
@@ -463,8 +480,13 @@ start_server {} {
         assert {$total_client_mem <= $maxmemory_clients}
 
         # Make sure we have only half of our clients now
-        set connected_clients [llength [lsearch -all [split [string trim [r client list]] "\r\n"] *name=client*]]
-        assert {$connected_clients == [expr $client_count / 2]}
+        wait_for_condition 200 100 {
+            ([lindex [r config get io-threads] 1] == 1) ?
+                ([llength [regexp -all -inline {name=client} [r client list]]] == $client_count / 2) :
+                ([llength [regexp -all -inline {name=client} [r client list]]] <= $client_count / 2)
+        } else {
+            fail "Failed to evict clients"
+        }
 
         # Restore the reply buffer resize to default
         r debug replybuffer resizing 1
@@ -519,7 +541,8 @@ start_server {} {
         foreach size [lreverse $sizes] {
             set control_mem [client_field control tot-mem]
             set total_mem [expr $total_mem - $clients_per_size * $size]
-            r config set maxmemory-clients [expr $total_mem + $control_mem]
+            # allow some tolerance when using io threads
+            r config set maxmemory-clients [expr $total_mem + $control_mem + 1000]
             set clients [split [string trim [r client list]] "\r\n"]
             # Verify only relevant clients were evicted
             for {set i 0} {$i < [llength $sizes]} {incr i} {
@@ -547,7 +570,7 @@ start_server {} {
         r config set maxmemory-clients 0
 
         test "client total memory grows during $type" {
-            r setrange k [mb 1] v
+            r setrange k [kb 10] v ;# Keep value <= 16KB to avoid copy-avoidance, which shares memory and slows tot-mem growth.
             set rr [redis_client]
             $rr client setname test_client
             if {$type eq "client no-evict"} {
@@ -559,8 +582,9 @@ start_server {} {
             # Fill output buffer in loop without reading it and make sure
             # the tot-mem of client has increased (OS buffers didn't swallow it)
             # and eviction not occurring.
+            set mget_args [lrepeat 100 k] ;# Use mget with 100 keys so each reply adds ~1MB to tot-mem, reaching 10MB faster.
             while {true} {
-                $rr get k
+                $rr mget {*}$mget_args
                 $rr flush
                 after 10
                 if {[client_field test_client tot-mem] > [mb 10]} {

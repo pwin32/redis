@@ -1583,7 +1583,7 @@ int uintCompare(const void *a, const void *b) {
     return (*(unsigned int *) a - *(unsigned int *) b);
 }
 
-/* Helper method to store a string into from val or lval into dest */
+/* Helper method to store a string from val or lval into dest */
 static inline void ziplistSaveValue(unsigned char *val, unsigned int len, long long lval, ziplistEntry *dest) {
     dest->sval = val;
     dest->slen = len;
@@ -2367,7 +2367,7 @@ int ziplistTest(int argc, char **argv, int flags) {
         for (i = 0; i < iteration; i++) {
             zl = ziplistNew();
             ref = listCreate();
-            listSetFreeMethod(ref,(void (*)(void*))sdsfree);
+            listSetFreeMethod(ref, sdsfreegeneric);
             len = rand() % 256;
 
             /* Create lists */

@@ -3,12 +3,19 @@
 # Copyright (C) 2014-Present, Redis Ltd.
 # All Rights reserved.
 #
-# Licensed under your choice of the Redis Source Available License 2.0
-# (RSALv2) or the Server Side Public License v1 (SSPLv1).
+# Copyright (c) 2024-present, Valkey contributors.
+# All rights reserved.
+#
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
+#
+# Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
+#
 
-package require Tcl 8.5
+package require Tcl 8.5-10
 
-set tcl_precision 17
+if {$tcl_version < 9.0} { set tcl_precision 17 }
 source tests/support/redis.tcl
 source tests/support/aofmanifest.tcl
 source tests/support/server.tcl
@@ -17,103 +24,27 @@ source tests/support/tmpfile.tcl
 source tests/support/test.tcl
 source tests/support/util.tcl
 
+set dir [pwd]
 set ::all_tests {
     windows/aof
     windows/iocp
     windows/regression
-    unit/printver
-    unit/dump
-    unit/auth
-    unit/protocol
-    unit/keyspace
-    unit/scan
-    unit/info
-    unit/info-command
-    unit/type/string
-    unit/type/incr
-    unit/type/list
-    unit/type/list-2
-    unit/type/list-3
-    unit/type/set
-    unit/type/zset
-    unit/type/hash
-    unit/type/hash-field-expire
-    unit/type/stream
-    unit/type/stream-cgroups
-    unit/sort
-    unit/expire
-    unit/other
-    unit/multi
-    unit/quit
-    unit/aofrw
-    unit/acl
-    unit/acl-v2
-    unit/latency-monitor
-    integration/block-repl
-    integration/replication
-    integration/replication-2
-    integration/replication-3
-    integration/replication-4
-    integration/replication-psync
-    integration/replication-buffer
-    integration/shutdown
-    integration/aof
-    integration/aof-race
-    integration/aof-multi-part
-    integration/rdb
-    integration/corrupt-dump
-    integration/corrupt-dump-fuzzer
-    integration/convert-zipmap-hash-on-load
-    integration/convert-ziplist-hash-on-load
-    integration/convert-ziplist-zset-on-load
-    integration/logging
-    integration/psync2
-    integration/psync2-reg
-    integration/psync2-pingoff
-    integration/psync2-master-restart
-    integration/failover
-    integration/redis-cli
-    integration/redis-benchmark
-    integration/dismiss-mem
-    unit/pubsub
-    unit/pubsubshard
-    unit/slowlog
-    unit/scripting
-    unit/functions
-    unit/maxmemory
-    unit/introspection
-    unit/introspection-2
-    unit/limits
-    unit/obuf-limits
-    unit/bitops
-    unit/bitfield
-    unit/geo
-    unit/memefficiency
-    unit/hyperloglog
-    unit/lazyfree
-    unit/wait
-    unit/pause
-    unit/querybuf
-    unit/tls
-    unit/tracking
-    unit/oom-score-adj
-    unit/shutdown
-    unit/networking
-    unit/client-eviction
-    unit/violations
-    unit/replybufsize
-    unit/cluster/announced-endpoints
-    unit/cluster/misc
-    unit/cluster/cli
-    unit/cluster/scripting
-    unit/cluster/hostnames
-    unit/cluster/human-announced-nodename
-    unit/cluster/multi-slot-operations
-    unit/cluster/slot-ownership
-    unit/cluster/links
-    unit/cluster/cluster-response-tls
-    unit/cluster/failure-marking
-    unit/cluster/sharded-pubsub
+}
+
+set test_dirs {
+    unit
+    unit/type
+    unit/moduleapi
+    unit/cluster
+    integration
+}
+
+foreach test_dir $test_dirs {
+    set files [glob -nocomplain $dir/tests/$test_dir/*.tcl]
+
+    foreach file [lsort $files] {
+        lappend ::all_tests $test_dir/[file root [file tail $file]]
+    }
 }
 # Index to the next test to run in the ::all_tests list.
 set ::next_test 0
@@ -124,6 +55,7 @@ set ::baseport 21111; # initial port for spawned redis servers
 set ::portcount 8000; # we don't wanna use more than 10000 to avoid collision with cluster bus ports
 set ::traceleaks 0
 set ::valgrind 0
+set ::tsan 0
 set ::durable 0
 set ::tls 0
 set ::tls_module 0
@@ -161,6 +93,7 @@ set ::ignoredigest 0
 set ::large_memory 0
 set ::log_req_res 0
 set ::force_resp3 0
+set ::debug_defrag 0
 
 # Set to 1 when we are running in client mode. The Redis test uses a
 # server-client model to run tests simultaneously. The server instance
@@ -314,6 +247,10 @@ proc s {args} {
         set args [lrange $args 1 end]
     }
     status [srv $level "client"] [lindex $args 0]
+}
+
+proc S {index field} {
+    getInfoProperty [R $index info] $field
 }
 
 # Get the specified field from the givens instances cluster info output.
@@ -472,9 +409,11 @@ proc read_from_test_client fd {
 }
 
 proc process_test_client_packet {fd payload} {
+    set payload_bytes $payload
+    set payload [encoding convertfrom utf-8 $payload_bytes]
     if {[catch {set field_count [llength $payload]} list_error] || \
         $field_count != 3} {
-        binary scan $payload H* payload_hex
+        binary scan $payload_bytes H* payload_hex
         error "invalid test-client packet payload ($list_error): $payload_hex"
     }
     foreach {status data elapsed} $payload break
@@ -642,7 +581,7 @@ proc the_end {} {
     }
 }
 
-# The client is not even driven (the test server is instead) as we just need
+# The client is not event driven (the test server is instead) as we just need
 # to read the command, execute, reply... all this in a loop.
 proc test_client_main server_port {
     set ::test_server_fd [socket localhost $server_port]
@@ -651,7 +590,7 @@ proc test_client_main server_port {
     send_data_packet $::test_server_fd ready [pid]
     while 1 {
         set bytes [gets $::test_server_fd]
-        set payload [read $::test_server_fd $bytes]
+        set payload [encoding convertfrom utf-8 [read $::test_server_fd $bytes]]
         foreach {cmd data} $payload break
         if {$cmd eq {run}} {
             execute_test_file $data
@@ -666,16 +605,23 @@ proc test_client_main server_port {
 
 proc send_data_packet {fd status data {elapsed 0}} {
     set payload [list $status $data $elapsed]
+    # Convert to UTF-8 bytes before sending so that:
+    # 1. The byte count is accurate (Tcl 9.0 string length returns character
+    #    count, which differs from byte count for non-ASCII Unicode chars).
+    # 2. Characters above U+00FF (not representable in the channel's iso8859-1
+    #    encoding) are safely transmitted as multi-byte UTF-8 sequences.
+    set payload_bytes [encoding convertto utf-8 $payload]
     # Keep the length header and payload in one channel write. Sending the
     # header separately can wake the peer's readable callback before the full
     # payload has arrived, corrupting back-to-back lifecycle notifications.
-    puts -nonewline $fd "[string length $payload]\n$payload"
+    puts -nonewline $fd "[string length $payload_bytes]\n$payload_bytes"
     flush $fd
 }
 
 proc print_help_screen {} {
     puts [join {
         "--valgrind         Run the test over valgrind."
+        "--tsan             Run the test with thread sanitizer."
         "--durable          suppress test crashes and keep running"
         "--stack-logging    Enable OSX leaks/malloc stack logging."
         "--accurate         Run slow randomized tests for more iterations."
@@ -712,6 +658,7 @@ proc print_help_screen {} {
         "--ignore-encoding  Don't validate object encoding."
         "--ignore-digest    Don't use debug digest validations."
         "--large-memory     Run tests using over 100mb."
+        "--debug-defrag     Indicate the test is running against server compiled with DEBUG_DEFRAG option"
         "--help             Print this help screen."
     } "\n"]
 }
@@ -749,6 +696,8 @@ for {set j 0} {$j < [llength $argv]} {incr j} {
         incr j
     } elseif {$opt eq {--valgrind}} {
         set ::valgrind 1
+    } elseif {$opt eq {--tsan}} {
+        set ::tsan 1
     } elseif {$opt eq {--stack-logging}} {
         if {[string match {*Darwin*} [exec uname -a]]} {
             set ::stack_logging 1
@@ -841,6 +790,8 @@ for {set j 0} {$j < [llength $argv]} {incr j} {
         set ::ignoreencoding 1
     } elseif {$opt eq {--ignore-digest}} {
         set ::ignoredigest 1
+    } elseif {$opt eq {--debug-defrag}} {
+        set ::debug_defrag 1
     } elseif {$opt eq {--help}} {
         print_help_screen
         exit 0

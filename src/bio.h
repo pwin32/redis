@@ -2,15 +2,16 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef __BIO_H
 #define __BIO_H
 
 typedef void lazy_free_fn(void *args[]);
-typedef void comp_fn(uint64_t user_data);
+typedef void comp_fn(uint64_t user_data, void *user_ptr);
 
 typedef enum bio_worker_t {
     BIO_WORKER_CLOSE_FILE = 0,
@@ -40,7 +41,7 @@ void bioCreateCloseJob(int fd, int need_fsync, int need_reclaim_cache);
 void bioCreateCloseAofJob(int fd, long long offset, int need_reclaim_cache);
 void bioCreateFsyncJob(int fd, long long offset, int need_reclaim_cache);
 void bioCreateLazyFreeJob(lazy_free_fn free_fn, int arg_count, ...);
-void bioCreateCompRq(bio_worker_t assigned_worker, comp_fn *func, uint64_t user_data);
+void bioCreateCompRq(bio_worker_t assigned_worker, comp_fn *func, uint64_t user_data, void *user_ptr);
 
 
 #endif

@@ -8,8 +8,21 @@ set test_script_get "#!lua
 redis.call('get','x')
 return 1"
 
-start_server {tags {"modules usercall"}} {
+start_server {tags {"modules usercall external:skip"}} {
     r module load $testmodule
+
+    # Test RedisModule_GetContextUser API: set context user, get it back, return its ACL string
+    test {test GetContextUser API - set context user and get ACL via GetContextUser} {
+        assert_equal [r usercall.reset_user] OK
+        assert_equal [r usercall.add_to_acl "~* &* +@all -set"] OK
+        assert_equal [r usercall.get_context_acl] "off sanitize-payload ~* &* +@all -set"
+    }
+
+    # Test RedisModule_GetUserUsername API: get username of the module user
+    test {test GetUserUsername API - returns module user name} {
+        assert_equal [r usercall.reset_user] OK
+        assert_equal [r usercall.get_user_username] module_user
+    }
 
     # baseline test that module isn't doing anything weird
     test {test module check regular redis command without user/acl} {
@@ -132,6 +145,24 @@ start_server {tags {"modules usercall"}} {
         assert_equal [dict get $entry object] {set}
         assert_equal [dict get $entry reason] {command}
         assert_match {*cmd=usercall.call_with_user_flag*} [dict get $entry client-info]
+    }
+
+    test {server not crashing when MONITOR is fed from spawned thread} {
+        set rd [redis_deferring_client]
+        $rd monitor
+
+        r ACL LOG RESET
+        assert_equal [r usercall.reset_user] OK
+        assert_equal [r usercall.add_to_acl "~* &* +@all -set"] OK
+
+        r flushdb
+        r set x x
+
+        # This is enough. This checks that we don't crash inside
+        # updateClientMemUsageAndBucket
+        assert_equal x [r usercall.call_with_user_bg C get x]
+
+        $rd close
     }
 
     start_server {tags {"wait aof network external:skip"}} {

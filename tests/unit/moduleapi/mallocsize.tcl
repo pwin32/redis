@@ -1,7 +1,7 @@
 set testmodule [redis_test_module mallocsize]
 
 
-start_server {tags {"modules"}} {
+start_server {tags {"modules external:skip"}} {
     r module load $testmodule
 
     test {MallocSize of raw bytes} {

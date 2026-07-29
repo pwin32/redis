@@ -1,3 +1,16 @@
+#
+# Copyright (c) 2009-Present, Redis Ltd.
+# All rights reserved.
+#
+# Copyright (c) 2024-present, Valkey contributors.
+# All rights reserved.
+#
+# Licensed under your choice of the Redis Source Available License 2.0
+# (RSALv2) or the Server Side Public License v1 (SSPLv1).
+#
+# Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
+#
+
 start_server {tags {"introspection"}} {
     test "PING" {
         assert_equal {PONG} [r ping]
@@ -6,8 +19,13 @@ start_server {tags {"introspection"}} {
     }
 
     test {CLIENT LIST} {
-        r client list
-    } {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=26 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=*}
+        set client_list [r client list]
+        if {[lindex [r config get io-threads] 1] == 1} {
+            assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=26 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client_list
+        } else {
+            assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client_list
+        }
+    }
 
     test {CLIENT LIST with IDs} {
         set myid [r client id]
@@ -16,8 +34,180 @@ start_server {tags {"introspection"}} {
     }
 
     test {CLIENT INFO} {
-        r client info
-    } {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=26 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=*}
+        set client [r client info]
+        if {[lindex [r config get io-threads] 1] == 1} {
+            assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=26 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client
+        } else {
+            assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client
+        }
+    }
+
+    proc get_field_in_client_info {info field} {
+        set info [string trim $info]
+        foreach item [split $info " "] {
+            set kv [split $item "="]
+            set k [lindex $kv 0]
+            if {[string match $field $k]} {
+                return [lindex $kv 1]   
+            }
+        }
+        return ""
+    }
+
+    proc get_field_in_client_list {id client_list filed} {
+        set list [split $client_list "\r\n"]
+        foreach info $list {
+            if {[string match "id=$id *" $info] } {
+                return [get_field_in_client_info $info $filed]
+            }
+        }
+        return ""
+    }
+
+    test {CLIENT INFO input/output/cmds-processed stats} {
+        set info1 [r client info]
+        set input1 [get_field_in_client_info $info1 "tot-net-in"]
+        set output1 [get_field_in_client_info $info1 "tot-net-out"]
+        set cmd1 [get_field_in_client_info $info1 "tot-cmds"]
+
+        # Run a command by that client and test if the stats change correctly
+        set info2 [r client info]
+        set input2 [get_field_in_client_info $info2 "tot-net-in"]
+        set output2 [get_field_in_client_info $info2 "tot-net-out"]
+        set cmd2 [get_field_in_client_info $info2 "tot-cmds"]
+
+        # NOTE if CLIENT INFO changes it's stats the output_bytes here and in the
+        # other related tests will need to be updated.
+        set input_bytes 26 ; # CLIENT INFO request
+        set output_bytes 300 ; # CLIENT INFO result
+        set cmds_processed 1 ; # processed the command CLIENT INFO
+        assert_equal [expr $input1+$input_bytes] $input2
+        assert {[expr $output1+$output_bytes] < $output2}
+        assert_equal [expr $cmd1+$cmds_processed] $cmd2
+    }
+
+    test {CLIENT INFO input/output/cmds-processed stats for blocking command} {
+        r del mylist
+        set rd [redis_deferring_client]
+        $rd client id
+        set rd_id [$rd read]
+ 
+        set info_list [r client list]
+        set input1 [get_field_in_client_list $rd_id $info_list "tot-net-in"]
+        set output1 [get_field_in_client_list $rd_id $info_list "tot-net-out"]
+        set cmd1 [get_field_in_client_list $rd_id $info_list "tot-cmds"]
+        $rd blpop mylist 0
+
+        # Make sure to wait for the $rd client to be blocked
+        wait_for_blocked_client
+
+        # Check if input stats have changed for $rd. Since command is blocking
+        # and has not been unblocked yet we expect no change in output/cmds-processed
+        # stats.
+        set info_list [r client list]
+        set input2 [get_field_in_client_list $rd_id $info_list "tot-net-in"]
+        set output2 [get_field_in_client_list $rd_id $info_list "tot-net-out"]
+        set cmd2 [get_field_in_client_list $rd_id $info_list "tot-cmds"]
+        assert_equal [expr $input1+34] $input2
+        assert_equal $output1 $output2
+        assert_equal $cmd1 $cmd2
+
+        # Unblock the $rd client (which will send a reply and thus update output
+        # and cmd-processed stats).
+        r lpush mylist a
+
+        # Note that the per-client stats are from the POV of the server. The
+        # deferred client may have not read the response yet, but the stats
+        # are still updated.
+        set info_list [r client list]
+        set input3 [get_field_in_client_list $rd_id $info_list "tot-net-in"]
+        set output3 [get_field_in_client_list $rd_id $info_list "tot-net-out"]
+        set cmd3 [get_field_in_client_list $rd_id $info_list "tot-cmds"]
+        assert_equal $input2 $input3
+        assert_equal [expr $output2+23] $output3
+        assert_equal [expr $cmd2+1] $cmd3
+
+        $rd close
+    }
+
+    test {CLIENT INFO cmds-processed stats for recursive command} {
+        set info [r client info]
+        set tot_cmd_before [get_field_in_client_info $info "tot-cmds"]
+        r eval "redis.call('ping')" 0
+        set info [r client info]
+        set tot_cmd_after [get_field_in_client_info $info "tot-cmds"]
+
+        # We executed 3 commands - EVAL, which in turn executed PING and finally CLIENT INFO
+        assert_equal [expr $tot_cmd_before+3] $tot_cmd_after
+    }
+
+    test {CLIENT INFO read-events and pipeline-length stats} {
+        # Use a fresh client so counters start from a known state
+        set r2 [redis_client]
+
+        # Baseline: the redis_client constructor issues some commands internally,
+        # so capture the current state rather than assuming zeros.
+        set info1 [$r2 client info]
+        set re1 [get_field_in_client_info $info1 "read-events"]
+        set plsum1 [get_field_in_client_info $info1 "avg-pipeline-len-sum"]
+        set plcnt1 [get_field_in_client_info $info1 "avg-pipeline-len-cnt"]
+
+        # Send 3 sequential (non-pipelined) commands
+        $r2 ping
+        $r2 ping
+        $r2 ping
+
+        set info2 [$r2 client info]
+        set re2 [get_field_in_client_info $info2 "read-events"]
+        set plsum2 [get_field_in_client_info $info2 "avg-pipeline-len-sum"]
+        set plcnt2 [get_field_in_client_info $info2 "avg-pipeline-len-cnt"]
+
+        # read-events should have increased (3 PINGs + the CLIENT INFO itself)
+        assert_morethan_equal $re2 [expr {$re1 + 4}]
+
+        # For sequential commands each batch has exactly 1 command,
+        # so delta of sum should equal delta of cnt (average pipeline length = 1.0)
+        set delta_sum [expr {$plsum2 - $plsum1}]
+        set delta_cnt [expr {$plcnt2 - $plcnt1}]
+        assert_morethan $delta_sum 0
+        assert_equal $delta_sum $delta_cnt
+
+        $r2 close
+    }
+
+    test {CLIENT INFO pipeline-length stats for pipelined commands} {
+        set rd [redis_deferring_client]
+        $rd client id
+        set rd_id [$rd read]
+
+        # Capture baseline from CLIENT LIST
+        set info_list [r client list]
+        set plsum1 [get_field_in_client_list $rd_id $info_list "avg-pipeline-len-sum"]
+        set plcnt1 [get_field_in_client_list $rd_id $info_list "avg-pipeline-len-cnt"]
+
+        # Send 5 pipelined commands without reading replies
+        for {set i 0} {$i < 5} {incr i} {
+            $rd ping
+        }
+
+        # Read all 5 replies to ensure they have been processed
+        for {set i 0} {$i < 5} {incr i} {
+            $rd read
+        }
+
+        set info_list [r client list]
+        set plsum2 [get_field_in_client_list $rd_id $info_list "avg-pipeline-len-sum"]
+        set plcnt2 [get_field_in_client_list $rd_id $info_list "avg-pipeline-len-cnt"]
+
+        # All 5 commands must have been counted in the sum
+        set delta_sum [expr {$plsum2 - $plsum1}]
+        set delta_cnt [expr {$plcnt2 - $plcnt1}]
+        assert_equal $delta_sum 5
+        assert_morethan $delta_cnt 0
+        assert_morethan_equal $delta_sum $delta_cnt
+
+        $rd close
+    }
 
     test {CLIENT KILL with illegal arguments} {
         assert_error "ERR wrong number of arguments for 'client|kill' command" {r client kill}
@@ -86,6 +276,11 @@ start_server {tags {"introspection"}} {
         assert {$connected_clients >= 3}
         set res [r client kill skipme yes]
         assert {$res == $connected_clients - 1}
+        wait_for_condition 1000 10 {
+            [s connected_clients] eq 1
+        } else {
+            fail "Can't kill all clients except the current one"
+        }
 
         # Kill all clients, including `me`
         set rd3 [redis_deferring_client]
@@ -247,7 +442,7 @@ start_server {tags {"introspection"}} {
         r migrate [srv 0 host] [srv 0 port] key 9 5000 AUTH2 user password
         catch {r auth not-real} _
         catch {r auth not-real not-a-password} _
-        
+
         assert_match {*"key"*"9"*"5000"*} [$rd read]
         assert_match {*"key"*"9"*"5000"*"(redacted)"*} [$rd read]
         assert_match {*"key"*"9"*"5000"*"(redacted)"*"(redacted)"*} [$rd read]
@@ -290,46 +485,49 @@ start_server {tags {"introspection"}} {
 
         $rd close
     }
-    
+
     test {MONITOR log blocked command only once} {
-        
+
         # need to reconnect in order to reset the clients state
         reconnect
-        
+
         set rd [redis_deferring_client]
         set bc [redis_deferring_client]
         r del mylist
-        
+
         $rd monitor
         $rd read ; # Discard the OK
-        
+
         $bc blpop mylist 0
+        # make sure the blpop arrives first
+        $bc flush
+        after 100
         wait_for_blocked_clients_count 1
         r lpush mylist 1
         wait_for_blocked_clients_count 0
         r lpush mylist 2
-        
+
         # we expect to see the blpop on the monitor first
         assert_match {*"blpop"*"mylist"*"0"*} [$rd read]
-        
+
         # we scan out all the info commands on the monitor
         set monitor_output [$rd read]
         while { [string match {*"info"*} $monitor_output] } {
             set monitor_output [$rd read]
         }
-        
+
         # we expect to locate the lpush right when the client was unblocked
         assert_match {*"lpush"*"mylist"*"1"*} $monitor_output
-        
+
         # we scan out all the info commands
         set monitor_output [$rd read]
         while { [string match {*"info"*} $monitor_output] } {
             set monitor_output [$rd read]
         }
-        
+
         # we expect to see the next lpush and not duplicate blpop command
         assert_match {*"lpush"*"mylist"*"2"*} $monitor_output
-        
+
         $rd close
         $bc close
     }
@@ -430,7 +628,6 @@ start_server {tags {"introspection"}} {
         set skip_configs {
             rdbchecksum
             daemonize
-            io-threads-do-reads
             tcp-backlog
             always-show-logo
             syslog-enabled
@@ -473,6 +670,7 @@ start_server {tags {"introspection"}} {
             socket-mark-id
             req-res-logfile
             client-default-resp
+            vset-force-single-threaded-execution
         }
 
         if {!$::tls} {
@@ -568,7 +766,7 @@ start_server {tags {"introspection"}} {
             assert_equal [r config get save] {save {}}
         }
     } {} {external:skip}
-    
+
     test {CONFIG SET with multiple args} {
         set some_configs {maxmemory 10000001 repl-backlog-size 10000002 save {3000 5}}
 
@@ -590,7 +788,7 @@ start_server {tags {"introspection"}} {
 
     test {CONFIG SET rollback on set error} {
         # This test passes an invalid percent value to maxmemory-clients which should cause an
-        # input verification failure during the "set" phase before trying to apply the 
+        # input verification failure during the "set" phase before trying to apply the
         # configuration. We want to make sure the correct failure happens and everything
         # is rolled back.
         # backup maxmemory config
@@ -613,7 +811,7 @@ start_server {tags {"introspection"}} {
 
     test {CONFIG SET rollback on apply error} {
         # This test tries to configure a used port number in redis. This is expected
-        # to pass the `CONFIG SET` validity checking implementation but fail on 
+        # to pass the `CONFIG SET` validity checking implementation but fail on
         # actual "apply" of the setting. This will validate that after an "apply"
         # failure we rollback to the previous values.
         proc dummy_accept {chan addr port} {}
@@ -645,8 +843,8 @@ start_server {tags {"introspection"}} {
         set used_port [find_available_port $::baseport $::portcount]
         dict set some_configs port $used_port
 
-        # Run a dummy server on used_port so we know we can't configure redis to 
-        # use it. It's ok for this to fail because that means used_port is invalid 
+        # Run a dummy server on used_port so we know we can't configure redis to
+        # use it. It's ok for this to fail because that means used_port is invalid
         # anyway
         catch {set sockfd [socket -server dummy_accept -myaddr 127.0.0.1 $used_port]} e
         if {$::verbose} { puts "dummy_accept: $e" }
@@ -693,18 +891,18 @@ start_server {tags {"introspection"}} {
 
     test {CONFIG GET multiple args} {
         set res [r config get maxmemory maxmemory* bind *of]
-        
+
         # Verify there are no duplicates in the result
         assert_equal [expr [llength [dict keys $res]]*2] [llength $res]
-        
+
         # Verify we got both name and alias in result
-        assert {[dict exists $res slaveof] && [dict exists $res replicaof]}  
+        assert {[dict exists $res slaveof] && [dict exists $res replicaof]}
 
         # Verify pattern found multiple maxmemory* configs
-        assert {[dict exists $res maxmemory] && [dict exists $res maxmemory-samples] && [dict exists $res maxmemory-clients]}  
+        assert {[dict exists $res maxmemory] && [dict exists $res maxmemory-samples] && [dict exists $res maxmemory-clients]}
 
         # Verify we also got the explicit config
-        assert {[dict exists $res bind]}  
+        assert {[dict exists $res bind]}
     }
 
     test {redis-server command line arguments - error cases} {
@@ -904,3 +1102,97 @@ test {CONFIG REWRITE handles alias config properly} {
         assert_equal [r config get hash-max-listpack-entries] {hash-max-listpack-entries 100}
     }
 } {} {external:skip}
+
+if {$::tcl_platform(platform) ne "windows"} {
+test {IO threads client number} {
+    start_server {overrides {io-threads 2} tags {external:skip}} {
+        set iothread_clients [get_io_thread_clients 1]
+        assert_equal $iothread_clients [s connected_clients]
+        assert_equal [get_io_thread_clients 0] 0
+
+        r script debug yes ; # Transfer to main thread
+        assert_equal [get_io_thread_clients 0] 1
+        assert_equal [get_io_thread_clients 1] [expr $iothread_clients - 1]
+
+        set iothread_clients [get_io_thread_clients 1]
+        set rd1 [redis_deferring_client]
+        set rd2 [redis_deferring_client]
+        assert_equal [get_io_thread_clients 1] [expr $iothread_clients + 2]
+        $rd1 close
+        $rd2 close
+        wait_for_condition 1000 10 {
+            [get_io_thread_clients 1] eq $iothread_clients
+        } else {
+            fail "Fail to close clients of io thread 1"
+        }
+        assert_equal [get_io_thread_clients 0] 1
+
+        r script debug no ; # Transfer to io thread
+        assert_equal [get_io_thread_clients 0] 0
+        assert_equal [get_io_thread_clients 1] [expr $iothread_clients + 1]
+    }
+}
+
+test {Clients are evenly distributed among io threads} {
+    start_server {overrides {io-threads 4} tags {external:skip}} {
+        # There might be a client used for health checks (to detect if the server is up)
+        # that has not been freed timely. This can lead to an inaccurate count of
+        # connectedclients processed by IO threads.
+        wait_for_condition 1000 10 {
+            [s connected_clients] eq 1
+        } else {
+            fail "Fail to wait for connected_clients to be 1"
+        }
+        global rdclients
+        for {set i 1} {$i < 9} {incr i} {
+            set rdclients($i) [redis_deferring_client]
+        }
+        for {set i 1} {$i <= 3} {incr i} {
+            assert_equal [get_io_thread_clients $i] 3
+        }
+
+        $rdclients(3) close
+        $rdclients(4) close
+        wait_for_condition 1000 10 {
+            [get_io_thread_clients 1] eq 2 &&
+            [get_io_thread_clients 2] eq 2 &&
+            [get_io_thread_clients 3] eq 3
+        } else {
+            fail "Fail to close clients"
+        }
+
+        set  $rdclients(3) [redis_deferring_client]
+        set  $rdclients(4) [redis_deferring_client]
+        for {set i 1} {$i <= 3} {incr i} {
+            assert_equal [get_io_thread_clients $i] 3
+        }
+    }
+}
+}
+
+# Test insecure configuration warnings
+start_server {tags {introspection external:skip} overrides {protected-mode no bind "*"} wait_ready false} {
+    test {Warning shown when no auth and binding all interfaces} {
+        wait_for_log_messages 0 {"*WARNING: Redis does not require authentication and is not protected by network restrictions*"} 0 10 100
+    }
+}
+
+start_server {tags {introspection external:skip} overrides {protected-mode no bind "127.0.0.1"}} {
+    test {Warning shown for configured interface when binding specific address} {
+        wait_for_log_messages 0 {"*WARNING: Redis does not require authentication*configured network interface*"} 0 10 100
+    }
+}
+
+start_server {tags {introspection external:skip} overrides {protected-mode yes}} {
+    test {Warning shown for local clients when protected mode is on} {
+        wait_for_log_messages 0 {"*WARNING: Redis does not require authentication*local client*"} 0 10 100
+    }
+}
+
+start_server {tags {introspection external:skip} overrides {requirepass secret}} {
+    test {No warning shown when password is set} {
+        # Check that the warning does NOT appear
+        set loglines [exec cat [srv 0 stdout]]
+        assert_equal 0 [string match "*WARNING: Redis does not require authentication*" $loglines]
+    }
+}
