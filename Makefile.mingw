@@ -7,12 +7,16 @@
 BUILD ?= build/mingw64
 BUILD_BUNDLED_MODULES ?= no
 SKIP_VEC_SETS ?= yes
+BUILD_COMPRESSION ?= yes
 
 ifneq ($(BUILD_BUNDLED_MODULES),no)
 $(error Bundled Redis modules are outside the initial Windows core-only port)
 endif
 ifneq ($(SKIP_VEC_SETS),yes)
 $(error Vector Sets are temporarily excluded from the Windows core-only bring-up)
+endif
+ifneq ($(filter $(BUILD_COMPRESSION),yes no),$(BUILD_COMPRESSION))
+$(error BUILD_COMPRESSION must be either yes or no)
 endif
 
 JEMALLOC_SRC := deps/jemalloc
@@ -45,6 +49,11 @@ BASE_DEFS := \
 	-DREDIS_STATIC='' \
 	-DPSAPI_VERSION=1 \
 	-DENABLE_CJSON_GLOBAL
+
+ifeq ($(BUILD_COMPRESSION),yes)
+BASE_DEFS += -DUSE_COMPRESSION=1
+ZSTD_LDLIBS := -Wl,-Bstatic -lzstd -Wl,-Bdynamic
+endif
 
 BASE_INCLUDES := \
 	-Ideps/hiredis \
@@ -157,6 +166,7 @@ SERVER_C_SOURCES := \
 	src/cluster_asm.c \
 	src/cluster_legacy.c \
 	src/cluster_slot_stats.c \
+	src/client_comp.c \
 	src/config.c \
 	src/connection.c \
 	src/crc16.c \
@@ -559,7 +569,7 @@ $(EVENTLOG_DLL): Makefile.mingw $(EVENTLOG_OBJ)
 	$(CC) -shared -nostdlib -Wl,--entry,0 -o $@ $(EVENTLOG_OBJ)
 
 $(BUILD)/redis-server.exe: Makefile.mingw $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB)
-	$(CXX) $(LDFLAGS_COMMON) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_COMMON) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB) $(ZSTD_LDLIBS) $(LDLIBS_COMMON)
 
 $(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(LDLIBS_COMMON)

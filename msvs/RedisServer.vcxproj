@@ -242,6 +242,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClCompile Include="..\src\cluster_asm.c" />
     <ClCompile Include="..\src\cluster_legacy.c" />
     <ClCompile Include="..\src\cluster_slot_stats.c" />
+    <ClCompile Include="..\src\client_comp.c" />
     <ClCompile Include="..\src\config.c" />
     <ClCompile Include="..\src\connection.c" />
     <ClCompile Include="..\src\crc16.c" />
@@ -380,6 +381,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\cluster.h" />
     <ClInclude Include="..\src\cluster_asm.h" />
     <ClInclude Include="..\src\cluster_legacy.h" />
+    <ClInclude Include="..\src\client_comp.h" />
     <ClInclude Include="..\src\config.h" />
     <ClInclude Include="..\src\commands.h" />
     <ClInclude Include="..\src\connection.h" />
@@ -400,6 +402,7 @@ copy /Y $(OutputPath)redis-server.pdb $(OutputPath)redis-check-aof.pdb</Command>
     <ClInclude Include="..\src\geohash.h" />
     <ClInclude Include="..\src\geohash_helper.h" />
     <ClInclude Include="..\src\help.h" />
+    <ClInclude Include="..\src\hyperloglog.h" />
     <ClInclude Include="..\src\intset.h" />
     <ClInclude Include="..\src\keymeta.h" />
     <ClInclude Include="..\src\kvstore.h" />

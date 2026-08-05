@@ -100,7 +100,7 @@ typedef struct aeEventLoop {
     aeBeforeSleepProc *beforesleep;
     aeBeforeSleepProc *aftersleep;
     int flags;
-    void *privdata[2];
+    void *privdata[3];
 } aeEventLoop;
 
 /* Prototypes */
@@ -110,6 +110,7 @@ void aeStop(aeEventLoop *eventLoop);
 int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         aeFileProc *proc, void *clientData);
 void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask);
+void aeSetFileEventBarrier(aeEventLoop *eventLoop, int fd, int barrier);
 int aeGetFileEvents(aeEventLoop *eventLoop, int fd);
 void *aeGetFileClientData(aeEventLoop *eventLoop, int fd);
 long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,

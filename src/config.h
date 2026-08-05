@@ -30,15 +30,21 @@
 #if defined(__APPLE__) && !defined(MAC_OS_10_6_DETECTED)
 #define redis_fstat fstat64
 #define redis_stat stat64
+#define redis_lstat lstat64
+#define redis_link link
 #elif defined(_WIN32)
 /* FDAPI exposes the 64-bit stat shape used by the Windows descriptor layer.
  * Keep the Redis call sites expressed as redis_fstat/redis_stat so they do
  * not accidentally bind to the CRT's native descriptor table. */
 #define redis_fstat fdapi_fstat64
 #define redis_stat __stat64
+#define redis_lstat __stat64
+#define redis_link replace_link
 #else
 #define redis_fstat fstat
 #define redis_stat stat
+#define redis_lstat lstat
+#define redis_link link
 #endif
 
 #ifndef CACHE_LINE_SIZE
@@ -147,6 +153,16 @@
 #define redis_fsync(fd) fdatasync(fd)
 #elif defined(__APPLE__)
 #define redis_fsync(fd) fcntl(fd, F_FULLFSYNC)
+#elif defined(_WIN32)
+/* Some shared utility translation units intentionally avoid server.h and its
+ * FDAPI declarations. Declare the concrete entry point here so file copies
+ * still flush Redis's synthetic descriptors rather than CRT descriptors. */
+#ifdef __cplusplus
+extern "C" int FDAPI_fsync(int fd);
+#else
+int FDAPI_fsync(int fd);
+#endif
+#define redis_fsync(fd) FDAPI_fsync(fd)
 #else
 #define redis_fsync(fd) fsync(fd)
 #endif

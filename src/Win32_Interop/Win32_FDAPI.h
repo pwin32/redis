@@ -310,6 +310,7 @@ int     FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFOW
 int     FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFOW lpProtocolInfo, GROUP g, DWORD dwFlags);
 int     FDAPI_WSAGetLastError(void);
 ssize_t FDAPI_writev(int rfd, const struct iovec *iov, int iovcnt);
+int     FDAPI_fsync(int rfd);
 int     FDAPI_ftruncate(int rfd, PORT_LONGLONG length);
 
 /* The MinGW declarations were consumed above under temporary names, so calls
