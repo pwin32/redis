@@ -80,6 +80,10 @@ int replace_random();
 #define rename(a,b) replace_rename(a,b)
 int replace_rename(const char *src, const char *dest);
 
+/* Create a hard link using the Win32 path API while preserving the POSIX
+ * link(oldpath, newpath) argument order expected by Redis. */
+int replace_link(const char *src, const char *dest);
+
 int truncate(const char *path, PORT_LONGLONG length);
 
 #ifdef __cplusplus

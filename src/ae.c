@@ -222,6 +222,17 @@ void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
     }
 }
 
+void aeSetFileEventBarrier(aeEventLoop *eventLoop, int fd, int barrier) {
+    if (fd < 0 || fd >= eventLoop->setsize) return;
+
+    aeFileEvent *fe = &eventLoop->events[fd];
+    if (!(fe->mask & AE_WRITABLE)) return;
+    if (barrier)
+        fe->mask |= AE_BARRIER;
+    else
+        fe->mask &= ~AE_BARRIER;
+}
+
 void *aeGetFileClientData(aeEventLoop *eventLoop, int fd) {
     if (fd >= eventLoop->setsize) return NULL;
     aeFileEvent *fe = &eventLoop->events[fd];
@@ -292,6 +303,11 @@ static int64_t usUntilEarliestTimer(aeEventLoop *eventLoop) {
             earliest = te;
         te = te->next;
     }
+
+    /* The list may hold only events marked AE_DELETED_EVENT_ID, leaving no
+     * earliest timer. Mirror the empty-list case above and report "no timer"
+     * instead of dereferencing a NULL earliest. */
+    if (earliest == NULL) return -1;
 
     monotime now = getMonotonicUs();
     return (now >= earliest->when) ? 0 : earliest->when - now;
@@ -463,6 +479,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
          * token before afterSleep(), which may re-enter and overwrite the
          * shared eventLoop->fired[0] slot. */
         int completion_budget = AE_WIN32_MAX_EVENTS_PER_POLL;
+        int stop_completion_drain = 0;
         numevents = aeApiPoll(eventLoop, tvp, &completion_budget);
         aeFiredEvent fired_event;
         int have_fired_event = numevents > 0;
@@ -473,8 +490,16 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 
         if (have_fired_event) {
             if (flags & AE_FILE_EVENTS) {
-                if (aeApiFiredEventValid(eventLoop, &fired_event))
+                if (aeApiFiredEventValid(eventLoop, &fired_event)) {
+                    /* IOCP reports read and write readiness as separate
+                     * completions.  Once a barriered read is dispatched, end
+                     * this batch so beforeSleep() can persist its effects
+                     * before any queued write completion sends the reply. */
+                    stop_completion_drain =
+                        (fired_event.mask & AE_READABLE) &&
+                        (eventLoop->events[fired_event.fd].mask & AE_BARRIER);
                     aeProcessFileEvent(eventLoop, fired_event.fd, fired_event.mask);
+                }
                 processed++;
             }
             aeApiReleaseFiredEvent(&fired_event);
@@ -485,14 +510,19 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
          * visible packets cannot multiply into an unbounded timer delay. */
         int visible_events = have_fired_event && (flags & AE_FILE_EVENTS);
         while ((flags & AE_FILE_EVENTS) &&
+               !stop_completion_drain &&
                visible_events < AE_WIN32_MAX_EVENTS_PER_POLL &&
                completion_budget > 0 &&
                !eventLoop->stop) {
             struct timeval zero = {0, 0};
             if (aeApiPoll(eventLoop, &zero, &completion_budget) == 0) break;
             fired_event = eventLoop->fired[0];
-            if (aeApiFiredEventValid(eventLoop, &fired_event))
+            if (aeApiFiredEventValid(eventLoop, &fired_event)) {
+                stop_completion_drain =
+                    (fired_event.mask & AE_READABLE) &&
+                    (eventLoop->events[fired_event.fd].mask & AE_BARRIER);
                 aeProcessFileEvent(eventLoop, fired_event.fd, fired_event.mask);
+            }
             processed++;
             visible_events++;
             aeApiReleaseFiredEvent(&fired_event);

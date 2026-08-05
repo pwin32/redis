@@ -104,6 +104,11 @@ BOOL SetupRedisGlobals(LPVOID redisData, size_t redisDataSize,
     configSetQForkData((dict *)redisCore->configs);
     asmSetQForkState(redisCore->asmManager);
     moduleSetForkData(redisModules);
+    if (hashTemplatesSetQForkState() != C_OK) {
+        serverLog(LL_WARNING,
+                  "QFork could not restore the hash template registry");
+        return FALSE;
+    }
     if (keyMetaSetForkData(redisCore->keyMetaData,
                            redisCore->keyMetaDataSize) != C_OK)
     {

@@ -323,12 +323,12 @@ int parseExtendedStringArgumentsOrReply(client *c, int start_pos, extendedString
 
         if ((opt[0] == 'n' || opt[0] == 'N') &&
             (opt[1] == 'x' || opt[1] == 'X') && opt[2] == '\0' &&
-            !(args->flags & OBJ_SET_XX) && (command_type == COMMAND_SET || command_type == COMMAND_MSETEX))
+            !(args->flags & (cond_mut_excl & ~OBJ_SET_NX)) && (command_type == COMMAND_SET || command_type == COMMAND_MSETEX))
         {
             args->flags |= OBJ_SET_NX;
         } else if ((opt[0] == 'x' || opt[0] == 'X') &&
                    (opt[1] == 'x' || opt[1] == 'X') && opt[2] == '\0' &&
-                   !(args->flags & OBJ_SET_NX) && (command_type == COMMAND_SET || command_type == COMMAND_MSETEX))
+                   !(args->flags & (cond_mut_excl & ~OBJ_SET_XX)) && (command_type == COMMAND_SET || command_type == COMMAND_MSETEX))
         {
             args->flags |= OBJ_SET_XX;
         } else if ((opt[0] == 'g' || opt[0] == 'G') &&
@@ -1315,10 +1315,10 @@ void increxCommand(client *c) {
     }
 
     if (!byfloat && o && o->refcount == 1 && o->encoding == OBJ_ENCODING_INT &&
-        value_ll >= LONG_MIN && value_ll <= LONG_MAX)
+        value_ll >= INTPTR_MIN && value_ll <= INTPTR_MAX)
     {
         new = o;
-        o->ptr = (void*)((long)value_ll);
+        o->ptr = (void*)(intptr_t)value_ll;
         updateKeysizesHist(c->db, OBJ_STRING, (int64_t)sdigits10(oldvalue_ll), (int64_t)sdigits10(value_ll));
     } else {
         if (byfloat)

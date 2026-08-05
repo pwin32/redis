@@ -184,6 +184,10 @@ void bioInit(void) {
     }
 }
 
+int bioIsLazyfreeWorker(void) {
+    return pthread_equal(pthread_self(), bio_threads[BIO_WORKER_LAZY_FREE]);
+}
+
 void bioSubmitJob(int type, bio_job *job) {
     job->header.type = type;
     unsigned long worker = bio_job_to_worker[type];

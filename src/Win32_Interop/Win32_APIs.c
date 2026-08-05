@@ -68,6 +68,14 @@ int replace_rename(const char *src, const char *dst) {
     return -1;
 }
 
+int replace_link(const char *src, const char *dst) {
+    if (CreateHardLinkA(dst, src, NULL)) return 0;
+
+    errno = translate_sys_error((int)GetLastError());
+    if (errno == -9999) errno = EIO;
+    return -1;
+}
+
 int truncate(const char *path, PORT_LONGLONG length) {
     LARGE_INTEGER newSize;
     HANDLE toTruncate = CreateFileA(path,

@@ -248,18 +248,31 @@ static int connSocketRebindEventLoop(connection *conn, aeEventLoop *el) {
  * loop.
  */
 static int connSocketSetWriteHandler(connection *conn, ConnectionCallbackFunc func, int barrier) {
-    if (func == conn->write_handler) return C_OK;
+    int same_handler = func == conn->write_handler;
 
     conn->write_handler = func;
     if (barrier)
         conn->flags |= CONN_FLAG_WRITE_BARRIER;
     else
         conn->flags &= ~CONN_FLAG_WRITE_BARRIER;
+    if (same_handler) {
+#ifdef _WIN32
+        if (conn->write_handler)
+            aeSetFileEventBarrier(conn->el, conn->fd, barrier);
+#endif
+        return C_OK;
+    }
     if (!conn->write_handler)
         aeDeleteFileEvent(conn->el,conn->fd,AE_WRITABLE);
-    else
+    else {
         if (aeCreateFileEvent(conn->el,conn->fd,AE_WRITABLE,
                     conn->type->ae_handler,conn) == AE_ERR) return C_ERR;
+#ifdef _WIN32
+        /* IOCP reports read and write readiness as separate completions, so
+         * expose the logical connection barrier to the AE batching layer. */
+        aeSetFileEventBarrier(conn->el, conn->fd, barrier);
+#endif
+    }
     return C_OK;
 }
 
