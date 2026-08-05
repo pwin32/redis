@@ -4,7 +4,7 @@ Modifications copyright (c) Tomasz Poradowski
 All rights reserved.
 
 The Windows portability layer and fork-specific adaptations in this tree retain
-the BSD-3-Clause notice below. Redis 8.8 upstream contributions are covered by
+the BSD-3-Clause notice below. Redis 8.10 upstream contributions are covered by
 the accompanying LICENSE.txt and REDISCONTRIBUTIONS.txt files.
 
 Redistribution and use in source and binary forms, with or without modification,
