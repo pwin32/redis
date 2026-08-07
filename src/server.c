@@ -18,6 +18,7 @@
 #include "Win32_Interop/Win32_ThreadControl.h"
 #include "Win32_Interop/Win32_QFork.h"
 #include "Win32_Interop/Win32_Error.h"
+#include "Win32_Interop/Win32_Service.h"
 #endif
 
 #include "server.h"
@@ -2610,6 +2611,15 @@ extern char **environ;
  * a different process. On error C_ERR is returned. */
 int restartServer(int flags, mstime_t delay) {
     int j;
+
+#ifdef _WIN32
+    if (RunningAsService()) {
+        serverLog(LL_WARNING,
+                  "Restart is not supported while running as a Windows service");
+        errno = ENOTSUP;
+        return C_ERR;
+    }
+#endif
 
     /* Check if we still have accesses to the executable that started this
      * server instance. */
@@ -8225,6 +8235,10 @@ int main(int argc, char **argv) {
     /* Store the executable path and arguments in a safe place in order
      * to be able to restart the server later. */
     server.executable = getAbsolutePath(argv[0]);
+    if (server.executable == NULL) {
+        fprintf(stderr, "Fatal error: unable to resolve executable path '%s'.\n", argv[0]);
+        return C_ERR;
+    }
     server.exec_argv = zmalloc(sizeof(char*)*(argc+1));
     server.exec_argv[argc] = NULL;
     for (j = 0; j < argc; j++) server.exec_argv[j] = zstrdup(argv[j]);
@@ -8279,6 +8293,10 @@ int main(int argc, char **argv) {
         if (argv[1][0] != '-') {
             /* Replace the config file in server.exec_argv with its absolute path. */
             server.configfile = getAbsolutePath(argv[1]);
+            if (server.configfile == NULL) {
+                fprintf(stderr, "Fatal error: unable to resolve configuration path '%s'.\n", argv[1]);
+                return C_ERR;
+            }
             zfree(server.exec_argv[1]);
             server.exec_argv[1] = zstrdup(server.configfile);
             j = 2; // Skip this arg when parsing options
@@ -8509,6 +8527,10 @@ int main(int argc, char **argv) {
 
     redisSetCpuAffinity(server.server_cpulist);
     setOOMScoreAdj(-1);
+
+#ifdef _WIN32
+    ServiceSetReady();
+#endif
 
     aeMain(server.el);
     aeDeleteEventLoop(server.el);

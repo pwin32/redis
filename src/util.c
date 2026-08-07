@@ -29,6 +29,13 @@
  */
 
 #include "fmacros.h"
+#ifdef _WIN32
+/* copyFile() uses open/read/write/fsync. Consume the Windows system headers
+ * through FDAPI before the generic headers below so all four operations use
+ * Redis's synthetic descriptor table. */
+#include "Win32_Interop/Win32_FDAPI.h"
+#include <windows.h>
+#endif
 #include "fpconv_dtoa.h"
 #include "fast_float_strtod.h"
 #include <stdlib.h>
@@ -55,6 +62,7 @@
 #include "util.h"
 #include "sha256.h"
 #include "config.h"
+#include "zmalloc.h"
 
 #define UNUSED(x) ((void)(x))
 
@@ -325,6 +333,8 @@ unsigned long long memtoull(const char *p, int *err) {
         if (err) *err = 1;
         return 0;
     }
+    /* Clamp to ULLONG_MAX if the unit conversion overflows. */
+    if (val > ULLONG_MAX / mul) return ULLONG_MAX;
     return val*mul;
 }
 
@@ -1037,6 +1047,37 @@ void getRandomHexChars(char *p, size_t len) {
  * case of one or more "../" appearing at the start of "filename"
  * relative path. */
 sds getAbsolutePath(char *filename) {
+#ifdef _WIN32
+    sds relpath = sdsnew(filename);
+    relpath = sdstrim(relpath," \r\n\t");
+
+    /* GetFullPathNameA understands drive-relative, drive-absolute, and both
+     * slash forms.  Grow the buffer when the path exceeds the legacy
+     * MAX_PATH limit instead of silently truncating it. */
+    DWORD size = 256;
+    for (;;) {
+        char *buffer = zmalloc(size);
+        DWORD length = GetFullPathNameA(relpath, size, buffer, NULL);
+        if (length == 0) {
+            zfree(buffer);
+            sdsfree(relpath);
+            return NULL;
+        }
+        if (length < size) {
+            sds result = sdsnewlen(buffer, length);
+            zfree(buffer);
+            sdsfree(relpath);
+            return result;
+        }
+
+        zfree(buffer);
+        if (length == UINT32_MAX || length + 1 <= length) {
+            sdsfree(relpath);
+            return NULL;
+        }
+        size = length + 1;
+    }
+#else
     char cwd[1024];
     sds abspath;
     sds relpath = sdsnew(filename);
@@ -1079,6 +1120,7 @@ sds getAbsolutePath(char *filename) {
     abspath = sdscatsds(abspath,relpath);
     sdsfree(relpath);
     return abspath;
+#endif
 }
 
 /*
@@ -1113,6 +1155,37 @@ int pathIsBaseName(char *path) {
     return strchr(path,'/') == NULL && strchr(path,'\\') == NULL;
 }
 
+static char *getLastPathSeparator(char *path) {
+    char *separator = strrchr(path, '/');
+#ifdef _WIN32
+    char *backslash = strrchr(path, '\\');
+    if (backslash && (separator == NULL || backslash > separator)) separator = backslash;
+#endif
+    return separator;
+}
+
+char *getFileExtension(char *path) {
+    char *pch = strrchr(path,'.');
+    if (!pch)
+        return NULL;
+    else
+        return pch+1;
+}
+
+char *getFileBaseName(char *path) {
+    if (pathIsBaseName(path)) return path;
+
+    char *pch = getLastPathSeparator(path);
+    return pch+1;
+}
+
+sds getFilePath(char *path) {
+    if (pathIsBaseName(path)) return NULL;
+
+    char *pch = getLastPathSeparator(path);
+    return sdsnewlen(path, pch - path);
+}
+
 int fileExist(char *filename) {
     struct stat statbuf;
     return stat(filename, &statbuf) == 0 && S_ISREG(statbuf.st_mode);
@@ -1121,6 +1194,25 @@ int fileExist(char *filename) {
 int dirExists(char *dname) {
     struct stat statbuf;
     return stat(dname, &statbuf) == 0 && S_ISDIR(statbuf.st_mode);
+}
+
+/* Returns true when the directory is missing or contains no entries. */
+int dirIsEmpty(char *dname) {
+    DIR *dir;
+    struct dirent *entry;
+
+    if ((dir = opendir(dname)) == NULL) {
+        return errno == ENOENT;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        closedir(dir);
+        return 0;
+    }
+
+    closedir(dir);
+    return 1;
 }
 
 int dirCreateIfMissing(char *dname) {
@@ -1199,7 +1291,75 @@ int dirRemove(char *dname) {
 }
 
 sds makePath(char *path, char *filename) {
+#ifdef _WIN32
+    /* An empty directory is used when preload-file already contains an
+     * absolute path. Prefixing a drive or UNC path with '/' makes it invalid
+     * on Windows, unlike the harmless double slash produced on POSIX. */
+    if (path[0] == '\0' &&
+        (((isalpha((unsigned char)filename[0]) && filename[1] == ':' &&
+           (filename[2] == '/' || filename[2] == '\\'))) ||
+         (filename[0] == '/' && filename[1] == '/')))
+    {
+        return sdsnew(filename);
+    }
+#endif
     return sdscatfmt(sdsempty(), "%s/%s", path, filename);
+}
+
+/* Copy source to a newly created destination and sync its contents. On error,
+ * remove any partial destination and return -1 with errno preserved. */
+int copyFile(char *source, char *destination) {
+    const size_t buf_size = 64 * 1024;
+    char *buf = zmalloc(buf_size);
+    int source_fd = -1, destination_fd = -1;
+    int destination_created = 0;
+    struct redis_stat sb;
+    int ret = -1;
+    int error;
+
+    if ((source_fd = open(source, O_RDONLY, 0)) == -1 ||
+        redis_fstat(source_fd, &sb) == -1)
+    {
+        goto cleanup;
+    }
+
+    destination_fd = open(destination, O_WRONLY|O_CREAT|O_EXCL,
+                          sb.st_mode & 0777);
+    if (destination_fd == -1) goto cleanup;
+    destination_created = 1;
+
+    while (1) {
+        ssize_t nread = read(source_fd, buf, buf_size);
+        if (nread == 0) break;
+        if (nread == -1) {
+            if (errno == EINTR) continue;
+            goto cleanup;
+        }
+
+        ssize_t offset = 0;
+        while (offset < nread) {
+            ssize_t nwritten = write(destination_fd, buf + offset, nread - offset);
+            if (nwritten <= 0) {
+                if (errno == EINTR) continue;
+                if (nwritten == 0) errno = EIO;
+                goto cleanup;
+            }
+            offset += nwritten;
+        }
+    }
+
+    if (redis_fsync(destination_fd) == -1)
+        goto cleanup;
+    ret = 0;
+
+cleanup:
+    error = errno;
+    if (source_fd != -1) close(source_fd);
+    if (destination_fd != -1) close(destination_fd);
+    if (ret == -1 && destination_created) unlink(destination);
+    zfree(buf);
+    errno = error;
+    return ret;
 }
 
 /* Given the filename, sync the corresponding directory.
