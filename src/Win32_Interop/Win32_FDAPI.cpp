@@ -575,7 +575,7 @@ int FDAPI_pipe_for_eventloop(int *pfds) {
                                       HANDLE_FLAG_INHERIT, 0) ||
                 !SetHandleInformation((HANDLE)write_socket,
                                       HANDLE_FLAG_INHERIT, 0)) {
-                set_errno_from_last_error();
+                errno = GetLastError();
                 break;
             }
 
@@ -692,16 +692,12 @@ int FDAPI_shutdown(int rfd, int how) {
 int FDAPI_open(const char * _Filename, int _OpenFlag, int flags = 0) {
     try {
         int crt_fd = crt_open(_Filename, _OpenFlag, flags);
-        if (crt_fd == INVALID_FD) return -1;
-
-        int rfd = RFDMap::getInstance().addCrtFD(crt_fd);
-        if (rfd != INVALID_FD) return rfd;
-
-        crt_close(crt_fd);
-        errno = EMFILE;
-        return -1;
+        if (crt_fd != INVALID_FD) {
+            return RFDMap::getInstance().addCrtFD(crt_fd);
+        }
     } CATCH_AND_REPORT();
 
+    errno = GetLastError();
     return -1;
 }
 
