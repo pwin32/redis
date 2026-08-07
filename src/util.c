@@ -48,6 +48,7 @@
 #include <fcntl.h>
 #include <libgen.h>
 #ifdef _WIN32
+#include <windows.h>
 #include <direct.h>
 #include "Win32_Interop/Win32_Time.h"
 #endif
@@ -1037,6 +1038,40 @@ void getRandomHexChars(char *p, size_t len) {
  * case of one or more "../" appearing at the start of "filename"
  * relative path. */
 sds getAbsolutePath(char *filename) {
+#ifdef _WIN32
+    sds relpath = sdsnew(filename);
+    relpath = sdstrim(relpath," \r\n\t");
+
+    /* GetFullPathNameA handles drive-relative, drive-absolute, and both
+     * slash forms. Grow the buffer instead of truncating long service paths. */
+    DWORD size = 256;
+    for (;;) {
+        char *buffer = malloc(size);
+        if (buffer == NULL) {
+            sdsfree(relpath);
+            return NULL;
+        }
+        DWORD length = GetFullPathNameA(relpath, size, buffer, NULL);
+        if (length == 0) {
+            free(buffer);
+            sdsfree(relpath);
+            return NULL;
+        }
+        if (length < size) {
+            sds result = sdsnewlen(buffer, length);
+            free(buffer);
+            sdsfree(relpath);
+            return result;
+        }
+
+        free(buffer);
+        if (length == UINT32_MAX || length + 1 <= length) {
+            sdsfree(relpath);
+            return NULL;
+        }
+        size = length + 1;
+    }
+#else
     char cwd[1024];
     sds abspath;
     sds relpath = sdsnew(filename);
@@ -1079,6 +1114,7 @@ sds getAbsolutePath(char *filename) {
     abspath = sdscatsds(abspath,relpath);
     sdsfree(relpath);
     return abspath;
+#endif
 }
 
 /*
