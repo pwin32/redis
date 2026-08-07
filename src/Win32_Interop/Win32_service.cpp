@@ -68,6 +68,7 @@ this should preceed the other arguments passed to redis. For instance:
 #include <sstream>
 #include <vector>
 #include <iostream>
+#include <process.h>
 #include "Win32_RedisLog.h"
 #include "Win32_CommandLine.h"
 using namespace std;
@@ -83,6 +84,7 @@ char g_serviceName[MAX_SERVICE_NAME_LENGTH + 1] = DEFAULT_SERVICE_NAME;
 SERVICE_STATUS g_ServiceStatus = { 0 };
 HANDLE g_ServiceStopEvent = INVALID_HANDLE_VALUE;
 HANDLE g_ServiceStoppedEvent = INVALID_HANDLE_VALUE;
+HANDLE g_ServiceReadyEvent = INVALID_HANDLE_VALUE;
 vector<string> serviceRunArguments;
 SERVICE_STATUS_HANDLE g_StatusHandle;
 const ULONGLONG cThirtySeconds = 30 * 1000;
@@ -447,51 +449,54 @@ VOID ServiceUninstall(int argc, char** argv) {
     ServicePipeWriter::getInstance().Write("Redis service successfully uninstalled.");
 }
 
-DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
+static string GetServiceExecutablePath() {
+    DWORD size = 256;
+    for (;;) {
+        vector<char> buffer(size);
+        DWORD length = GetModuleFileNameA(NULL, buffer.data(), size);
+        if (length == 0) {
+            throw std::system_error(GetLastError(), system_category(), "GetModuleFileNameA failed");
+        }
+        if (length < size - 1) return string(buffer.data(), length);
+        if (size > ((DWORD)-1 / 2)) {
+            throw std::runtime_error("GetModuleFileNameA path is too long");
+        }
+        size *= 2;
+    }
+}
+
+unsigned __stdcall ServiceWorkerThread(void *lpParam) {
+    (void)lpParam;
     try {
         int argc = (int)(serviceRunArguments.size());
-        char** argv = new char*[argc];
-        if (argv == nullptr)
-            throw std::runtime_error("new() failed");
-
-        int argIndex = 0;
+        vector<vector<char>> argumentStorage;
+        vector<char *> redisArgv;
+        argumentStorage.reserve(argc);
+        redisArgv.reserve(argc + 1);
         for (const string& arg : serviceRunArguments) {
-            argv[argIndex] = new char[arg.length() + 1];
-            if (argv[argIndex] == nullptr)
-                throw std::runtime_error("new() failed");
-            memcpy_s(argv[argIndex], arg.length() + 1, arg.c_str(), arg.length());
-            argv[argIndex][arg.size()] = '\0';
-            ++argIndex;
+            argumentStorage.emplace_back(arg.begin(), arg.end());
+            argumentStorage.back().push_back('\0');
+            redisArgv.push_back(argumentStorage.back().data());
         }
+        redisArgv.push_back(nullptr);
 
         // When the service starts the current directory is %systemdir%. If the launching user does not have permission there(i.e., NETWORK SERVICE), the 
         // memory mapped file will not be able to be created. Thus Redis will fail to start. Setting the current directory to the executable directory
         // should fix this.
-        char szFilePath[MAX_PATH];
-        if (GetModuleFileNameA(NULL, szFilePath, MAX_PATH) == 0) {
-            throw std::system_error(GetLastError(), system_category(), "ServiceWrokerThread: GetModuleFileName failed");
-        }
-        string currentDir = szFilePath;
-        auto pos = currentDir.rfind("\\");
-        currentDir.erase(pos);
+        string currentDir = GetServiceExecutablePath();
+        auto pos = currentDir.find_last_of("\\/");
+        if (pos != string::npos) currentDir.erase(pos);
 
         if (FALSE == SetCurrentDirectoryA(currentDir.c_str())) {
             throw std::system_error(GetLastError(), system_category(), "SetCurrentDirectory failed");
         }
 
         // call redis main without the --service-run argument
-        main(argc, argv);
-
-        for (int a = 0; a < argc; a++) {
-            delete[] argv[a];
-            argv[a] = nullptr;
-        }
-        delete[] argv;
-        argv = nullptr;
-
-        SetEvent(g_ServiceStoppedEvent);
-
-        return ERROR_SUCCESS;
+        int result = main(argc, redisArgv.data());
+        if (g_ServiceStoppedEvent != INVALID_HANDLE_VALUE && g_ServiceStoppedEvent != NULL)
+            SetEvent(g_ServiceStoppedEvent);
+        return result == 0 ? ERROR_SUCCESS :
+               (result > 0 ? (DWORD)result : ERROR_PROCESS_ABORTED);
     } catch (std::system_error syserr) {
         stringstream err;
         err << "ServiceWorkerThread: system error caught. error code=0x" << hex << syserr.code().value() << ", message = " << syserr.what() << endl;
@@ -504,22 +509,30 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
         OutputDebugStringA("ServiceWorkerThread: other exception caught.\n");
     }
 
-    return  ERROR_PROCESS_ABORTED;
+    if (g_ServiceStoppedEvent != INVALID_HANDLE_VALUE && g_ServiceStoppedEvent != NULL)
+        SetEvent(g_ServiceStoppedEvent);
+    return ERROR_PROCESS_ABORTED;
 }
 
 DWORD WINAPI ServiceCtrlHandler(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
-    switch (dwControl) {
+    (void)dwEventType;
+    (void)lpEventData;
+    (void)lpContext;
+    try {
+        switch (dwControl) {
         case SERVICE_CONTROL_PRESHUTDOWN:
         {
-            SetEvent(g_ServiceStopEvent);
+            if (SetEvent(g_ServiceStopEvent) == FALSE)
+                return GetLastError();
 
             g_ServiceStatus.dwControlsAccepted = 0;
             g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
             g_ServiceStatus.dwWin32ExitCode = 0;
             g_ServiceStatus.dwCheckPoint = 4;
+            g_ServiceStatus.dwWaitHint = cPreshutdownInterval;
 
             if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-                throw std::system_error(GetLastError(), system_category(), "SetServiceStatus failed");
+                return GetLastError();
             }
 
             break;
@@ -557,69 +570,124 @@ DWORD WINAPI ServiceCtrlHandler(DWORD dwControl, DWORD dwEventType, LPVOID lpEve
         {
                    break;
         }
+        }
+        return NO_ERROR;
+    } catch (...) {
+        return ERROR_EXCEPTION_IN_SERVICE;
     }
-
-    return NO_ERROR;
 }
 
 VOID WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
-    DWORD Status = E_FAIL;
+    (void)argc;
+    (void)argv;
+    DWORD failureCode = ERROR_SUCCESS;
+    HANDLE hThread = NULL;
 
-    g_StatusHandle = RegisterServiceCtrlHandlerExA(g_serviceName, ServiceCtrlHandler, NULL);
-    if (g_StatusHandle == NULL) {
-        return;
-    }
+    try {
+        g_StatusHandle = RegisterServiceCtrlHandlerExA(g_serviceName, ServiceCtrlHandler, NULL);
+        if (g_StatusHandle == NULL) return;
 
-    ZeroMemory(&g_ServiceStatus, sizeof (g_ServiceStatus));
-    g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_ServiceStatus.dwControlsAccepted = 0;
-    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwServiceSpecificExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 0;
+        ZeroMemory(&g_ServiceStatus, sizeof(g_ServiceStatus));
+        g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+        g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+        g_ServiceStatus.dwWaitHint = cPreshutdownInterval;
+        if (!SetServiceStatus(g_StatusHandle, &g_ServiceStatus)) return;
 
-    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-        throw std::system_error(GetLastError(), system_category(), "SetServiceStatus failed");
-    }
-
-    g_ServiceStoppedEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if (g_ServiceStopEvent == NULL) {
-        g_ServiceStatus.dwControlsAccepted = 0;
-        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-        g_ServiceStatus.dwWin32ExitCode = GetLastError();
-        g_ServiceStatus.dwCheckPoint = 1;
-
-        if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-            throw std::system_error(GetLastError(), system_category(), "SetServiceStatus failed");
+        g_ServiceStoppedEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        g_ServiceReadyEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        if (g_ServiceStoppedEvent == NULL || g_ServiceStopEvent == NULL ||
+            g_ServiceReadyEvent == NULL) {
+            failureCode = GetLastError();
+            goto service_cleanup;
         }
 
-        return;
-    }
+        g_ServiceStatus.dwCheckPoint = 1;
+        if (!SetServiceStatus(g_StatusHandle, &g_ServiceStatus)) {
+            failureCode = GetLastError();
+            goto service_cleanup;
+        }
 
-    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN;
-    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 0;
+        {
+            uintptr_t thread = _beginthreadex(NULL, 0, ServiceWorkerThread, NULL, 0, NULL);
+            if (thread == 0) {
+                failureCode = GetLastError();
+                if (failureCode == ERROR_SUCCESS) failureCode = ERROR_SERVICE_REQUEST_TIMEOUT;
+                goto service_cleanup;
+            }
+            hThread = (HANDLE)thread;
+        }
 
-    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-        throw std::system_error(GetLastError(), system_category(), "SetServiceStatus failed");
-    }
+        for (;;) {
+            HANDLE waitHandles[2] = { g_ServiceReadyEvent, hThread };
+            DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, 1000);
+            if (waitResult == WAIT_OBJECT_0) {
+                g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN;
+                g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+                g_ServiceStatus.dwWin32ExitCode = ERROR_SUCCESS;
+                g_ServiceStatus.dwCheckPoint = 0;
+                g_ServiceStatus.dwWaitHint = 0;
+                if (!SetServiceStatus(g_StatusHandle, &g_ServiceStatus))
+                    failureCode = GetLastError();
+                break;
+            }
+            if (waitResult == WAIT_OBJECT_0 + 1) {
+                if (!GetExitCodeThread(hThread, &failureCode) || failureCode == STILL_ACTIVE)
+                    failureCode = ERROR_PROCESS_ABORTED;
+                break;
+            }
+            if (waitResult == WAIT_TIMEOUT) {
+                g_ServiceStatus.dwCheckPoint++;
+                g_ServiceStatus.dwWaitHint = cPreshutdownInterval;
+                if (!SetServiceStatus(g_StatusHandle, &g_ServiceStatus)) {
+                    failureCode = GetLastError();
+                    break;
+                }
+                continue;
+            }
+            failureCode = GetLastError();
+            break;
+        }
 
-    HANDLE hThread = CreateThread(NULL, 0, ServiceWorkerThread, NULL, 0, NULL);
+        if (g_ServiceStatus.dwCurrentState == SERVICE_RUNNING) {
+            DWORD waitResult = WaitForSingleObject(hThread, INFINITE);
+            if (waitResult != WAIT_OBJECT_0) {
+                failureCode = GetLastError();
+            } else if (!GetExitCodeThread(hThread, &failureCode)) {
+                failureCode = GetLastError();
+            }
+        }
 
-    WaitForSingleObject(hThread, INFINITE);
+service_cleanup:
+        if (hThread != NULL) {
+            CloseHandle(hThread);
+            hThread = NULL;
+        }
+        if (g_ServiceReadyEvent != INVALID_HANDLE_VALUE && g_ServiceReadyEvent != NULL) {
+            CloseHandle(g_ServiceReadyEvent);
+            g_ServiceReadyEvent = INVALID_HANDLE_VALUE;
+        }
+        if (g_ServiceStoppedEvent != INVALID_HANDLE_VALUE && g_ServiceStoppedEvent != NULL) {
+            CloseHandle(g_ServiceStoppedEvent);
+            g_ServiceStoppedEvent = INVALID_HANDLE_VALUE;
+        }
+        if (g_ServiceStopEvent != INVALID_HANDLE_VALUE && g_ServiceStopEvent != NULL) {
+            CloseHandle(g_ServiceStopEvent);
+            g_ServiceStopEvent = INVALID_HANDLE_VALUE;
+        }
 
-    CloseHandle(g_ServiceStopEvent);
-
-    g_ServiceStatus.dwControlsAccepted = 0;
-    g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 0;
-    g_ServiceStatus.dwWaitHint = 0;
-
-    if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE) {
-        throw std::system_error(GetLastError(), system_category(), "SetServiceStatus failed");
+        g_ServiceStatus.dwControlsAccepted = 0;
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_ServiceStatus.dwWin32ExitCode = failureCode;
+        g_ServiceStatus.dwCheckPoint = 0;
+        g_ServiceStatus.dwWaitHint = 0;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    } catch (...) {
+        if (hThread != NULL) CloseHandle(hThread);
+        g_ServiceStatus.dwControlsAccepted = 0;
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_ServiceStatus.dwWin32ExitCode = ERROR_EXCEPTION_IN_SERVICE;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
     }
 }
 
@@ -638,24 +706,18 @@ void ServiceRun() {
 void BuildServiceRunArguments(int argc, char** argv) {
     InitializeServiceName();
 	string serviceNameFullArgument = "--" + cServiceName;
+	serviceRunArguments.clear();
 
     // build argument list to be used by ServiceRun
     for (int n = 0; n < argc; n++) {
         if (n == 0) {
-            CHAR szPath[MAX_PATH];
-            if (GetModuleFileNameA(NULL, szPath, MAX_PATH) == 0) {
-                throw std::system_error(GetLastError(), system_category(), "BuildServiceRunArguments: GetModuleFileNameA failed");
-            }
-            stringstream ss;
-            ss << "\"" << szPath << "\"";
-            serviceRunArguments.push_back(ss.str());
-        } else if (n == 1) {
-            // bypass --service-run argument
+            serviceRunArguments.push_back(GetServiceExecutablePath());
+        } else if (_stricmp(argv[n], ("--" + cServiceRun).c_str()) == 0) {
             continue;
         } else {
 			if (_stricmp(argv[n], serviceNameFullArgument.c_str()) == 0) {
                 // bypass --service-name argument and the name of the service
-                n++;
+                if (n + 1 < argc) n++;
                 continue; 
             } else {
                 serviceRunArguments.push_back(argv[n]);
@@ -729,6 +791,12 @@ extern "C" BOOL HandleServiceCommands(int argc, char **argv) {
 extern "C" BOOL ServiceStopIssued() {
     if (g_ServiceStopEvent == INVALID_HANDLE_VALUE) return FALSE;
     return (WaitForSingleObject(g_ServiceStopEvent, 0) == WAIT_OBJECT_0) ? TRUE : FALSE;
+}
+
+extern "C" void ServiceSetReady() {
+    if (!g_isRunningAsService || g_ServiceReadyEvent == INVALID_HANDLE_VALUE ||
+        g_ServiceReadyEvent == NULL) return;
+    SetEvent(g_ServiceReadyEvent);
 }
 
 extern "C" BOOL RunningAsService() {
