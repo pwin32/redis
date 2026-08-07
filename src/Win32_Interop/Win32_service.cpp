@@ -684,6 +684,18 @@ service_cleanup:
         SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
     } catch (...) {
         if (hThread != NULL) CloseHandle(hThread);
+        if (g_ServiceReadyEvent != INVALID_HANDLE_VALUE && g_ServiceReadyEvent != NULL) {
+            CloseHandle(g_ServiceReadyEvent);
+            g_ServiceReadyEvent = INVALID_HANDLE_VALUE;
+        }
+        if (g_ServiceStoppedEvent != INVALID_HANDLE_VALUE && g_ServiceStoppedEvent != NULL) {
+            CloseHandle(g_ServiceStoppedEvent);
+            g_ServiceStoppedEvent = INVALID_HANDLE_VALUE;
+        }
+        if (g_ServiceStopEvent != INVALID_HANDLE_VALUE && g_ServiceStopEvent != NULL) {
+            CloseHandle(g_ServiceStopEvent);
+            g_ServiceStopEvent = INVALID_HANDLE_VALUE;
+        }
         g_ServiceStatus.dwControlsAccepted = 0;
         g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
         g_ServiceStatus.dwWin32ExitCode = ERROR_EXCEPTION_IN_SERVICE;
