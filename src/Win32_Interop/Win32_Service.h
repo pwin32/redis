@@ -31,6 +31,7 @@ extern "C"
     const char* GetServiceName();
     BOOL HandleServiceCommands(int argc, char **argv);
 	BOOL ServiceStopIssued();
+    void ServiceSetReady();
 
 #ifdef __cplusplus
 }

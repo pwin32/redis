@@ -2222,10 +2222,17 @@ cleanup:
     if (fakeClient) freeClient(fakeClient);
     server.current_client = old_cur_client;
     server.executing_client = old_exec_client;
+#ifdef _WIN32
+    /* fileno() returns a synthetic FDAPI descriptor on Windows, while dup()
+     * remains the raw CRT operation.  Do not cross those descriptor
+     * namespaces for a page-cache job that is not supported on Windows. */
+    fclose(fp);
+#else
     int fd = dup(fileno(fp));
     fclose(fp);
     /* Reclaim page cache memory used by the AOF file in background. */
     if (fd >= 0) bioCreateCloseJob(fd, 0, 1);
+#endif
     sdsfree(aof_filepath);
     return ret;
 }

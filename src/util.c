@@ -34,6 +34,7 @@
  * through FDAPI before the generic headers below so all four operations use
  * Redis's synthetic descriptor table. */
 #include "Win32_Interop/Win32_FDAPI.h"
+#include <windows.h>
 #endif
 #include "fpconv_dtoa.h"
 #include "fast_float_strtod.h"
@@ -1046,6 +1047,37 @@ void getRandomHexChars(char *p, size_t len) {
  * case of one or more "../" appearing at the start of "filename"
  * relative path. */
 sds getAbsolutePath(char *filename) {
+#ifdef _WIN32
+    sds relpath = sdsnew(filename);
+    relpath = sdstrim(relpath," \r\n\t");
+
+    /* GetFullPathNameA understands drive-relative, drive-absolute, and both
+     * slash forms.  Grow the buffer when the path exceeds the legacy
+     * MAX_PATH limit instead of silently truncating it. */
+    DWORD size = 256;
+    for (;;) {
+        char *buffer = zmalloc(size);
+        DWORD length = GetFullPathNameA(relpath, size, buffer, NULL);
+        if (length == 0) {
+            zfree(buffer);
+            sdsfree(relpath);
+            return NULL;
+        }
+        if (length < size) {
+            sds result = sdsnewlen(buffer, length);
+            zfree(buffer);
+            sdsfree(relpath);
+            return result;
+        }
+
+        zfree(buffer);
+        if (length == UINT32_MAX || length + 1 <= length) {
+            sdsfree(relpath);
+            return NULL;
+        }
+        size = length + 1;
+    }
+#else
     char cwd[1024];
     sds abspath;
     sds relpath = sdsnew(filename);
@@ -1088,6 +1120,7 @@ sds getAbsolutePath(char *filename) {
     abspath = sdscatsds(abspath,relpath);
     sdsfree(relpath);
     return abspath;
+#endif
 }
 
 /*
