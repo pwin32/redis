@@ -59,7 +59,7 @@ int translate_sys_error(int sys_error) {
     case ERROR_PIPE_BUSY:                   return EBUSY;
     case ERROR_SHARING_VIOLATION:           return EBUSY;
     case ERROR_OPERATION_ABORTED:           return ECANCELED;
-    case WSAEINTR:                          return ECANCELED;
+    case WSAEINTR:                          return EINTR;
     case WSAEINPROGRESS:                    return EINPROGRESS;
     case ERROR_CONNECTION_ABORTED:          return ECONNABORTED;
     case WSAECONNABORTED:                   return ECONNABORTED;
