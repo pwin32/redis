@@ -322,7 +322,7 @@ unsigned long long int kvstoreSize(kvstore *kvs) {
 
 /* This method provides the cumulative sum of all the dictionary buckets
  * across dictionaries in a database. */
-unsigned long kvstoreBuckets(kvstore *kvs) {
+uint64_t kvstoreBuckets(kvstore *kvs) {
     if (kvs->num_dicts != 1) {
         return kvs->bucket_count;
     } else {
@@ -496,7 +496,7 @@ void kvstoreGetStats(kvstore *kvs, char *buf, size_t bufsize, int full) {
  * search for the new target using the current node as the parent.
  * Time complexity of this function is O(log(kvs->num_dicts))
  */
-int kvstoreFindDictIndexByKeyIndex(kvstore *kvs, unsigned long target) {
+int kvstoreFindDictIndexByKeyIndex(kvstore *kvs, uint64_t target) {
     if (kvs->num_dicts == 1 || kvstoreSize(kvs) == 0)
         return 0;
     assert(target <= kvstoreSize(kvs));
@@ -671,7 +671,7 @@ unsigned long kvstoreDictRehashingCount(kvstore *kvs) {
     return listLength(kvs->rehashing);
 }
 
-unsigned long kvstoreDictSize(kvstore *kvs, int didx)
+dict_ulong kvstoreDictSize(kvstore *kvs, int didx)
 {
     dict *d = kvstoreGetDict(kvs, didx);
     if (!d)
@@ -760,7 +760,7 @@ int kvstoreDictExpand(kvstore *kvs, int didx, unsigned long size)
     return dictExpand(d, size);
 }
 
-unsigned long kvstoreDictScanDefrag(kvstore *kvs, int didx, unsigned long v, dictScanFunction *fn, dictDefragFunctions *defragfns, void *privdata)
+dict_ulong kvstoreDictScanDefrag(kvstore *kvs, int didx, dict_ulong v, dictScanFunction *fn, dictDefragFunctions *defragfns, void *privdata)
 {
     dict *d = kvstoreGetDict(kvs, didx);
     if (!d)

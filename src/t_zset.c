@@ -66,9 +66,9 @@
 
 int zslLexValueGteMin(sds value, zlexrangespec *spec);
 int zslLexValueLteMax(sds value, zlexrangespec *spec);
-void zsetConvertAndExpand(robj *zobj, int encoding, unsigned long cap);
-zskiplistNode *zslGetElementByRankFromNode(zskiplistNode *start_node, int start_level, unsigned long rank);
-zskiplistNode *zslGetElementByRank(zskiplist *zsl, unsigned long rank);
+void zsetConvertAndExpand(robj *zobj, int encoding, uint64_t cap);
+zskiplistNode *zslGetElementByRankFromNode(zskiplistNode *start_node, int start_level, uint64_t rank);
+zskiplistNode *zslGetElementByRank(zskiplist *zsl, uint64_t rank);
 
 /* Create a skiplist node with the specified number of levels.
  * The SDS string 'ele' is referenced by the node after the call. */
@@ -365,7 +365,7 @@ zskiplistNode *zslNthInRange(zskiplist *zsl, zrangespec *range, long n) {
             }
         }
         /* Check if zsl is long enough. */
-        if ((unsigned long)(edge_rank + n) >= zsl->length) return NULL;
+        if ((uint64_t)(edge_rank + n) >= zsl->length) return NULL;
         if (n < ZSKIPLIST_MAX_SEARCH) {
             /* If offset is small, we can just jump node by node */
             /* rank+1 is the first element in range, so we need n+1 steps to reach target. */
@@ -505,9 +505,9 @@ unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned 
  * Returns 0 when the element cannot be found, rank otherwise.
  * Note that the rank is 1-based due to the span of zsl->header to the
  * first element. */
-unsigned long zslGetRank(zskiplist *zsl, double score, sds ele) {
+uint64_t zslGetRank(zskiplist *zsl, double score, sds ele) {
     zskiplistNode *x;
-    unsigned long rank = 0;
+    uint64_t rank = 0;
     int i;
 
     x = zsl->header;
@@ -529,7 +529,7 @@ unsigned long zslGetRank(zskiplist *zsl, double score, sds ele) {
 }
 
 /* Finds an element by its rank from start node. The rank argument needs to be 1-based. */
-zskiplistNode *zslGetElementByRankFromNode(zskiplistNode *start_node, int start_level, unsigned long rank) {
+zskiplistNode *zslGetElementByRankFromNode(zskiplistNode *start_node, int start_level, uint64_t rank) {
     zskiplistNode *x;
     unsigned long traversed = 0;
     int i;
@@ -549,7 +549,7 @@ zskiplistNode *zslGetElementByRankFromNode(zskiplistNode *start_node, int start_
 }
 
 /* Finds an element by its rank. The rank argument needs to be 1-based. */
-zskiplistNode *zslGetElementByRank(zskiplist *zsl, unsigned long rank) {
+zskiplistNode *zslGetElementByRank(zskiplist *zsl, uint64_t rank) {
     return zslGetElementByRankFromNode(zsl->header, zsl->level - 1, rank);
 }
 
@@ -736,7 +736,7 @@ zskiplistNode *zslNthInLexRange(zskiplist *zsl, zlexrangespec *range, long n) {
             }
         }
         /* Check if zsl is long enough. */
-        if ((unsigned long)(edge_rank + n) >= zsl->length) return NULL;
+        if ((uint64_t)(edge_rank + n) >= zsl->length) return NULL;
         if (n < ZSKIPLIST_MAX_SEARCH) {
             /* If offset is small, we can just jump node by node */
             /* rank+1 is the first element in range, so we need n+1 steps to reach target. */
@@ -1216,8 +1216,8 @@ unsigned char *zzlDeleteRangeByRank(unsigned char *zl, unsigned int start, unsig
  * Common sorted set API
  *----------------------------------------------------------------------------*/
 
-unsigned long zsetLength(const robj *zobj) {
-    unsigned long length = 0;
+uint64_t zsetLength(const robj *zobj) {
+    uint64_t length = 0;
     if (zobj->encoding == OBJ_ENCODING_LISTPACK) {
         length = zzlLength(zobj->ptr);
     } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
@@ -1267,7 +1267,7 @@ void zsetConvert(robj *zobj, int encoding) {
 }
 
 /* Converts a zset to the specified encoding, pre-sizing it for 'cap' elements. */
-void zsetConvertAndExpand(robj *zobj, int encoding, unsigned long cap) {
+void zsetConvertAndExpand(robj *zobj, int encoding, uint64_t cap) {
     zset *zs;
     zskiplistNode *node, *next;
     sds ele;
@@ -1616,9 +1616,9 @@ int zsetDel(robj *zobj, sds ele) {
  * the one with the lowest score. Otherwise if 'reverse' is non-zero
  * the rank is computed considering as element with rank 0 the one with
  * the highest score. */
-long zsetRank(robj *zobj, sds ele, int reverse, double *output_score) {
-    unsigned long llen;
-    unsigned long rank;
+int64_t zsetRank(robj *zobj, sds ele, int reverse, double *output_score) {
+    uint64_t llen;
+    uint64_t rank;
 
     llen = zsetLength(zobj);
 
@@ -1703,7 +1703,7 @@ robj *zsetDup(robj *o) {
         zskiplist *zsl = zs->zsl;
         zskiplistNode *ln;
         sds ele;
-        long llen = zsetLength(o);
+        uint64_t llen = zsetLength(o);
 
         /* We copy the skiplist elements from the greatest to the
          * smallest (that's trivial since the elements are already ordered in
@@ -1743,7 +1743,7 @@ void zsetReplyFromListpackEntry(client *c, listpackEntry *e) {
  * 'key' and 'val' will be set to hold the element.
  * The memory in `key` is not to be freed or modified by the caller.
  * 'score' can be NULL in which case it's not extracted. */
-void zsetTypeRandomElement(robj *zsetobj, unsigned long zsetsize, listpackEntry *key, double *score) {
+void zsetTypeRandomElement(robj *zsetobj, uint64_t zsetsize, listpackEntry *key, double *score) {
     if (zsetobj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = zsetobj->ptr;
         dictEntry *de = dictGetFairRandomKey(zs->dict);
@@ -2203,7 +2203,7 @@ void zuiDiscardDirtyValue(zsetopval *val) {
     }
 }
 
-unsigned long zuiLength(zsetopsrc *op) {
+uint64_t zuiLength(zsetopsrc *op) {
     if (op->subject == NULL)
         return 0;
 
@@ -2397,8 +2397,8 @@ int zuiFind(zsetopsrc *op, zsetopval *val, double *score) {
 }
 
 int zuiCompareByCardinality(const void *s1, const void *s2) {
-    unsigned long first = zuiLength((zsetopsrc*)s1);
-    unsigned long second = zuiLength((zsetopsrc*)s2);
+    uint64_t first = zuiLength((zsetopsrc*)s1);
+    uint64_t second = zuiLength((zsetopsrc*)s2);
     if (first > second) return 1;
     if (first < second) return -1;
     return 0;
@@ -2646,8 +2646,8 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
     zset *dstzset = NULL;
     zskiplistNode *znode;
     int withscores = 0;
-    unsigned long cardinality = 0;
-    long limit = 0; /* Stop searching after reaching the limit. 0 means unlimited. */
+    uint64_t cardinality = 0;
+    long long limit = 0; /* Stop searching after reaching the limit. 0 means unlimited. */
 
     /* expect setnum input keys to be given */
     if ((getLongFromObjectOrReply(c, c->argv[numkeysIndex], &setnum, NULL) != C_OK))
@@ -2738,9 +2738,10 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
                        !strcasecmp(c->argv[j]->ptr, "limit"))
             {
                 j++; remaining--;
-                if (getPositiveLongFromObjectOrReply(c, c->argv[j], &limit,
-                                                     "LIMIT can't be negative") != C_OK)
-                {
+                if (getLongLongFromObjectOrReply(c, c->argv[j], &limit,
+                                                 "LIMIT can't be negative") != C_OK ||
+                    limit < 0) {
+                    if (limit < 0) addReplyError(c, "LIMIT can't be negative");
                     zfree(src);
                     return;
                 }
@@ -2800,7 +2801,7 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
                     cardinality++;
 
                     /* We stop the searching after reaching the limit. */
-                    if (limit && cardinality >= (unsigned long)limit) {
+                    if (limit && cardinality >= (uint64_t)limit) {
                         /* Cleanup before we break the zuiNext loop. */
                         zuiDiscardDirtyValue(&zval);
                         break;
@@ -2909,7 +2910,7 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
     } else if (cardinality_only) {
         addReplyLongLong(c, cardinality);
     } else {
-        unsigned long length = dstzset->zsl->length;
+        uint64_t length = dstzset->zsl->length;
         zskiplist *zsl = dstzset->zsl;
         zskiplistNode *zn = zsl->header->level[0].forward;
         /* In case of WITHSCORES, respond with a single array in RESP2, and
@@ -2980,7 +2981,7 @@ typedef enum {
 
 typedef struct zrange_result_handler zrange_result_handler;
 
-typedef void (*zrangeResultBeginFunction)(zrange_result_handler *c, long length);
+typedef void (*zrangeResultBeginFunction)(zrange_result_handler *c, int64_t length);
 typedef void (*zrangeResultFinalizeFunction)(
     zrange_result_handler *c, size_t result_count);
 typedef void (*zrangeResultEmitCBufferFunction)(
@@ -3012,7 +3013,7 @@ struct zrange_result_handler {
  * length can be used to provide the result length in advance (avoids deferred reply overhead).
  * length can be set to -1 if the result length is not know in advance.
  */
-static void zrangeResultBeginClient(zrange_result_handler *handler, long length) {
+static void zrangeResultBeginClient(zrange_result_handler *handler, int64_t length) {
     if (length > 0) {
         /* In case of WITHSCORES, respond with a single array in RESP2, and
         * nested arrays in RESP3. We can't use a map response type since the
@@ -3072,9 +3073,9 @@ static void zrangeResultFinalizeClient(zrange_result_handler *handler,
 }
 
 /* Result handler methods for storing the ZRANGESTORE to a zset. */
-static void zrangeResultBeginStore(zrange_result_handler *handler, long length)
+static void zrangeResultBeginStore(zrange_result_handler *handler, int64_t length)
 {
-    handler->dstobj = zsetTypeCreate(length >= 0 ? length : 0, 0);
+    handler->dstobj = zsetTypeCreate(length >= 0 ? (size_t)length : 0, 0);
 }
 
 static void zrangeResultEmitCBufferForStore(zrange_result_handler *handler,
@@ -3155,11 +3156,11 @@ static void zrangeResultHandlerDestinationKeySet (zrange_result_handler *handler
 
 /* This command implements ZRANGE, ZREVRANGE. */
 void genericZrangebyrankCommand(zrange_result_handler *handler,
-    robj *zobj, long start, long end, int withscores, int reverse) {
+    robj *zobj, int64_t start, int64_t end, int withscores, int reverse) {
 
     client *c = handler->client;
-    long llen;
-    long rangelen;
+    int64_t llen;
+    int64_t rangelen;
     size_t result_cardinality;
 
     /* Sanitize indexes. */
@@ -3270,14 +3271,14 @@ void zrevrangeCommand(client *c) {
 
 /* This command implements ZRANGEBYSCORE, ZREVRANGEBYSCORE. */
 void genericZrangebyscoreCommand(zrange_result_handler *handler,
-    zrangespec *range, robj *zobj, long offset, long limit,
+    zrangespec *range, robj *zobj, int64_t offset, int64_t limit,
     int reverse) {
-    unsigned long rangelen = 0;
+    uint64_t rangelen = 0;
 
     handler->beginResultEmission(handler, -1);
 
     /* For invalid offset, return directly. */
-    if (offset < 0 || (offset > 0 && offset >= (long)zsetLength(zobj))) {
+    if (offset < 0 || (offset > 0 && (uint64_t)offset >= zsetLength(zobj))) {
         handler->finalizeResultEmission(handler, 0);
         return;
     }
@@ -3544,15 +3545,15 @@ void zlexcountCommand(client *c) {
 
 /* This command implements ZRANGEBYLEX, ZREVRANGEBYLEX. */
 void genericZrangebylexCommand(zrange_result_handler *handler,
-    zlexrangespec *range, robj *zobj, int withscores, long offset, long limit,
+    zlexrangespec *range, robj *zobj, int withscores, int64_t offset, int64_t limit,
     int reverse)
 {
-    unsigned long rangelen = 0;
+    uint64_t rangelen = 0;
 
     handler->beginResultEmission(handler, -1);
 
     /* For invalid offset, return directly. */
-    if (offset < 0 || (offset > 0 && offset >= (long)zsetLength(zobj))) {
+    if (offset < 0 || (offset > 0 && (uint64_t)offset >= zsetLength(zobj))) {
         handler->finalizeResultEmission(handler, 0);
         return;
     }
@@ -3685,11 +3686,11 @@ void zrangeGenericCommand(zrange_result_handler *handler, int argc_start, int st
     int maxidx = argc_start + 2;
 
     /* Options common to all */
-    long opt_start = 0;
-    long opt_end = 0;
+    int64_t opt_start = 0;
+    int64_t opt_end = 0;
     int opt_withscores = 0;
-    long opt_offset = 0;
-    long opt_limit = -1;
+    int64_t opt_offset = 0;
+    int64_t opt_limit = -1;
 
     /* Step 1: Skip the <src> <min> <max> args and parse remaining optional arguments. */
     for (int j=argc_start + 3; j < c->argc; j++) {
@@ -3697,8 +3698,8 @@ void zrangeGenericCommand(zrange_result_handler *handler, int argc_start, int st
         if (!store && !strcasecmp(c->argv[j]->ptr,"withscores")) {
             opt_withscores = 1;
         } else if (!strcasecmp(c->argv[j]->ptr,"limit") && leftargs >= 2) {
-            if ((getLongFromObjectOrReply(c, c->argv[j+1], &opt_offset, NULL) != C_OK) ||
-                (getLongFromObjectOrReply(c, c->argv[j+2], &opt_limit, NULL) != C_OK))
+            if ((getLongLongFromObjectOrReply(c, c->argv[j+1], &opt_offset, NULL) != C_OK) ||
+                (getLongLongFromObjectOrReply(c, c->argv[j+2], &opt_limit, NULL) != C_OK))
             {
                 return;
             }
@@ -3751,8 +3752,8 @@ void zrangeGenericCommand(zrange_result_handler *handler, int argc_start, int st
     case ZRANGE_AUTO:
     case ZRANGE_RANK:
         /* Z[REV]RANGE, ZRANGESTORE [REV]RANGE */
-        if ((getLongFromObjectOrReply(c, c->argv[minidx], &opt_start,NULL) != C_OK) ||
-            (getLongFromObjectOrReply(c, c->argv[maxidx], &opt_end,NULL) != C_OK))
+        if ((getLongLongFromObjectOrReply(c, c->argv[minidx], &opt_start,NULL) != C_OK) ||
+            (getLongLongFromObjectOrReply(c, c->argv[maxidx], &opt_end,NULL) != C_OK))
         {
             return;
         }
@@ -3948,7 +3949,7 @@ void zscanCommand(client *c) {
  * if the key got deleted by this function.
  * */
 void genericZpopCommand(client *c, robj **keyv, int keyc, int where, int emitkey,
-                        long count, int use_nested_array, int reply_nil_when_empty, int *deleted) {
+                        int64_t count, int use_nested_array, int reply_nil_when_empty, int *deleted) {
     int idx;
     robj *key = NULL;
     robj *zobj = NULL;
@@ -3983,13 +3984,13 @@ void genericZpopCommand(client *c, robj **keyv, int keyc, int where, int emitkey
         return;
     }
 
-    long result_count = 0;
+    int64_t result_count = 0;
 
     /* When count is -1, we need to correct it to 1 for plain single pop. */
     if (count == -1) count = 1;
 
-    long llen = zsetLength(zobj);
-    long rangelen = (count > llen) ? llen : count;
+    int64_t llen = (int64_t)zsetLength(zobj);
+    int64_t rangelen = (count > llen) ? llen : count;
 
     if (!use_nested_array && !emitkey) {
         /* ZPOPMIN/ZPOPMAX with or without COUNT option in RESP2. */
@@ -4090,8 +4091,8 @@ void zpopMinMaxCommand(client *c, int where) {
         return;
     }
 
-    long count = -1; /* -1 for plain single pop. */
-    if (c->argc == 3 && getPositiveLongFromObjectOrReply(c, c->argv[2], &count, NULL) != C_OK)
+    int64_t count = -1; /* -1 for plain single pop. */
+    if (c->argc == 3 && getPositiveLongLongFromObjectOrReply(c, c->argv[2], &count, NULL) != C_OK)
         return;
 
     /* Respond with a single (flat) array in RESP2 or if count is -1
@@ -4125,7 +4126,7 @@ void zpopmaxCommand(client *c) {
  * When true, it generates a nested 3 level array of keyname, field + score pairs.
  * */
 void blockingGenericZpopCommand(client *c, robj **keys, int numkeys, int where,
-                                int timeout_idx, long count, int use_nested_array, int reply_nil_when_empty) {
+                                int timeout_idx, int64_t count, int use_nested_array, int reply_nil_when_empty) {
     robj *o;
     robj *key;
     mstime_t timeout;
@@ -4142,7 +4143,7 @@ void blockingGenericZpopCommand(client *c, robj **keys, int numkeys, int where,
 
         if (checkType(c,o,OBJ_ZSET)) return;
 
-        long llen = zsetLength(o);
+        int64_t llen = (int64_t)zsetLength(o);
         /* Empty zset, move to next key. */
         if (llen == 0) continue;
 
@@ -4224,9 +4225,10 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
     size = zsetLength(zsetobj);
 
     if(l >= 0) {
-        count = (unsigned long) l;
+        count = (uint64_t)l;
     } else {
-        count = -l;
+        serverAssert(l != LLONG_MIN);
+        count = (uint64_t)(-l);
         uniq = 0;
     }
 
@@ -4289,7 +4291,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
     memset(&zval, 0, sizeof(zval));
 
     /* Initiate reply count, RESP3 responds with nested array, RESP2 with flat one. */
-    long reply_size = count < size ? count : size;
+    uint64_t reply_size = count < size ? count : size;
     if (withscores && c->resp == 2)
         addReplyArrayLen(c, reply_size*2);
     else
@@ -4386,7 +4388,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
      * to reach the specified count. */
     else {
         /* Hashtable encoding (generic implementation) */
-        unsigned long added = 0;
+        uint64_t added = 0;
         dict *d = dictCreate(&hashDictType);
         dictExpand(d, count);
 
@@ -4456,18 +4458,19 @@ void zrandmemberCommand(client *c) {
  * 'numkeys_idx' parameter position of key number.
  * 'is_block' this indicates whether it is a blocking variant. */
 void zmpopGenericCommand(client *c, int numkeys_idx, int is_block) {
-    long j;
-    long numkeys = 0;      /* Number of keys. */
+    int j;
+    long long parsed_numkeys = 0; /* Number of keys. */
     int where = 0;         /* ZSET_MIN or ZSET_MAX. */
-    long count = -1;       /* Reply will consist of up to count elements, depending on the zset's length. */
+    int64_t count = -1;    /* Reply will consist of up to count elements, depending on the zset's length. */
 
     /* Parse the numkeys. */
-    if (getRangeLongFromObjectOrReply(c, c->argv[numkeys_idx], 1, LONG_MAX,
-                                      &numkeys, "numkeys should be greater than 0") != C_OK)
+    if (getRangeLongLongFromObjectOrReply(c, c->argv[numkeys_idx], 1, INT_MAX,
+                                          &parsed_numkeys, "numkeys should be greater than 0") != C_OK)
         return;
+    int numkeys = (int)parsed_numkeys;
 
     /* Parse the where. where_idx: the index of where in the c->argv. */
-    long where_idx = numkeys_idx + numkeys + 1;
+    int where_idx = numkeys_idx + numkeys + 1;
     if (where_idx >= c->argc) {
         addReplyErrorObject(c, shared.syntaxerr);
         return;
@@ -4488,8 +4491,8 @@ void zmpopGenericCommand(client *c, int numkeys_idx, int is_block) {
 
         if (count == -1 && !strcasecmp(opt, "COUNT") && moreargs) {
             j++;
-            if (getRangeLongFromObjectOrReply(c, c->argv[j], 1, LONG_MAX,
-                                              &count,"count should be greater than 0") != C_OK)
+            if (getRangeLongLongFromObjectOrReply(c, c->argv[j], 1, LLONG_MAX,
+                                                  &count,"count should be greater than 0") != C_OK)
                 return;
         } else {
             addReplyErrorObject(c, shared.syntaxerr);

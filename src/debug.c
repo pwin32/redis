@@ -809,10 +809,6 @@ NULL
 #ifdef _WIN32
         if (getPositiveDebugLongFromObjectOrReply(c,c->argv[2],&keys) != C_OK)
             return;
-        if ((PORT_ULONG)keys > ULONG_MAX) {
-            addReplyError(c,"value is out of range for the Windows dictionary implementation");
-            return;
-        }
 #else
         if (getPositiveLongFromObjectOrReply(c, c->argv[2], &keys, NULL) != C_OK)
             return;
@@ -1150,7 +1146,7 @@ NULL
             } else if(!strcasecmp(c->argv[3]->ptr, "reset")) {
                 server.reply_buffer_peak_reset_time = REPLY_BUFFER_DEFAULT_PEAK_RESET_TIME;
             } else {
-                if (getLongFromObjectOrReply(c, c->argv[3], &server.reply_buffer_peak_reset_time, NULL) != C_OK)
+                if (getLongLongFromObjectOrReply(c, c->argv[3], &server.reply_buffer_peak_reset_time, NULL) != C_OK)
                     return;
             }
         } else if(!strcasecmp(c->argv[2]->ptr,"resizing")) {
@@ -2604,7 +2600,7 @@ void bugReportEnd(int killViaSignal, int sig) {
 );
 
     /* free(messages); Don't call free() with possibly corrupted memory. */
-    if (server.daemonize && server.supervised == 0 && server.pidfile) unlink(server.pidfile);
+    if (server.daemonize && server.supervised == 0 && server.pidfile) redis_unlink(server.pidfile);
 
     if (!killViaSignal) {
         /* To avoid issues with valgrind, we may wanna exit rather than generate a signal */

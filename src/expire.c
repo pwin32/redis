@@ -295,7 +295,7 @@ void activeExpireCycle(int type) {
          * we scanned. The percentage, stored in config_cycle_acceptable_stale
          * is not fixed, but depends on the Redis configured "expire effort". */
         do {
-            unsigned long num;
+            uint64_t num;
             iteration++;
 
             /* If there is nothing to expire try next DB ASAP. */

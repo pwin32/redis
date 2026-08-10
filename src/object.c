@@ -878,6 +878,25 @@ int getLongLongFromObjectOrReply(client *c, robj *o, long long *target, const ch
     return C_OK;
 }
 
+int getRangeLongLongFromObjectOrReply(client *c, robj *o, long long min, long long max,
+                                      long long *target, const char *msg) {
+    if (getLongLongFromObjectOrReply(c, o, target, msg) != C_OK) return C_ERR;
+    if (*target < min || *target > max) {
+        if (msg != NULL) {
+            addReplyError(c,(char*)msg);
+        } else {
+            addReplyErrorFormat(c,"value is out of range, value must between %lld and %lld", min, max);
+        }
+        return C_ERR;
+    }
+    return C_OK;
+}
+
+int getPositiveLongLongFromObjectOrReply(client *c, robj *o, long long *target, const char *msg) {
+    return getRangeLongLongFromObjectOrReply(c, o, 0, LLONG_MAX, target,
+        msg ? msg : "value is out of range, must be positive");
+}
+
 int getLongFromObjectOrReply(client *c, robj *o, long *target, const char *msg) {
     long long value;
 
@@ -1326,8 +1345,8 @@ sds getMemoryDoctorReport(void) {
         }
 
         /* Clients using more than 200k each average? */
-        long numslaves = listLength(server.slaves);
-        long numclients = listLength(server.clients)-numslaves;
+        uint64_t numslaves = listLength(server.slaves);
+        uint64_t numclients = listLength(server.clients)-numslaves;
         if (mh->clients_normal / numclients > (1024*200)) {
             big_client_buf = 1;
             num_reports++;

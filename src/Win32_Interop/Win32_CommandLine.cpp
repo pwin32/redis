@@ -22,8 +22,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <exception>
-#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -35,6 +35,7 @@
 #include "win32fixes.h"
 #include <mswsock.h>
 
+#include "Win32_Error.h"
 #include "Win32_variadicFunctor.h"
 #include "Win32_CommandLine.h"
 
@@ -44,10 +45,7 @@
 #undef close
 #undef open
 
-#include <Shlwapi.h>
 using namespace std;
-
-#pragma comment (lib, "Shlwapi.lib")
 
 ArgumentMap g_argMap;
 vector<string> g_pathsAccessed;
@@ -110,9 +108,11 @@ public:
     }
 
     vector<string> Extract(vector<string> tokens, int startIndex = 0) {
-        if ((int) (tokens.size() - 1) < parameterCount + startIndex) {
+        if (startIndex < 0 || parameterCount < 0 ||
+            (size_t)startIndex + (size_t)parameterCount >= tokens.size()) {
             stringstream err;
-            err << "Not enough parameters available for " << tokens.at(0);
+            err << "Not enough parameters available";
+            if (!tokens.empty()) err << " for " << tokens[0];
             throw invalid_argument(err.str());
         }
         vector<string> params;
@@ -796,10 +796,10 @@ vector<string> Tokenize(string line) {
                 if (token.str().length() == 0)
                     token << endQuote << endQuote;
 
-                // correct paths for windows nomenclature
-                string path = token.str();
-                replace(path.begin(), path.end(), '/', '\\');
-                tokens.push_back(path);
+                /* Quoted Redis values are not necessarily paths.  Preserve
+                 * their bytes exactly; Windows path normalization belongs at
+                 * the filesystem API boundary. */
+                tokens.push_back(token.str());
 
                 token.str("");
             }
@@ -819,67 +819,97 @@ vector<string> Tokenize(string line) {
     return tokens;
 }
 
+void ParseConfFile(string confFile, string cwd, ArgumentMap& argMap);
+
+static void ParseConfLine(const string& line, const string& cwd,
+                          ArgumentMap& argMap) {
+    vector<string> tokens = Tokenize(line);
+    if (tokens.size() > 0) {
+        string parameter = tokens.at(0);
+        transform(parameter.begin(), parameter.end(), parameter.begin(), ::tolower);
+        if (parameter.at(0) == '#') {
+            return;
+        }
+        else if (parameter.compare(cInclude) == 0) {
+            if (tokens.size() > 1) {
+                ParseConfFile(tokens.at(1), cwd, argMap);
+            }
+        }
+        else {
+            auto extractor = g_redisArgMap.find(parameter);
+            if (extractor == g_redisArgMap.end()) {
+                return;
+            }
+
+            try {
+                vector<string> params = extractor->second->Extract(tokens);
+                argMap[parameter].push_back(params);
+            }
+            catch (const invalid_argument &) {
+                /* This pre-parser only discovers Windows service and QFork
+                 * metadata. Redis config.c performs authoritative syntax
+                 * and arity validation after startup initialization. */
+            }
+        }
+    }
+}
+
 void ParseConfFile(string confFile, string cwd, ArgumentMap& argMap) {
-    ifstream config;
+    char *fullConfFilePath = win32_get_full_path_utf8(confFile.c_str());
+    wchar_t *wideConfFilePath;
+    FILE *config;
     string line;
 
-    char fullConfFilePath[MAX_PATH];
-    if (PathIsRelativeA(confFile.c_str())) {
-        if (NULL == PathCombineA(fullConfFilePath, cwd.c_str(), confFile.c_str())) {
-            throw std::system_error(GetLastError(), system_category(), "PathCombineA failed");
-        }
+    if (fullConfFilePath == NULL) {
+        throw std::system_error(errno, generic_category(),
+                                "GetFullPathNameW failed");
     }
-    else {
-        strcpy(fullConfFilePath, confFile.c_str());
+    wideConfFilePath = win32_utf8_path_to_wide(fullConfFilePath);
+    if (wideConfFilePath == NULL) {
+        free(fullConfFilePath);
+        throw std::system_error(errno, generic_category(),
+                                "UTF-8 configuration path conversion failed");
     }
 
-    config.open(fullConfFilePath);
-    if (config.fail()) {
+    config = _wfopen(wideConfFilePath, L"rb");
+    free(wideConfFilePath);
+    if (config == NULL) {
         stringstream ss;
         ss << "Failed to open the .conf file: " << confFile << " CWD=" << cwd.c_str();
+        free(fullConfFilePath);
         throw invalid_argument(ss.str());
     }
-    else {
-        char confFileDir[MAX_PATH];
-        strcpy(confFileDir, fullConfFilePath);
-        if (FALSE == PathRemoveFileSpecA(confFileDir)) {
-            throw std::system_error(GetLastError(), system_category(), "PathRemoveFileSpecA failed");
+
+    {
+        string fullPath(fullConfFilePath);
+        size_t separator = fullPath.find_last_of("\\/");
+        if (separator == string::npos) {
+            fclose(config);
+            free(fullConfFilePath);
+            throw std::runtime_error("Configuration path has no directory");
         }
-        g_pathsAccessed.push_back(confFileDir);
+        if (separator == 2 && fullPath.size() >= 3 && fullPath[1] == ':')
+            separator++;
+        g_pathsAccessed.push_back(fullPath.substr(0, separator));
     }
+    free(fullConfFilePath);
 
-    while (!config.eof()) {
-        getline(config, line);
-        vector<string> tokens = Tokenize(line);
-        if (tokens.size() > 0) {
-            string parameter = tokens.at(0);
-            transform(parameter.begin(), parameter.end(), parameter.begin(), ::tolower);
-            if (parameter.at(0) == '#') {
-                continue;
-            }
-            else if (parameter.compare(cInclude) == 0) {
-                if (tokens.size() > 1) {
-                    ParseConfFile(tokens.at(1), cwd, argMap);
-                }
-            }
-            else {
-                auto extractor = g_redisArgMap.find(parameter);
-                if (extractor == g_redisArgMap.end()) {
-                    continue;
-                }
-
-                try {
-                    vector<string> params = extractor->second->Extract(tokens);
-                    argMap[parameter].push_back(params);
-                }
-                catch (const invalid_argument &) {
-                    /* This pre-parser only discovers Windows service and QFork
-                     * metadata. Redis config.c performs authoritative syntax
-                     * and arity validation after startup initialization. */
-                }
-            }
+    char chunk[4096];
+    while (fgets(chunk, sizeof(chunk), config) != NULL) {
+        line.append(chunk);
+        if (!line.empty() && line.back() == '\n') {
+            ParseConfLine(line, cwd, argMap);
+            line.clear();
         }
     }
+    if (ferror(config)) {
+        int readError = errno == 0 ? EIO : errno;
+        fclose(config);
+        throw std::system_error(readError, generic_category(),
+                                "Failed to read configuration file");
+    }
+    if (!line.empty()) ParseConfLine(line, cwd, argMap);
+    fclose(config);
 }
 
 vector<string> incompatibleNoPersistenceCommands{
@@ -1025,16 +1055,21 @@ void ParseCommandLineArguments(int argc, char** argv) {
             if (argument == cServiceRun) {
                 // When the service starts the current directory is %systemdir%. This needs to be changed to the
                 // directory the executable is in so that the .conf file can be loaded.
-                char szFilePath[MAX_PATH];
-                if (GetModuleFileNameA(NULL, szFilePath, MAX_PATH) == 0) {
-                    throw std::system_error(GetLastError(), system_category(), "ParseCommandLineArguments: GetModuleFileName failed");
+                char *modulePath = win32_get_module_filename_utf8();
+                if (modulePath == NULL) {
+                    throw std::system_error(errno, generic_category(),
+                                            "GetModuleFileNameW failed");
                 }
-                string currentDir = szFilePath;
-                auto pos = currentDir.rfind("\\");
+                string currentDir = modulePath;
+                free(modulePath);
+                auto pos = currentDir.find_last_of("\\/");
+                if (pos == string::npos)
+                    throw std::runtime_error("Executable path has no directory");
                 currentDir.erase(pos);
 
-                if (FALSE == SetCurrentDirectoryA(currentDir.c_str())) {
-                    throw std::system_error(GetLastError(), system_category(), "SetCurrentDirectory failed");
+                if (win32_set_current_directory_utf8(currentDir.c_str()) != 0) {
+                    throw std::system_error(errno, generic_category(),
+                                            "SetCurrentDirectoryW failed");
                 }
             }
             else if (inlineValues) {
@@ -1054,14 +1089,20 @@ void ParseCommandLineArguments(int argc, char** argv) {
         }
         RecordCommandLineArgument(argument, params);
         if (!inlineValues && extractor != g_redisArgMap.end()) {
+            if (params.size() > (size_t)(INT_MAX - n)) {
+                throw length_error("Command line has too many arguments");
+            }
             n += (int) params.size();
         }
     }
 
-    char cwd[MAX_PATH];
-    if (0 == ::GetCurrentDirectoryA(MAX_PATH, cwd)) {
-        throw std::system_error(GetLastError(), system_category(), "ParseCommandLineArguments: GetCurrentDirectoryA failed");
+    char *cwdBuffer = win32_get_current_directory_utf8();
+    if (cwdBuffer == NULL) {
+        throw std::system_error(errno, generic_category(),
+                                "ParseCommandLineArguments: GetCurrentDirectoryW failed");
     }
+    string cwd(cwdBuffer);
+    free(cwdBuffer);
 
     if (confFile) {
         ParseConfFile(confFilePath, cwd, g_argMap);
@@ -1071,15 +1112,14 @@ void ParseCommandLineArguments(int argc, char** argv) {
     string fileCreationDirectory = ".\\";
     if (g_argMap.find(cDir) != g_argMap.end()) {
         fileCreationDirectory = g_argMap[cDir][0][0];
-        replace(fileCreationDirectory.begin(), fileCreationDirectory.end(), '/', '\\');
     }
-    if (PathIsRelativeA(fileCreationDirectory.c_str())) {
-        char fullPath[MAX_PATH];
-        if (NULL == PathCombineA(fullPath, cwd, fileCreationDirectory.c_str())) {
-            throw std::system_error(GetLastError(), system_category(), "PathCombineA failed");
-        }
-        fileCreationDirectory = fullPath;
+    char *fullPath = win32_get_full_path_utf8(fileCreationDirectory.c_str());
+    if (fullPath == NULL) {
+        throw std::system_error(errno, generic_category(),
+                                "GetFullPathNameW failed for data directory");
     }
+    fileCreationDirectory = fullPath;
+    free(fullPath);
     g_pathsAccessed.push_back(fileCreationDirectory);
 
     ValidateCommandlineCombinations();

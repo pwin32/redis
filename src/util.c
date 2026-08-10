@@ -49,6 +49,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#include "Win32_Interop/Win32_Error.h"
 #include "Win32_Interop/Win32_Time.h"
 #endif
 
@@ -57,6 +58,31 @@
 #include "config.h"
 
 #define UNUSED(x) ((void)(x))
+
+#ifdef _WIN32
+typedef win32_utf8_dir redisDir;
+static redisDir *redisOpenDir(const char *path) {
+    return win32_opendir_utf8(path);
+}
+static const char *redisReadDir(redisDir *dir) {
+    return win32_readdir_utf8(dir);
+}
+static int redisCloseDir(redisDir *dir) {
+    return win32_closedir_utf8(dir);
+}
+#else
+typedef DIR redisDir;
+static redisDir *redisOpenDir(const char *path) {
+    return opendir(path);
+}
+static const char *redisReadDir(redisDir *dir) {
+    struct dirent *entry = readdir(dir);
+    return entry == NULL ? NULL : entry->d_name;
+}
+static int redisCloseDir(redisDir *dir) {
+    return closedir(dir);
+}
+#endif
 
 /* Glob-style pattern matching. */
 static int stringmatchlen_impl(const char *pattern, int patternLen,
@@ -991,35 +1017,13 @@ sds getAbsolutePath(char *filename) {
     sds relpath = sdsnew(filename);
     relpath = sdstrim(relpath," \r\n\t");
 
-    /* Resolve all Windows path forms, including drive-absolute service
-     * configuration paths, without imposing a MAX_PATH-sized buffer. */
-    DWORD size = 256;
-    for (;;) {
-        char *buffer = malloc(size);
-        if (buffer == NULL) {
-            sdsfree(relpath);
-            return NULL;
-        }
-        DWORD length = GetFullPathNameA(relpath, size, buffer, NULL);
-        if (length == 0) {
-            free(buffer);
-            sdsfree(relpath);
-            return NULL;
-        }
-        if (length < size) {
-            sds result = sdsnewlen(buffer, length);
-            free(buffer);
-            sdsfree(relpath);
-            return result;
-        }
-
-        free(buffer);
-        if (length == UINT32_MAX || length + 1 <= length) {
-            sdsfree(relpath);
-            return NULL;
-        }
-        size = length + 1;
-    }
+    char *buffer = win32_get_full_path_utf8(relpath);
+    sds result;
+    sdsfree(relpath);
+    if (buffer == NULL) return NULL;
+    result = sdsnew(buffer);
+    win32_free(buffer);
+    return result;
 #else
     char cwd[1024];
     sds abspath;
@@ -1099,18 +1103,18 @@ int pathIsBaseName(char *path) {
 }
 
 int fileExist(char *filename) {
-    struct stat statbuf;
-    return stat(filename, &statbuf) == 0 && S_ISREG(statbuf.st_mode);
+    struct redis_stat_type statbuf;
+    return redis_stat(filename, &statbuf) == 0 && S_ISREG(statbuf.st_mode);
 }
 
 int dirExists(char *dname) {
-    struct stat statbuf;
-    return stat(dname, &statbuf) == 0 && S_ISDIR(statbuf.st_mode);
+    struct redis_stat_type statbuf;
+    return redis_stat(dname, &statbuf) == 0 && S_ISDIR(statbuf.st_mode);
 }
 
 int dirCreateIfMissing(char *dname) {
 #ifdef _WIN32
-    int mkdir_result = _mkdir(dname);
+    int mkdir_result = redis_mkdir(dname, 0755);
 #else
     int mkdir_result = mkdir(dname, 0755);
 #endif
@@ -1126,35 +1130,37 @@ int dirCreateIfMissing(char *dname) {
 }
 
 int dirRemove(char *dname) {
-    DIR *dir;
-    struct stat stat_entry;
-    struct dirent *entry;
-    char full_path[PATH_MAX + 1];
+    redisDir *dir;
+    struct redis_stat_type stat_entry;
+    const char *entry;
 
-    if ((dir = opendir(dname)) == NULL) {
+    if ((dir = redisOpenDir(dname)) == NULL) {
         return -1;
     }
 
-    while ((entry = readdir(dir)) != NULL) {
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    while ((entry = redisReadDir(dir)) != NULL) {
+        if (!strcmp(entry, ".") || !strcmp(entry, "..")) continue;
 
-        snprintf(full_path, sizeof(full_path), "%s/%s", dname, entry->d_name);
+        sds full_path = makePath(dname, entry);
 
 #ifdef _WIN32
-        if (stat(full_path, &stat_entry) == -1) {
-            closedir(dir);
+        if (redis_stat(full_path, &stat_entry) == -1) {
+            sdsfree(full_path);
+            redisCloseDir(dir);
             return -1;
         }
 #else
         int fd = open(full_path, O_RDONLY|O_NONBLOCK);
         if (fd == -1) {
-            closedir(dir);
+            sdsfree(full_path);
+            redisCloseDir(dir);
             return -1;
         }
 
         if (fstat(fd, &stat_entry) == -1) {
             close(fd);
-            closedir(dir);
+            sdsfree(full_path);
+            redisCloseDir(dir);
             return -1;
         }
         close(fd);
@@ -1162,28 +1168,35 @@ int dirRemove(char *dname) {
 
         if (S_ISDIR(stat_entry.st_mode) != 0) {
             if (dirRemove(full_path) == -1) {
-                closedir(dir);
+                sdsfree(full_path);
+                redisCloseDir(dir);
                 return -1;
             }
+            sdsfree(full_path);
             continue;
         }
 
-        if (unlink(full_path) != 0) {
-            closedir(dir);
+        if (redis_unlink(full_path) != 0) {
+            sdsfree(full_path);
+            redisCloseDir(dir);
             return -1;
         }
+        sdsfree(full_path);
     }
 
-    if (rmdir(dname) != 0) {
-        closedir(dir);
+    if (redis_rmdir(dname) != 0) {
+        redisCloseDir(dir);
         return -1;
     }
 
-    closedir(dir);
+    redisCloseDir(dir);
     return 0;
 }
 
-sds makePath(char *path, char *filename) {
+sds makePath(const char *path, const char *filename) {
+#ifdef _WIN32
+    if (path[0] == '\0') return sdsnew(filename);
+#endif
     return sdscatfmt(sdsempty(), "%s/%s", path, filename);
 }
 

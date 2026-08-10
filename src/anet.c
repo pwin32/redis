@@ -469,8 +469,6 @@ static int anetTcpGenericConnect(char *err, const char *addr, int port,
         WSIOCP_SocketConnectBind(fd, &storage, source_addr) :
         WSIOCP_SocketConnect(fd, &storage);
     if (connect_result == SOCKET_ERROR) {
-        if (errno == WSAEWOULDBLOCK || errno == WSA_IO_PENDING || errno == EINPROGRESS)
-            errno = EINPROGRESS;
         if ((errno == EINPROGRESS) && (flags & ANET_CONNECT_NONBLOCK))
             return fd;
 
@@ -620,7 +618,7 @@ static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int 
 
 #ifndef _WIN32
     if (sa->sa_family == AF_LOCAL && perm)
-        chmod(((struct sockaddr_un *) sa)->sun_path, perm);
+        redis_chmod(((struct sockaddr_un *) sa)->sun_path, perm);
 #else
     ANET_NOTUSED(perm);
 #endif
@@ -965,8 +963,8 @@ int anetSetSockMarkId(char *err, int fd, uint32_t id) {
 }
 
 int anetIsFifo(char *filepath) {
-    struct stat sb;
-    if (stat(filepath, &sb) == -1) return 0;
+    struct redis_stat_type sb;
+    if (redis_stat(filepath, &sb) == -1) return 0;
     return S_ISFIFO(sb.st_mode);
 }
 

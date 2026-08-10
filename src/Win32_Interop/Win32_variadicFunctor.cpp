@@ -23,8 +23,11 @@
 #include "win32_types.h"
 
 #include "Win32_variadicFunctor.h"
+#include "Win32_Error.h"
 
 #include <windows.h>
+#include <cerrno>
+#include <cstdlib>
 #include <stdexcept>
 #include <map>
 #include <system_error>
@@ -40,7 +43,12 @@ DLLMap::DLLMap() { };
 LPVOID DLLMap::getProcAddress(string dll, string functionName)
 {
 	if (find(dll) == end()) {
-		HMODULE mod = LoadLibraryA(dll.c_str());
+		wchar_t *wide_dll = win32_utf8_to_wide(dll.c_str());
+		if (wide_dll == NULL) {
+			throw system_error(errno, generic_category(), "invalid UTF-8 DLL name");
+		}
+		HMODULE mod = LoadLibraryW(wide_dll);
+		free(wide_dll);
 		if (mod == NULL) {
 			throw system_error(GetLastError(), system_category(), "LoadLibrary failed");
 		}

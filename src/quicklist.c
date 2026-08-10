@@ -184,11 +184,11 @@ REDIS_STATIC quicklistNode *quicklistCreateNode(void) {
 }
 
 /* Return cached quicklist count */
-unsigned long quicklistCount(const quicklist *ql) { return ql->count; }
+uint64_t quicklistCount(const quicklist *ql) { return ql->count; }
 
 /* Free entire quicklist. */
 void quicklistRelease(quicklist *quicklist) {
-    unsigned long len;
+    uint64_t len;
     quicklistNode *current, *next;
 
     current = quicklist->head;
@@ -836,7 +836,7 @@ void quicklistReplaceEntry(quicklistIter *iter, quicklistEntry *entry,
  *
  * Returns 1 if replace happened.
  * Returns 0 if replace failed and no changes happened. */
-int quicklistReplaceAtIndex(quicklist *quicklist, long index, void *data,
+int quicklistReplaceAtIndex(quicklist *quicklist, int64_t index, void *data,
                             size_t sz) {
     quicklistEntry entry;
     quicklistIter *iter = quicklistGetIteratorEntryAtIdx(quicklist, index, &entry);
@@ -1157,17 +1157,19 @@ void quicklistInsertAfter(quicklistIter *iter, quicklistEntry *entry,
  * have to be careful about tracking where we start and end.
  *
  * Returns 1 if entries were deleted, 0 if nothing was deleted. */
-int quicklistDelRange(quicklist *quicklist, const long start,
-                      const long count) {
-    if (count <= 0)
+int quicklistDelRange(quicklist *quicklist, int64_t start, int64_t count) {
+    if (count <= 0 || start == INT64_MIN)
         return 0;
 
-    unsigned long extent = count; /* range is inclusive of start position */
+    uint64_t extent = count; /* range is inclusive of start position */
 
-    if (start >= 0 && extent > (quicklist->count - start)) {
+    if (start >= 0 && (uint64_t)start >= quicklist->count)
+        return 0;
+
+    if (start >= 0 && extent > (quicklist->count - (uint64_t)start)) {
         /* if requesting delete more elements than exist, limit to list size. */
-        extent = quicklist->count - start;
-    } else if (start < 0 && extent > (unsigned long)(-start)) {
+        extent = quicklist->count - (uint64_t)start;
+    } else if (start < 0 && extent > (uint64_t)(-start)) {
         /* else, if at negative offset, limit max size to rest of list. */
         extent = -start; /* c.f. LREM -29 29; just delete until end. */
     }
@@ -1675,8 +1677,8 @@ void quicklistPush(quicklist *quicklist, void *value, const size_t sz,
 void quicklistRepr(unsigned char *ql, int full) {
     int i = 0;
     quicklist *quicklist  = (struct quicklist*) ql;
-    printf("{count : %ld}\n", quicklist->count);
-    printf("{len : %ld}\n", quicklist->len);
+    printf("{count : %llu}\n", (unsigned long long)quicklist->count);
+    printf("{len : %llu}\n", (unsigned long long)quicklist->len);
     printf("{fill : %d}\n", quicklist->fill);
     printf("{compress : %d}\n", quicklist->compress);
     printf("{bookmark_count : %d}\n", quicklist->bookmark_count);
@@ -1820,8 +1822,8 @@ void quicklistBookmarksClear(quicklist *ql) {
 #define UNUSED(x) (void)(x)
 static void ql_info(quicklist *ql) {
 #if QL_TEST_VERBOSE
-    printf("Container length: %lu\n", ql->len);
-    printf("Container size: %lu\n", ql->count);
+    printf("Container length: %llu\n", (unsigned long long)ql->len);
+    printf("Container size: %llu\n", (unsigned long long)ql->count);
     if (ql->head)
         printf("\t(zsize head: %lu)\n", lpLength(ql->head->entry));
     if (ql->tail)
@@ -1898,8 +1900,9 @@ static int _ql_verify_compress(quicklist *ql) {
                 if (node->encoding != QUICKLIST_NODE_ENCODING_RAW) {
                     yell("Incorrect compression: node %d is "
                          "compressed at depth %d ((%u, %u); total "
-                         "nodes: %lu; size: %zu; recompress: %d)",
-                         at, ql->compress, low_raw, high_raw, ql->len, node->sz,
+                         "nodes: %llu; size: %zu; recompress: %d)",
+                         at, ql->compress, low_raw, high_raw,
+                         (unsigned long long)ql->len, node->sz,
                          node->recompress);
                     errors++;
                 }
@@ -1908,8 +1911,9 @@ static int _ql_verify_compress(quicklist *ql) {
                     !node->attempted_compress) {
                     yell("Incorrect non-compression: node %d is NOT "
                          "compressed at depth %d ((%u, %u); total "
-                         "nodes: %lu; size: %zu; recompress: %d; attempted: %d)",
-                         at, ql->compress, low_raw, high_raw, ql->len, node->sz,
+                         "nodes: %llu; size: %zu; recompress: %d; attempted: %d)",
+                         at, ql->compress, low_raw, high_raw,
+                         (unsigned long long)ql->len, node->sz,
                          node->recompress, node->attempted_compress);
                     errors++;
                 }
@@ -1926,20 +1930,22 @@ static int _ql_verify(quicklist *ql, uint32_t len, uint32_t count,
 
     ql_info(ql);
     if (len != ql->len) {
-        yell("quicklist length wrong: expected %d, got %lu", len, ql->len);
+        yell("quicklist length wrong: expected %u, got %llu", len,
+             (unsigned long long)ql->len);
         errors++;
     }
 
     if (count != ql->count) {
-        yell("quicklist count wrong: expected %d, got %lu", count, ql->count);
+        yell("quicklist count wrong: expected %u, got %llu", count,
+             (unsigned long long)ql->count);
         errors++;
     }
 
     int loopr = itrprintr(ql, 0);
     if (loopr != (int)ql->count) {
-        yell("quicklist cached count not match actual count: expected %lu, got "
+        yell("quicklist cached count not match actual count: expected %llu, got "
              "%d",
-             ql->count, loopr);
+             (unsigned long long)ql->count, loopr);
         errors++;
     }
 
@@ -2567,7 +2573,8 @@ int quicklistTest(int argc, char *argv[], int flags) {
                 }
 
                 if (ql->count != 750)
-                    ERR("List size not 750, but rather %ld", ql->count);
+                    ERR("List size not 750, but rather %llu",
+                        (unsigned long long)ql->count);
 
                 if (fills[f] == 32)
                     ql_verify(ql, 26, 750, 20, 32);
@@ -3132,8 +3139,8 @@ int quicklistTest(int argc, char *argv[], int flags) {
                     ql_verify(ql, 2, 33, 32, 1);
                 quicklistDelRange(ql, -12, 3);
                 if (ql->count != 30)
-                    ERR("Didn't delete exactly three elements!  Count is: %lu",
-                        ql->count);
+                    ERR("Didn't delete exactly three elements!  Count is: %llu",
+                        (unsigned long long)ql->count);
                 quicklistRelease(ql);
             }
         }
@@ -3181,16 +3188,18 @@ int quicklistTest(int argc, char *argv[], int flags) {
                                 if (node->encoding != QUICKLIST_NODE_ENCODING_RAW) {
                                     ERR("Incorrect compression: node %d is "
                                         "compressed at depth %d ((%u, %u); total "
-                                        "nodes: %lu; size: %zu)",
-                                        at, depth, low_raw, high_raw, ql->len,
+                                        "nodes: %llu; size: %zu)",
+                                        at, depth, low_raw, high_raw,
+                                        (unsigned long long)ql->len,
                                         node->sz);
                                 }
                             } else {
                                 if (node->encoding != QUICKLIST_NODE_ENCODING_LZF) {
                                     ERR("Incorrect non-compression: node %d is NOT "
                                         "compressed at depth %d ((%u, %u); total "
-                                        "nodes: %lu; size: %zu; attempted: %d)",
-                                        at, depth, low_raw, high_raw, ql->len,
+                                        "nodes: %llu; size: %zu; attempted: %d)",
+                                        at, depth, low_raw, high_raw,
+                                        (unsigned long long)ql->len,
                                         node->sz, node->attempted_compress);
                                 }
                             }

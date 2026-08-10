@@ -28,7 +28,6 @@
 #include <stdio.h>
 #include "Win32_Interop/Win32_QFork.h"
 #include <direct.h>
-#define MAXPATHLEN 1024
 extern void redisForkChildStarted(pid_t childpid, int purpose, long long start);
 extern void *moduleGetForkData(void);
 #else
@@ -1534,23 +1533,32 @@ werr: /* Write error. */
 }
 
 static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int rdbflags) {
+#ifndef _WIN32
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
+#endif
     rio rdb;
     int error = 0;
     int saved_errno;
     char *err_op;    /* For a detailed log */
 
-    FILE *fp = fopen(filename,IF_WIN32("wb","w"));
+    FILE *fp = redis_fopen(filename,IF_WIN32("wb","w"));
     if (!fp) {
         saved_errno = errno;
         char *str_err = strerror(errno);
+#ifdef _WIN32
+        char *cwdp = win32_get_current_directory_utf8();
+#else
         char *cwdp = getcwd(cwd,MAXPATHLEN);
+#endif
         serverLog(LL_WARNING,
             "Failed opening the temp RDB file %s (in server root dir %s) "
             "for saving: %s",
             filename,
             cwdp ? cwdp : "unknown",
             str_err);
+#ifdef _WIN32
+        win32_free(cwdp);
+#endif
         errno = saved_errno;
         return C_ERR;
     }
@@ -1582,7 +1590,7 @@ werr:
     saved_errno = errno;
     serverLog(LL_WARNING,"Write error while saving DB to the disk(%s): %s", err_op, strerror(errno));
     if (fp) fclose(fp);
-    unlink(filename);
+    redis_unlink(filename);
     errno = saved_errno;
     return C_ERR;
 }
@@ -1606,7 +1614,9 @@ int rdbSaveToFile(const char *filename) {
 /* Save the DB on disk. Return C_ERR on error, C_OK on success. */
 int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
     char tmpfile[256];
+#ifndef _WIN32
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
+#endif
 
     startSaving(rdbflags);
     snprintf(tmpfile,256,"temp-%d.rdb", (int) getpid());
@@ -1621,7 +1631,11 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
      * if the generate DB file is ok. */
     if (rename(tmpfile,filename) == -1) {
         char *str_err = strerror(errno);
+#ifdef _WIN32
+        char *cwdp = win32_get_current_directory_utf8();
+#else
         char *cwdp = getcwd(cwd,MAXPATHLEN);
+#endif
         serverLog(LL_WARNING,
             "Error moving temp DB file %s on the final "
             "destination %s (in server root dir %s): %s",
@@ -1629,7 +1643,10 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
             filename,
             cwdp ? cwdp : "unknown",
             str_err);
-        unlink(tmpfile);
+#ifdef _WIN32
+        win32_free(cwdp);
+#endif
+        redis_unlink(tmpfile);
         stopSaving(0);
         return C_ERR;
     }
@@ -1715,7 +1732,7 @@ void rdbRemoveTempFile(pid_t childpid, int from_signal) {
          * need to close the fd, it'll be released when the process exists. */
         int fd = open(tmpfile, O_RDONLY|O_NONBLOCK|IF_WIN32(O_BINARY,0), 0);
         UNUSED(fd);
-        unlink(tmpfile);
+        redis_unlink(tmpfile);
     } else {
         bg_unlink(tmpfile);
     }
@@ -1867,7 +1884,7 @@ static int _listZiplistEntryConvertAndValidate(unsigned char *p, unsigned int he
 static int _lpEntryValidation(unsigned char *p, unsigned int head_count, void *userdata) {
     struct {
         int tuple_len;
-        long count;
+        uint64_t count;
         dict *fields;
         long long last_expireat;
     } *data = userdata;
@@ -1923,7 +1940,7 @@ int lpValidateIntegrityAndDups(unsigned char *lp, size_t size, int deep, int tup
     /* Keep track of the field names to locate duplicate ones */
     struct {
         int tuple_len;
-        long count;
+        uint64_t count;
         dict *fields; /* Initialisation at the first callback. */
         long long last_expireat; /* Last field's expiry time to ensure order in TTL fields. */
     } data = {tuple_len, 0, NULL, -1};
@@ -3497,10 +3514,9 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                 serverLog(LL_NOTICE,"Loading RDB produced by version %s",
                     (char*)auxval->ptr);
             } else if (!strcasecmp(auxkey->ptr,"ctime")) {
-                time_t age = time(NULL)-strtol(auxval->ptr,NULL,10);
+                time_t age = time(NULL)-(time_t)strtoll(auxval->ptr,NULL,10);
                 if (age < 0) age = 0;
-                serverLog(LL_NOTICE,"RDB age %ld seconds",
-                    (unsigned long) age);
+                serverLog(LL_NOTICE,"RDB age %jd seconds", (intmax_t)age);
             } else if (!strcasecmp(auxkey->ptr,"used-mem")) {
                 long long usedmem = strtoll(auxval->ptr,NULL,10);
                 serverLog(LL_NOTICE,"RDB memory usage when created %.2f Mb",
@@ -3749,9 +3765,9 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     FILE *fp;
     rio rdb;
     int retval;
-    struct redis_stat sb;
+    struct redis_stat_type sb;
 
-    fp = fopen(filename, IF_WIN32("rb","r"));
+    fp = redis_fopen(filename, IF_WIN32("rb","r"));
     if (fp == NULL) {
         if (errno == ENOENT) return RDB_NOT_EXIST;
 

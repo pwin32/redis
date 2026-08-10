@@ -840,7 +840,7 @@ void setDeferredReply(client *c, void *node, const char *s, size_t length) {
 }
 
 /* Populate the length object and try gluing it to the next chunk. */
-void setDeferredAggregateLen(client *c, void *node, long length, char prefix) {
+void setDeferredAggregateLen(client *c, void *node, long long length, char prefix) {
     serverAssert(length >= 0);
 
     /* Abort when *node is NULL: when the client should not accept writes
@@ -866,31 +866,31 @@ void setDeferredAggregateLen(client *c, void *node, long length, char prefix) {
     }
 
     char lenstr[128];
-    size_t lenstr_len = snprintf(lenstr, sizeof(lenstr), "%c%ld\r\n", prefix, length);
+    size_t lenstr_len = snprintf(lenstr, sizeof(lenstr), "%c%lld\r\n", prefix, length);
     setDeferredReply(c, node, lenstr, lenstr_len);
 }
 
-void setDeferredArrayLen(client *c, void *node, long length) {
+void setDeferredArrayLen(client *c, void *node, long long length) {
     setDeferredAggregateLen(c,node,length,'*');
 }
 
-void setDeferredMapLen(client *c, void *node, long length) {
+void setDeferredMapLen(client *c, void *node, long long length) {
     int prefix = c->resp == 2 ? '*' : '%';
     if (c->resp == 2) length *= 2;
     setDeferredAggregateLen(c,node,length,prefix);
 }
 
-void setDeferredSetLen(client *c, void *node, long length) {
+void setDeferredSetLen(client *c, void *node, long long length) {
     int prefix = c->resp == 2 ? '*' : '~';
     setDeferredAggregateLen(c,node,length,prefix);
 }
 
-void setDeferredAttributeLen(client *c, void *node, long length) {
+void setDeferredAttributeLen(client *c, void *node, long long length) {
     serverAssert(c->resp >= 3);
     setDeferredAggregateLen(c,node,length,'|');
 }
 
-void setDeferredPushLen(client *c, void *node, long length) {
+void setDeferredPushLen(client *c, void *node, long long length) {
     serverAssert(c->resp >= 3);
     setDeferredAggregateLen(c,node,length,'>');
 }
@@ -3371,9 +3371,9 @@ NULL
                 int moreargs = c->argc > i+1;
 
                 if (!strcasecmp(c->argv[i]->ptr,"id") && moreargs) {
-                    long tmp;
+                    long long tmp;
 
-                    if (getRangeLongFromObjectOrReply(c, c->argv[i+1], 1, LONG_MAX, &tmp,
+                    if (getRangeLongLongFromObjectOrReply(c, c->argv[i+1], 1, LLONG_MAX, &tmp,
                                                       "client-id should be greater than 0") != C_OK)
                         return;
                     id = tmp;

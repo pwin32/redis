@@ -74,7 +74,7 @@ static pthread_t bio_threads[BIO_WORKER_NUM];
 static pthread_mutex_t bio_mutex[BIO_WORKER_NUM];
 static pthread_cond_t bio_newjob_cond[BIO_WORKER_NUM];
 static list *bio_jobs[BIO_WORKER_NUM];
-static unsigned long bio_jobs_counter[BIO_NUM_OPS] = {0};
+static uint64_t bio_jobs_counter[BIO_NUM_OPS] = {0};
 
 /* The bio_comp_list is used to hold completion job responses and to handover
  * to main thread to callback as notification for job completion. Main
@@ -381,11 +381,11 @@ void *bioProcessBackgroundJobs(void *arg) {
 }
 
 /* Return the number of pending jobs of the specified type. */
-unsigned long bioPendingJobsOfType(int type) {
+uint64_t bioPendingJobsOfType(int type) {
     unsigned int worker = bio_job_to_worker[type];
 
     pthread_mutex_lock(&bio_mutex[worker]);
-    unsigned long val = bio_jobs_counter[type];
+    uint64_t val = bio_jobs_counter[type];
     pthread_mutex_unlock(&bio_mutex[worker]);
 
     return val;

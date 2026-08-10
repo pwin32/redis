@@ -1739,8 +1739,8 @@ void luaCallFunction(scriptRunCtx* run_ctx, lua_State *lua, robj** keys, size_t 
     luaSaveOnRegistry(lua, REGISTRY_RUN_CTX_NAME, NULL);
 }
 
-unsigned long luaMemory(lua_State *lua) {
-    return lua_gc(lua, LUA_GCCOUNT, 0) * 1024LL;
+size_t luaMemory(lua_State *lua) {
+    return (size_t)lua_gc(lua, LUA_GCCOUNT, 0) * 1024;
 }
 
 /* Call the Lua garbage collector from time to time to avoid a

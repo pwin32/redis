@@ -82,6 +82,7 @@
 #include "Win32_FDAPI.h"
 #include "Win32_Common.h"
 #include "Win32_Assert.h"
+#include "Win32_Error.h"
 
 #include <Windows.h>
 #include <WinNT.h>
@@ -161,12 +162,60 @@ BOOL WriteToProcmon(wstring message)
 
 #define IFFAILTHROW(a,m) if(!(a)) { throw system_error(GetLastError(), system_category(), m); }
 
+static wstring QForkUtf8ToWide(const char *value) {
+    wchar_t *wide = win32_utf8_to_wide(value);
+    if (wide == NULL) {
+        throw system_error(errno, generic_category(),
+                           "QFork UTF-8 to UTF-16 conversion failed");
+    }
+    wstring result(wide);
+    free(wide);
+    return result;
+}
+
+static void QForkAppendQuotedArgument(wstring& commandLine,
+                                      const wstring& argument) {
+    size_t backslashes = 0;
+
+    commandLine.push_back(L'"');
+    for (wchar_t c : argument) {
+        if (c == L'\\') {
+            backslashes++;
+            continue;
+        }
+        if (c == L'"') {
+            commandLine.append(backslashes * 2 + 1, L'\\');
+            commandLine.push_back(L'"');
+            backslashes = 0;
+            continue;
+        }
+        commandLine.append(backslashes, L'\\');
+        backslashes = 0;
+        commandLine.push_back(c);
+    }
+    commandLine.append(backslashes * 2, L'\\');
+    commandLine.push_back(L'"');
+}
+
+static wstring QForkBuildCommandLine(const vector<wstring>& arguments) {
+    wstring commandLine;
+    for (size_t index = 0; index < arguments.size(); index++) {
+        if (index != 0) commandLine.push_back(L' ');
+        QForkAppendQuotedArgument(commandLine, arguments[index]);
+    }
+    return commandLine;
+}
+
 /* redisServer grew substantially between 6.2 and 7.2.  Keep the copied
  * process-static server image bounded, but leave enough headroom for future
  * 7.2 maintenance fields; CopyForkOperationData still fails closed if the
  * live structure ever exceeds this contract. */
 #define MAX_REDIS_DATA_SIZE (64 * 1024)
 #define MAX_RDB_SAVE_INFO_SIZE 128
+/* A Windows path may contain up to 32,767 UTF-16 code units. Redis stores the
+ * logical path as UTF-8, whose worst-case representation uses four bytes per
+ * code point, so the shared QFork control block must not retain MAX_PATH. */
+#define MAX_QFORK_FILENAME_SIZE (32767 * 4 + 1)
 struct QForkInfo {
     BYTE redisData[MAX_REDIS_DATA_SIZE];
     size_t redisDataSize;
@@ -181,7 +230,7 @@ struct QForkInfo {
     uint32_t moduleSnapshotCount;
     uint32_t moduleSnapshotReserved;
     size_t usedMemory;
-    char filename[MAX_PATH];
+    char filename[MAX_QFORK_FILENAME_SIZE];
     int rdb_req;
     int rdb_flags;
     size_t rdb_save_info_size;
@@ -1980,17 +2029,17 @@ BOOL QForkParentInit() {
 
         return TRUE;
     }
-    catch (system_error syserr) {
+    catch (const system_error& syserr) {
         if (ReportSpecialSystemErrors(syserr.code().value()) == false) {
             RedisEventLog().LogError("QForkParentInit: system error. " + string(syserr.what()));
             serverLog(LL_WARNING, "QForkParentInit: system error caught. error code=0x%08x, message=%s\n", syserr.code().value(), syserr.what());
         }
     }
-    catch (runtime_error runerr) {
+    catch (const runtime_error& runerr) {
         RedisEventLog().LogError("QForkParentInit: runtime error. " + string(runerr.what()));
         serverLog(LL_WARNING, "QForkParentInit: runtime error caught. message=%s\n", runerr.what());
     }
-    catch (exception ex) {
+    catch (const exception& ex) {
         RedisEventLog().LogError("QForkParentInit: an exception occurred. " + string(ex.what()));
         serverLog(LL_WARNING, "QForkParentInit: other exception caught.\n");
     }
@@ -2156,28 +2205,32 @@ void CreateChildProcess(PROCESS_INFORMATION *pi, DWORD dwCreationFlags = 0) {
     IFFAILTHROW(ResetEvent(g_pQForkControl->operationFailed),
         "CreateChildProcess: ResetEvent() failed.");
 
-    // Launch the "forked" process
-    char fileName[MAX_PATH];
-    IFFAILTHROW(GetModuleFileNameA(NULL, fileName, MAX_PATH),
-        "Failed to get module name.");
+    // Launch the "forked" process through the UTF-16 process boundary.
+    wchar_t *modulePath = win32_get_module_filename_wide();
+    if (modulePath == NULL) {
+        throw system_error(errno, generic_category(),
+                           "Failed to get module name");
+    }
+    wstring fileName(modulePath);
+    free(modulePath);
 
-    STARTUPINFOA si;
-    memset(&si, 0, sizeof(STARTUPINFOA));
-    si.cb = sizeof(STARTUPINFOA);
-    char arguments[_MAX_PATH];
-    memset(arguments, 0, _MAX_PATH);
+    vector<wstring> childArguments;
+    childArguments.push_back(fileName);
+    childArguments.push_back(L"--" + QForkUtf8ToWide(cQFork.c_str()));
+    childArguments.push_back(to_wstring((uint64_t)g_hQForkControlFileMap));
+    childArguments.push_back(to_wstring((unsigned long)GetCurrentProcessId()));
+    childArguments.push_back(L"--" + QForkUtf8ToWide(cLogfile.c_str()));
+    childArguments.push_back(QForkUtf8ToWide(getLogFilename()));
+    wstring commandLine = QForkBuildCommandLine(childArguments);
+    vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
+    mutableCommandLine.push_back(L'\0');
 
-    sprintf_s(arguments,
-        _MAX_PATH,
-        "\"%s\" --%s %llu %lu --%s \"%s\"",
-        fileName,
-        cQFork.c_str(),
-        (uint64_t) g_hQForkControlFileMap,
-        GetCurrentProcessId(),
-        cLogfile.c_str(),
-        getLogFilename());
+    STARTUPINFOW si;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
 
-    IFFAILTHROW(CreateProcessA(fileName, arguments, NULL, NULL, TRUE, dwCreationFlags, NULL, NULL, &si, pi),
+    IFFAILTHROW(CreateProcessW(fileName.c_str(), mutableCommandLine.data(),
+        NULL, NULL, TRUE, dwCreationFlags, NULL, NULL, &si, pi),
         "Problem creating slave process");
     g_hForkedProcess = pi->hProcess;
 }
@@ -2213,10 +2266,10 @@ pid_t BeginForkOperation(OperationType type,
 
         return pi.dwProcessId;
     }
-    catch (system_error syserr) {
+    catch (const system_error& syserr) {
         serverLog(LL_WARNING, "BeginForkOperation: system error caught. error code=0x%08x, message=%s\n", syserr.code().value(), syserr.what());
     }
-    catch (runtime_error runerr) {
+    catch (const runtime_error& runerr) {
         serverLog(LL_WARNING, "BeginForkOperation: runtime error caught. message=%s\n", runerr.what());
     }
     catch (...) {
@@ -2407,12 +2460,12 @@ BOOL AbortForkOperation() {
         ResumeFromSuspension();
         return result;
     }
-    catch (system_error syserr) {
+    catch (const system_error& syserr) {
         serverLog(LL_WARNING, "AbortForkOperation: 0x%08x - %s\n", syserr.code().value(), syserr.what());
         // If we can not properly restore fork state, then another fork operation is not possible.
         exit(1);
     }
-    catch (exception ex) {
+    catch (const exception& ex) {
         serverLog(LL_WARNING, "AbortForkOperation: %s\n", ex.what());
         exit(1);
     }
@@ -2578,13 +2631,13 @@ BOOL EndForkOperation(int * pExitCode) {
 
         return TRUE;
     }
-    catch (system_error syserr) {
+    catch (const system_error& syserr) {
         serverLog(LL_WARNING, "EndForkOperation: 0x%08x - %s\n", syserr.code().value(), syserr.what());
 
         // If we can not properly restore fork state, then another fork operation is not possible.
         exit(1);
     }
-    catch (exception ex) {
+    catch (const exception& ex) {
         serverLog(LL_WARNING, "EndForkOperation: %s\n", ex.what());
         exit(1);
     }
@@ -3020,6 +3073,17 @@ void SetupQForkGlobals(int argc, char* argv[]) {
     g_HasMemoryMappedHeap = !g_PersistenceDisabled && !g_SentinelMode;
 }
 
+static volatile LONG g_mainInvocationDepth;
+
+class MainInvocationGuard {
+public:
+    MainInvocationGuard() : depth(InterlockedIncrement(&g_mainInvocationDepth)) {}
+    ~MainInvocationGuard() { InterlockedDecrement(&g_mainInvocationDepth); }
+    bool IsTopLevel() const { return depth == 1; }
+private:
+    LONG depth;
+};
+
 extern "C"
 {
     // The external main() is redefined as redis_main() by Win32_QFork.h.
@@ -3027,6 +3091,22 @@ extern "C"
     // is invoked so that the QFork allocator can be setup prior to anything
     // Redis will allocate.
     int main(int argc, char* argv[]) {
+        MainInvocationGuard invocation;
+        if (invocation.IsTopLevel()) {
+            char **utf8Argv = NULL;
+            int utf8Argc = 0;
+            if (win32_get_utf8_argv(&utf8Argc, &utf8Argv) != 0) {
+                fprintf(stderr, "Unable to decode the Windows command line as UTF-8: %s\n",
+                        strerror(errno));
+                return 1;
+            }
+            argc = utf8Argc;
+            argv = utf8Argv;
+            /* This top-level vector intentionally lives until process exit.
+             * ServiceWorkerThread recursively invokes this wrapper while the
+             * outer SCM dispatcher is still active and supplies its own
+             * already-UTF-8 argv. */
+        }
         try {
             //[tporadowski/#2] check if started as "redis-check-rdb" tool
             string executable(argv[0]);
@@ -3051,13 +3131,13 @@ extern "C"
             StackTraceInit();
             InitThreadControl();
         }
-        catch (system_error syserr) {
+        catch (const system_error& syserr) {
             string errMsg = string("System error during startup: ") + syserr.what();
             RedisEventLog().LogError(errMsg);
             cout << errMsg << endl;
             exit(-1);
         }
-        catch (runtime_error runerr) {
+        catch (const runtime_error& runerr) {
             string errMsg = string("System error during startup: ") + runerr.what();
             RedisEventLog().LogError(errMsg);
             cout << errMsg << endl;
@@ -3069,7 +3149,7 @@ extern "C"
             cout << errMsg << endl;
             exit(-1);
         }
-        catch (exception othererr) {
+        catch (const exception& othererr) {
             string errMsg = string("An exception occurred during startup: ") + othererr.what();
             RedisEventLog().LogError(errMsg);
             cout << errMsg << endl;
@@ -3079,7 +3159,7 @@ extern "C"
         try {
 #ifdef DEBUG_WITH_PROCMON
             hProcMonDevice =
-                CreateFile(
+                CreateFileW(
                     L"\\\\.\\Global\\ProcmonDebugLogger",
                     GENERIC_READ | GENERIC_WRITE,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -3119,15 +3199,15 @@ extern "C"
                 }
             }
     }
-        catch (system_error syserr) {
+        catch (const system_error& syserr) {
             RedisEventLog().LogError(string("Main: system error. ") + syserr.what());
             serverLog(LL_WARNING, "main: system error caught. error code=0x%08x, message=%s\n", syserr.code().value(), syserr.what());
         }
-        catch (runtime_error runerr) {
+        catch (const runtime_error& runerr) {
             RedisEventLog().LogError(string("Main: runtime error. ") + runerr.what());
             serverLog(LL_WARNING, "main: runtime error caught. message=%s\n", runerr.what());
         }
-        catch (exception ex) {
+        catch (const exception& ex) {
             RedisEventLog().LogError(string("Main: an exception occurred. ") + ex.what());
             serverLog(LL_WARNING, "main: other exception caught.\n");
         }

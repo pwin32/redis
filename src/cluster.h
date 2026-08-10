@@ -78,7 +78,7 @@ void clusterUpdateMyselfHumanNodename(void);
 
 void clusterPropagatePublish(robj *channel, robj *message, int sharded);
 
-unsigned long getClusterConnectionsCount(void);
+uint64_t getClusterConnectionsCount(void);
 int isClusterHealthy(void);
 
 sds clusterGenNodesDescription(client *c, int filter, int tls_primary);

@@ -29,6 +29,7 @@
 #include <process.h>
 #include <time.h>
 #include "Win32Fixes.h"
+#include "Win32_Error.h"
 #include "Win32_EventLog.h"
 #include "Win32_Time.h"
 #include <assert.h>
@@ -59,62 +60,56 @@ const char* getLogFilename() {
  */
 void setLogFile(const char* filename)
 {
-    if (logFilename != NULL) {
-        free((void*) logFilename);
-        logFilename = NULL;
-    }
-    logFilename = (char*) malloc(strlen(filename) + 1);
-    if (logFilename == NULL) {
+    const char *requested = filename == NULL ? "" : filename;
+    size_t requestedLength = strlen(requested);
+    char *newLogFilename = (char*) malloc(requestedLength + 1);
+    HANDLE newLogFile;
+    int newIsStdout;
+
+    if (newLogFilename == NULL) {
         serverLog(LL_WARNING, "memory allocation failure");
         return;
     }
-    memset(logFilename, 0, strlen(filename) + 1);
-    strcpy(logFilename, filename);
+    memcpy(newLogFilename, requested, requestedLength + 1);
 
-    if (hLogFile != INVALID_HANDLE_VALUE) {
-        if (!isStdout) CloseHandle(hLogFile);
-        hLogFile = INVALID_HANDLE_VALUE;
-    }
-
-    if (filename == NULL || (filename[0] == '\0') || (_stricmp(filename, "stdout") == 0)) {
-        hLogFile = GetStdHandle(STD_OUTPUT_HANDLE);
-        isStdout = 1;
-    }
-    else {
-        int len;
-        UINT codePage = CP_ACP;
-        wchar_t *widePath;
-
-        /* Convert the path from ansi to unicode, to support paths longer than MAX_PATH */
-        if ((len = MultiByteToWideChar(codePage, 0, filename, -1, 0, 0)) == 0) return;
-        if ((widePath = (wchar_t*)malloc(len * sizeof(wchar_t))) == NULL) return;
-        if (MultiByteToWideChar(codePage, 0, filename, -1, widePath, len) == 0) {
-            free(widePath);
+    if (requested[0] == '\0' || _stricmp(requested, "stdout") == 0) {
+        newLogFile = GetStdHandle(STD_OUTPUT_HANDLE);
+        newIsStdout = 1;
+    } else {
+        wchar_t *widePath = win32_utf8_path_to_wide(requested);
+        if (widePath == NULL) {
+            fprintf(stderr, "Could not convert logfile path from UTF-8: %s\n",
+                    requested);
+            free(newLogFilename);
             return;
         }
 
-        /* Passing FILE_APPEND_DATA without FILE_WRITE_DATA is essential for getting atomic appends across processes. */
-        hLogFile = CreateFileW(
-            widePath,
-            FILE_APPEND_DATA,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            NULL,
-            OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL, 
-            NULL);
-
-        if (hLogFile == INVALID_HANDLE_VALUE) {
-            DWORD err = GetLastError();
-            LPSTR messageBuffer = NULL;
-            FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&messageBuffer, 0, NULL);
-            fprintf(stderr, "Could not open logfile %s: %s\n", filename, messageBuffer);
-            LocalFree(messageBuffer);
-        }
-
+        /* Passing FILE_APPEND_DATA without FILE_WRITE_DATA is essential for
+         * getting atomic appends across processes. */
+        newLogFile = CreateFileW(widePath,
+                                 FILE_APPEND_DATA,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 NULL,
+                                 OPEN_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL,
+                                 NULL);
         free(widePath);
-        isStdout = 0;
+
+        if (newLogFile == INVALID_HANDLE_VALUE) {
+            DWORD err = GetLastError();
+            fprintf(stderr, "Could not open logfile %s: Windows error %lu\n",
+                    requested, (unsigned long)err);
+            free(newLogFilename);
+            return;
+        }
+        newIsStdout = 0;
     }
+
+    if (hLogFile != INVALID_HANDLE_VALUE && !isStdout) CloseHandle(hLogFile);
+    free(logFilename);
+    logFilename = newLogFilename;
+    hLogFile = newLogFile;
+    isStdout = newIsStdout;
 }
     
 void serverLogRaw(int level, const char *msg) {
@@ -136,10 +131,13 @@ void serverLogRaw(int level, const char *msg) {
     if (hLogFile == INVALID_HANDLE_VALUE) return;
 
     if (rawmode) {
+        size_t rawLength = strlen(msg);
         completeMessage = msg;
-        completeMessageLength = (DWORD)strlen(msg);
+        completeMessageLength = rawLength > (size_t)MAXDWORD ?
+                                MAXDWORD : (DWORD)rawLength;
     } else {
-        int vlen, off = 0;
+        int vlen;
+        size_t off = 0;
         time_t secs;
         unsigned int usecs;
         struct tm * now ;
@@ -148,27 +146,29 @@ void serverLogRaw(int level, const char *msg) {
         secs = gettimeofdaysecs(&usecs);
         now = localtime(&secs);
         vlen = snprintf(buf + off, sizeof(buf) - off, "[%d] ", (int)_getpid());
-        assert(vlen >= 0);
-        off += vlen;
-        vlen = (int)strftime(buf + off, sizeof(buf) - off, "%d %b %H:%M:%S.", now);
-        assert(vlen >= 0);
-        off += vlen;
+        if (vlen < 0 || (size_t)vlen >= sizeof(buf) - off) goto truncated;
+        off += (size_t)vlen;
+        size_t time_len = strftime(buf + off, sizeof(buf) - off,
+                                   "%d %b %H:%M:%S.", now);
+        if (time_len == 0) goto truncated;
+        off += time_len;
         vlen = snprintf(buf + off, sizeof(buf) - off, "%03d %c ", usecs / 1000, c[level]);
-        assert(vlen >= 0);
-        off += vlen;
+        if (vlen < 0 || (size_t)vlen >= sizeof(buf) - off) goto truncated;
+        off += (size_t)vlen;
         vlen = snprintf(buf + off, sizeof(buf) - off, "%s\n", msg);
-        if (vlen >= 0 && (off + vlen < sizeof(buf))) {
-            completeMessageLength = off + vlen;
-        }
-        else {
-            /* The MS CRT implementation of vsnprintf/snprintf returns -1 if the formatted output doesn't fit the buffer,
-            * in addition to when an encoding error occurs. Proceeding with a zero-terminated ellipsis at the end of the
-            * buffer seems a better option than not logging this message at all.
-            */
-            memcpy(buf + sizeof(buf)-sizeof(ellipsisWithNewLine), ellipsisWithNewLine, sizeof(ellipsisWithNewLine));
-            completeMessageLength = sizeof(buf)-1;
-        }
+        if (vlen < 0 || (size_t)vlen >= sizeof(buf) - off) goto truncated;
+        completeMessageLength = (DWORD)(off + (size_t)vlen);
+        goto write_message;
+
+truncated:
+        /* Keep the buffer valid even when MinGW's C99 snprintf returns the
+         * required length rather than the MS CRT's historical -1. */
+        memcpy(buf + sizeof(buf)-sizeof(ellipsisWithNewLine),
+               ellipsisWithNewLine, sizeof(ellipsisWithNewLine));
+        completeMessageLength = sizeof(buf)-1;
     }
+
+write_message:
     WriteFile(hLogFile, completeMessage, completeMessageLength, &dwBytesWritten, NULL);
 
     /* FlushFileBuffers() ensures that all data and metadata is written to disk, but it's effect
@@ -195,7 +195,7 @@ static void serverLogV(int level, const char *fmt, va_list ap) {
      * in addition to when an encoding error occurs. Proceeding with a zero-terminated ellipsis at the end of the
      * buffer seems a better option than not logging this message at all.
      */
-    if (vlen < 0 || vlen >= sizeof(msg)) {
+    if (vlen < 0 || (size_t)vlen >= sizeof(msg)) {
         memcpy(msg + sizeof(msg) - sizeof(ellipsis), ellipsis, sizeof(ellipsis));
     }
 
@@ -230,5 +230,3 @@ void serverLogFromHandler(int level, const char *fmt, ...) {
     serverLogV(level, fmt, ap);
     va_end(ap);
 }
-
-

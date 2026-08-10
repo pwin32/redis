@@ -668,7 +668,7 @@ NULL
 }
 
 void channelList(client *c, sds pat, kvstore *pubsub_channels) {
-    long mblen = 0;
+    uint64_t mblen = 0;
     void *replylen;
     unsigned int slot_cnt = kvstoreNumDicts(pubsub_channels);
 

@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "dlfcn.h"
+#include "Win32_Error.h"
 
 /* POSIX does not require dlerror() to be thread-safe. Redis calls these
  * wrappers from the main thread while loading and unloading modules, so a
@@ -33,25 +34,10 @@ static void clear_error(void) {
 }
 
 static void save_error(const char *operation, const char *target, DWORD code) {
-    char system_message[1024];
-    DWORD length;
-
-    system_message[0] = '\0';
-    length = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM |
-                                FORMAT_MESSAGE_IGNORE_INSERTS,
-                            NULL, code,
-                            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                            system_message, (DWORD)sizeof(system_message),
-                            NULL);
-    while (length > 0 &&
-           (system_message[length - 1] == '\r' ||
-            system_message[length - 1] == '\n'))
-    {
-        system_message[--length] = '\0';
-    }
+    const char *system_message = wsa_strerror((int)code);
 
     if (target == NULL) target = "(null)";
-    if (length == 0) {
+    if (system_message == NULL || system_message[0] == '\0') {
         snprintf(error_buffer, sizeof(error_buffer),
                  "%s %s failed with Windows error %lu",
                  operation, target, (unsigned long)code);
@@ -66,41 +52,15 @@ static void save_error(const char *operation, const char *target, DWORD code) {
 
 static HMODULE load_library_utf8(const char *file) {
     HMODULE module;
-    wchar_t *wide_path = NULL;
-    int wide_length;
-    int i;
+    wchar_t *wide_path = win32_utf8_path_to_wide(file);
+    DWORD code;
 
-    wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                      file, -1, NULL, 0);
-    if (wide_length > 0) {
-        wide_path = (wchar_t *)malloc((size_t)wide_length *
-                                      sizeof(*wide_path));
-        if (wide_path == NULL) {
-            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-            return NULL;
-        }
-        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, file, -1,
-                                wide_path, wide_length) == 0)
-        {
-            DWORD code = GetLastError();
-            free(wide_path);
-            SetLastError(code);
-            return NULL;
-        }
-        for (i = 0; wide_path[i] != L'\0'; i++) {
-            if (wide_path[i] == L'/') wide_path[i] = L'\\';
-        }
-        module = LoadLibraryExW(wide_path, NULL,
-                                LOAD_WITH_ALTERED_SEARCH_PATH);
-        DWORD code = module == NULL ? GetLastError() : ERROR_SUCCESS;
-        free(wide_path);
-        if (module == NULL) SetLastError(code);
-        return module;
-    }
-
-    /* Preserve compatibility with older configurations whose module path is
-     * expressed in the active Windows code page rather than UTF-8. */
-    return LoadLibraryExA(file, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (wide_path == NULL) return NULL;
+    module = LoadLibraryExW(wide_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    code = module == NULL ? GetLastError() : ERROR_SUCCESS;
+    free(wide_path);
+    if (module == NULL) SetLastError(code);
+    return module;
 }
 
 void *dlopen(const char *file, int mode) {

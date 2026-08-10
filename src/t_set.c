@@ -415,7 +415,7 @@ int setTypeRandomElement(robj *setobj, char **str, size_t *len, int64_t *llele) 
         *str = NULL; /* Not needed. Defensive. */
     } else if (setobj->encoding == OBJ_ENCODING_LISTPACK) {
         unsigned char *lp = setobj->ptr;
-        int r = rand() % lpLength(lp);
+        uint64_t r = genrand64_int64() % lpLength(lp);
         unsigned char *p = lpSeek(lp, r);
         unsigned int l;
         *str = (char *)lpGetValue(p, &l, (long long *)llele);
@@ -455,7 +455,7 @@ robj *setTypePopRandom(robj *set) {
     return obj;
 }
 
-unsigned long setTypeSize(const robj *subject) {
+uint64_t setTypeSize(const robj *subject) {
     if (subject->encoding == OBJ_ENCODING_HT) {
         return dictSize((const dict*)subject->ptr);
     } else if (subject->encoding == OBJ_ENCODING_INTSET) {
@@ -478,7 +478,7 @@ void setTypeConvert(robj *setobj, int enc) {
  * The 'panic' argument controls whether to panic on OOM (panic=1) or return
  * C_ERR on OOM (panic=0). If panic=1 is given, this function always returns
  * C_OK. */
-int setTypeConvertAndExpand(robj *setobj, int enc, unsigned long cap, int panic) {
+int setTypeConvertAndExpand(robj *setobj, int enc, uint64_t cap, int panic) {
     setTypeIterator *si;
     serverAssertWithInfo(NULL,setobj,setobj->type == OBJ_SET &&
                              setobj->encoding != enc);
@@ -737,13 +737,13 @@ void scardCommand(client *c) {
 #define SPOP_MOVE_STRATEGY_MUL 5
 
 void spopWithCountCommand(client *c) {
-    long l;
-    unsigned long count, size;
+    long long l;
+    uint64_t count, size;
     robj *set;
 
     /* Get the count argument */
-    if (getPositiveLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
-    count = (unsigned long) l;
+    if (getPositiveLongLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
+    count = (uint64_t)l;
 
     /* Make sure a key with the name inputted exists, and that it's type is
      * indeed a set. Otherwise, return nil */
@@ -996,8 +996,8 @@ void spopCommand(client *c) {
 #define SRANDFIELD_RANDOM_SAMPLE_LIMIT 1000
 
 void srandmemberWithCountCommand(client *c) {
-    long l;
-    unsigned long count, size;
+    long long l;
+    uint64_t count, size;
     int uniq = 1;
     robj *set;
     char *str;
@@ -1006,13 +1006,17 @@ void srandmemberWithCountCommand(client *c) {
 
     dict *d;
 
-    if (getRangeLongFromObjectOrReply(c,c->argv[2],-LONG_MAX,LONG_MAX,&l,NULL) != C_OK) return;
+    if (getLongLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
     if (l >= 0) {
-        count = (unsigned long) l;
+        count = (uint64_t)l;
     } else {
         /* A negative count means: return the same elements multiple times
          * (i.e. don't remove the extracted element after every extraction). */
-        count = -l;
+        if (l == LLONG_MIN) {
+            addReplyError(c,"value is out of range");
+            return;
+        }
+        count = (uint64_t)(-l);
         uniq = 0;
     }
 
@@ -1164,7 +1168,7 @@ void srandmemberWithCountCommand(client *c) {
      * to the temporary set, trying to eventually get enough unique elements
      * to reach the specified count. */
     else {
-        unsigned long added = 0;
+        uint64_t added = 0;
         sds sdsele;
 
         dictExpand(d, count);
@@ -1236,8 +1240,8 @@ int qsortCompareSetsByCardinality(const void *s1, const void *s2) {
  * be handled as empty sets. */
 int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     robj *o1 = *(robj**)s1, *o2 = *(robj**)s2;
-    unsigned long first = o1 ? setTypeSize(o1) : 0;
-    unsigned long second = o2 ? setTypeSize(o2) : 0;
+    uint64_t first = o1 ? setTypeSize(o1) : 0;
+    uint64_t second = o2 ? setTypeSize(o2) : 0;
 
     if (first < second) return 1;
     if (first > second) return -1;
@@ -1422,13 +1426,14 @@ void sinterCommand(client *c) {
 
 /* SINTERCARD numkeys key [key ...] [LIMIT limit] */
 void sinterCardCommand(client *c) {
-    long j;
-    long numkeys = 0; /* Number of keys. */
-    long limit = 0;   /* 0 means not limit. */
+    int j;
+    long long parsed_numkeys = 0; /* Number of keys. */
+    long long limit = 0;   /* 0 means not limit. */
 
-    if (getRangeLongFromObjectOrReply(c, c->argv[1], 1, LONG_MAX,
-                                      &numkeys, "numkeys should be greater than 0") != C_OK)
+    if (getRangeLongLongFromObjectOrReply(c, c->argv[1], 1, INT_MAX,
+                                          &parsed_numkeys, "numkeys should be greater than 0") != C_OK)
         return;
+    int numkeys = (int)parsed_numkeys;
     if (numkeys > (c->argc - 2)) {
         addReplyError(c, "Number of keys can't be greater than number of args");
         return;
@@ -1440,8 +1445,8 @@ void sinterCardCommand(client *c) {
 
         if (!strcasecmp(opt, "LIMIT") && moreargs) {
             j++;
-            if (getPositiveLongFromObjectOrReply(c, c->argv[j], &limit,
-                                                 "LIMIT can't be negative") != C_OK)
+            if (getPositiveLongLongFromObjectOrReply(c, c->argv[j], &limit,
+                                                     "LIMIT can't be negative") != C_OK)
                 return;
         } else {
             addReplyErrorObject(c, shared.syntaxerr);

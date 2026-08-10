@@ -2581,9 +2581,10 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
         == NULL || checkType(c,hash,OBJ_HASH)) return;
 
     if(l >= 0) {
-        count = (unsigned long) l;
+        count = (uint64_t)l;
     } else {
-        count = -l;
+        serverAssert(l != LLONG_MIN);
+        count = (uint64_t)(-l);
         uniq = 0;
     }
 
@@ -2652,7 +2653,7 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
     }
 
     /* Initiate reply count, RESP3 responds with nested array, RESP2 with flat one. */
-    long reply_size = count < size ? count : size;
+    uint64_t reply_size = count < size ? count : size;
     if (withvalues && c->resp == 2)
         addReplyArrayLen(c, reply_size*2);
     else
@@ -2729,7 +2730,7 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
 
         /* Remove random elements to reach the right count. */
         while (size > count) {
-            unsigned long toDiscardIdx = rand() % size;
+            uint64_t toDiscardIdx = randomULong() % size;
             pairs[toDiscardIdx] = pairs[--size];
         }
 
@@ -2758,7 +2759,7 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
         dictExpand(dictUnique, count);
 
         /* Hashtable encoding (generic implementation) */
-        unsigned long added = 0;
+        uint64_t added = 0;
 
         while(added < count) {
             dictEntry *de = dictGetFairRandomKey(hash->ptr);
