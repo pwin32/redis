@@ -210,6 +210,15 @@ enum KEY_ACTION{
 	BACKSPACE =  127    /* Backspace */
 };
 
+#ifdef _WIN32
+enum WIN32_KEY_ACTION {
+    WIN32_KEY_NONE = 0,
+    WIN32_KEY_DELETE,
+    WIN32_KEY_WORD_LEFT,
+    WIN32_KEY_WORD_RIGHT
+};
+#endif
+
 static void linenoiseAtExit(void);
 int linenoiseHistoryAdd(const char *line, int is_sensitive);
 static void refreshLine(struct linenoiseState *l);
@@ -255,7 +264,7 @@ static int win32Utf8Encode(unsigned int codepoint, char *bytes, size_t capacity)
     return 0;
 }
 
-static int win32read(char *bytes, size_t capacity) {
+static int win32read(char *bytes, size_t capacity, int *key_action) {
     static WCHAR high_surrogate;
     DWORD count;
     INPUT_RECORD record;
@@ -265,6 +274,7 @@ static int win32read(char *bytes, size_t capacity) {
         BOOL altgr;
         unsigned int codepoint;
 
+        *key_action = WIN32_KEY_NONE;
         if (!ReadConsoleInputW(hIn, &record, 1, &count)) return 0;
         if (!count) return 0;
         if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown)
@@ -296,6 +306,8 @@ static int win32read(char *bytes, size_t capacity) {
             case 'T': bytes[0] = CTRL_T; return 1;
             case 'U': bytes[0] = CTRL_U; return 1;
             case 'W': bytes[0] = CTRL_W; return 1;
+            case VK_LEFT:  *key_action = WIN32_KEY_WORD_LEFT; return 1;
+            case VK_RIGHT: *key_action = WIN32_KEY_WORD_RIGHT; return 1;
             default: continue;
             }
         }
@@ -310,7 +322,7 @@ static int win32read(char *bytes, size_t capacity) {
         case VK_HOME:   high_surrogate = 0; bytes[0] = CTRL_A; return 1;
         case VK_END:    high_surrogate = 0; bytes[0] = CTRL_E; return 1;
         case VK_BACK:   high_surrogate = 0; bytes[0] = CTRL_H; return 1;
-        case VK_DELETE: high_surrogate = 0; bytes[0] = BACKSPACE; return 1;
+        case VK_DELETE: high_surrogate = 0; *key_action = WIN32_KEY_DELETE; return 1;
         default: break;
         }
 
@@ -1264,17 +1276,36 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
         char c;
         int nread;
         char seq[3];
+#ifdef _WIN32
+        int win32_key_action = WIN32_KEY_NONE;
+#endif
 
 #ifdef _WIN32
         if (getenv("FAKETTY_WITH_PROMPT") != NULL) {
             nread = (int)read(l.ifd,input,1);
         } else {
-            nread = win32read(input,sizeof(input));
+            nread = win32read(input,sizeof(input),&win32_key_action);
         }
 #else
         nread = read(l.ifd,input,1);
 #endif
         if (nread <= 0) return (int)l.len;
+#ifdef _WIN32
+        if (win32_key_action != WIN32_KEY_NONE) {
+            switch (win32_key_action) {
+            case WIN32_KEY_DELETE:
+                linenoiseEditDelete(&l);
+                break;
+            case WIN32_KEY_WORD_LEFT:
+                linenoiseEditMoveWordLeft(&l);
+                break;
+            case WIN32_KEY_WORD_RIGHT:
+                linenoiseEditMoveWordRight(&l);
+                break;
+            }
+            continue;
+        }
+#endif
         c = input[0];
 
         /* Only autocomplete when the callback is set. It returns < 0 when
@@ -1791,16 +1822,16 @@ static void refreshSearchResult(struct linenoiseState *ls) {
         char *bold = "\x1B[1m";
         char *normal = "\x1B[0m";
 
-        int size_needed = sr.search_term_index + sr.search_term_len + sr.len -
+        size_t size_needed = sr.search_term_index + sr.search_term_len + sr.len -
             (sr.search_term_index+sr.search_term_len) + sizeof(normal) + sizeof(bold) + sizeof(normal);
         if (size_needed > sizeof(search_result_friendly) - 1) {
             return;
         }
 
         /* Allocate memory for the prefix, match, and suffix strings, one extra byte for `\0`. */
-        char *prefix = calloc(sizeof(char), sr.search_term_index + 1);
-        char *match = calloc(sizeof(char), sr.search_term_len + 1);
-        char *suffix = calloc(sizeof(char), sr.len - (sr.search_term_index+sr.search_term_len) + 1);
+        char *prefix = calloc(sr.search_term_index + 1, sizeof(char));
+        char *match = calloc(sr.search_term_len + 1, sizeof(char));
+        char *suffix = calloc(sr.len - (sr.search_term_index+sr.search_term_len) + 1, sizeof(char));
 
         memcpy(prefix, sr.result, sr.search_term_index);
         memcpy(match, sr.result + sr.search_term_index, sr.search_term_len);
