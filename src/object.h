@@ -170,6 +170,8 @@ int getPositiveLongFromObjectOrReply(struct client *c, robj *o, long *target, co
 int getRangeLongFromObjectOrReply(struct client *c, robj *o, long min, long max, long *target, const char *msg);
 int checkType(struct client *c, robj *o, int type);
 int getLongLongFromObjectOrReply(struct client *c, robj *o, long long *target, const char *msg);
+int getRangeLongLongFromObjectOrReply(struct client *c, robj *o, long long min, long long max, long long *target, const char *msg);
+int getPositiveLongLongFromObjectOrReply(struct client *c, robj *o, long long *target, const char *msg);
 int getDoubleFromObjectOrReply(struct client *c, robj *o, double *target, const char *msg);
 int getDoubleFromObject(const robj *o, double *target);
 int getLongLongFromObject(robj *o, long long *target);

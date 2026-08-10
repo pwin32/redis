@@ -69,7 +69,7 @@ struct DefragContext {
 
     long long timeproc_id;      /* Eventloop ID of the timerproc (or AE_DELETED_EVENT_ID) */
     monotime timeproc_end_time; /* Ending time of previous timerproc execution */
-    long timeproc_overage_us;   /* A correction value if over target CPU percent */
+    int64_t timeproc_overage_us; /* A correction value if over target CPU percent */
 };
 static struct DefragContext defrag = {0, 0, 0, 0, 1.0f};
 
@@ -85,7 +85,7 @@ static struct DefragContext defrag = {0, 0, 0, 0, 1.0f};
 typedef struct {
     kvstore *kvs;
     int slot;   /* Consider defines ITER_SLOT_XXX for special values. */
-    unsigned long cursor;
+    dict_ulong cursor;
 } kvstoreIterState;
 #define INIT_KVSTORE_STATE(kvs) ((kvstoreIterState){(kvs), ITER_SLOT_DEFRAG_LUT, 0})
 
@@ -114,7 +114,7 @@ typedef struct {
      * Note that this is a list of key names. It's possible that the key may be deleted or modified
      * before "later" and we will search by key name to find the entry when we defrag the item later. */
     list *defrag_later;
-    unsigned long defrag_later_cursor;
+    dict_ulong defrag_later_cursor;
 } defragKeysCtx;
 static_assert(offsetof(defragKeysCtx, kvstate) == 0, "defragStageKvstoreHelper requires this");
 
@@ -123,7 +123,7 @@ typedef struct {
     estore *subexpires;
     int slot; /* Consider defines ITER_SLOT_XXX for special values. */
     int dbid;
-    unsigned long cursor;
+    uint64_t cursor;
 } defragSubexpiresCtx;
 
 /* Context for pubsub kvstores */
@@ -475,7 +475,7 @@ void activeDefragHfieldDictCallback(void *privdata, const dictEntry *de, dictEnt
 
 /* Defrag a dict with sds key and optional value (either ptr, sds or robj string) */
 void activeDefragSdsDict(dict* d, int val_type) {
-    unsigned long cursor = 0;
+    dict_ulong cursor = 0;
     dictDefragFunctions defragfns = {
         .defragAlloc = activeDefragAlloc,
         .defragKey = (dictDefragAllocFunction *)activeDefragSds,
@@ -495,7 +495,7 @@ void activeDefragSdsDict(dict* d, int val_type) {
 
 /* Defrag a dict with hfield key (no separate value - value is part of entry). */
 void activeDefragHfieldDict(dict *d) {
-    unsigned long cursor = 0;
+    dict_ulong cursor = 0;
     dictDefragFunctions defragfns = {
         .defragAlloc = activeDefragAlloc, /* Only defrag dictEntry */
         .defragKey = NULL, /* Will be defragmented in activeDefragHfieldDictCallback. */
@@ -516,7 +516,8 @@ void activeDefragHfieldDict(dict *d) {
             .defragItem = activeDefragHfieldAndUpdateRef
         };
         ebuckets *eb = hashTypeGetDictMetaHFE(d);
-        while (ebScanDefrag(eb, &hashFieldExpireBucketsType, &cursor, &eb_defragfns, d)) {}
+        uint64_t eb_cursor = 0;
+        while (ebScanDefrag(eb, &hashFieldExpireBucketsType, &eb_cursor, &eb_defragfns, d)) {}
     }
 }
 
@@ -561,7 +562,7 @@ void defragLater(defragKeysCtx *ctx, kvobj *kv) {
 }
 
 /* returns 0 if no more work needs to be been done, and 1 if time is up and more work is needed. */
-long scanLaterList(robj *ob, unsigned long *cursor, monotime endtime) {
+long scanLaterList(robj *ob, dict_ulong *cursor, monotime endtime) {
     quicklist *ql = ob->ptr;
     quicklistNode *node;
     long iterations = 0;
@@ -614,7 +615,7 @@ void scanZsetCallback(void *privdata, const dictEntry *_de, dictEntryLink plink)
     server.stat_active_defrag_scanned++;
 }
 
-void scanLaterZset(robj *ob, unsigned long *cursor) {
+void scanLaterZset(robj *ob, dict_ulong *cursor) {
     serverAssert(ob->type == OBJ_ZSET && ob->encoding == OBJ_ENCODING_SKIPLIST);
     zset *zs = (zset*)ob->ptr;
     dict *d = zs->dict;
@@ -631,7 +632,7 @@ void scanCallbackCountScanned(void *privdata, const dictEntry *de, dictEntryLink
     server.stat_active_defrag_scanned++;
 }
 
-void scanLaterSet(robj *ob, unsigned long *cursor) {
+void scanLaterSet(robj *ob, dict_ulong *cursor) {
     serverAssert(ob->type == OBJ_SET && ob->encoding == OBJ_ENCODING_HT);
     dict *d = ob->ptr;
     dictDefragFunctions defragfns = {
@@ -641,7 +642,7 @@ void scanLaterSet(robj *ob, unsigned long *cursor) {
     *cursor = dictScanDefrag(d, *cursor, scanCallbackCountScanned, &defragfns, NULL);
 }
 
-void scanLaterHash(robj *ob, unsigned long *cursor) {
+void scanLaterHash(robj *ob, dict_ulong *cursor) {
     serverAssert(ob->type == OBJ_HASH && ob->encoding == OBJ_ENCODING_HT);
     dict *d = ob->ptr;
 
@@ -677,7 +678,9 @@ void scanLaterHash(robj *ob, unsigned long *cursor) {
                 .defragItem = activeDefragHfieldAndUpdateRef
             };
             ebuckets *eb = hashTypeGetDictMetaHFE(d);
-            ebScanDefrag(eb, &hashFieldExpireBucketsType, cursor, &eb_defragfns, d);
+            uint64_t eb_cursor = *cursor;
+            ebScanDefrag(eb, &hashFieldExpireBucketsType, &eb_cursor, &eb_defragfns, d);
+            *cursor = eb_cursor;
         } else {
             /* Finish defragmentation if this dict doesn't have expired fields. */
             *cursor = 0;
@@ -718,7 +721,7 @@ void defragZsetSkiplist(defragKeysCtx *ctx, kvobj *ob) {
          * and calls our callback with plink for each entry so we can defrag skiplist nodes. */
         scanLaterZsetData data = {zs};
         dictDefragFunctions defragfns = {.defragAlloc = activeDefragAlloc};
-        unsigned long cursor = 0;
+        dict_ulong cursor = 0;
         do {
             cursor = dictScanDefrag(zs->dict, cursor, scanZsetCallback, &defragfns, &data);
         } while (cursor != 0);
@@ -793,7 +796,7 @@ int defragRaxNode(raxNode **noderef, void *privdata) {
 }
 
 /* returns 0 if no more work needs to be been done, and 1 if time is up and more work is needed. */
-int scanLaterStreamListpacks(robj *ob, unsigned long *cursor, monotime endtime) {
+int scanLaterStreamListpacks(robj *ob, dict_ulong *cursor, monotime endtime) {
     static unsigned char next[sizeof(streamID)];
     raxIterator ri;
     long iterations = 0;
@@ -1302,7 +1305,7 @@ void defragPubsubScanCallback(void *privdata, const dictEntry *de, dictEntryLink
 
 /* returns 0 more work may or may not be needed (see non-zero cursor),
  * and 1 if time is up and more work is needed. */
-int defragLaterItem(kvobj *ob, unsigned long *cursor, monotime endtime, int dbid) {
+int defragLaterItem(kvobj *ob, dict_ulong *cursor, monotime endtime, int dbid) {
     if (ob) {
         if (ob->type == OBJ_LIST && ob->encoding == OBJ_ENCODING_QUICKLIST) {
             return scanLaterList(ob, cursor, endtime);
@@ -1317,7 +1320,11 @@ int defragLaterItem(kvobj *ob, unsigned long *cursor, monotime endtime, int dbid
         } else if (ob->type == OBJ_MODULE) {
             robj keyobj;
             initStaticStringObject(keyobj, kvobjGetKey(ob));
-            return moduleLateDefrag(&keyobj, ob, cursor, endtime, dbid);
+            serverAssert(*cursor <= ULONG_MAX);
+            unsigned long module_cursor = (unsigned long)*cursor;
+            int ret = moduleLateDefrag(&keyobj, ob, &module_cursor, endtime, dbid);
+            *cursor = module_cursor;
+            return ret;
         } else if (ob->type == OBJ_ARRAY) {
             redisArray *ar = ob->ptr;
             *cursor = arDefragIncremental(&ar, *cursor, activeDefragAlloc);
@@ -1444,7 +1451,8 @@ static doneStatus defragStageKvstoreHelper(monotime endtime,
     if (state->slot == ITER_SLOT_DEFRAG_LUT) {
         /* Before we start scanning the kvstore, handle the main structures */
         do {
-            state->cursor = kvstoreDictLUTDefrag(state->kvs, state->cursor, dictDefragTables);
+            serverAssert(state->cursor <= ULONG_MAX);
+            state->cursor = kvstoreDictLUTDefrag(state->kvs, (unsigned long)state->cursor, dictDefragTables);
             if (getMonotonicUs() >= endtime) return DEFRAG_NOT_DONE;
         } while (state->cursor != 0);
         state->slot = ITER_SLOT_UNASSIGNED;
@@ -1734,7 +1742,7 @@ static void endDefragCycle(int normal_termination) {
 /* Must be called at the start of the timeProc as it measures the delay from the end of the previous
  * timeProc invocation when performing the computation. */
 static int computeDefragCycleUs(void) {
-    long dutyCycleUs;
+    int64_t dutyCycleUs;
 
     int targetCpuPercent = server.active_defrag_running;
     serverAssert(targetCpuPercent > 0 && targetCpuPercent < 100);
@@ -1754,7 +1762,7 @@ static int computeDefragCycleUs(void) {
         defrag.timeproc_overage_us = 0;
         dutyCycleUs = DEFRAG_CYCLE_US;
     } else {
-        long waitedUs = getMonotonicUs() - defrag.timeproc_end_time;
+        int64_t waitedUs = (int64_t)(getMonotonicUs() - defrag.timeproc_end_time);
         /* Given the elapsed wait time between calls, compute the necessary duty time needed to
          * achieve the desired CPU percentage.
          * With:  D = duty time, W = wait time, P = percent
@@ -1793,7 +1801,9 @@ static int computeDefragCycleUs(void) {
  * computeDefragCycleUs computation. */
 static int computeDelayMs(monotime intendedEndtime) {
     defrag.timeproc_end_time = getMonotonicUs();
-    long overage = defrag.timeproc_end_time - intendedEndtime;
+    int64_t overage = defrag.timeproc_end_time >= intendedEndtime
+        ? (int64_t)(defrag.timeproc_end_time - intendedEndtime)
+        : -(int64_t)(intendedEndtime - defrag.timeproc_end_time);
     defrag.timeproc_overage_us += overage; /* track over/under desired CPU */
     /* Allow negative overage (underage) to count against existing overage, but don't allow
      * underage (from short stages) to be accumulated. */
@@ -1806,13 +1816,13 @@ static int computeDelayMs(monotime intendedEndtime) {
     /* We want to achieve a specific CPU percent. To do that, we can't use a skewed computation. */
     /* Example, if we run for 1ms and delay 10ms, that's NOT 10%, because the total cycle time is 11ms. */
     /* Instead, if we rum for 1ms, our total time should be 10ms. So the delay is only 9ms. */
-    long totalCycleTimeUs = DEFRAG_CYCLE_US * 100 / targetCpuPercent;
-    long delayUs = totalCycleTimeUs - DEFRAG_CYCLE_US;
+    int64_t totalCycleTimeUs = DEFRAG_CYCLE_US * 100 / targetCpuPercent;
+    int64_t delayUs = totalCycleTimeUs - DEFRAG_CYCLE_US;
     /* Only increase delay by the fraction of the overage that would be non-duty-cycle */
     delayUs += defrag.timeproc_overage_us * (100 - targetCpuPercent) / 100;
     if (delayUs < 0) delayUs = 0;
-    long delayMs = delayUs / 1000; /* round down */
-    return delayMs;
+    int64_t delayMs = delayUs / 1000; /* round down */
+    return delayMs > INT_MAX ? INT_MAX : (int)delayMs;
 }
 
 /* An independent time proc for defrag. While defrag is running, this is called much more often

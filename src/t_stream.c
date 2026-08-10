@@ -118,7 +118,7 @@ void freeStream(stream *s) {
 }
 
 /* Return the length of a stream. */
-unsigned long streamLength(const robj *subject) {
+uint64_t streamLength(const robj *subject) {
     stream *s = subject->ptr;
     return s->length;
 }
@@ -788,7 +788,7 @@ typedef struct {
 
 typedef struct {
     int startidx; /* Starting index of IDs in argv */
-    long numids; /* Number of IDs to process */
+    int numids; /* Number of IDs to process; bounded by the command argc. */
     int delete_strategy; /* DELETE_STRATEGY_* */
 } streamAckDelArgs;
 
@@ -1289,11 +1289,13 @@ static int streamParseAckDelArgsOrReply(client *c, int start_pos, streamAckDelAr
             j++;
         } else if (!strcasecmp(opt, "IDS") && j+1 < c->argc) {
             /* Parse the number of IDs */
-            if (getRangeLongFromObjectOrReply(c, c->argv[j+1], 1, LONG_MAX,
-                &args->numids, "Number of IDs must be a positive integer") != C_OK)
+            long numids;
+            if (getRangeLongFromObjectOrReply(c, c->argv[j+1], 1, INT_MAX,
+                &numids, "Number of IDs must be a positive integer") != C_OK)
             {
                 return 0;
             }
+            args->numids = (int)numids;
 
             /* Verify that the specified number of IDs matches the actual arguments */
             if (args->numids > (c->argc - j - 2)) {
@@ -4610,7 +4612,7 @@ void xautoclaimCommand(client *c) {
     streamCG *group = NULL;
     kvobj *o = lookupKeyRead(c->db,c->argv[1]);
     long long minidle; /* Minimum idle time argument, in milliseconds. */
-    long count = 100; /* Maximum entries to claim. */
+    long long count = 100; /* Maximum entries to claim. */
     const unsigned attempts_factor = 10;
     streamID startid;
     int startex;
@@ -4634,8 +4636,8 @@ void xautoclaimCommand(client *c) {
         int moreargs = (c->argc-1) - j; /* Number of additional arguments. */
         char *opt = c->argv[j]->ptr;
         if (!strcasecmp(opt,"COUNT") && moreargs) {
-            long max_count = LONG_MAX / (max(sizeof(streamID), attempts_factor));
-            if (getRangeLongFromObjectOrReply(c,c->argv[j+1],1,max_count,&count,"COUNT must be > 0") != C_OK)
+            long long max_count = LLONG_MAX / (long long)max(sizeof(streamID), attempts_factor);
+            if (getRangeLongLongFromObjectOrReply(c,c->argv[j+1],1,max_count,&count,"COUNT must be > 0") != C_OK)
                 return;
             j++;
         } else if (!strcasecmp(opt,"JUSTID")) {
@@ -4690,7 +4692,7 @@ void xautoclaimCommand(client *c) {
     raxSeek(&ri,">=",startkey,sizeof(startkey));
     size_t arraylen = 0;
     mstime_t now = commandTimeSnapshot();
-    int deleted_id_num = 0;
+    long long deleted_id_num = 0;
     while (attempts-- && count && raxNext(&ri)) {
         streamNACK *nack = ri.data;
 

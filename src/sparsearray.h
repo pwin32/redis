@@ -306,7 +306,7 @@ void arMayPromoteToDenseForRangeSet(redisArray *ar, uint64_t lo, uint64_t hi);
 uint32_t arSparseFindPos(arSlice *s, uint16_t rel_idx, int *found);
 uint32_t arSuperDirFind(redisArray *ar, uint64_t block_id, int *found);
 redisArray *arDefrag(redisArray *ar, void *(*defragfn)(void *));
-unsigned long arDefragIncremental(redisArray **arref, unsigned long cursor,
-                                  void *(*defragfn)(void *));
+uint64_t arDefragIncremental(redisArray **arref, uint64_t cursor,
+                             void *(*defragfn)(void *));
 
 #endif /* __SPARSEARRAY_H */

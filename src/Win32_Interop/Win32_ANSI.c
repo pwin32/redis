@@ -273,7 +273,7 @@ void InterpretEscSeq(void) {
                                    TCHAR def[4];
                                    int   a;
                                    *def = '7'; def[1] = '\0';
-                                   GetEnvironmentVariable(L"ANSICON_DEF", def, lenof(def));
+                                   GetEnvironmentVariableW(L"ANSICON_DEF", def, lenof(def));
                                    a = wcstol(def, NULL, 16);
                                    grm.reverse = FALSE;
                                    if (a < 0) {
@@ -723,7 +723,7 @@ BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytes
                 Pt_arg[--Pt_len] = '\0';
                 InterpretEscSeq();
                 state = 1;
-            } else if (Pt_len < lenof(Pt_arg) - 1)
+            } else if ((size_t)Pt_len < lenof(Pt_arg) - 1)
                 Pt_arg[Pt_len++] = *s;
         } else if (state == 6) {
             // Ignore it (ESC ) 0 is implicit; nothing else is supported).

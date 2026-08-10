@@ -4934,8 +4934,9 @@ int moduleListIteratorSeek(RedisModuleKey *key, long index, int mode) {
         return 0;
     }
 
-    long length = listTypeLength(key->kv);
-    if (index < -length || index >= length) {
+    uint64_t length = listTypeLength(key->kv);
+    if ((index < 0 && (uint64_t)(-(int64_t)index) > length) ||
+        (index >= 0 && (uint64_t)index >= length)) {
         errno = EDOM; /* Invalid index */
         return 0;
     }
@@ -14200,7 +14201,7 @@ void modulePipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
 /* Helper function for the MODULE and HELLO command: send the list of the
  * loaded modules to the client. */
 void addReplyLoadedModules(client *c) {
-    const long ln = dictSize(modules);
+    const uint64_t ln = dictSize(modules);
     /* In case no module is load we avoid iterator creation */
     addReplyArrayLen(c,ln);
     if (ln == 0) {

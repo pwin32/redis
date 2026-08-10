@@ -1842,7 +1842,7 @@ void arMayPromoteToDenseForRangeSet(redisArray *ar, uint64_t lo, uint64_t hi) {
  * dense slices add winsize, while sparse slices add count. We update the
  * active defrag scanned statistic at the same time, so callers do not need
  * to duplicate that logic. */
-static arSlice *arDefragSlice(arSlice *s, unsigned long *work,
+static arSlice *arDefragSlice(arSlice *s, uint64_t *work,
                               void *(*defragfn)(void *)) {
     /* 1. Try to defrag the slice itself. If the pointer changed,
      *    we need to also change the structure pointers pointing inside
@@ -1900,34 +1900,26 @@ static redisArray *arDefragTopLevel(redisArray *ar, void *(*defragfn)(void *)) {
     return ar;
 }
 
-/* Encode the next superdir scan position as a single cursor.
+/* Encode the next superdir scan position as a single 64-bit cursor.
  * Cursor 0 means "start from the beginning" and also "finished".
  *
- * On 64-bit builds we encode block_id and slot, so resume is stable even if
+ * We encode block_id and slot, so resume is stable even if
  * blocks before the current one are inserted or removed between defrag steps.
- *
- * On 32-bit builds the generic defrag cursor type is only unsigned long, so
- * it cannot always hold a full 64-bit block_id. In that case we fall back to
- * the positional (block-index, slot) encoding. */
-static inline unsigned long arDefragSuperdirCursor(redisArray *ar, uint32_t bi, uint32_t si) {
+ * Using uint64_t here is important on LLP64 platforms such as Windows, where
+ * unsigned long remains 32 bits even in a 64-bit process. */
+static inline uint64_t arDefragSuperdirCursor(redisArray *ar, uint32_t bi, uint32_t si) {
     serverAssert(si < AR_SUPER_BLOCK_SLOTS);
-#if ULONG_MAX >= UINT64_MAX
     uint64_t block_id = ar->superdir[bi].block_id;
-    serverAssert(block_id <= (ULONG_MAX - 1) / AR_SUPER_BLOCK_SLOTS);
-    return ((unsigned long)block_id * AR_SUPER_BLOCK_SLOTS + si) + 1;
-#else
-    UNUSED(ar);
-    return ((unsigned long)bi * AR_SUPER_BLOCK_SLOTS + si) + 1;
-#endif
+    serverAssert(block_id <= (UINT64_MAX - 1) / AR_SUPER_BLOCK_SLOTS);
+    return (block_id * AR_SUPER_BLOCK_SLOTS + si) + 1;
 }
 
 /* Decode the next superdir scan position stored in the incremental defrag
  * cursor. */
-static void arDefragDecodeSuperdirCursor(redisArray *ar, unsigned long cursor,
+static void arDefragDecodeSuperdirCursor(redisArray *ar, uint64_t cursor,
                                          uint32_t *bi, uint32_t *si) {
     serverAssert(cursor > 0);
-    unsigned long pos = cursor - 1;
-#if ULONG_MAX >= UINT64_MAX
+    uint64_t pos = cursor - 1;
     /* Flat-mode cursors are also encoded as "slot + 1". After promotion to
      * superdir, those old cursors still decode correctly here as block_id 0
      * with the same slot index, because flat mode only ever covers block 0
@@ -1938,11 +1930,6 @@ static void arDefragDecodeSuperdirCursor(redisArray *ar, unsigned long cursor,
     *si = pos % AR_SUPER_BLOCK_SLOTS;
     *bi = arSuperDirFind(ar, block_id, &found);
     if (!found) *si = 0;
-#else
-    UNUSED(ar);
-    *bi = pos / AR_SUPER_BLOCK_SLOTS;
-    *si = pos % AR_SUPER_BLOCK_SLOTS;
-#endif
 }
 
 /* Defrag an array that is small enough that we can handle it
@@ -1988,12 +1975,12 @@ redisArray *arDefrag(redisArray *ar, void *(*defragfn)(void *)) {
  * Slices are still defragmented as whole units. So a dense slice may cause one
  * call to overshoot the configured budget, but we still stop immediately after
  * that slice in order to resume from the next cursor position later. */
-unsigned long arDefragIncremental(redisArray **arref, unsigned long cursor,
-                                  void *(*defragfn)(void *))
+uint64_t arDefragIncremental(redisArray **arref, uint64_t cursor,
+                             void *(*defragfn)(void *))
 {
     redisArray *ar = *arref;
-    unsigned long work = 0;
-    unsigned long maxwork = server.active_defrag_max_scan_fields;
+    uint64_t work = 0;
+    uint64_t maxwork = server.active_defrag_max_scan_fields;
     if (ar == NULL) return 0;
 
     if (cursor == 0) {
