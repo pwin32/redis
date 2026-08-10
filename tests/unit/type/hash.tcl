@@ -78,6 +78,12 @@ start_server {tags {"hash"}} {
         assert_error {*value is out of range*} {r hrandfield myhash -9223372036854775808}
     } {}
 
+    test "HRANDFIELD count is not limited by Windows long" {
+        r del myhash
+        r hset myhash a 1
+        r hrandfield myhash 4294967296
+    } {a}
+
     test "HRANDFIELD with <count> against non existing key" {
         r hrandfield nonexisting_key 100
     } {}

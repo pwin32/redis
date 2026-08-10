@@ -923,8 +923,8 @@ static void hrandfieldReplyWithListpack(client *c, unsigned int count, listpackE
  * the number of randoms per time. */
 #define HRANDFIELD_RANDOM_SAMPLE_LIMIT 1000
 
-void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
-    unsigned long count, size;
+void hrandfieldWithCountCommand(client *c, long long l, int withvalues) {
+    uint64_t count, size;
     int uniq = 1;
     robj *hash;
 
@@ -1131,19 +1131,19 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
 
 /* HRANDFIELD key [<count> [WITHVALUES]] */
 void hrandfieldCommand(client *c) {
-    long l;
+    long long l;
     int withvalues = 0;
     robj *hash;
     listpackEntry ele;
 
     if (c->argc >= 3) {
-        if (getRangeLongFromObjectOrReply(c,c->argv[2],-LONG_MAX,LONG_MAX,&l,NULL) != C_OK) return;
+        if (getRangeLongLongFromObjectOrReply(c,c->argv[2],-LLONG_MAX,LLONG_MAX,&l,NULL) != C_OK) return;
         if (c->argc > 4 || (c->argc == 4 && strcasecmp(c->argv[3]->ptr,"withvalues"))) {
             addReplyErrorObject(c,shared.syntaxerr);
             return;
         } else if (c->argc == 4) {
             withvalues = 1;
-            if (l < -LONG_MAX/2 || l > LONG_MAX/2) {
+            if (l < -LLONG_MAX/2 || l > LLONG_MAX/2) {
                 addReplyError(c,"value is out of range");
                 return;
             }
