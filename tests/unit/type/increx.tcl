@@ -78,7 +78,7 @@ start_server {tags {"increx"}} {
         }
     }
 
-    test {INCREX - result within [LONG_MIN, LONG_MAX] keeps int encoding} {
+    test {INCREX - result within [INTPTR_MIN, INTPTR_MAX] keeps int encoding} {
         r del mykey
         r increx mykey
         assert_encoding int mykey
@@ -88,6 +88,14 @@ start_server {tags {"increx"}} {
         r set mykey -2000000000
         r increx mykey BYINT -100
         assert_encoding int mykey
+        if {$::tcl_platform(pointerSize) == 8} {
+            r set mykey 4294967296
+            r increx mykey BYINT 1
+            assert_encoding int mykey
+            r set mykey -4294967296
+            r increx mykey BYINT -1
+            assert_encoding int mykey
+        }
     }
 
     # ---------------------------------------------------------------------
