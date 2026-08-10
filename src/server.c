@@ -5843,9 +5843,9 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "pubsub_clients:%d\r\n", server.pubsub_clients,
             "watching_clients:%d\r\n", server.watching_clients,
             "clients_in_timeout_table:%llu\r\n", (unsigned long long) raxSize(server.clients_timeout_table),
-            "total_watched_keys:%lu\r\n", watched_keys,
-            "total_blocking_keys:%lu\r\n", blocking_keys,
-            "total_blocking_keys_on_nokey:%lu\r\n", blocking_keys_on_nokey));
+            "total_watched_keys:%llu\r\n", (unsigned long long)watched_keys,
+            "total_blocking_keys:%llu\r\n", (unsigned long long)blocking_keys,
+            "total_blocking_keys_on_nokey:%llu\r\n", (unsigned long long)blocking_keys_on_nokey));
     }
 
     /* Memory */
@@ -5898,15 +5898,15 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "allocator_active:%zu\r\n", server.cron_malloc_stats.allocator_active,
             "allocator_resident:%zu\r\n", server.cron_malloc_stats.allocator_resident,
             "allocator_muzzy:%zu\r\n", server.cron_malloc_stats.allocator_muzzy,
-            "total_system_memory:%lu\r\n", (unsigned long)total_system_mem,
+            "total_system_memory:%zu\r\n", total_system_mem,
             "total_system_memory_human:%s\r\n", total_system_hmem,
             "used_memory_lua:%lld\r\n", memory_lua, /* deprecated, renamed to used_memory_vm_eval */
             "used_memory_vm_eval:%lld\r\n", memory_lua,
             "used_memory_lua_human:%s\r\n", used_memory_lua_hmem, /* deprecated */
             "used_memory_scripts_eval:%lld\r\n", (long long)mh->lua_caches,
-            "number_of_cached_scripts:%lu\r\n", dictSize(evalScriptsDict()),
-            "number_of_functions:%lu\r\n", functionsNum(),
-            "number_of_libraries:%lu\r\n", functionsLibNum(),
+            "number_of_cached_scripts:%llu\r\n", (unsigned long long)dictSize(evalScriptsDict()),
+            "number_of_functions:%llu\r\n", (unsigned long long)functionsNum(),
+            "number_of_libraries:%llu\r\n", (unsigned long long)functionsLibNum(),
             "used_memory_vm_functions:%lld\r\n", memory_functions,
             "used_memory_vm_total:%lld\r\n", memory_functions + memory_lua,
             "used_memory_vm_total_human:%s\r\n", used_memory_vm_total_hmem,
