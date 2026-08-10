@@ -38,6 +38,7 @@
 #endif
 
 #include "fmacros.h"
+#include "config.h"
 #include "version.h"
 
 #include <stdio.h>
@@ -69,6 +70,7 @@
 #define strcasecmp _stricmp
 #define strncasecmp _strnicmp
 #define strtoull _strtoui64
+#define getenv(name) win32_getenv_utf8_cached(name)
 #endif
 
 #include <hiredis.h>
@@ -298,7 +300,7 @@ char *redisGitDirty(void);
 static int cliConnect(int force);
 
 static char *getInfoField(char *info, char *field);
-static long getLongInfoField(char *info, char *field);
+static long long getLongInfoField(char *info, char *field);
 
 /*------------------------------------------------------------------------------
  * Utility functions
@@ -2160,7 +2162,7 @@ void cliSetPreferences(char **argv, int argc, int interactive) {
 void cliLoadPreferences(void) {
     sds rcfile = getDotfilePath(REDIS_CLI_RCFILE_ENV,REDIS_CLI_RCFILE_DEFAULT);
     if (rcfile == NULL) return;
-    FILE *fp = fopen(rcfile,"r");
+    FILE *fp = redis_fopen(rcfile,"r");
     char buf[1024];
 
     if (fp) {
@@ -2363,7 +2365,7 @@ static int evalMode(int argc, char **argv) {
         keys = 0;
 
         /* Load the script from the file, as an sds string. */
-        fp = fopen(config.eval,"r");
+        fp = redis_fopen(config.eval,"r");
         if (!fp) {
             fprintf(stderr,
                 "Can't open file '%s': %s\n", config.eval, strerror(errno));
@@ -2989,7 +2991,7 @@ static int clusterManagerNodeIsEmpty(clusterManagerNode *node, char **err) {
         is_empty = 0;
         goto result;
     }
-    long known_nodes = getLongInfoField(info->str, "cluster_known_nodes");
+    long long known_nodes = getLongInfoField(info->str, "cluster_known_nodes");
     is_empty = (known_nodes == 1);
 result:
     freeReplyObject(info);
@@ -6165,7 +6167,7 @@ static int clusterManagerCommandReshard(int argc, char **argv) {
                "the hash slots.\n");
         printf("  Type 'done' once you entered all the source nodes IDs.\n");
         while (1) {
-            printf("Source node #%lu: ", listLength(sources) + 1);
+            printf("Source node #%llu: ", (unsigned long long)listLength(sources) + 1);
             fflush(stdout);
             int nread = read(fileno(stdin),buf,255);
             if (nread <= 0) continue;
@@ -6777,7 +6779,7 @@ static int clusterManagerCommandBackup(int argc, char **argv) {
     jsonpath = sdscat(jsonpath, "nodes.json");
     fflush(stdout);
     clusterManagerLogInfo("Saving cluster configuration to: %s\n", jsonpath);
-    FILE *out = fopen(jsonpath, "w+");
+    FILE *out = redis_fopen(jsonpath, "w+");
     if (!out) {
         clusterManagerLogErr("Could not save nodes to: %s\n", jsonpath);
         success = 0;
@@ -7976,13 +7978,13 @@ static char *getInfoField(char *info, char *field) {
 }
 
 /* Like the above function but automatically convert the result into
- * a long. On error (missing field) LONG_MIN is returned. */
-static long getLongInfoField(char *info, char *field) {
+ * a long long. On error (missing field) LLONG_MIN is returned. */
+static long long getLongInfoField(char *info, char *field) {
     char *value = getInfoField(info,field);
-    long l;
+    long long l;
 
-    if (!value) return LONG_MIN;
-    l = strtol(value,NULL,10);
+    if (!value) return LLONG_MIN;
+    l = strtoll(value,NULL,10);
     zfree(value);
     return l;
 }
@@ -8301,6 +8303,13 @@ static sds askPassword(const char *msg) {
  *--------------------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    if (win32_get_utf8_argv(&argc, &argv) != 0) {
+        fprintf(stderr, "Unable to decode the Windows command line as UTF-8: %s\n",
+                strerror(errno));
+        return 1;
+    }
+#endif
     int firstarg;
     struct timeval tv;
 

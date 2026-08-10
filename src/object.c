@@ -1146,8 +1146,8 @@ sds getMemoryDoctorReport(void) {
         }
 
         /* Clients using more than 200k each average? */
-        long numslaves = listLength(server.slaves);
-        long numclients = listLength(server.clients)-numslaves;
+        uint64_t numslaves = listLength(server.slaves);
+        uint64_t numclients = listLength(server.clients)-numslaves;
         if (mh->clients_normal / numclients > (1024*200)) {
             big_client_buf = 1;
             num_reports++;

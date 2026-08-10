@@ -34,6 +34,7 @@
 #include <process.h>    // for getpid
 #include <direct.h>     // for getcwd
 #include <shlwapi.h>    // for PathIsRelative
+#include "Win32_Interop/Win32_Error.h"
 #endif
 
 #include "fmacros.h"
@@ -772,23 +773,17 @@ void getRandomHexChars(char *p, size_t len) {
  * relative path. */
 #ifdef _WIN32
 sds getAbsolutePath(char *filename) {
-    char fullPath[MAX_PATH];
-    DWORD gfpnResult;
-    sds abspath;
     sds relpath = sdsnew(filename);
+    char *buffer;
+    sds result;
 
     relpath = sdstrim(relpath, " \r\n\t");
-
-    if (!PathIsRelative(relpath)) return relpath;
-
-    gfpnResult = GetFullPathNameA(relpath, sizeof(fullPath), fullPath, NULL);
+    buffer = win32_get_full_path_utf8(relpath);
     sdsfree(relpath);
-
-    if (gfpnResult == 0 || gfpnResult > sizeof(fullPath)) {
-        return NULL;
-    }
-    abspath = sdsnew(fullPath);
-    return abspath;
+    if (buffer == NULL) return NULL;
+    result = sdsnew(buffer);
+    win32_free(buffer);
+    return result;
 }
 #else
 sds getAbsolutePath(char *filename) {

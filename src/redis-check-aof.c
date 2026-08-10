@@ -170,13 +170,13 @@ int redis_check_aof_main(int argc, char **argv) {
         exit(1);
     }
 
-    FILE *fp = fopen(filename, IF_WIN32("r+b", "r+"));
+    FILE *fp = redis_fopen(filename, IF_WIN32("r+b", "r+"));
     if (fp == NULL) {
         printf("Cannot open file: %s\n", filename);
         exit(1);
     }
 
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     if (redis_fstat(fileno(fp),&sb) == -1) {
         printf("Cannot stat file: %s\n", filename);
         exit(1);

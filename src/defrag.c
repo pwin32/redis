@@ -441,7 +441,7 @@ void defragLater(redisDb *db, dictEntry *kde) {
 }
 
 /* returns 0 if no more work needs to be been done, and 1 if time is up and more work is needed. */
-long scanLaterList(robj *ob, unsigned long *cursor, long long endtime, long long *defragged) {
+long scanLaterList(robj *ob, dict_ulong *cursor, long long endtime, long long *defragged) {
     quicklist *ql = ob->ptr;
     quicklistNode *node;
     long iterations = 0;
@@ -496,7 +496,7 @@ void scanLaterZsetCallback(void *privdata, const dictEntry *_de) {
     server.stat_active_defrag_scanned++;
 }
 
-long scanLaterZset(robj *ob, unsigned long *cursor) {
+long scanLaterZset(robj *ob, dict_ulong *cursor) {
     if (ob->type != OBJ_ZSET || ob->encoding != OBJ_ENCODING_SKIPLIST)
         return 0;
     zset *zs = (zset*)ob->ptr;
@@ -515,7 +515,7 @@ void scanLaterSetCallback(void *privdata, const dictEntry *_de) {
     server.stat_active_defrag_scanned++;
 }
 
-long scanLaterSet(robj *ob, unsigned long *cursor) {
+long scanLaterSet(robj *ob, dict_ulong *cursor) {
     long defragged = 0;
     if (ob->type != OBJ_SET || ob->encoding != OBJ_ENCODING_HT)
         return 0;
@@ -536,7 +536,7 @@ void scanLaterHashCallback(void *privdata, const dictEntry *_de) {
     server.stat_active_defrag_scanned++;
 }
 
-long scanLaterHash(robj *ob, unsigned long *cursor) {
+long scanLaterHash(robj *ob, dict_ulong *cursor) {
     long defragged = 0;
     if (ob->type != OBJ_HASH || ob->encoding != OBJ_ENCODING_HT)
         return 0;
@@ -640,7 +640,7 @@ int defragRaxNode(raxNode **noderef) {
 }
 
 /* returns 0 if no more work needs to be been done, and 1 if time is up and more work is needed. */
-int scanLaterStreamListpacks(robj *ob, unsigned long *cursor, long long endtime, long long *defragged) {
+int scanLaterStreamListpacks(robj *ob, dict_ulong *cursor, long long endtime, long long *defragged) {
     static unsigned char last[sizeof(streamID)];
     raxIterator ri;
     long iterations = 0;
@@ -948,7 +948,7 @@ long defragOtherGlobals() {
 
 /* returns 0 more work may or may not be needed (see non-zero cursor),
  * and 1 if time is up and more work is needed. */
-int defragLaterItem(dictEntry *de, unsigned long *cursor, long long endtime) {
+int defragLaterItem(dictEntry *de, dict_ulong *cursor, long long endtime) {
     if (de) {
         robj *ob = dictGetVal(de);
         if (ob->type == OBJ_LIST) {
@@ -962,7 +962,15 @@ int defragLaterItem(dictEntry *de, unsigned long *cursor, long long endtime) {
         } else if (ob->type == OBJ_STREAM) {
             return scanLaterStreamListpacks(ob, cursor, endtime, &server.stat_active_defrag_hits);
         } else if (ob->type == OBJ_MODULE) {
-            return moduleLateDefrag(dictGetKey(de), ob, cursor, endtime, &server.stat_active_defrag_hits);
+            unsigned long module_cursor;
+            int result;
+
+            serverAssert(*cursor <= ULONG_MAX);
+            module_cursor = (unsigned long)*cursor;
+            result = moduleLateDefrag(dictGetKey(de), ob, &module_cursor,
+                                      endtime, &server.stat_active_defrag_hits);
+            *cursor = module_cursor;
+            return result;
         } else {
             *cursor = 0; /* object type may have changed since we schedule it for later */
         }
@@ -974,7 +982,7 @@ int defragLaterItem(dictEntry *de, unsigned long *cursor, long long endtime) {
 
 /* static variables serving defragLaterStep to continue scanning a key from were we stopped last time. */
 static sds defrag_later_current_key = NULL;
-static unsigned long defrag_later_cursor = 0;
+static dict_ulong defrag_later_cursor = 0;
 
 /* returns 0 if no more work needs to be been done, and 1 if time is up and more work is needed. */
 int defragLaterStep(redisDb *db, long long endtime) {

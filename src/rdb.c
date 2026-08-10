@@ -45,7 +45,6 @@
 #include <stdio.h>
 #include "Win32_Interop/Win32_QFork.h"
 #include <direct.h>
-#define MAXPATHLEN 1024
 extern void redisForkChildStarted(pid_t childpid, int purpose, long long start);
 extern void *moduleGetForkData(void);
 #else
@@ -1373,22 +1372,31 @@ werr: /* Write error. */
 /* Save the DB on disk. Return C_ERR on error, C_OK on success. */
 int rdbSave(char *filename, rdbSaveInfo *rsi) {
     char tmpfile[256];
+#ifndef _WIN32
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
+#endif
     FILE *fp = NULL;
     rio rdb;
     int error = 0;
 
     snprintf(tmpfile,256,"temp-%d.rdb", (int) getpid());
     WIN32_ONLY(tmpfile[sizeof(tmpfile) - 1] = 0;) /*get rid of C6053 warning*/
-    fp = fopen(tmpfile,IF_WIN32("wb","w"));
+    fp = redis_fopen(tmpfile,IF_WIN32("wb","w"));
     if (!fp) {
+#ifdef _WIN32
+        char *cwdp = win32_get_current_directory_utf8();
+#else
         char *cwdp = getcwd(cwd,MAXPATHLEN);
+#endif
         serverLog(LL_WARNING,
             "Failed opening the RDB file %s (in server root dir %s) "
             "for saving: %s",
             filename,
             cwdp ? cwdp : "unknown",
             strerror(errno));
+#ifdef _WIN32
+        win32_free(cwdp);
+#endif
         return C_ERR;
     }
 
@@ -1411,8 +1419,12 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
     
     /* Use RENAME to make sure the DB file is changed atomically only
      * if the generate DB file is ok. */
-    if (rename(tmpfile,filename) == -1) {
+    if (redis_rename(tmpfile,filename) == -1) {
+#ifdef _WIN32
+        char *cwdp = win32_get_current_directory_utf8();
+#else
         char *cwdp = getcwd(cwd,MAXPATHLEN);
+#endif
         serverLog(LL_WARNING,
             "Error moving temp DB file %s on the final "
             "destination %s (in server root dir %s): %s",
@@ -1420,7 +1432,10 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
             filename,
             cwdp ? cwdp : "unknown",
             strerror(errno));
-        unlink(tmpfile);
+#ifdef _WIN32
+        win32_free(cwdp);
+#endif
+        redis_unlink(tmpfile);
         stopSaving(0);
         return C_ERR;
     }
@@ -1435,7 +1450,7 @@ int rdbSave(char *filename, rdbSaveInfo *rsi) {
 werr:
     serverLog(LL_WARNING,"Write error saving DB on disk: %s", strerror(errno));
     if (fp) fclose(fp);
-    unlink(tmpfile);
+    redis_unlink(tmpfile);
     stopSaving(0);
     return C_ERR;
 }
@@ -1504,7 +1519,7 @@ void rdbRemoveTempFile(pid_t childpid, int from_signal) {
          * need to close the fd, it'll be released when the process exists. */
         int fd = open(tmpfile, O_RDONLY|O_NONBLOCK, 0);
         UNUSED(fd);
-        unlink(tmpfile);
+        redis_unlink(tmpfile);
     } else {
         bg_unlink(tmpfile);
     }
@@ -2393,8 +2408,8 @@ void startLoading(size_t size, int rdbflags) {
  * needed to provide loading stats.
  * 'filename' is optional and used for rdb-check on error */
 void startLoadingFile(FILE *fp, char* filename, int rdbflags) {
-    struct redis_stat sb;
-    if (fstat(fileno(fp), &sb) == -1)
+    struct redis_stat_type sb;
+    if (redis_fstat(fileno(fp), &sb) == -1)
         sb.st_size = 0;
     rdbFileBeingLoaded = filename;
     startLoading(sb.st_size, rdbflags);
@@ -2588,10 +2603,9 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
                 serverLog(LL_NOTICE,"Loading RDB produced by version %s",
                     (char*)auxval->ptr);
             } else if (!strcasecmp(auxkey->ptr,"ctime")) {
-                time_t age = time(NULL)-strtol(auxval->ptr,NULL,10);
+                time_t age = time(NULL)-(time_t)strtoll(auxval->ptr,NULL,10);
                 if (age < 0) age = 0;
-                serverLog(LL_NOTICE,"RDB age %ld seconds",
-                    (unsigned long) age);
+                serverLog(LL_NOTICE,"RDB age %jd seconds", (intmax_t)age);
             } else if (!strcasecmp(auxkey->ptr,"used-mem")) {
                 long long usedmem = strtoll(auxval->ptr,NULL,10);
                 serverLog(LL_NOTICE,"RDB memory usage when created %.2f Mb",
@@ -2800,7 +2814,7 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     rio rdb;
     int retval;
 
-    if ((fp = fopen(filename,IF_WIN32("rb","r"))) == NULL) return C_ERR;
+    if ((fp = redis_fopen(filename,IF_WIN32("rb","r"))) == NULL) return C_ERR;
     startLoadingFile(fp, filename,rdbflags);
     rioInitWithFile(&rdb,fp);
     retval = rdbLoadRio(&rdb,rdbflags,rsi);

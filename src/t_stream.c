@@ -83,7 +83,7 @@ void freeStream(stream *s) {
 }
 
 /* Return the length of a stream. */
-unsigned long streamLength(const robj *subject) {
+uint64_t streamLength(const robj *subject) {
     stream *s = subject->ptr;
     return s->length;
 }

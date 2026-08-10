@@ -479,10 +479,10 @@ static unsigned long evictionTimeLimitUs() {
 
     if (server.maxmemory_eviction_tenacity < 100) {
         /* A 15% geometric progression, resulting in a limit of ~2 min at tenacity==99  */
-        return (unsigned long)(500.0 * pow(1.15, server.maxmemory_eviction_tenacity - 10.0));
+        return (uint64_t)(500.0 * pow(1.15, server.maxmemory_eviction_tenacity - 10.0));
     }
 
-    return ULONG_MAX;   /* No limit to eviction time */
+    return UINT64_MAX;   /* No limit to eviction time */
 }
 
 /* Check that memory usage is within the current "maxmemory" limit.  If over

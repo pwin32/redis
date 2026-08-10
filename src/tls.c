@@ -331,7 +331,7 @@ int tlsConfigure(redisTLSContextConfig *ctx_config) {
     SSL_CTX_set_options(ctx, SSL_OP_SINGLE_DH_USE);
 
     if (ctx_config->dh_params_file) {
-        FILE *dhfile = fopen(ctx_config->dh_params_file, "r");
+        FILE *dhfile = redis_fopen(ctx_config->dh_params_file, "r");
         if (!dhfile) {
             serverLog(LL_WARNING, "Failed to load %s: %s", ctx_config->dh_params_file, strerror(errno));
             goto error;

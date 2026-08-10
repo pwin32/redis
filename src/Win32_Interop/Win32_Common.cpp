@@ -20,6 +20,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include "Win32_Common.h"
+#include <stdint.h>
 
 namespace Globals
 {
@@ -31,18 +32,21 @@ namespace Globals
 void EnsureMemoryIsMapped(const void *buffer, size_t size) {
     //[tporadowski/#62] when this is called from main process - Globals::pageSize is not initialized,
     //                  so prevent EXCEPTION_INT_DIVIDE_BY_ZERO
-    if (Globals::pageSize == 0) {
+    if (buffer == NULL || size == 0 || Globals::pageSize == 0) {
         return;
     }
-        
-    char* pFirstByte = (char*) buffer;
-    char* pLastByte = (char*) buffer + size - 1;
-    char* pFirstPage = pFirstByte - ((size_t) pFirstByte % Globals::pageSize);
-    char* pLastPage = pLastByte - ((size_t) pLastByte % Globals::pageSize);
-    // Use 'volatile' to make sure the compiler doesn't remove the memory access
-    for (volatile char* p = pFirstPage; p <= pLastPage; p += Globals::pageSize) {
-        volatile char c = *p;
 
+    uintptr_t firstByte = (uintptr_t)buffer;
+    if (size - 1 > UINTPTR_MAX - firstByte) return;
+    uintptr_t lastByte = firstByte + size - 1;
+    uintptr_t firstPage = firstByte - (firstByte % Globals::pageSize);
+    uintptr_t lastPage = lastByte - (lastByte % Globals::pageSize);
+
+    // Use 'volatile' to make sure the compiler doesn't remove the memory access
+    for (uintptr_t page = firstPage;; page += Globals::pageSize) {
+        volatile char value = *(volatile char *)page;
+        (void)value;
+        if (page == lastPage || UINTPTR_MAX - page < Globals::pageSize) break;
     }
 }
 

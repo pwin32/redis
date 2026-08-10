@@ -58,8 +58,10 @@ POSIX_ONLY(#include <unistd.h>)
 #include <inttypes.h>
 #include <pthread.h>
 #include <syslog.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+typedef struct timeval redis_rusage_timeval;
 #else
 #include "Win32_Interop/Win32_PThread.h"
 #endif
@@ -744,7 +746,7 @@ typedef struct redisDb {
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
     int id;                     /* Database ID */
     long long avg_ttl;          /* Average TTL, just for stats */
-    unsigned long expires_cursor; /* Cursor of the active expire cycle. */
+    uint64_t expires_cursor;      /* Cursor of the active expire cycle. */
     list *defrag_later;         /* List of key names to attempt to defrag one by one, gradually. */
 } redisDb;
 
@@ -914,7 +916,7 @@ typedef struct client {
     size_t sentlen;         /* Amount of bytes already sent in the current
                                buffer or object being sent. */
     time_t ctime;           /* Client creation time. */
-    long duration;          /* Current command duration. Used for measuring latency of blocking/non-blocking cmds */
+    ustime_t duration;      /* Current command duration. Used for measuring latency of blocking/non-blocking cmds */
     time_t lastinteraction; /* Time of the last interaction, used for timeout */
     time_t obuf_soft_limit_reached_time;
 #ifdef _WIN32
@@ -1034,7 +1036,7 @@ typedef struct zskiplistNode {
     struct zskiplistNode *backward;
     struct zskiplistLevel {
         struct zskiplistNode *forward;
-        unsigned long span;
+        uint64_t span;
     } level[];
 } zskiplistNode;
 
@@ -1317,7 +1319,7 @@ struct redisServer {
     list *slowlog;                  /* SLOWLOG list of commands */
     long long slowlog_entry_id;     /* SLOWLOG current entry ID */
     long long slowlog_log_slower_than; /* SLOWLOG time limit (to get logged) */
-    unsigned long slowlog_max_len;     /* SLOWLOG max number of items logged */
+    uint64_t slowlog_max_len;     /* SLOWLOG max number of items logged */
     struct malloc_stats cron_malloc_stats; /* sampled in serverCron(). */
     redisAtomic long long stat_net_input_bytes; /* Bytes read from network. */
     redisAtomic long long stat_net_output_bytes; /* Bytes written to network. */
@@ -1360,7 +1362,7 @@ struct redisServer {
     int active_defrag_threshold_upper; /* maximum percentage of fragmentation at which we use maximum effort */
     int active_defrag_cycle_min;       /* minimal effort for defrag in CPU percentage */
     int active_defrag_cycle_max;       /* maximal effort for defrag in CPU percentage */
-    unsigned long active_defrag_max_scan_fields; /* maximum number of fields of set/hash/zset/list to process from within the main dict scan */
+    uint64_t active_defrag_max_scan_fields; /* maximum number of fields of set/hash/zset/list to process from within the main dict scan */
     size_t client_max_querybuf_len; /* Limit for client query buffer length */
     int dbnum;                      /* Total number of configured DBs */
     int supervised;                 /* 1 if supervised, 0 otherwise. */
@@ -1392,7 +1394,7 @@ struct redisServer {
     time_t aof_rewrite_time_last;   /* Time used by last AOF rewrite run. */
     time_t aof_rewrite_time_start;  /* Current AOF rewrite start time. */
     int aof_lastbgrewrite_status;   /* C_OK or C_ERR */
-    unsigned long aof_delayed_fsync;  /* delayed AOF fsync() counter */
+    uint64_t aof_delayed_fsync;       /* delayed AOF fsync() counter */
     int aof_rewrite_incremental_fsync;/* fsync incrementally while aof rewriting? */
     int rdb_save_incremental_fsync;   /* fsync incrementally while rdb saving? */
     int aof_last_write_status;      /* C_OK or C_ERR */
@@ -1633,7 +1635,7 @@ struct redisServer {
     dict *latency_events;
     /* ACLs */
     char *acl_filename;           /* ACL Users file. NULL if not configured. */
-    unsigned long acllog_max_len; /* Maximum length of the ACL LOG list. */
+    uint64_t acllog_max_len; /* Maximum length of the ACL LOG list. */
     sds requirepass;              /* Remember the cleartext password set with
                                      the old "requirepass" directive for
                                      backward compatibility with Redis <= 5. */
@@ -2279,14 +2281,21 @@ int inNestedCall(void);
 #if defined(__GNUC__) && defined(__MINGW32__)
 void _serverLog(int level, const char *fmt, ...)
     __attribute__((format(gnu_printf, 2, 3)));
+void serverLogFromHandler(int level, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
 #elif defined(__GNUC__)
 void _serverLog(int level, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
+#elif defined(_WIN32)
+void _serverLog(int level, const char *fmt, ...);
+void serverLogFromHandler(int level, const char *fmt, ...);
 #else
 void _serverLog(int level, const char *fmt, ...);
 #endif
 void serverLogRaw(int level, const char *msg);
+#ifndef _WIN32
 void serverLogFromHandler(int level, const char *msg);
+#endif
 void usage(void);
 void updateDictResizePolicy(void);
 int htNeedsResize(dict *dict);

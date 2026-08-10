@@ -194,7 +194,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
     static rio rdb; /* Pointed by global struct riostate. */
 
     int closefile = (fp == NULL);
-    if (fp == NULL && (fp = fopen(rdbfilename,IF_WIN32("rb","r"))) == NULL) return 1;
+    if (fp == NULL && (fp = redis_fopen(rdbfilename,IF_WIN32("rb","r"))) == NULL) return 1;
 
     startLoadingFile(fp, rdbfilename, RDBFLAGS_NONE);
     rioInitWithFile(&rdb,fp);

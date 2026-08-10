@@ -907,6 +907,39 @@ listNode *sentinelGetScriptListNodeByPid(pid_t pid) {
 }
 #endif
 
+#ifdef _WIN32
+/* CreateProcess receives one mutable command line. Quote every UTF-8
+ * argument according to the Microsoft C runtime parsing rules before the
+ * final UTF-16 conversion. */
+static sds sentinelWin32AppendQuotedArgument(sds cmd, const char *arg) {
+    size_t backslashes = 0;
+    cmd = sdscatlen(cmd,"\"",1);
+
+    for (const char *p = arg; ; p++) {
+        if (*p == '\\') {
+            backslashes++;
+            continue;
+        }
+        if (*p == '"') {
+            for (size_t i = 0; i < backslashes * 2 + 1; i++)
+                cmd = sdscatlen(cmd,"\\",1);
+            cmd = sdscatlen(cmd,"\"",1);
+            backslashes = 0;
+            continue;
+        }
+        if (*p == '\0') {
+            for (size_t i = 0; i < backslashes * 2; i++)
+                cmd = sdscatlen(cmd,"\\",1);
+            return sdscatlen(cmd,"\"",1);
+        }
+        for (size_t i = 0; i < backslashes; i++)
+            cmd = sdscatlen(cmd,"\\",1);
+        backslashes = 0;
+        cmd = sdscatlen(cmd,p,1);
+    }
+}
+#endif
+
 /* Run pending scripts if we are not already at max number of running
  * scripts. */
 void sentinelRunPendingScripts(void) {
@@ -934,36 +967,32 @@ void sentinelRunPendingScripts(void) {
         sj->retry_num++;
 
 #ifdef _WIN32
-        /* The notification script is called passing two arguments:
-         * - the first argument doesn't contain spaces
-         * - the second argument contains spaces therefore we quote it */
-        char args[1024];
-        int j = 0;
-        int pos = 0;
-        while (sj->argv[j]) {
-            if (j == 2) {
-                memcpy(args + pos, "\"", 1);
-                pos += 1;
-            }
-            int arglen = (int) strlen(sj->argv[j]);
-            memcpy(args + pos, sj->argv[j], arglen);
-            pos += arglen;
-            if (j == 2) {
-                memcpy(args + pos, "\"\0", 2);
-                break;
-            } else {
-                memcpy(args + pos, " ", 1);
-                pos += 1;
-                j++;
-            }
+        sds command_line = sdsempty();
+        for (int j = 0; sj->argv[j] != NULL; j++) {
+            if (j != 0) command_line = sdscatlen(command_line," ",1);
+            command_line = sentinelWin32AppendQuotedArgument(command_line,
+                                                              sj->argv[j]);
         }
 
+        wchar_t *wide_program = win32_utf8_path_to_wide(sj->argv[0]);
+        wchar_t *wide_command_line = win32_utf8_to_wide(command_line);
         PROCESS_INFORMATION pi;
-        STARTUPINFO si;
-        ZeroMemory(&si, sizeof(si));
+        STARTUPINFOW si;
+        ZeroMemory(&si,sizeof(si));
+        ZeroMemory(&pi,sizeof(pi));
         si.cb = sizeof(si);
-        if (TRUE == CreateProcessA(NULL, args, NULL, NULL, FALSE, 0,
-                                   NULL, NULL, &si, &pi)) {
+
+        BOOL created = FALSE;
+        if (wide_program != NULL && wide_command_line != NULL) {
+            created = CreateProcessW(wide_program, wide_command_line,
+                                     NULL, NULL, FALSE, 0,
+                                     NULL, NULL, &si, &pi);
+        }
+        win32_free(wide_program);
+        win32_free(wide_command_line);
+        sdsfree(command_line);
+
+        if (created) {
             sj->hScriptProcess = pi.hProcess;
             sj->pid = pi.dwProcessId;
             CloseHandle(pi.hThread);
@@ -2082,17 +2111,19 @@ const char *sentinelHandleConfiguration(char **argv, int argc) {
         /* down-after-milliseconds <name> <milliseconds> */
         ri = sentinelGetMasterByName(argv[1]);
         if (!ri) return "No such master with specified name.";
-        ri->down_after_period = atoi(argv[2]);
-        if (ri->down_after_period <= 0)
+        long long value;
+        if (!string2ll(argv[2],strlen(argv[2]),&value) || value <= 0)
             return "negative or zero time parameter.";
+        ri->down_after_period = value;
         sentinelPropagateDownAfterPeriod(ri);
     } else if (!strcasecmp(argv[0],"failover-timeout") && argc == 3) {
         /* failover-timeout <name> <milliseconds> */
         ri = sentinelGetMasterByName(argv[1]);
         if (!ri) return "No such master with specified name.";
-        ri->failover_timeout = atoi(argv[2]);
-        if (ri->failover_timeout <= 0)
+        long long value;
+        if (!string2ll(argv[2],strlen(argv[2]),&value) || value <= 0)
             return "negative or zero time parameter.";
+        ri->failover_timeout = value;
     } else if (!strcasecmp(argv[0],"parallel-syncs") && argc == 3) {
         /* parallel-syncs <name> <milliseconds> */
         ri = sentinelGetMasterByName(argv[1]);

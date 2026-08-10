@@ -1520,7 +1520,7 @@ sds ACLLoadFromFile(const char *filename) {
     char buf[1024];
 
     /* Open the ACL file. */
-    if ((fp = fopen(filename,"r")) == NULL) {
+    if ((fp = redis_fopen(filename,"r")) == NULL) {
         sds errors = sdscatprintf(sdsempty(),
             "Error loading ACLs, opening file '%s': %s",
             filename, strerror(errno));
@@ -1712,7 +1712,7 @@ int ACLSaveToFile(const char *filename) {
     close(fd); fd = -1;
 
     /* Let's replace the new file with the old one. */
-    if (rename(tmpfilename,filename) == -1) {
+    if (redis_rename(tmpfilename,filename) == -1) {
         serverLog(LL_WARNING,"Renaming ACL file for ACL SAVE: %s",
             strerror(errno));
         goto cleanup;
@@ -1722,7 +1722,7 @@ int ACLSaveToFile(const char *filename) {
 
 cleanup:
     if (fd != -1) close(fd);
-    if (tmpfilename) unlink(tmpfilename);
+    if (tmpfilename) redis_unlink(tmpfilename);
     sdsfree(tmpfilename);
     sdsfree(acl);
     return retval;
@@ -2152,7 +2152,7 @@ void aclCommand(client *c) {
                 listSetFreeMethod(ACLLog,NULL);
                 addReply(c,shared.ok);
                 return;
-            } else if (getLongFromObjectOrReply(c,c->argv[2],&count,NULL)
+            } else if (getLongLongFromObjectOrReply(c,c->argv[2],&count,NULL)
                        != C_OK)
             {
                 return;
@@ -2161,7 +2161,7 @@ void aclCommand(client *c) {
         }
 
         /* Fix the count according to the number of entries we got. */
-        if ((size_t)count > listLength(ACLLog))
+        if ((uint64_t)count > listLength(ACLLog))
             count = listLength(ACLLog);
 
         addReplyArrayLen(c,count);

@@ -35,9 +35,14 @@
 
 #ifndef _RUSAGE_T_
 #define _RUSAGE_T_
+typedef struct redis_rusage_timeval {
+    PORT_LONGLONG tv_sec;
+    PORT_LONGLONG tv_usec;
+} redis_rusage_timeval;
+
 struct rusage {
-    struct timeval ru_utime;    /* user time used */
-    struct timeval ru_stime;    /* system time used */
+    redis_rusage_timeval ru_utime;    /* user time used */
+    redis_rusage_timeval ru_stime;    /* system time used */
 };
 #endif
 
@@ -61,9 +66,7 @@ int getrusage(int who, struct rusage * rusage);
 #define SIGTTIN 21
 #define SIGTTOU 22
 #define SIGABRT 22
-/* #define SIGSTOP	24 /*Pause the process; cannot be trapped*/
-/* #define SIGTSTP	25 /*Terminal stop	Pause the process; can be trapped*/
-/* #define SIGCONT	26 /* */
+/* Historical alternate values used SIGSTOP=24, SIGTSTP=25, SIGCONT=26. */
 #define SIGWINCH 28
 #define SIGUSR1  30
 #define SIGUSR2  31
@@ -81,9 +84,9 @@ int getrusage(int who, struct rusage * rusage);
 
 #define sigemptyset(pset)       (*(pset) = 0)
 #define sigfillset(pset)        (*(pset) = (unsigned int)-1)
-#define sigaddset(pset, num)    (*(pset) |= (1L<<(num)))
-#define sigdelset(pset, num)    (*(pset) &= ~(1L<<(num)))
-#define sigismember(pset, num)  (*(pset) & (1L<<(num)))
+#define sigaddset(pset, num)    (*(pset) |= ((sigset_t)1u << (num)))
+#define sigdelset(pset, num)    (*(pset) &= ~((sigset_t)1u << (num)))
+#define sigismember(pset, num)  (*(pset) & ((sigset_t)1u << (num)))
 
 typedef	void(*__p_sig_fn_t)(int);
 

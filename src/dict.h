@@ -41,6 +41,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/* Redis historically used long for dictionary sizes and cursors because its
+ * primary 64-bit platforms are LP64.  Win64 is LLP64, so long remains 32 bit.
+ * Keep the upstream ABI on POSIX while restoring the intended logical width
+ * for the Windows port. */
+#ifdef _WIN32
+#include "Win32_Interop/win32_types_hiredis.h"
+typedef PORT_LONG dict_long;
+typedef PORT_ULONG dict_ulong;
+#define DICT_LONG_MAX PORT_LONG_MAX
+#define DICT_ULONG_C(value) value##ULL
+#else
+typedef long dict_long;
+typedef unsigned long dict_ulong;
+#define DICT_LONG_MAX LONG_MAX
+#define DICT_ULONG_C(value) value##UL
+#endif
+
 #define DICT_OK 0
 #define DICT_ERR 1
 
@@ -81,7 +98,7 @@ typedef struct dict {
     dictType *type;
     void *privdata;
     dictht ht[2];
-    long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    dict_long rehashidx; /* rehashing not in progress if rehashidx == -1 */
     int16_t pauserehash; /* If >0 rehashing is paused (<0 indicates coding error) */
 } dict;
 
@@ -155,7 +172,7 @@ typedef void (dictScanBucketFunction)(void *privdata, dictEntry **bucketref);
 
 /* If our unsigned long type can store a 64 bit number, use a 64 bit PRNG. */
 #if ULONG_MAX >= 0xffffffffffffffff
-#define randomULong() ((unsigned long) genrand64_int64())
+#define randomULong() ((dict_ulong) genrand64_int64())
 #else
 #define randomULong() random()
 #endif
@@ -168,8 +185,8 @@ typedef enum {
 
 /* API */
 dict *dictCreate(dictType *type, void *privDataPtr);
-int dictExpand(dict *d, unsigned long size);
-int dictTryExpand(dict *d, unsigned long size);
+int dictExpand(dict *d, dict_ulong size);
+int dictTryExpand(dict *d, dict_ulong size);
 int dictAdd(dict *d, void *key, void *val);
 dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing);
 dictEntry *dictAddOrFind(dict *d, void *key);

@@ -465,7 +465,7 @@ void popGenericCommand(client *c, int where) {
         return;
     } else if (hascount) {
         /* Parse the optional count argument. */
-        if (getPositiveLongFromObjectOrReply(c,c->argv[2],&count,NULL) != C_OK) 
+        if (getPositiveLongFromObjectOrReply(c,c->argv[2],&count,NULL) != C_OK)
             return;
     }
 
@@ -622,7 +622,7 @@ void lposCommand(client *c) {
                 return;
         } else if (!strcasecmp(opt,"MAXLEN") && moreargs) {
             j++;
-            if (getPositiveLongFromObjectOrReply(c, c->argv[j], &maxlen, 
+            if (getPositiveLongFromObjectOrReply(c, c->argv[j], &maxlen,
               "MAXLEN can't be negative") != C_OK)
                 return;
         } else {

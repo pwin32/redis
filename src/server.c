@@ -1144,7 +1144,7 @@ void serverLogRaw(int level, const char *msg) {
     level &= 0xff; /* clear flags */
     if (level < server.verbosity) return;
 
-    fp = log_to_stdout ? stdout : fopen(server.logfile,"a");
+    fp = log_to_stdout ? stdout : redis_fopen(server.logfile,"a");
     if (!fp) return;
 
     if (rawmode) {
@@ -3258,8 +3258,9 @@ void initServer(void) {
     setLogFile(server.logfile);
 
     /* MingGW 32 lacks declaration of RtlGenRandom, MinGw64 don't */
-    lib = LoadLibraryA("advapi32.dll");
-    RtlGenRandom = (RtlGenRandomFunc) GetProcAddress(lib, "SystemFunction036");
+    lib = LoadLibraryW(L"advapi32.dll");
+    if (lib != NULL)
+        RtlGenRandom = (RtlGenRandomFunc) GetProcAddress(lib, "SystemFunction036");
 #else
     if (server.syslog_enabled) {
         openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,
@@ -3334,7 +3335,7 @@ void initServer(void) {
 
     /* Open the listening Unix domain socket. */
     if (server.unixsocket != NULL) {
-        unlink(server.unixsocket); /* don't care if this fails */
+        redis_unlink(server.unixsocket); /* don't care if this fails */
         server.sofd = anetUnixServer(server.neterr,server.unixsocket,
             server.unixsocketperm, server.tcp_backlog);
         if (server.sofd == ANET_ERR) {
@@ -4431,7 +4432,7 @@ void closeListeningSockets(int unlink_unix_socket) {
 #ifndef _WIN32
     if (unlink_unix_socket && server.unixsocket) {
         serverLog(LL_NOTICE,"Removing the unix socket file.");
-        unlink(server.unixsocket); /* don't care if this fails */
+        redis_unlink(server.unixsocket); /* don't care if this fails */
     }
 #endif
 }
@@ -4529,7 +4530,7 @@ int prepareForShutdown(int flags) {
     /* Remove the pid file if possible and needed. */
     if (server.daemonize || server.pidfile) {
         serverLog(LL_NOTICE,"Removing the pid file.");
-        unlink(server.pidfile);
+        redis_unlink(server.pidfile);
     }
 
     /* Best effort flush of slave output buffers, so that we hopefully
@@ -5106,14 +5107,14 @@ sds genRedisInfoString(const char *section) {
                 "aof_buffer_length:%zu\r\n"
                 "aof_rewrite_buffer_length:%lu\r\n"
                 "aof_pending_bio_fsync:%llu\r\n"
-                "aof_delayed_fsync:%lu\r\n",
+                "aof_delayed_fsync:%llu\r\n",
                 (PORT_LONGLONG) server.aof_current_size,
                 (PORT_LONGLONG) server.aof_rewrite_base_size,
                 server.aof_rewrite_scheduled,
                 sdslen(server.aof_buf),
                 aofRewriteBufferSize(),
                 bioPendingJobsOfType(BIO_AOF_FSYNC),
-                server.aof_delayed_fsync);
+                (unsigned long long)server.aof_delayed_fsync);
         }
 
         if (server.loading) {
@@ -5404,22 +5405,22 @@ sds genRedisInfoString(const char *section) {
         getrusage(RUSAGE_CHILDREN, &c_ru);
         info = sdscatprintf(info,
         "# CPU\r\n"
-        "used_cpu_sys:%ld.%06ld\r\n"
-        "used_cpu_user:%ld.%06ld\r\n"
-        "used_cpu_sys_children:%ld.%06ld\r\n"
-        "used_cpu_user_children:%ld.%06ld\r\n",
-        (long)self_ru.ru_stime.tv_sec, (long)self_ru.ru_stime.tv_usec,
-        (long)self_ru.ru_utime.tv_sec, (long)self_ru.ru_utime.tv_usec,
-        (long)c_ru.ru_stime.tv_sec, (long)c_ru.ru_stime.tv_usec,
-        (long)c_ru.ru_utime.tv_sec, (long)c_ru.ru_utime.tv_usec);
+        "used_cpu_sys:%lld.%06lld\r\n"
+        "used_cpu_user:%lld.%06lld\r\n"
+        "used_cpu_sys_children:%lld.%06lld\r\n"
+        "used_cpu_user_children:%lld.%06lld\r\n",
+        (long long)self_ru.ru_stime.tv_sec, (long long)self_ru.ru_stime.tv_usec,
+        (long long)self_ru.ru_utime.tv_sec, (long long)self_ru.ru_utime.tv_usec,
+        (long long)c_ru.ru_stime.tv_sec, (long long)c_ru.ru_stime.tv_usec,
+        (long long)c_ru.ru_utime.tv_sec, (long long)c_ru.ru_utime.tv_usec);
 #ifdef RUSAGE_THREAD
         struct rusage m_ru;
         getrusage(RUSAGE_THREAD, &m_ru);
         info = sdscatprintf(info,
-            "used_cpu_sys_main_thread:%ld.%06ld\r\n"
-            "used_cpu_user_main_thread:%ld.%06ld\r\n",
-            (long)m_ru.ru_stime.tv_sec, (long)m_ru.ru_stime.tv_usec,
-            (long)m_ru.ru_utime.tv_sec, (long)m_ru.ru_utime.tv_usec);
+            "used_cpu_sys_main_thread:%lld.%06lld\r\n"
+            "used_cpu_user_main_thread:%lld.%06lld\r\n",
+            (long long)m_ru.ru_stime.tv_sec, (long long)m_ru.ru_stime.tv_usec,
+            (long long)m_ru.ru_utime.tv_sec, (long long)m_ru.ru_utime.tv_usec);
 #endif  /* RUSAGE_THREAD */
     }
 
@@ -5731,7 +5732,7 @@ void createPidFile(void) {
     if (!server.pidfile) server.pidfile = zstrdup(CONFIG_DEFAULT_PID_FILE);
 
     /* Try to write the pid file in a best-effort way. */
-    FILE *fp = fopen(server.pidfile,"w");
+    FILE *fp = redis_fopen(server.pidfile,"w");
     if (fp) {
         fprintf(fp,"%d\n",(int)getpid());
         fclose(fp);

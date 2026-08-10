@@ -286,7 +286,9 @@ void stopAppendOnly(void) {
 /* Called when the user switches from "appendonly no" to "appendonly yes"
  * at runtime using the CONFIG command. */
 int startAppendOnly(void) {
+#ifndef _WIN32
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
+#endif
     int newfd;
 
     newfd = open(server.aof_filename,
@@ -294,7 +296,11 @@ int startAppendOnly(void) {
         IF_WIN32(_S_IREAD|_S_IWRITE,0644));
     serverAssert(server.aof_state == AOF_OFF);
     if (newfd == -1) {
-        char *cwdp = IF_WIN32(_getcwd,getcwd)(cwd,MAXPATHLEN);
+#ifdef _WIN32
+        char *cwdp = win32_get_current_directory_utf8();
+#else
+        char *cwdp = getcwd(cwd,MAXPATHLEN);
+#endif
 
         serverLog(LL_WARNING,
             "Redis needs to enable the AOF but can't open the "
@@ -302,6 +308,9 @@ int startAppendOnly(void) {
             server.aof_filename,
             cwdp ? cwdp : "unknown",
             IF_WIN32(wsa_strerror(errno),strerror(errno)));
+#ifdef _WIN32
+        win32_free(cwdp);
+#endif
         return C_ERR;
     }
     if (hasActiveChildProcess() && server.child_type != CHILD_TYPE_AOF) {
@@ -785,8 +794,8 @@ void freeFakeClient(struct client *c) {
  * fatal error an error message is logged and the program exists. */
 int loadAppendOnlyFile(char *filename) {
     struct client *fakeClient;
-    FILE *fp = fopen(filename, IF_WIN32("rb", "r"));
-    struct redis_stat sb;
+    FILE *fp = redis_fopen(filename, IF_WIN32("rb", "r"));
+    struct redis_stat_type sb;
     int old_aof_state = server.aof_state;
     long loops = 0;
     off_t valid_up_to = 0; /* Offset of latest well-formed command loaded. */
@@ -1592,7 +1601,7 @@ int rewriteAppendOnlyFile(char *filename) {
     /* Note that we have to use a different temp name here compared to the
      * one used by rewriteAppendOnlyFileBackground() function. */
     snprintf(tmpfile,256,"temp-rewriteaof-%d.aof", (int) getpid());
-    fp = fopen(tmpfile,IF_WIN32("wb","w"));
+    fp = redis_fopen(tmpfile,IF_WIN32("wb","w"));
     if (!fp) {
         serverLog(LL_WARNING, "Opening the temp file for AOF rewrite in rewriteAppendOnlyFile(): %s", strerror(errno));
         return C_ERR;
@@ -1694,9 +1703,9 @@ int rewriteAppendOnlyFile(char *filename) {
 
     /* Use RENAME to make sure the DB file is changed atomically only
      * if the generate DB file is ok. */
-    if (rename(tmpfile,filename) == -1) {
+    if (redis_rename(tmpfile,filename) == -1) {
         serverLog(LL_WARNING,"Error moving temp append only file on the final destination: %s", IF_WIN32(wsa_strerror(errno), strerror(errno)));
-        unlink(tmpfile);
+        redis_unlink(tmpfile);
         stopSaving(0);
         return C_ERR;
     }
@@ -1707,7 +1716,7 @@ int rewriteAppendOnlyFile(char *filename) {
 werr:
     serverLog(LL_WARNING,"Write error writing append only file on disk: %s", strerror(errno));
     if (fp) fclose(fp);
-    unlink(tmpfile);
+    redis_unlink(tmpfile);
     stopSaving(0);
     return C_ERR;
 }
@@ -1907,7 +1916,7 @@ void aofRemoveTempFile(pid_t childpid) {
  * a restart, normally the size is updated just adding the write length
  * to the current length, that is much faster. */
 void aofUpdateCurrentSize(void) {
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     mstime_t latency;
 
 #ifdef _WIN32
@@ -2025,25 +2034,25 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
             // AOF enabled, close the existing AOF file
             close(server.aof_fd);
             // Now rename the existing AOF file to allow the new file to be renamed
-            if (rename(server.aof_filename, tmpfile_win_old) == -1) {
+            if (redis_rename(server.aof_filename, tmpfile_win_old) == -1) {
                 serverLog(LL_WARNING,
                     "Error trying to rename the existing AOF to old tempfile: %s", IF_WIN32(wsa_strerror(errno), strerror(errno)));
                 // Let's clean the Windows-specific temp file here
-                unlink(tmpfile_win_old);
+                redis_unlink(tmpfile_win_old);
                 goto cleanup;
             }
         }
         latencyStartMonitor(latency);
         // Close the temp AOF file before renaming it
         close(newfd);
-        if (rename(tmpfile, server.aof_filename) == -1) {
+        if (redis_rename(tmpfile, server.aof_filename) == -1) {
             serverLog(LL_WARNING,
                 "Error trying to rename the temporary AOF file %s into %s: %s",
                 tmpfile,
                 server.aof_filename,
                 IF_WIN32(wsa_strerror(errno), strerror(errno)));
             if (server.aof_fd != -1) {
-                if (rename(tmpfile_win_old, server.aof_filename) == -1) {
+                if (redis_rename(tmpfile_win_old, server.aof_filename) == -1) {
                     serverLog(LL_WARNING,
                         "Error trying to rename the old tempfile %s into the existing AOF file %s: %s",
                         tmpfile,
@@ -2088,7 +2097,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
         /* Rename the temporary file. This will not unlink the target file if
          * it exists, because we reference it with "oldfd". */
         latencyStartMonitor(latency);
-        if (rename(tmpfile,server.aof_filename) == -1) {
+        if (redis_rename(tmpfile,server.aof_filename) == -1) {
             serverLog(LL_WARNING,
                 "Error trying to rename the temporary AOF file %s into %s: %s",
                 tmpfile,

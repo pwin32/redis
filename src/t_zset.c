@@ -2133,7 +2133,7 @@ void zuiClearIterator(zsetopsrc *op) {
     }
 }
 
-unsigned long zuiLength(zsetopsrc *op) {
+uint64_t zuiLength(zsetopsrc *op) {
     if (op->subject == NULL)
         return 0;
 
@@ -2340,8 +2340,8 @@ int zuiFind(zsetopsrc *op, zsetopval *val, double *score) {
 }
 
 int zuiCompareByCardinality(const void *s1, const void *s2) {
-    unsigned long first = zuiLength((zsetopsrc*)s1);
-    unsigned long second = zuiLength((zsetopsrc*)s2);
+    uint64_t first = zuiLength((zsetopsrc*)s1);
+    uint64_t second = zuiLength((zsetopsrc*)s2);
     if (first > second) return 1;
     if (first < second) return -1;
     return 0;
@@ -2812,7 +2812,7 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
             }
         }
     } else {
-        unsigned long length = dstzset->zsl->length;
+        uint64_t length = dstzset->zsl->length;
         zskiplist *zsl = dstzset->zsl;
         zskiplistNode *zn = zsl->header->level[0].forward;
         /* In case of WITHSCORES, respond with a single array in RESP2, and
@@ -3299,7 +3299,7 @@ void zcountCommand(client *c) {
     robj *key = c->argv[1];
     robj *zobj;
     zrangespec range;
-    unsigned long count = 0;
+    uint64_t count = 0;
 
     /* Parse the range arguments */
     if (zslParseRange(c->argv[2],c->argv[3],&range) != C_OK) {
@@ -3376,7 +3376,7 @@ void zlexcountCommand(client *c) {
     robj *key = c->argv[1];
     robj *zobj;
     zlexrangespec range;
-    unsigned long count = 0;
+    uint64_t count = 0;
 
     /* Parse the range arguments */
     if (zslParseLexRange(c->argv[2],c->argv[3],&range) != C_OK) {
@@ -3614,8 +3614,8 @@ void zrangeGenericCommand(zrange_result_handler *handler, int argc_start, int st
         if (!store && !strcasecmp(c->argv[j]->ptr,"withscores")) {
             opt_withscores = 1;
         } else if (!strcasecmp(c->argv[j]->ptr,"limit") && leftargs >= 2) {
-            if ((getLongFromObjectOrReply(c, c->argv[j+1], &opt_offset, NULL) != C_OK) ||
-                (getLongFromObjectOrReply(c, c->argv[j+2], &opt_limit, NULL) != C_OK))
+            if ((getLongLongFromObjectOrReply(c, c->argv[j+1], &opt_offset, NULL) != C_OK) ||
+                (getLongLongFromObjectOrReply(c, c->argv[j+2], &opt_limit, NULL) != C_OK))
             {
                 return;
             }
@@ -3668,8 +3668,8 @@ void zrangeGenericCommand(zrange_result_handler *handler, int argc_start, int st
     case ZRANGE_AUTO:
     case ZRANGE_RANK:
         /* Z[REV]RANGE, ZRANGESTORE [REV]RANGE */
-        if ((getLongFromObjectOrReply(c, c->argv[minidx], &opt_start,NULL) != C_OK) ||
-            (getLongFromObjectOrReply(c, c->argv[maxidx], &opt_end,NULL) != C_OK))
+        if ((getLongLongFromObjectOrReply(c, c->argv[minidx], &opt_start,NULL) != C_OK) ||
+            (getLongLongFromObjectOrReply(c, c->argv[maxidx], &opt_end,NULL) != C_OK))
         {
             return;
         }

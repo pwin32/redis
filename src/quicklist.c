@@ -159,7 +159,7 @@ REDIS_STATIC quicklistNode *quicklistCreateNode(void) {
 }
 
 /* Return cached quicklist count */
-unsigned long quicklistCount(const quicklist *ql) { return ql->count; }
+uint64_t quicklistCount(const quicklist *ql) { return ql->count; }
 
 /* Free entire quicklist. */
 void quicklistRelease(quicklist *quicklist) {
@@ -1629,20 +1629,22 @@ static int _ql_verify(quicklist *ql, uint32_t len, uint32_t count,
 
     ql_info(ql);
     if (len != ql->len) {
-        yell("quicklist length wrong: expected %d, got %lu", len, ql->len);
+        yell("quicklist length wrong: expected %u, got %llu", len,
+             (unsigned long long)ql->len);
         errors++;
     }
 
     if (count != ql->count) {
-        yell("quicklist count wrong: expected %d, got %lu", count, ql->count);
+        yell("quicklist count wrong: expected %u, got %llu", count,
+             (unsigned long long)ql->count);
         errors++;
     }
 
     int loopr = itrprintr(ql, 0);
     if (loopr != (int)ql->count) {
-        yell("quicklist cached count not match actual count: expected %lu, got "
+        yell("quicklist cached count not match actual count: expected %llu, got "
              "%d",
-             ql->count, loopr);
+             (unsigned long long)ql->count, loopr);
         errors++;
     }
 
@@ -2109,7 +2111,8 @@ int quicklistTest(int argc, char *argv[], int accurate) {
                 }
 
                 if (ql->count != 750)
-                    ERR("List size not 750, but rather %ld", ql->count);
+                    ERR("List size not 750, but rather %llu",
+                        (unsigned long long)ql->count);
 
                 if (fills[f] == 32)
                     ql_verify(ql, 26, 750, 20, 32);
@@ -2628,8 +2631,8 @@ int quicklistTest(int argc, char *argv[], int accurate) {
                     ql_verify(ql, 2, 33, 32, 1);
                 quicklistDelRange(ql, -12, 3);
                 if (ql->count != 30)
-                    ERR("Didn't delete exactly three elements!  Count is: %lu",
-                        ql->count);
+                    ERR("Didn't delete exactly three elements!  Count is: %llu",
+                        (unsigned long long)ql->count);
                 quicklistRelease(ql);
             }
         }

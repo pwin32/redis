@@ -25,6 +25,7 @@
 #include "win32_Interop/win32fixes.h"
 #include "adlist.h"
 #include "win32_Interop/win32_wsiocp.h"
+#include "win32_Interop/Win32_Error.h"
 
 #define MAX_COMPLETE_PER_POLL   100
 #define MAX_SOCKET_LOOKUP       65535
@@ -83,7 +84,7 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
     }
 
     pGetQueuedCompletionStatusEx = NULL;
-    kernel32_module = GetModuleHandleA("kernel32.dll");
+    kernel32_module = GetModuleHandleW(L"kernel32.dll");
     if (kernel32_module != NULL) {
         pGetQueuedCompletionStatusEx = (sGetQueuedCompletionStatusEx) GetProcAddress(
                                         kernel32_module,
@@ -114,7 +115,7 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     aeApiState *state = (aeApiState *) eventLoop->apidata;
     iocpSockState *sockstate = WSIOCP_GetSocketState(fd);
     if (sockstate == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return -1;
     }
     if ((sockstate->masks & SOCKET_ATTACHED) == 0 &&
@@ -145,7 +146,7 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
                                                0,
                                                fd,
                                                &areq->ov) == 0) {
-                    errno = GetLastError();
+                    set_errno_from_last_error();
                     FreeMemoryNoCOW(areq);
                     return -1;
                 }
@@ -161,7 +162,7 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
 static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int mask) {
     iocpSockState *sockstate = WSIOCP_GetExistingSocketState(fd);
     if (sockstate == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return;
     }
 

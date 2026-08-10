@@ -71,7 +71,7 @@ void InitHighResAbsoluteTime() {
 
     /* Use GetSystemTimeAsFileTime as fallbcak where GetSystemTimePreciseAsFileTime is not available */
     fnGetSystemTimePreciseAsFileTime = GetSystemTimeAsFileTime;
-    module = GetModuleHandleA("kernel32.dll");
+    module = GetModuleHandleW(L"kernel32.dll");
     if (module) {
         fp = GetProcAddress(module, "GetSystemTimePreciseAsFileTime");
         if (fp) {

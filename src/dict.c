@@ -156,7 +156,7 @@ int dictResize(dict *d)
 /* Expand or create the hash table,
  * when malloc_failed is non-NULL, it'll avoid panic if malloc fails (in which case it'll be set to 1).
  * Returns DICT_OK if expand was performed, and DICT_ERR if skipped. */
-int _dictExpand(dict *d, unsigned long size, int* malloc_failed)
+int _dictExpand(dict *d, dict_ulong size, int* malloc_failed)
 {
     if (malloc_failed) *malloc_failed = 0;
 
@@ -202,12 +202,12 @@ int _dictExpand(dict *d, unsigned long size, int* malloc_failed)
 }
 
 /* return DICT_ERR if expand was not performed */
-int dictExpand(dict *d, unsigned long size) {
+int dictExpand(dict *d, dict_ulong size) {
     return _dictExpand(d, size, NULL);
 }
 
 /* return DICT_ERR if expand failed due to memory allocation failure */
-int dictTryExpand(dict *d, unsigned long size) {
+int dictTryExpand(dict *d, dict_ulong size) {
     int malloc_failed;
     _dictExpand(d, size, &malloc_failed);
     return malloc_failed? DICT_ERR : DICT_OK;
@@ -823,9 +823,9 @@ dictEntry *dictGetFairRandomKey(dict *d) {
 
 /* Function to reverse bits. Algorithm from:
  * http://graphics.stanford.edu/~seander/bithacks.html#ReverseParallel */
-static unsigned long rev(unsigned long v) {
-    unsigned long s = CHAR_BIT * sizeof(v); // bit size; must be power of 2
-    unsigned long mask = ~0UL;
+static dict_ulong rev(dict_ulong v) {
+    dict_ulong s = CHAR_BIT * sizeof(v); // bit size; must be power of 2
+    dict_ulong mask = ~(dict_ulong)0;
     while ((s >>= 1) > 0) {
         mask ^= (mask << s);
         v = ((v >> s) & mask) | ((v << s) & ~mask);

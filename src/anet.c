@@ -343,10 +343,10 @@ static int anetTcpGenericConnect(char *err, const char *addr, int port,
                                  const char *source_addr, int flags) {
     int fd;
     SOCKADDR_STORAGE socketStorage;
-    ANET_NOTUSED(source_addr);
 
     if (ParseStorageAddress(addr, port, &socketStorage) == FALSE) {
         anetSetError(err, "invalid address: %s", addr);
+        errno = EINVAL;
         return ANET_ERR;
     }
 
@@ -356,11 +356,17 @@ static int anetTcpGenericConnect(char *err, const char *addr, int port,
     /* getpeername() cannot recover the endpoint while IOCP connect is pending. */
     FDAPI_SaveSocketAddrStorage(fd, &socketStorage);
 
-    if (WSIOCP_SocketConnect(fd, &socketStorage) == SOCKET_ERROR) {
-        if (errno == WSAEWOULDBLOCK || errno == WSA_IO_PENDING)
-            errno = EINPROGRESS;
+    int connect_result = source_addr ?
+        WSIOCP_SocketConnectBind(fd, &socketStorage, source_addr) :
+        WSIOCP_SocketConnect(fd, &socketStorage);
+    if (connect_result == SOCKET_ERROR) {
         if (errno == EINPROGRESS && (flags & ANET_CONNECT_NONBLOCK))
             return fd;
+
+        if (source_addr && (flags & ANET_CONNECT_BE_BINDING)) {
+            close(fd);
+            return anetTcpGenericConnect(err, addr, port, NULL, flags);
+        }
 
         anetSetError(err, "connect: %s", wsa_strerror(errno));
         close(fd);
@@ -508,7 +514,7 @@ static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int 
 
 #ifndef _WIN32
     if (sa->sa_family == AF_LOCAL && perm)
-        chmod(((struct sockaddr_un *) sa)->sun_path, perm);
+        redis_chmod(((struct sockaddr_un *) sa)->sun_path, perm);
 #endif
 
 #ifdef _WIN32

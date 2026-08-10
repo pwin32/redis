@@ -244,7 +244,7 @@ void activeExpireCycle(int type) {
                 for (int table = 0; table < 2; table++) {
                     if (table == 1 && !dictIsRehashing(db->expires)) break;
 
-                    unsigned long idx = db->expires_cursor;
+                    uint64_t idx = db->expires_cursor;
                     idx &= db->expires->ht[table].sizemask;
                     dictEntry *de = db->expires->ht[table].table[idx];
                     long long ttl;
@@ -617,4 +617,3 @@ void touchCommand(client *c) {
         if (lookupKeyRead(c->db,c->argv[j]) != NULL) touched++;
     addReplyLongLong(c,touched);
 }
-

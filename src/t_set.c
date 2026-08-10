@@ -774,7 +774,7 @@ void srandmemberWithCountCommand(client *c) {
      * to the temporary set, trying to eventually get enough unique elements
      * to reach the specified count. */
     else {
-        unsigned long added = 0;
+        uint64_t added = 0;
         sds sdsele;
 
         dictExpand(d, count);
@@ -846,8 +846,8 @@ int qsortCompareSetsByCardinality(const void *s1, const void *s2) {
  * be handled as empty sets. */
 int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     robj *o1 = *(robj**)s1, *o2 = *(robj**)s2;
-    unsigned long first = o1 ? setTypeSize(o1) : 0;
-    unsigned long second = o2 ? setTypeSize(o2) : 0;
+    uint64_t first = o1 ? setTypeSize(o1) : 0;
+    uint64_t second = o2 ? setTypeSize(o2) : 0;
 
     if (first < second) return 1;
     if (first > second) return -1;

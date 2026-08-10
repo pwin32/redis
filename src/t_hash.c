@@ -1058,7 +1058,7 @@ void hrandfieldWithCountCommand(client *c, PORT_LONG l, int withvalues) {
     }
 
     /* Initiate reply count, RESP3 responds with nested array, RESP2 with flat one. */
-    long reply_size = count < size ? count : size;
+    uint64_t reply_size = count < size ? count : size;
     if (withvalues && c->resp == 2)
         addReplyArrayLen(c, reply_size*2);
     else

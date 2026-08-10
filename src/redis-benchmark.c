@@ -1778,6 +1778,17 @@ int test_is_selected(char *name) {
 }
 
 int main(int argc, const char **argv) {
+#ifdef _WIN32
+    char **utf8_argv = NULL;
+    int utf8_argc = 0;
+    if (win32_get_utf8_argv(&utf8_argc, &utf8_argv) != 0) {
+        fprintf(stderr, "Unable to decode the Windows command line as UTF-8: %s\n",
+                strerror(errno));
+        return 1;
+    }
+    argc = utf8_argc;
+    argv = (const char **)utf8_argv;
+#endif
     int i;
     char *data, *cmd, *tag;
     int len;

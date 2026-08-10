@@ -524,7 +524,7 @@ void loadServerConfigFromString(char *config) {
             if (server.logfile[0] != '\0') {
                 /* Test if we are able to open the file. The server will not
                  * be able to abort just for this problem later... */
-                logfp = fopen(server.logfile,"a");
+                logfp = redis_fopen(server.logfile,"a");
                 if (logfp == NULL) {
                     err = sdscatprintf(sdsempty(),
                         "Can't open the log file: %s", IF_WIN32(wsa_strerror(errno), strerror(errno)));
@@ -727,7 +727,7 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
 
     /* Load the file content */
     if (filename) {
-        if ((fp = fopen(filename,"r")) == NULL) {
+        if ((fp = redis_fopen(filename,"r")) == NULL) {
             serverLog(LL_WARNING,
                     "Fatal error, can't open config file '%s': %s",
                     filename, strerror(errno));
@@ -1208,7 +1208,7 @@ void rewriteConfigMarkAsProcessed(struct rewriteConfigState *state, const char *
  * If it is impossible to read the old file, NULL is returned.
  * If the old file does not exist at all, an empty state is returned. */
 struct rewriteConfigState *rewriteConfigReadOldFile(char *path) {
-    FILE *fp = fopen(path,"r");
+    FILE *fp = redis_fopen(path,"r");
     if (fp == NULL && errno != ENOENT) return NULL;
 
     char buf[CONFIG_MAX_LINE+1];
@@ -1689,17 +1689,11 @@ void rewriteConfigRemoveOrphaned(struct rewriteConfigState *state) {
 int rewriteConfigOverwriteFile(char *configfile, sds content) {
     int fd = -1;
     int retval = -1;
-    char tmp_conffile[PATH_MAX];
     const char *tmp_suffix = ".XXXXXX";
+    sds tmp_conffile = sdscat(sdsnew(configfile), tmp_suffix);
     size_t offset = 0;
     ssize_t written_bytes = 0;
-
-    int tmp_path_len = snprintf(tmp_conffile, sizeof(tmp_conffile), "%s%s", configfile, tmp_suffix);
-    if (tmp_path_len <= 0 || (unsigned int)tmp_path_len >= sizeof(tmp_conffile)) {
-        serverLog(LL_WARNING, "Config file full path is too long");
-        errno = ENAMETOOLONG;
-        return retval;
-    }
+    int old_errno;
 
 #ifdef _WIN32
     fd = FDAPI_mkstemp(tmp_conffile);
@@ -1712,6 +1706,7 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
 
     if (fd == -1) {
         serverLog(LL_WARNING, "Could not create tmp config file (%s)", strerror(errno));
+        sdsfree(tmp_conffile);
         return retval;
     }
 
@@ -1730,7 +1725,7 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
 #ifndef _WIN32
     else if (fchmod(fd, 0644 & ~server.umask) == -1)
         serverLog(LL_WARNING, "Could not chmod config file (%s)", strerror(errno));
-    else if (rename(tmp_conffile, configfile) == -1)
+    else if (redis_rename(tmp_conffile, configfile) == -1)
         serverLog(LL_WARNING, "Could not rename tmp config file (%s)", strerror(errno));
     else {
         retval = 0;
@@ -1742,7 +1737,7 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
         fd = -1;
         if (close_ret == -1)
             serverLog(LL_WARNING, "Could not close tmp config file (%s)", strerror(errno));
-        else if (rename(tmp_conffile, configfile) == -1)
+        else if (redis_rename(tmp_conffile, configfile) == -1)
             serverLog(LL_WARNING, "Could not rename tmp config file (%s)", strerror(errno));
         else {
             retval = 0;
@@ -1752,8 +1747,11 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
 #endif
 
 cleanup:
+    old_errno = errno;
     if (fd != -1) close(fd);
-    if (retval) unlink(tmp_conffile);
+    if (retval) redis_unlink(tmp_conffile);
+    sdsfree(tmp_conffile);
+    errno = old_errno;
     return retval;
 }
 
@@ -2617,9 +2615,9 @@ standardConfig configs[] = {
     createUIntConfig("maxclients", NULL, MODIFIABLE_CONFIG, 1, UINT_MAX, server.maxclients, 10000, INTEGER_CONFIG, NULL, updateMaxclients),
 
     /* Unsigned Long configs */
-    createULongConfig("active-defrag-max-scan-fields", NULL, MODIFIABLE_CONFIG, 1, LONG_MAX, server.active_defrag_max_scan_fields, 1000, INTEGER_CONFIG, NULL, NULL), /* Default: keys with more than 1000 fields will be processed separately */
-    createULongConfig("slowlog-max-len", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.slowlog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
-    createULongConfig("acllog-max-len", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.acllog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
+    createULongLongConfig("active-defrag-max-scan-fields", NULL, MODIFIABLE_CONFIG, 1, LLONG_MAX, server.active_defrag_max_scan_fields, 1000, INTEGER_CONFIG, NULL, NULL), /* Default: keys with more than 1000 fields will be processed separately */
+    createULongLongConfig("slowlog-max-len", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.slowlog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
+    createULongLongConfig("acllog-max-len", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.acllog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
 
     /* Long Long configs */
     createLongLongConfig("lua-time-limit", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.lua_time_limit, 5000, INTEGER_CONFIG, NULL, NULL),/* milliseconds */

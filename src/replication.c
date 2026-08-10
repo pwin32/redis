@@ -97,16 +97,16 @@ int bg_unlink(const char *filename) {
     /* The POSIX open-then-unlink technique below is invalid with Windows CRT
      * sharing semantics: our own read handle prevents unlink(). QFork and AOF
      * callers wait for their writer before cleanup, so delete synchronously. */
-    return unlink(filename);
+    return redis_unlink(filename);
 #else
     int fd = open(filename,O_RDONLY|O_NONBLOCK,0);
     if (fd == -1) {
         /* Can't open the file? Fall back to unlinking in the main thread. */
-        return unlink(filename);
+        return redis_unlink(filename);
     } else {
         /* The following unlink() removes the name but doesn't free the
          * file contents because a process still has it open. */
-        int retval = unlink(filename);
+        int retval = redis_unlink(filename);
         if (retval == -1) {
             /* If we got an unlink error, we just return it, closing the
              * new reference we have to the file. */
@@ -1106,7 +1106,7 @@ void removeRDBUsedToSyncReplicas(void) {
             }
         }
         if (delrdb) {
-            struct redis_stat sb;
+            struct redis_stat_type sb;
             if (redis_stat(server.rdb_filename,&sb) != -1) {
                 RDBGeneratedByReplication = 0;
                 serverLog(LL_NOTICE,
@@ -1408,7 +1408,7 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
         client *slave = ln->value;
 
         if (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_END) {
-            struct redis_stat buf;
+            struct redis_stat_type buf;
 
             if (bgsaveerr != C_OK) {
                 freeClientAsync(slave);
@@ -1705,7 +1705,7 @@ void readSyncBulkPayload(connection *conn) {
                 use_diskless_load? "to parser":"to disk");
         } else {
             usemark = 0;
-            server.repl_transfer_size = strtol(buf+1,NULL,10);
+            server.repl_transfer_size = strtoll(buf+1,NULL,10);
             serverLog(LL_NOTICE,
                 "MASTER <-> REPLICA sync: receiving %lld bytes from master %s",
                 (long long) server.repl_transfer_size,
@@ -1947,7 +1947,7 @@ void readSyncBulkPayload(connection *conn) {
         /* Rename rdb like renaming rewrite aof asynchronously. */
         int old_rdb_fd = open(server.rdb_filename,O_RDONLY|O_NONBLOCK,0);
 #endif
-        if (rename(server.repl_transfer_tmpfile,server.rdb_filename) == -1) {
+        if (redis_rename(server.repl_transfer_tmpfile,server.rdb_filename) == -1) {
             serverLog(LL_WARNING,
                 "Failed trying to rename the temp DB into %s in "
                 "MASTER <-> REPLICA synchronization: %s",
@@ -2610,7 +2610,7 @@ void syncWithMaster(connection *conn) {
     if (!useDisklessLoad()) {
         while(maxtries--) {
             snprintf(tmpfile,256,
-                "temp-%d.%ld.rdb",(int)server.unixtime,(long int)getpid());
+                "temp-%jd.%ld.rdb",(intmax_t)server.unixtime,(long int)getpid());
             dfd = open(tmpfile,O_CREAT|O_WRONLY|O_EXCL,0644);
             if (dfd != -1) break;
             sleep(1);

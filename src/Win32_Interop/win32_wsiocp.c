@@ -26,12 +26,14 @@
 #include <mswsock.h>
 #include "win32_wsiocp.h"
 #include "Win32_FDAPI.h"
+#include "Win32_Error.h"
 #include "Win32_Assert.h"
 #include <errno.h>
 
 static HANDLE iocph;
 
-#define SUCCEEDED_WITH_IOCP(result) ((result) || (GetLastError() == ERROR_IO_PENDING))
+#define SUCCEEDED_WITH_IOCP(result) \
+    ((result) || (FDAPI_WSAGetLastError() == WSA_IO_PENDING))
 
 /* For zero length reads use shared buf */
 static DWORD wsarecvflags;
@@ -95,7 +97,7 @@ int WSIOCP_SocketAttachToPort(int fd, iocpSockState *socketState,
             return 0;
         }
     } else {
-        errno = WSAEINVAL;
+        errno = EINVAL;
     }
 
     return -1;
@@ -112,23 +114,23 @@ int WSIOCP_QueueAccept(int listenfd) {
     iocpSockState *accsockstate;
     SOCKADDR_STORAGE listenaddr;
     int listenaddrlen = sizeof(listenaddr);
-    DWORD result, bytes;
+    BOOL result;
+    DWORD bytes;
     int acceptfd;
     aacceptreq * areq;
 
     if ((sockstate = WSIOCP_GetSocketState(listenfd)) == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return -1;
     }
 
     if (getsockname(listenfd, (struct sockaddr *) &listenaddr,
                     &listenaddrlen) == SOCKET_ERROR) {
-        errno = FDAPI_WSAGetLastError();
         return -1;
     }
     if (listenaddr.ss_family != AF_INET &&
         listenaddr.ss_family != AF_INET6) {
-        errno = WSAEAFNOSUPPORT;
+        errno = EAFNOSUPPORT;
         return -1;
     }
 
@@ -140,14 +142,26 @@ int WSIOCP_QueueAccept(int listenfd) {
 
     accsockstate = WSIOCP_GetSocketState(acceptfd);
     if (accsockstate == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
+        close(acceptfd);
         return -1;
     }
 
     accsockstate->masks = SOCKET_ATTACHED;
     // Keep accept socket in buf len until accepted
     areq = (aacceptreq *) CallocMemoryNoCOW(sizeof(aacceptreq));
+    if (areq == NULL) {
+        close(acceptfd);
+        errno = ENOMEM;
+        return -1;
+    }
     areq->buf = CallocMemoryNoCOW(ACCEPTEX_ADDRESS_BUFFER_SIZE * 2);
+    if (areq->buf == NULL) {
+        close(acceptfd);
+        FreeMemoryNoCOW(areq);
+        errno = ENOMEM;
+        return -1;
+    }
     areq->accept = acceptfd;
     areq->next = NULL;
 
@@ -159,12 +173,13 @@ int WSIOCP_QueueAccept(int listenfd) {
     if (SUCCEEDED_WITH_IOCP(result)){
         sockstate->masks |= ACCEPT_PENDING;
     } else {
-        errno = FDAPI_WSAGetLastError();
+        int saved_errno = errno;
         sockstate->masks &= ~ACCEPT_PENDING;
         accsockstate->masks = 0;
         close(acceptfd);
         FreeMemoryNoCOW(areq->buf);
         FreeMemoryNoCOW(areq);
+        errno = saved_errno;
         return -1;
     }
 
@@ -175,7 +190,7 @@ int WSIOCP_QueueAccept(int listenfd) {
 int WSIOCP_Listen(int rfd, int backlog) {
     iocpSockState *sockstate = WSIOCP_GetSocketState(rfd);
     if (sockstate == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return SOCKET_ERROR;
     }
 
@@ -208,7 +223,7 @@ int WSIOCP_Accept(int fd, struct sockaddr *sa, socklen_t *len) {
     aacceptreq * areq;
 
     if ((sockstate = WSIOCP_GetSocketState(fd)) == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return SOCKET_ERROR;
     }
 
@@ -222,21 +237,32 @@ int WSIOCP_Accept(int fd, struct sockaddr *sa, socklen_t *len) {
 
     acceptfd = (int) areq->accept;
 
-    result = FDAPI_UpdateAcceptContext(acceptfd);
+    result = FDAPI_UpdateAcceptContext(acceptfd, fd);
     if (result == SOCKET_ERROR) {
-        errno = FDAPI_WSAGetLastError();
+        int saved_errno = errno;
+        close(acceptfd);
         FreeMemoryNoCOW(areq->buf);
         FreeMemoryNoCOW(areq);
+        WSIOCP_QueueAccept(fd);
+        errno = saved_errno;
         return SOCKET_ERROR;
     }
 
-    FDAPI_GetAcceptExSockaddrs(acceptfd,
-                               areq->buf,
-                               0,
-                               ACCEPTEX_ADDRESS_BUFFER_SIZE,
-                               ACCEPTEX_ADDRESS_BUFFER_SIZE,
-                               &plocalsa, &locallen,
-                               &premotesa, &remotelen);
+    if (!FDAPI_GetAcceptExSockaddrs(acceptfd,
+                                    areq->buf,
+                                    0,
+                                    ACCEPTEX_ADDRESS_BUFFER_SIZE,
+                                    ACCEPTEX_ADDRESS_BUFFER_SIZE,
+                                    &plocalsa, &locallen,
+                                    &premotesa, &remotelen)) {
+        int saved_errno = errno;
+        close(acceptfd);
+        FreeMemoryNoCOW(areq->buf);
+        FreeMemoryNoCOW(areq);
+        WSIOCP_QueueAccept(fd);
+        errno = saved_errno;
+        return SOCKET_ERROR;
+    }
 
     if (sa != NULL) {
         if (remotelen > 0) {
@@ -249,7 +275,15 @@ int WSIOCP_Accept(int fd, struct sockaddr *sa, socklen_t *len) {
         }
     }
 
-    WSIOCP_SocketAttach(acceptfd, NULL);
+    if (WSIOCP_SocketAttach(acceptfd, NULL) != 0) {
+        int saved_errno = errno;
+        close(acceptfd);
+        FreeMemoryNoCOW(areq->buf);
+        FreeMemoryNoCOW(areq);
+        WSIOCP_QueueAccept(fd);
+        errno = saved_errno;
+        return SOCKET_ERROR;
+    }
 
     FreeMemoryNoCOW(areq->buf);
     FreeMemoryNoCOW(areq);
@@ -273,7 +307,7 @@ int WSIOCP_QueueNextRead(int fd) {
     DWORD recvFlags = 0;
 
     if ((sockstate = WSIOCP_GetSocketState(fd)) == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return -1;
     }
     /* ConnectEx and read readiness share ov_read. Never reuse it while an
@@ -299,7 +333,7 @@ int WSIOCP_QueueNextRead(int fd) {
     if (SUCCEEDED_WITH_IOCP(result == 0)){
         sockstate->masks |= READ_QUEUED;
     } else {
-        errno = FDAPI_WSAGetLastError();
+        errno = win32_errno_from_system_error(FDAPI_WSAGetLastError());
         sockstate->masks &= ~READ_QUEUED;
         return -1;
     }
@@ -308,13 +342,18 @@ int WSIOCP_QueueNextRead(int fd) {
 
 /* Wrapper for send.
  * Enables use of WSA Send to get IOCP notification of completion.
- * Returns -1 with errno = WSA_IO_PENDING if callback will be invoked later */
+ * Returns -1 with errno = EINPROGRESS if callback will be invoked later */
 int WSIOCP_SocketSend(int fd, char *buf, int len, void *eventLoop,
                       void *client, void *data, void *proc) {
     iocpSockState *sockstate;
     int result;
     asendreq *areq;
     DWORD bytesSent = 0;
+
+    if (len < 0 || (buf == NULL && len != 0)) {
+        errno = EINVAL;
+        return SOCKET_ERROR;
+    }
 
     sockstate = WSIOCP_GetSocketState(fd);
 
@@ -328,14 +367,15 @@ int WSIOCP_SocketSend(int fd, char *buf, int len, void *eventLoop,
         (sockstate->masks & SOCKET_ATTACHED) == 0 ||
         proc == NULL) {
         result = (int) write(fd, buf, len);
-        if (result == SOCKET_ERROR) {
-            errno = FDAPI_WSAGetLastError();
-        }
         return result;
     }
 
     // Use overlapped structure to send using IOCP
     areq = (asendreq *) CallocMemoryNoCOW(sizeof(asendreq));
+    if (areq == NULL) {
+        errno = ENOMEM;
+        return SOCKET_ERROR;
+    }
     areq->wbuf.len = len;
     areq->wbuf.buf = buf;
     areq->eventLoop = (aeEventLoop *) eventLoop;
@@ -354,11 +394,11 @@ int WSIOCP_SocketSend(int fd, char *buf, int len, void *eventLoop,
                            NULL);
 	
     if (SUCCEEDED_WITH_IOCP(result == 0)) {
-        errno = WSA_IO_PENDING;
+        errno = EINPROGRESS;
         sockstate->wreqs++;
         listAddNodeTail(&sockstate->wreqlist, areq);
     } else {
-        errno = FDAPI_WSAGetLastError();
+        errno = win32_errno_from_system_error(FDAPI_WSAGetLastError());
         FreeMemoryNoCOW(areq);
     }
     return SOCKET_ERROR;
@@ -366,12 +406,11 @@ int WSIOCP_SocketSend(int fd, char *buf, int len, void *eventLoop,
 
 /* For non-blocking connect with IOCP */
 int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
-    const GUID wsaid_connectex = WSAID_CONNECTEX;
-    DWORD result;
+    int result;
     iocpSockState *sockstate;
 
     if ((sockstate = WSIOCP_GetSocketState(fd)) == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return SOCKET_ERROR;
     }
 
@@ -393,6 +432,10 @@ int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
             addr.sin_addr.S_un.S_addr = INADDR_ANY;
             addr.sin_port = 0;
             result = bind(fd, (SOCKADDR*) &addr, sizeof(addr));
+            if (result == SOCKET_ERROR) {
+                sockstate->masks &= ~CONNECT_PENDING;
+                return SOCKET_ERROR;
+            }
 
             result = FDAPI_ConnectEx(fd,
                                      (SOCKADDR*) socketAddrStorage,
@@ -411,6 +454,10 @@ int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
             memset(&(addr.sin6_addr.u.Byte), 0, 16);
             addr.sin6_port = 0;
             result = bind(fd, (SOCKADDR*) &addr, sizeof(addr));
+            if (result == SOCKET_ERROR) {
+                sockstate->masks &= ~CONNECT_PENDING;
+                return SOCKET_ERROR;
+            }
 
             result = FDAPI_ConnectEx(fd,
                                      (SOCKADDR*) socketAddrStorage,
@@ -425,7 +472,7 @@ int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
         {
             ASSERT(socketAddrStorage->ss_family == AF_INET || socketAddrStorage->ss_family == AF_INET6);
             sockstate->masks &= ~CONNECT_PENDING;
-            errno = WSAEINVAL;
+            errno = EINVAL;
             return SOCKET_ERROR;
         }
     }
@@ -433,10 +480,10 @@ int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
     if (result != TRUE) {
         result = FDAPI_WSAGetLastError();
         if (result == ERROR_IO_PENDING) {
-            errno = WSA_IO_PENDING;
+            errno = EINPROGRESS;
         } else {
             sockstate->masks &= ~CONNECT_PENDING;
-            errno = result;
+            errno = win32_errno_from_system_error(result);
             return SOCKET_ERROR;
         }
     }
@@ -444,12 +491,13 @@ int WSIOCP_SocketConnect(int fd, const SOCKADDR_STORAGE *socketAddrStorage) {
 }
 
 int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, const char* source_addr) {
-    const GUID wsaid_connectex = WSAID_CONNECTEX;
-    DWORD result;
+    int result;
     iocpSockState *sockstate;
+    SOCKADDR_STORAGE sourceStorage;
+    const struct sockaddr *sourceSockaddr = NULL;
 
     if ((sockstate = WSIOCP_GetSocketState(fd)) == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return SOCKET_ERROR;
     }
 
@@ -461,7 +509,16 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
     sockstate->masks |= CONNECT_PENDING;
     memset(&sockstate->ov_read, 0, sizeof(sockstate->ov_read));
 
-    // Need to bind sock before connectex
+    if (source_addr != NULL && source_addr[0] != '\0') {
+        if (!ParseStorageAddress(source_addr, 0, &sourceStorage)) {
+            sockstate->masks &= ~CONNECT_PENDING;
+            errno = EINVAL;
+            return SOCKET_ERROR;
+        }
+        sourceSockaddr = (const struct sockaddr *)&sourceStorage;
+    }
+
+    // Need to bind sock before ConnectEx.
     int storageSize = 0;
     switch (socketAddrStorage->ss_family) {
         case AF_INET:
@@ -469,9 +526,18 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
             storageSize = sizeof(SOCKADDR_IN);
             SOCKADDR_IN addr;
             memset(&addr, 0, storageSize);
-            addr.sin_family = socketAddrStorage->ss_family;
-            addr.sin_addr.S_un.S_addr = INADDR_ANY;
-            addr.sin_port = 0;
+            if (sourceSockaddr != NULL) {
+                if (sourceStorage.ss_family != AF_INET) {
+                    sockstate->masks &= ~CONNECT_PENDING;
+                    errno = EAFNOSUPPORT;
+                    return SOCKET_ERROR;
+                }
+                memcpy(&addr, sourceSockaddr, sizeof(addr));
+            } else {
+                addr.sin_family = socketAddrStorage->ss_family;
+                addr.sin_addr.S_un.S_addr = INADDR_ANY;
+                addr.sin_port = 0;
+            }
             result = bind(fd, (SOCKADDR*) &addr, sizeof(addr));
             break;
         }
@@ -480,9 +546,18 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
             storageSize = sizeof(SOCKADDR_IN6);
             SOCKADDR_IN6 addr;
             memset(&addr, 0, storageSize);
-            addr.sin6_family = socketAddrStorage->ss_family;
-            memset(&(addr.sin6_addr.u.Byte), 0, 16);
-            addr.sin6_port = 0;
+            if (sourceSockaddr != NULL) {
+                if (sourceStorage.ss_family != AF_INET6) {
+                    sockstate->masks &= ~CONNECT_PENDING;
+                    errno = EAFNOSUPPORT;
+                    return SOCKET_ERROR;
+                }
+                memcpy(&addr, sourceSockaddr, sizeof(addr));
+            } else {
+                addr.sin6_family = socketAddrStorage->ss_family;
+                memset(&(addr.sin6_addr.u.Byte), 0, 16);
+                addr.sin6_port = 0;
+            }
             result = bind(fd, (SOCKADDR*) &addr, sizeof(addr));
             break;
         }
@@ -490,9 +565,14 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
         {
             ASSERT(socketAddrStorage->ss_family == AF_INET || socketAddrStorage->ss_family == AF_INET6);
             sockstate->masks &= ~CONNECT_PENDING;
-            errno = WSAEINVAL;
+            errno = EINVAL;
             return SOCKET_ERROR;
         }
+    }
+
+    if (result == SOCKET_ERROR) {
+        sockstate->masks &= ~CONNECT_PENDING;
+        return SOCKET_ERROR;
     }
 
     result = FDAPI_ConnectEx(fd, (const LPSOCKADDR) socketAddrStorage,
@@ -500,10 +580,10 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
     if (result != TRUE) {
         result = FDAPI_WSAGetLastError();
         if (result == ERROR_IO_PENDING) {
-            errno = WSA_IO_PENDING;
+            errno = EINPROGRESS;
         } else {
             sockstate->masks &= ~CONNECT_PENDING;
-            errno = result;
+            errno = win32_errno_from_system_error(result);
             return SOCKET_ERROR;
         }
     }
@@ -529,7 +609,7 @@ static BOOL CALLBACK InitializePrivateHeapOnce(PINIT_ONCE once,
     (void)parameter;
     (void)context;
 
-    privateheap = HeapCreate(HEAP_GENERATE_EXCEPTIONS, 0, 0);
+    privateheap = HeapCreate(0, 0, 0);
     return privateheap != NULL;
 }
 
@@ -541,5 +621,5 @@ void* CallocMemoryNoCOW(size_t size) {
 }
 
 void FreeMemoryNoCOW(void * ptr) {
-    HeapFree(privateheap, 0, ptr);
+    if (ptr != NULL) HeapFree(privateheap, 0, ptr);
 }

@@ -22,14 +22,19 @@
 
 #include "Win32_StackTrace.h"
 #include "Win32_RedisLog.h"
+#include "Win32_Error.h"
 #include <DbgHelp.h>
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 
-static IMAGEHLP_SYMBOL64* pSymbol = (IMAGEHLP_SYMBOL64*) malloc(sizeof(IMAGEHLP_SYMBOL64) + MAX_PATH*sizeof(TCHAR));
+/* Symbol names are not filesystem paths and are not subject to MAX_PATH.
+ * Keep a fixed crash-safe buffer large enough for DbgHelp's documented symbol
+ * name limit so the exception handler never depends on a heap allocation. */
+static unsigned char symbolBuffer[sizeof(IMAGEHLP_SYMBOL64) + MAX_SYM_NAME];
+static IMAGEHLP_SYMBOL64* pSymbol = (IMAGEHLP_SYMBOL64*)symbolBuffer;
 static IMAGEHLP_LINE64 line;
-static BOOLEAN processingException = FALSE;
-static CHAR modulePath[MAX_PATH];
+static volatile LONG processingException = 0;
 static LPTOP_LEVEL_EXCEPTION_FILTER defaultTopLevelExceptionHandler = NULL;
 
 static const char* exceptionDescription(const DWORD& code)
@@ -60,19 +65,15 @@ static const char* exceptionDescription(const DWORD& code)
 }
 
 /* Returns the index of the last backslash in the file path */
-int GetFilenameStart(CHAR* path) {
-    int pos = 0;
-    int found = 0;
-    if (path != NULL) {
-        while (path[pos] != '\0' && pos < MAX_PATH) {
-            if (path[pos] == '\\') {
-                found = pos + 1;
-            }
-            ++pos;
-        }
-    }
-
-    return found;
+const char *GetFilenameStart(const char* path) {
+    const char *backslash;
+    const char *slash;
+    if (path == NULL) return "(unknown module)";
+    backslash = strrchr(path, '\\');
+    slash = strrchr(path, '/');
+    if (slash != NULL && (backslash == NULL || slash > backslash))
+        backslash = slash;
+    return backslash == NULL ? path : backslash + 1;
 }
 
 #ifdef _WIN64
@@ -82,15 +83,10 @@ void LogStackTrace() {
     HANDLE          process;
     CONTEXT         context;
     STACKFRAME64    stack;
-    ULONG           frame;
     DWORD64         dw64Displacement;
     DWORD           dwDisplacement;
 
     memset(&stack, 0, sizeof(STACKFRAME64));
-    memset(pSymbol, '\0', sizeof(*pSymbol) + MAX_PATH);
-    memset(&modulePath[0], '\0', sizeof(modulePath));
-    line.LineNumber = 0;
-
     RtlCaptureContext(&context);
     process = GetCurrentProcess();
     thread = GetCurrentThread();
@@ -102,7 +98,7 @@ void LogStackTrace() {
     stack.AddrFrame.Offset = context.Rbp;
     stack.AddrFrame.Mode = AddrModeFlat;
 
-    for (frame = 0;; frame++){
+    for (;;) {
         result = StackWalk64(
             IMAGE_FILE_MACHINE_AMD64,
             process,
@@ -115,33 +111,34 @@ void LogStackTrace() {
             NULL
             );
 
-        pSymbol->MaxNameLength = MAX_PATH;
+        if (!result) break;
+
+        memset(symbolBuffer, 0, sizeof(symbolBuffer));
+        memset(&line, 0, sizeof(line));
+        pSymbol->MaxNameLength = MAX_SYM_NAME;
         pSymbol->SizeOfStruct = sizeof(IMAGEHLP_SYMBOL64);
+        line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
 
         SymGetSymFromAddr64(process, stack.AddrPC.Offset, &dw64Displacement, pSymbol);
         SymGetLineFromAddr64(process, stack.AddrPC.Offset, &dwDisplacement, &line);
 
         DWORD64 moduleBase = SymGetModuleBase64(process, stack.AddrPC.Offset);
-        if (moduleBase)
-        {
-            GetModuleFileNameA((HINSTANCE) moduleBase, modulePath, MAX_PATH);
-        }
+        char *modulePath = moduleBase ?
+            win32_get_module_filename_for_handle_utf8((void *)(uintptr_t)moduleBase) :
+            NULL;
 
         //serverLog(LL_WARNING | LL_RAW, "%s!%s(%s:%d)(0x%08LX, 0x%08LX, 0x%08LX, 0x%08LX)\n",
         serverLog(LL_WARNING | LL_RAW, "%s!%s(%s:%d)(0x%08I64X, 0x%08I64X, 0x%08I64X, 0x%08I64X)\n",
-            &modulePath[GetFilenameStart(modulePath)],
+            GetFilenameStart(modulePath),
             pSymbol->Name,
-            line.FileName,
+            line.FileName != NULL ? line.FileName : "(unknown source)",
             line.LineNumber,
             stack.Params[0],
             stack.Params[1],
             stack.Params[2],
             stack.Params[3]
             );
-
-        if (!result) {
-            break;
-        }
+        free(modulePath);
     }
 }
 #else
@@ -169,12 +166,12 @@ void BugReportEnd(){
 }
 
 LONG WINAPI UnhandledExceptiontHandler(PEXCEPTION_POINTERS info) {
-    if (!processingException) {
+    if (InterlockedCompareExchange(&processingException, 1, 0) == 0) {
         bool headerLogged = false;
         try {
             const char* exDescription = "Exception code not available";
-            processingException = true;
-            if (info != NULL && info->ExceptionRecord != NULL && info->ExceptionRecord->ExceptionCode != NULL) {
+            if (info != NULL && info->ExceptionRecord != NULL &&
+                info->ExceptionRecord->ExceptionCode != 0) {
                 exDescription = exceptionDescription(info->ExceptionRecord->ExceptionCode);
             }
 
@@ -207,7 +204,7 @@ LONG WINAPI UnhandledExceptiontHandler(PEXCEPTION_POINTERS info) {
             defaultTopLevelExceptionHandler(info);
         }
 
-        processingException = false;
+        InterlockedExchange(&processingException, 0);
     }
 
     return EXCEPTION_CONTINUE_SEARCH;
@@ -224,7 +221,6 @@ extern "C" void AbortHandler(int signal_number) {
 void InitSymbols() {
     // Preload symbols so they will be available in case of out-of-memory exception
     SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
-    line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
     HANDLE process = GetCurrentProcess();
     SymInitialize(process, NULL, TRUE);
 }
