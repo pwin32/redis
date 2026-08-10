@@ -689,7 +689,8 @@ NULL
             int remaining = sizeof(extra);
             quicklist *ql = val->ptr;
             /* Add number of quicklist nodes */
-            int used = snprintf(nextra, remaining, " ql_nodes:%lu", ql->len);
+            int used = snprintf(nextra, remaining, " ql_nodes:%llu",
+                                (unsigned long long)ql->len);
             nextra += used;
             remaining -= used;
             /* Add average quicklist fill factor */
