@@ -5750,31 +5750,31 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
     /* Clients */
     if (all_sections || (dictFind(section_dict,"clients") != NULL)) {
         size_t maxin, maxout;
-        unsigned long blocking_keys, blocking_keys_on_nokey;
+        uint64_t blocking_keys, blocking_keys_on_nokey;
         getExpansiveClientsInfo(&maxin,&maxout);
         totalNumberOfBlockingKeys(&blocking_keys, &blocking_keys_on_nokey);
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
             "# Clients\r\n"
             "connected_clients:%llu\r\n"
-            "cluster_connections:%lu\r\n"
+            "cluster_connections:%llu\r\n"
             "maxclients:%u\r\n"
             "client_recent_max_input_buffer:%zu\r\n"
             "client_recent_max_output_buffer:%zu\r\n"
             "blocked_clients:%d\r\n"
             "tracking_clients:%d\r\n"
             "clients_in_timeout_table:%llu\r\n"
-            "total_blocking_keys:%lu\r\n"
-            "total_blocking_keys_on_nokey:%lu\r\n",
+            "total_blocking_keys:%llu\r\n"
+            "total_blocking_keys_on_nokey:%llu\r\n",
             (unsigned long long)(listLength(server.clients)-listLength(server.slaves)),
-            getClusterConnectionsCount(),
+            (unsigned long long)getClusterConnectionsCount(),
             server.maxclients,
             maxin, maxout,
             server.blocked_clients,
             server.tracking_clients,
             (unsigned long long) raxSize(server.clients_timeout_table),
-            blocking_keys,
-            blocking_keys_on_nokey);
+            (unsigned long long)blocking_keys,
+            (unsigned long long)blocking_keys_on_nokey);
     }
 
     /* Memory */
@@ -5827,15 +5827,15 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "allocator_allocated:%zu\r\n"
             "allocator_active:%zu\r\n"
             "allocator_resident:%zu\r\n"
-            "total_system_memory:%lu\r\n"
+            "total_system_memory:%zu\r\n"
             "total_system_memory_human:%s\r\n"
             "used_memory_lua:%lld\r\n" /* deprecated, renamed to used_memory_vm_eval */
             "used_memory_vm_eval:%lld\r\n"
             "used_memory_lua_human:%s\r\n" /* deprecated */
             "used_memory_scripts_eval:%lld\r\n"
-            "number_of_cached_scripts:%lu\r\n"
-            "number_of_functions:%lu\r\n"
-            "number_of_libraries:%lu\r\n"
+            "number_of_cached_scripts:%llu\r\n"
+            "number_of_functions:%llu\r\n"
+            "number_of_libraries:%llu\r\n"
             "used_memory_vm_functions:%lld\r\n"
             "used_memory_vm_total:%lld\r\n"
             "used_memory_vm_total_human:%s\r\n"
@@ -5878,15 +5878,15 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             server.cron_malloc_stats.allocator_allocated,
             server.cron_malloc_stats.allocator_active,
             server.cron_malloc_stats.allocator_resident,
-            (unsigned long)total_system_mem,
+            total_system_mem,
             total_system_hmem,
             memory_lua,
             memory_lua,
             used_memory_lua_hmem,
             (long long) mh->lua_caches,
-            dictSize(evalScriptsDict()),
-            functionsNum(),
-            functionsLibNum(),
+            (unsigned long long)dictSize(evalScriptsDict()),
+            (unsigned long long)functionsNum(),
+            (unsigned long long)functionsLibNum(),
             memory_functions,
             memory_functions + memory_lua,
             used_memory_vm_total_hmem,

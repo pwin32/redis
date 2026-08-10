@@ -733,8 +733,8 @@ void unblockClientOnError(client *c, const char *err_str) {
 /* sets blocking_keys to the total number of keys which has at least one client blocked on them
  * sets blocking_keys_on_nokey to the total number of keys which has at least one client
  * blocked on them to be written or deleted */
-void totalNumberOfBlockingKeys(unsigned long *blocking_keys, unsigned long *bloking_keys_on_nokey) {
-    unsigned long bkeys=0, bkeys_on_nokey=0;
+void totalNumberOfBlockingKeys(uint64_t *blocking_keys, uint64_t *bloking_keys_on_nokey) {
+    uint64_t bkeys=0, bkeys_on_nokey=0;
     for (int j = 0; j < server.dbnum; j++) {
         bkeys += dictSize(server.db[j].blocking_keys);
         bkeys_on_nokey += dictSize(server.db[j].blocking_keys_unblock_on_nokey);

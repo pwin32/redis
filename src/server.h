@@ -3460,7 +3460,7 @@ void blockForAofFsync(client *c, mstime_t timeout, long long offset, int numloca
 void signalDeletedKeyAsReady(redisDb *db, robj *key, int type);
 void updateStatsOnUnblock(client *c, ustime_t blocked_us, ustime_t reply_us, int had_errors);
 void scanDatabaseForDeletedKeys(redisDb *emptied, redisDb *replaced_with);
-void totalNumberOfBlockingKeys(unsigned long *blocking_keys, unsigned long *bloking_keys_on_nokey);
+void totalNumberOfBlockingKeys(uint64_t *blocking_keys, uint64_t *bloking_keys_on_nokey);
 void blockedBeforeSleep(void);
 
 /* timeout.c -- Blocked clients timeout and connections timeout. */
