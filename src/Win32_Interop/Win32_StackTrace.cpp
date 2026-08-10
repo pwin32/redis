@@ -138,7 +138,7 @@ void LogStackTrace() {
             stack.Params[2],
             stack.Params[3]
             );
-        free(modulePath);
+        win32_free(modulePath);
     }
 }
 #else

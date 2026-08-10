@@ -4703,7 +4703,7 @@ int finishShutdown(void) {
         {
             serverLog(LL_WARNING,
                 "Could not unlock cluster config lock file: %s",
-                wsa_strerror((int)GetLastError()));
+                win32_system_strerror((int)GetLastError()));
         }
         close(server.cluster_config_file_lock_fd);
         server.cluster_config_file_lock_fd = -1;

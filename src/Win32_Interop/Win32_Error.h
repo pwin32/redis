@@ -72,6 +72,7 @@ void win32_globfree_utf8(char **paths, size_t count);
 
 int strerror_r(int err, char* buf, size_t buflen);
 char *wsa_strerror(int err);
+char *win32_system_strerror(int error);
 
 
 #ifdef __cplusplus

@@ -13,10 +13,10 @@
  * Helpers and low level bit functions.
  * -------------------------------------------------------------------------- */
 
-/* Count number of bits set in the binary array pointed by 's' and long
+/* Count number of bits set in the binary array pointed by 's' and
  * 'count' bytes. The implementation of this function is required to
  * work with an input string length up to 512 MB or more (server.proto_max_bulk_len) */
-long long redisPopcount(void *s, long count) {
+long long redisPopcount(void *s, size_t count) {
     long long bits = 0;
     unsigned char *p = s;
     uint32_t *p4;
@@ -71,18 +71,18 @@ long long redisPopcount(void *s, long count) {
 }
 
 /* Return the position of the first bit set to one (if 'bit' is 1) or
- * zero (if 'bit' is 0) in the bitmap starting at 's' and long 'count' bytes.
+ * zero (if 'bit' is 0) in the bitmap starting at 's' and 'count' bytes.
  *
  * The function is guaranteed to return a value >= 0 if 'bit' is 0 since if
  * no zero bit is found, it returns count*8 assuming the string is zero
  * padded on the right. However if 'bit' is 1 it is possible that there is
  * not a single set bit in the bitmap. In this special case -1 is returned. */
-long long redisBitpos(void *s, unsigned long count, int bit) {
+long long redisBitpos(void *s, size_t count, int bit) {
     unsigned long *l;
     unsigned char *c;
     unsigned long skipval, word = 0, one;
     long long pos = 0; /* Position of bit, to return to the caller. */
-    unsigned long j;
+    size_t j;
     int found;
 
     /* Process whole words first, seeking for first word that is not
@@ -489,7 +489,7 @@ robj *lookupStringForBitCommand(client *c, uint64_t maxbit, int *dirty) {
  *
  * If the source object is NULL the function is guaranteed to return NULL
  * and set 'len' to 0. */
-unsigned char *getObjectReadOnlyString(robj *o, long *len, char *llbuf) {
+unsigned char *getObjectReadOnlyString(robj *o, size_t *len, char *llbuf) {
     serverAssert(!o || o->type == OBJ_STRING);
     unsigned char *p = NULL;
 
@@ -586,12 +586,12 @@ REDIS_NO_SANITIZE("alignment")
 void bitopCommand(client *c) {
     char *opname = c->argv[1]->ptr;
     robj *o, *targetkey = c->argv[2];
-    unsigned long op, j, numkeys;
+    unsigned long op, numkeys;
+    size_t j;
     robj **objects;      /* Array of source objects. */
     unsigned char **src; /* Array of source strings pointers. */
-    unsigned long *len, maxlen = 0; /* Array of length of src strings,
-                                       and max len. */
-    unsigned long minlen = 0;    /* Min len among the input keys. */
+    size_t *len, maxlen = 0; /* Array of length of src strings and max len. */
+    size_t minlen = 0;       /* Min len among the input keys. */
     unsigned char *res = NULL; /* Resulting string. */
 
     /* Parse the operation name. */
@@ -617,7 +617,7 @@ void bitopCommand(client *c) {
     /* Lookup keys, and store pointers to the string objects into an array. */
     numkeys = c->argc - 3;
     src = zmalloc(sizeof(unsigned char*) * numkeys);
-    len = zmalloc(sizeof(long) * numkeys);
+    len = zmalloc(sizeof(*len) * numkeys);
     objects = zmalloc(sizeof(robj*) * numkeys);
     for (j = 0; j < numkeys; j++) {
         o = lookupKeyRead(c->db,c->argv[j+3]);
@@ -631,7 +631,7 @@ void bitopCommand(client *c) {
         }
         /* Return an error if one of the keys is not a string. */
         if (checkType(c,o,OBJ_STRING)) {
-            unsigned long i;
+            size_t i;
             for (i = 0; i < j; i++) {
                 if (objects[i])
                     decrRefCount(objects[i]);
@@ -652,7 +652,7 @@ void bitopCommand(client *c) {
     if (maxlen) {
         res = (unsigned char*) sdsnewlen(NULL,maxlen);
         unsigned char output, byte;
-        unsigned long i;
+        size_t i;
 
         /* Fast path: as far as we have data for all the input bitmaps we
          * can take a fast path that performs much better than the
@@ -768,14 +768,15 @@ void bitopCommand(client *c) {
         notifyKeyspaceEvent(NOTIFY_GENERIC,"del",targetkey,c->db->id);
         server.dirty++;
     }
-    addReplyLongLong(c,maxlen); /* Return the output string length in bytes. */
+    serverAssert(maxlen <= LLONG_MAX);
+    addReplyLongLong(c,(long long)maxlen); /* Return the output string length in bytes. */
 }
 
 /* BITCOUNT key [start end [BIT|BYTE]] */
 void bitcountCommand(client *c) {
     robj *o;
     long long start, end;
-    long strlen;
+    size_t strlen;
     unsigned char *p;
     char llbuf[LONG_STR_SIZE];
     int isbit = 0;
@@ -799,10 +800,9 @@ void bitcountCommand(client *c) {
         o = lookupKeyRead(c->db, c->argv[1]);
         if (checkType(c, o, OBJ_STRING)) return;
         p = getObjectReadOnlyString(o,&strlen,llbuf);
-        long long totlen = strlen;
-
         /* Make sure we will not overflow */
-        serverAssert(totlen <= LLONG_MAX >> 3);
+        serverAssert(strlen <= LLONG_MAX >> 3);
+        long long totlen = (long long)strlen;
 
         /* Convert negative indexes */
         if (start < 0 && end < 0 && start > end) {
@@ -830,7 +830,7 @@ void bitcountCommand(client *c) {
         p = getObjectReadOnlyString(o,&strlen,llbuf);
         /* The whole string. */
         start = 0;
-        end = strlen-1;
+        end = strlen ? (long long)strlen-1 : -1;
     } else {
         /* Syntax error. */
         addReplyErrorObject(c,shared.syntaxerr);
@@ -848,7 +848,7 @@ void bitcountCommand(client *c) {
     if (start > end) {
         addReply(c,shared.czero);
     } else {
-        long bytes = (long)(end-start+1);
+        size_t bytes = (size_t)(end-start+1);
         long long count = redisPopcount(p+start,bytes);
         if (first_byte_neg_mask != 0 || last_byte_neg_mask != 0) {
             unsigned char firstlast[2] = {0, 0};
@@ -867,7 +867,8 @@ void bitcountCommand(client *c) {
 void bitposCommand(client *c) {
     robj *o;
     long long start, end;
-    long bit, strlen;
+    long bit;
+    size_t strlen;
     unsigned char *p;
     char llbuf[LONG_STR_SIZE];
     int isbit = 0, end_given = 0;
@@ -906,8 +907,8 @@ void bitposCommand(client *c) {
         p = getObjectReadOnlyString(o, &strlen, llbuf);
 
         /* Make sure we will not overflow */
-        long long totlen = strlen;
-        serverAssert(totlen <= LLONG_MAX >> 3);
+        serverAssert(strlen <= LLONG_MAX >> 3);
+        long long totlen = (long long)strlen;
 
         if (c->argc < 5) {
             if (isbit) end = (totlen<<3) + 7;
@@ -937,7 +938,7 @@ void bitposCommand(client *c) {
 
         /* The whole string. */
         start = 0;
-        end = strlen-1;
+        end = strlen ? (long long)strlen-1 : -1;
     } else {
         /* Syntax error. */
         addReplyErrorObject(c,shared.syntaxerr);
@@ -957,7 +958,7 @@ void bitposCommand(client *c) {
     if (start > end) {
         addReplyLongLong(c, -1);
     } else {
-        long bytes = end-start+1;
+        size_t bytes = (size_t)(end-start+1);
         long long pos;
         unsigned char tmpchar;
         if (first_byte_neg_mask) {
@@ -975,7 +976,7 @@ void bitposCommand(client *c) {
             bytes--;
         }
         /* If the last byte has not bits in the range, we should exclude it */
-        long curbytes = bytes - (last_byte_neg_mask ? 1 : 0);
+        size_t curbytes = bytes - (last_byte_neg_mask ? 1 : 0);
         if (curbytes > 0) {
             pos = redisBitpos(p+start,curbytes,bit);
             /* If there is no more bytes or we get valid pos, we can exit early */
@@ -1219,7 +1220,7 @@ void bitfieldGeneric(client *c, int flags) {
         } else {
             /* GET */
             unsigned char buf[9];
-            long strlen = 0;
+            size_t strlen = 0;
             unsigned char *src = NULL;
             char llbuf[LONG_STR_SIZE];
 

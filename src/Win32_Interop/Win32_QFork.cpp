@@ -169,7 +169,7 @@ static wstring QForkUtf8ToWide(const char *value) {
                            "QFork UTF-8 to UTF-16 conversion failed");
     }
     wstring result(wide);
-    free(wide);
+    win32_free(wide);
     return result;
 }
 
@@ -2212,7 +2212,7 @@ void CreateChildProcess(PROCESS_INFORMATION *pi, DWORD dwCreationFlags = 0) {
                            "Failed to get module name");
     }
     wstring fileName(modulePath);
-    free(modulePath);
+    win32_free(modulePath);
 
     vector<wstring> childArguments;
     childArguments.push_back(fileName);
