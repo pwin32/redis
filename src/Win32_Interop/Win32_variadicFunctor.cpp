@@ -48,7 +48,7 @@ LPVOID DLLMap::getProcAddress(string dll, string functionName)
 			throw system_error(errno, generic_category(), "invalid UTF-8 DLL name");
 		}
 		HMODULE mod = LoadLibraryW(wide_dll);
-		free(wide_dll);
+		win32_free(wide_dll);
 		if (mod == NULL) {
 			throw system_error(GetLastError(), system_category(), "LoadLibrary failed");
 		}

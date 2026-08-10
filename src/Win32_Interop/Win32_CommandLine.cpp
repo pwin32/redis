@@ -866,17 +866,17 @@ void ParseConfFile(string confFile, string cwd, ArgumentMap& argMap) {
     }
     wideConfFilePath = win32_utf8_path_to_wide(fullConfFilePath);
     if (wideConfFilePath == NULL) {
-        free(fullConfFilePath);
+        win32_free(fullConfFilePath);
         throw std::system_error(errno, generic_category(),
                                 "UTF-8 configuration path conversion failed");
     }
 
     config = _wfopen(wideConfFilePath, L"rb");
-    free(wideConfFilePath);
+    win32_free(wideConfFilePath);
     if (config == NULL) {
         stringstream ss;
         ss << "Failed to open the .conf file: " << confFile << " CWD=" << cwd.c_str();
-        free(fullConfFilePath);
+        win32_free(fullConfFilePath);
         throw invalid_argument(ss.str());
     }
 
@@ -885,14 +885,14 @@ void ParseConfFile(string confFile, string cwd, ArgumentMap& argMap) {
         size_t separator = fullPath.find_last_of("\\/");
         if (separator == string::npos) {
             fclose(config);
-            free(fullConfFilePath);
+            win32_free(fullConfFilePath);
             throw std::runtime_error("Configuration path has no directory");
         }
         if (separator == 2 && fullPath.size() >= 3 && fullPath[1] == ':')
             separator++;
         g_pathsAccessed.push_back(fullPath.substr(0, separator));
     }
-    free(fullConfFilePath);
+    win32_free(fullConfFilePath);
 
     char chunk[4096];
     while (fgets(chunk, sizeof(chunk), config) != NULL) {
@@ -1061,7 +1061,7 @@ void ParseCommandLineArguments(int argc, char** argv) {
                                             "GetModuleFileNameW failed");
                 }
                 string currentDir = modulePath;
-                free(modulePath);
+                win32_free(modulePath);
                 auto pos = currentDir.find_last_of("\\/");
                 if (pos == string::npos)
                     throw std::runtime_error("Executable path has no directory");
@@ -1102,7 +1102,7 @@ void ParseCommandLineArguments(int argc, char** argv) {
                                 "ParseCommandLineArguments: GetCurrentDirectoryW failed");
     }
     string cwd(cwdBuffer);
-    free(cwdBuffer);
+    win32_free(cwdBuffer);
 
     if (confFile) {
         ParseConfFile(confFilePath, cwd, g_argMap);
@@ -1119,7 +1119,7 @@ void ParseCommandLineArguments(int argc, char** argv) {
                                 "GetFullPathNameW failed for data directory");
     }
     fileCreationDirectory = fullPath;
-    free(fullPath);
+    win32_free(fullPath);
     g_pathsAccessed.push_back(fileCreationDirectory);
 
     ValidateCommandlineCombinations();

@@ -36,6 +36,8 @@ _Static_assert(sizeof(((struct redisServer *)0)->acllog_max_len) == sizeof(uint6
                "Win64 ACL log limits must be 64-bit");
 _Static_assert(sizeof(unsigned long) == 4,
                "This regression test must run against the Win64 LLP64 ABI");
+_Static_assert(sizeof(size_t) == sizeof(uint64_t),
+               "Win64 string and bit-operation lengths must be 64-bit");
 _Static_assert(sizeof(((struct redisFunctionSym *)0)->pointer) == sizeof(void *),
                "Function symbol addresses must preserve the full pointer width");
 

@@ -1575,7 +1575,7 @@ void rewriteConfigDirOption(standardConfig *config, const char *name, struct rew
         return; /* no rewrite on error. */
     }
     rewriteConfigStringOption(state,name,cwd,NULL);
-    free(cwd);
+    win32_free(cwd);
 #else
     char cwd[1024];
 
@@ -3094,7 +3094,7 @@ static sds getConfigDirOption(standardConfig *config) {
 #ifdef _WIN32
     char *cwd = win32_get_current_directory_utf8();
     sds result = sdsnew(cwd != NULL ? cwd : "");
-    free(cwd);
+    win32_free(cwd);
     return result;
 #else
     char buf[1024];

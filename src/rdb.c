@@ -2153,7 +2153,7 @@ static int rdbSaveInternal(int req, const char *filename, rdbSaveInfo *rsi, int 
             cwdp ? cwdp : "unknown",
             str_err);
 #ifdef _WIN32
-        free(cwdp);
+        win32_free(cwdp);
 #endif
         errno = saved_errno;
         return C_ERR;
@@ -2240,7 +2240,7 @@ int rdbSave(int req, char *filename, rdbSaveInfo *rsi, int rdbflags) {
             cwdp ? cwdp : "unknown",
             str_err);
 #ifdef _WIN32
-        free(cwdp);
+        win32_free(cwdp);
 #endif
         redis_unlink(tmpfile);
         stopSaving(0);

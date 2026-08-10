@@ -1082,7 +1082,7 @@ sds getAbsolutePath(char *filename) {
     sdsfree(relpath);
     if (buffer == NULL) return NULL;
     result = sdsnew(buffer);
-    free(buffer);
+    win32_free(buffer);
     return result;
 #else
     char cwd[1024];
