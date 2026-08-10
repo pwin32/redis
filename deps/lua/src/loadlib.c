@@ -111,12 +111,12 @@ static void setprogdir (lua_State *L) {
   slash = strrchr(buff, '/');
   if (slash != NULL && (lb == NULL || slash > lb)) lb = slash;
   if (lb == NULL) {
-    free(buff);
+    win32_free(buff);
     luaL_error(L, "unable to find ModuleFileName directory");
   }
   *lb = '\0';
   luaL_gsub(L, lua_tostring(L, -1), LUA_EXECDIR, buff);
-  free(buff);
+  win32_free(buff);
   lua_remove(L, -2);  /* remove original string */
 }
 
@@ -145,7 +145,7 @@ static void *ll_load (lua_State *L, const char *path) {
   }
   lib = LoadLibraryExW(wide_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
   error = lib == NULL ? GetLastError() : ERROR_SUCCESS;
-  free(wide_path);
+  win32_free(wide_path);
   if (lib == NULL) SetLastError(error);
   if (lib == NULL) pusherror(L);
   return lib;
@@ -628,7 +628,7 @@ static void setpath (lua_State *L, const char *fieldname, const char *envname,
     lua_remove(L, -2);
   }
 #ifdef _WIN32
-  free(envpath);
+  win32_free(envpath);
 #endif
   setprogdir(L);
   lua_setfield(L, -2, fieldname);

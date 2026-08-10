@@ -76,6 +76,11 @@ static void test_error_translation() {
           "WSAECONNRESET should map to POSIX ECONNRESET");
     check(win32_errno_from_system_error(0x7fffffff) == EIO,
           "unknown Windows errors should map to POSIX EIO");
+    check(std::strcmp(wsa_strerror(EACCES), std::strerror(EACCES)) == 0,
+          "POSIX errno formatting must not reinterpret errno as a Win32 code");
+    const char *native_error = win32_system_strerror(ERROR_ACCESS_DENIED);
+    check(native_error != NULL && native_error[0] != '\0',
+          "native Windows errors should retain a UTF-8 system formatter");
     check(sizeof(((redis_rusage_timeval *)0)->tv_sec) == sizeof(int64_t),
           "Windows CPU accounting seconds should be 64-bit");
     check(sizeof(((redis_rusage_timeval *)0)->tv_usec) == sizeof(int64_t),

@@ -1061,7 +1061,7 @@ void ParseCommandLineArguments(int argc, char** argv) {
                                             "GetModuleFileNameW failed");
                 }
                 string currentDir = modulePath;
-                free(modulePath);
+                win32_free(modulePath);
                 auto pos = currentDir.find_last_of("\\/");
                 if (pos == string::npos)
                     throw std::runtime_error("Executable path has no directory");

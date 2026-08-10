@@ -93,7 +93,7 @@ void setLogFile(const char* filename)
                                  OPEN_ALWAYS,
                                  FILE_ATTRIBUTE_NORMAL,
                                  NULL);
-        free(widePath);
+        win32_free(widePath);
 
         if (newLogFile == INVALID_HANDLE_VALUE) {
             DWORD err = GetLastError();

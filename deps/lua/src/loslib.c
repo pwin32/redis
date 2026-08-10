@@ -74,7 +74,7 @@ static int os_getenv (lua_State *L) {
 #ifdef _WIN32
   char *value = win32_getenv_utf8(luaL_checkstring(L, 1));
   lua_pushstring(L, value);  /* if NULL push nil */
-  free(value);
+  win32_free(value);
 #else
   lua_pushstring(L, getenv(luaL_checkstring(L, 1)));  /* if NULL push nil */
 #endif
