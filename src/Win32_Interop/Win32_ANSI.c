@@ -178,7 +178,7 @@ WCHAR ChBuffer[BUFFER_SIZE];
 void FlushBuffer(void) {
     DWORD nWritten;
     if (nCharInBuffer <= 0) return;
-    WriteConsole(hConOut, ChBuffer, nCharInBuffer, &nWritten, NULL);
+    WriteConsoleW(hConOut, ChBuffer, nCharInBuffer, &nWritten, NULL);
     nCharInBuffer = 0;
 }
 
@@ -193,6 +193,92 @@ void PushBuffer(WCHAR c) {
     ChBuffer[nCharInBuffer] = c;
     if (++nCharInBuffer == BUFFER_SIZE)
         FlushBuffer();
+}
+
+static void PushBufferCodepoint(unsigned int codepoint) {
+    if (codepoint <= 0xffff) {
+        PushBuffer((WCHAR)codepoint);
+    } else if (codepoint <= 0x10ffff) {
+        codepoint -= 0x10000;
+        PushBuffer((WCHAR)(0xd800 + (codepoint >> 10)));
+        PushBuffer((WCHAR)(0xdc00 + (codepoint & 0x3ff)));
+    }
+}
+
+typedef struct {
+    unsigned int codepoint;
+    unsigned int minimum;
+    int remaining;
+} UTF8Decoder;
+
+static UTF8Decoder text_decoder;
+static UTF8Decoder title_decoder;
+static BOOL title_escape_pending;
+
+static void utf8DecoderReset(UTF8Decoder *decoder) {
+    decoder->codepoint = 0;
+    decoder->minimum = 0;
+    decoder->remaining = 0;
+}
+
+static void PushTitleCodepoint(unsigned int codepoint) {
+    if (codepoint <= 0xffff) {
+        if ((size_t)Pt_len < lenof(Pt_arg) - 1)
+            Pt_arg[Pt_len++] = (WCHAR)codepoint;
+    } else if (codepoint <= 0x10ffff && (size_t)Pt_len < lenof(Pt_arg) - 2) {
+        codepoint -= 0x10000;
+        Pt_arg[Pt_len++] = (WCHAR)(0xd800 + (codepoint >> 10));
+        Pt_arg[Pt_len++] = (WCHAR)(0xdc00 + (codepoint & 0x3ff));
+    }
+}
+
+static void utf8DecoderEmitReplacement(UTF8Decoder *decoder,
+                                        void (*emit)(unsigned int)) {
+    if (decoder->remaining != 0) {
+        emit(0xfffd);
+        utf8DecoderReset(decoder);
+    }
+}
+
+static void utf8DecoderByte(UTF8Decoder *decoder, unsigned char byte,
+                            void (*emit)(unsigned int)) {
+again:
+    if (decoder->remaining == 0) {
+        if (byte <= 0x7f) {
+            emit(byte);
+        } else if (byte >= 0xc2 && byte <= 0xdf) {
+            decoder->codepoint = byte & 0x1f;
+            decoder->minimum = 0x80;
+            decoder->remaining = 1;
+        } else if (byte >= 0xe0 && byte <= 0xef) {
+            decoder->codepoint = byte & 0x0f;
+            decoder->minimum = 0x800;
+            decoder->remaining = 2;
+        } else if (byte >= 0xf0 && byte <= 0xf4) {
+            decoder->codepoint = byte & 0x07;
+            decoder->minimum = 0x10000;
+            decoder->remaining = 3;
+        } else {
+            emit(0xfffd);
+        }
+        return;
+    }
+
+    if ((byte & 0xc0) != 0x80) {
+        emit(0xfffd);
+        utf8DecoderReset(decoder);
+        goto again;
+    }
+    decoder->codepoint = (decoder->codepoint << 6) | (byte & 0x3f);
+    if (--decoder->remaining == 0) {
+        unsigned int codepoint = decoder->codepoint;
+        if (codepoint < decoder->minimum || codepoint > 0x10ffff ||
+            (codepoint >= 0xd800 && codepoint <= 0xdfff))
+            emit(0xfffd);
+        else
+            emit(codepoint);
+        utf8DecoderReset(decoder);
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -213,7 +299,7 @@ void SendSequence(LPTSTR seq) {
     in.Event.KeyEvent.dwControlKeyState = 0;
     for (; *seq; ++seq) {
         in.Event.KeyEvent.uChar.UnicodeChar = *seq;
-        WriteConsoleInput(hStdIn, &in, 1, &out);
+        WriteConsoleInputW(hStdIn, &in, 1, &out);
     }
 }
 
@@ -619,7 +705,7 @@ void InterpretEscSeq(void) {
                 if (es_argv[0] == 21)	// ESC[21t Report xterm window's title
                 {
                     TCHAR buf[MAX_PATH * 2];
-                    DWORD len = GetConsoleTitle(buf + 3, lenof(buf) - 3 - 2);
+                    DWORD len = GetConsoleTitleW(buf + 3, lenof(buf) - 3 - 2);
                     // Too bad if it's too big or fails.
                     buf[0] = ESC;
                     buf[1] = ']';
@@ -642,7 +728,7 @@ void InterpretEscSeq(void) {
 
         if (es_argc == 1 && es_argv[0] == 0) // ESC]0;titleST
         {
-            SetConsoleTitle(Pt_arg);
+            SetConsoleTitleW(Pt_arg);
         }
     }
 }
@@ -661,16 +747,32 @@ BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytes
 
     if (hDev != hConOut)	// reinit if device has changed
     {
+        if (hConOut != NULL) {
+            utf8DecoderEmitReplacement(&text_decoder, PushBufferCodepoint);
+            FlushBuffer();
+        }
         hConOut = hDev;
         state = 1;
         shifted = FALSE;
+        utf8DecoderReset(&text_decoder);
+        utf8DecoderReset(&title_decoder);
+        title_escape_pending = FALSE;
     }
     for (i = nNumberOfBytesToWrite, s = (LPCSTR)lpBuffer; i > 0; i--, s++) {
         if (state == 1) {
-            if (*s == ESC) state = 2;
-            else if (*s == SO) shifted = TRUE;
-            else if (*s == SI) shifted = FALSE;
-            else PushBuffer(*s);
+            if (*s == ESC) {
+                utf8DecoderEmitReplacement(&text_decoder, PushBufferCodepoint);
+                state = 2;
+            }
+            else if (*s == SO) {
+                utf8DecoderEmitReplacement(&text_decoder, PushBufferCodepoint);
+                shifted = TRUE;
+            }
+            else if (*s == SI) {
+                utf8DecoderEmitReplacement(&text_decoder, PushBufferCodepoint);
+                shifted = FALSE;
+            }
+            else utf8DecoderByte(&text_decoder, (unsigned char)*s, PushBufferCodepoint);
         } else if (state == 2) {
             if (*s == ESC);	// \e\e...\e == \e
             else if ((*s == '[') || (*s == ']')) {
@@ -680,6 +782,8 @@ BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytes
                 state = 3;
                 Pt_len = 0;
                 *Pt_arg = '\0';
+                utf8DecoderReset(&title_decoder);
+                title_escape_pending = FALSE;
             } else if (*s == ')' || *s == '(') state = 6;
             else state = 1;
         } else if (state == 3) {
@@ -715,16 +819,30 @@ BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytes
                 state = 1;
             }
         } else if (state == 5) {
-            if (*s == BEL) {
+            if (title_escape_pending && *s == '\\') {
+                utf8DecoderEmitReplacement(&title_decoder, PushTitleCodepoint);
                 Pt_arg[Pt_len] = '\0';
                 InterpretEscSeq();
                 state = 1;
-            } else if (*s == '\\' && Pt_len > 0 && Pt_arg[Pt_len - 1] == ESC) {
-                Pt_arg[--Pt_len] = '\0';
+                title_escape_pending = FALSE;
+                continue;
+            }
+            if (title_escape_pending) {
+                utf8DecoderByte(&title_decoder, ESC, PushTitleCodepoint);
+                title_escape_pending = FALSE;
+            }
+            if (*s == BEL) {
+                utf8DecoderEmitReplacement(&title_decoder, PushTitleCodepoint);
+                Pt_arg[Pt_len] = '\0';
                 InterpretEscSeq();
                 state = 1;
-            } else if ((size_t)Pt_len < lenof(Pt_arg) - 1)
-                Pt_arg[Pt_len++] = *s;
+            } else {
+                if (*s == ESC)
+                    title_escape_pending = TRUE;
+                else
+                    utf8DecoderByte(&title_decoder, (unsigned char)*s,
+                                    PushTitleCodepoint);
+            }
         } else if (state == 6) {
             // Ignore it (ESC ) 0 is implicit; nothing else is supported).
             state = 1;

@@ -591,11 +591,13 @@ static int pthread_abi_cond_wait(win32_pthread_abi_cond_t *cond,
 {
     win32_pthread_abi_cond_state *state = pthread_abi_get_cond(cond);
     CRITICAL_SECTION *cs = pthread_abi_get_mutex(mutex);
+    DWORD error;
 
     if (state == NULL || cs == NULL) return ENOMEM;
     if (SleepConditionVariableCS(&state->condition, cs, timeout)) return 0;
-    if (GetLastError() == ERROR_TIMEOUT) return ETIMEDOUT;
-    return pthread_win32_error(GetLastError());
+    error = GetLastError();
+    if (error == ERROR_TIMEOUT) return ETIMEDOUT;
+    return pthread_win32_error(error);
 }
 
 int pthread_cond_wait(win32_pthread_abi_cond_t *cond,
