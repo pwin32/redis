@@ -955,7 +955,7 @@ char *getObjectTypeName(robj *o) {
 void scanGenericCommand(client *c, robj *o, unsigned long cursor) {
     int i, j;
     listNode *node;
-    long count = 10;
+    int64_t count = 10;
     sds pat = NULL;
     sds typename = NULL;
     long long type = LLONG_MAX;
@@ -974,7 +974,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long cursor) {
     while (i < c->argc) {
         j = c->argc - i;
         if (!strcasecmp(c->argv[i]->ptr, "count") && j >= 2) {
-            if (getLongFromObjectOrReply(c, c->argv[i+1], &count, NULL)
+            if (getLongLongFromObjectOrReply(c, c->argv[i+1], &count, NULL)
                 != C_OK)
             {
                 return;
@@ -1050,7 +1050,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long cursor) {
          * COUNT, so if the hash table is in a pathological state (very
          * sparsely populated) we avoid to block too much time at the cost
          * of returning no or very few elements. */
-        long maxiterations = count*10;
+        int64_t maxiterations = (count > LLONG_MAX / 10) ? LLONG_MAX : count * 10;
 
         /* We pass scanData which have three pointers to the callback:
          * 1. data.keys: the list to which it will add new elements;

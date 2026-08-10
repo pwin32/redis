@@ -245,7 +245,7 @@ void activeDefragSdsDictCallback(void *privdata, const dictEntry *de) {
 
 /* Defrag a dict with sds key and optional value (either ptr, sds or robj string) */
 void activeDefragSdsDict(dict* d, int val_type) {
-    unsigned long cursor = 0;
+    dict_ulong cursor = 0;
     dictDefragFunctions defragfns = {
         .defragAlloc = activeDefragAlloc,
         .defragKey = (dictDefragAllocFunction *)activeDefragSds,
@@ -327,7 +327,7 @@ void defragLater(redisDb *db, dictEntry *kde) {
 }
 
 /* returns 0 if no more work needs to be been done, and 1 if time is up and more work is needed. */
-long scanLaterList(robj *ob, unsigned long *cursor, long long endtime) {
+long scanLaterList(robj *ob, dict_ulong *cursor, long long endtime) {
     quicklist *ql = ob->ptr;
     quicklistNode *node;
     long iterations = 0;
@@ -381,7 +381,7 @@ void scanLaterZsetCallback(void *privdata, const dictEntry *_de) {
     server.stat_active_defrag_scanned++;
 }
 
-void scanLaterZset(robj *ob, unsigned long *cursor) {
+void scanLaterZset(robj *ob, dict_ulong *cursor) {
     if (ob->type != OBJ_ZSET || ob->encoding != OBJ_ENCODING_SKIPLIST)
         return;
     zset *zs = (zset*)ob->ptr;
@@ -398,7 +398,7 @@ void scanCallbackCountScanned(void *privdata, const dictEntry *de) {
     server.stat_active_defrag_scanned++;
 }
 
-void scanLaterSet(robj *ob, unsigned long *cursor) {
+void scanLaterSet(robj *ob, dict_ulong *cursor) {
     if (ob->type != OBJ_SET || ob->encoding != OBJ_ENCODING_HT)
         return;
     dict *d = ob->ptr;
@@ -409,7 +409,7 @@ void scanLaterSet(robj *ob, unsigned long *cursor) {
     *cursor = dictScanDefrag(d, *cursor, scanCallbackCountScanned, &defragfns, NULL);
 }
 
-void scanLaterHash(robj *ob, unsigned long *cursor) {
+void scanLaterHash(robj *ob, dict_ulong *cursor) {
     if (ob->type != OBJ_HASH || ob->encoding != OBJ_ENCODING_HT)
         return;
     dict *d = ob->ptr;
@@ -508,7 +508,7 @@ int defragRaxNode(raxNode **noderef) {
 }
 
 /* returns 0 if no more work needs to be been done, and 1 if time is up and more work is needed. */
-int scanLaterStreamListpacks(robj *ob, unsigned long *cursor, long long endtime) {
+int scanLaterStreamListpacks(robj *ob, dict_ulong *cursor, long long endtime) {
     static unsigned char last[sizeof(streamID)];
     raxIterator ri;
     long iterations = 0;
@@ -793,7 +793,7 @@ void defragOtherGlobals(void) {
 
 /* returns 0 more work may or may not be needed (see non-zero cursor),
  * and 1 if time is up and more work is needed. */
-int defragLaterItem(dictEntry *de, unsigned long *cursor, long long endtime, int dbid) {
+int defragLaterItem(dictEntry *de, dict_ulong *cursor, long long endtime, int dbid) {
     if (de) {
         robj *ob = dictGetVal(de);
         if (ob->type == OBJ_LIST) {
@@ -809,7 +809,11 @@ int defragLaterItem(dictEntry *de, unsigned long *cursor, long long endtime, int
         } else if (ob->type == OBJ_MODULE) {
             robj keyobj;
             initStaticStringObject(keyobj, dictGetKey(de));
-            return moduleLateDefrag(&keyobj, ob, cursor, endtime, dbid);
+            serverAssert(*cursor <= ULONG_MAX);
+            unsigned long module_cursor = (unsigned long)*cursor;
+            int ret = moduleLateDefrag(&keyobj, ob, &module_cursor, endtime, dbid);
+            *cursor = module_cursor;
+            return ret;
         } else {
             *cursor = 0; /* object type may have changed since we schedule it for later */
         }
@@ -821,7 +825,7 @@ int defragLaterItem(dictEntry *de, unsigned long *cursor, long long endtime, int
 
 /* static variables serving defragLaterStep to continue scanning a key from were we stopped last time. */
 static sds defrag_later_current_key = NULL;
-static unsigned long defrag_later_cursor = 0;
+static dict_ulong defrag_later_cursor = 0;
 
 /* returns 0 if no more work needs to be been done, and 1 if time is up and more work is needed. */
 int defragLaterStep(redisDb *db, long long endtime) {
@@ -923,7 +927,7 @@ void computeDefragCycles(void) {
  * we do incremental work across calls. */
 void activeDefragCycle(void) {
     static int current_db = -1;
-    static unsigned long cursor = 0;
+    static dict_ulong cursor = 0;
     static unsigned long expires_cursor = 0;
     static redisDb *db = NULL;
     static long long start_scan, start_stat;

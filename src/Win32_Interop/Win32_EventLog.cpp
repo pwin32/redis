@@ -23,12 +23,16 @@
 #include "win32_types.h"
 
 #include <Windows.h>
+#include <cerrno>
+#include <cstdlib>
+#include <cwchar>
 #include <string>
 #include <iostream>
 #include <sstream>
 using namespace std;
 
 #include "Win32_EventLog.h"
+#include "Win32_Error.h"
 #include "Win32_SmartHandle.h"
 #include "EventLog.h"
 
@@ -40,27 +44,34 @@ void RedisEventLog::SetEventLogIdentity(const char* identity) {
 }
 
 void RedisEventLog::UninstallEventLogSource() {
+    static const wchar_t eventLogApplicationPath[] = L"SYSTEM\\CurrentControlSet\\Services\\EventLog\\Application\\";
+    static const wchar_t eventLogPath[] = L"SYSTEM\\CurrentControlSet\\Services\\EventLog\\";
+    static const wchar_t eventLogName[] = L"redis";
+    static const wchar_t redisServer[] = L"redis-server";
     SmartRegistryHandle appKey;
-    if (ERROR_SUCCESS == RegOpenKeyA(HKEY_LOCAL_MACHINE, cEventLogApplicitonPath.c_str(), appKey)) {
+    if (ERROR_SUCCESS == RegOpenKeyW(HKEY_LOCAL_MACHINE, eventLogApplicationPath, appKey)) {
         SmartRegistryHandle eventLogNameKey;
-        if (ERROR_SUCCESS == RegOpenKeyA(appKey, eventLogName.c_str(), eventLogNameKey)) {
-            if (ERROR_SUCCESS != RegDeleteKeyA(appKey, eventLogName.c_str())) {
-                throw std::system_error(GetLastError(), system_category(), "RegDeleteKeyA failed");
+        if (ERROR_SUCCESS == RegOpenKeyW(appKey, eventLogName, eventLogNameKey)) {
+            LSTATUS status = RegDeleteKeyW(appKey, eventLogName);
+            if (ERROR_SUCCESS != status) {
+                throw std::system_error(status, system_category(), "RegDeleteKeyW failed");
             }
         }
     }
 
     SmartRegistryHandle eventLogKey;
-    if (ERROR_SUCCESS == RegOpenKeyA(HKEY_LOCAL_MACHINE, cEventLogPath.c_str(), eventLogKey)) {
+    if (ERROR_SUCCESS == RegOpenKeyW(HKEY_LOCAL_MACHINE, eventLogPath, eventLogKey)) {
         SmartRegistryHandle eventServiceKey;
-        if (ERROR_SUCCESS == RegOpenKeyA(eventLogKey, cRedis.c_str(), eventServiceKey)) {
+        if (ERROR_SUCCESS == RegOpenKeyW(eventLogKey, eventLogName, eventServiceKey)) {
             SmartRegistryHandle eventServiceSubKey;
-            if (ERROR_SUCCESS == RegOpenKeyA(eventServiceKey, cRedisServer.c_str(), eventServiceSubKey)) {
-                if (ERROR_SUCCESS != RegDeleteKeyA(eventServiceKey, cRedisServer.c_str())) {
-                    throw std::system_error(GetLastError(), system_category(), "RegDeleteKeyA failed");
+            if (ERROR_SUCCESS == RegOpenKeyW(eventServiceKey, redisServer, eventServiceSubKey)) {
+                LSTATUS status = RegDeleteKeyW(eventServiceKey, redisServer);
+                if (ERROR_SUCCESS != status) {
+                    throw std::system_error(status, system_category(), "RegDeleteKeyW failed");
                 }
-                if (ERROR_SUCCESS != RegDeleteKeyA(eventLogKey, cRedis.c_str())) {
-                    throw std::system_error(GetLastError(), system_category(), "RegDeleteKeyA failed");
+                status = RegDeleteKeyW(eventLogKey, eventLogName);
+                if (ERROR_SUCCESS != status) {
+                    throw std::system_error(status, system_category(), "RegDeleteKeyW failed");
                 }
             }
         }
@@ -69,60 +80,90 @@ void RedisEventLog::UninstallEventLogSource() {
 
 // sets up the registry keys required for the EventViewer message filter
 void RedisEventLog::InstallEventLogSource(string appPath) {
+    static const wchar_t eventLogPath[] = L"SYSTEM\\CurrentControlSet\\Services\\EventLog\\";
+    static const wchar_t eventLogName[] = L"redis";
+    static const wchar_t redisServer[] = L"redis-server";
+    static const wchar_t application[] = L"Application";
+    static const wchar_t typesSupported[] = L"TypesSupported";
+    static const wchar_t eventMessageFile[] = L"EventMessageFile";
+    wchar_t *wideAppPath = win32_utf8_path_to_wide(appPath.c_str());
+    LSTATUS status;
+
+    if (wideAppPath == NULL) {
+        throw std::system_error(errno, generic_category(),
+                                "UTF-8 event log path conversion failed");
+    }
+
     SmartRegistryHandle eventLogKey;
-    if (ERROR_SUCCESS != RegOpenKeyA(HKEY_LOCAL_MACHINE, cEventLogPath.c_str(), eventLogKey)) {
-        throw std::system_error(GetLastError(), system_category(), "RegOpenKey failed");
+    status = RegOpenKeyW(HKEY_LOCAL_MACHINE, eventLogPath, eventLogKey);
+    if (ERROR_SUCCESS != status) {
+        free(wideAppPath);
+        throw std::system_error(status, system_category(), "RegOpenKeyW failed");
     }
     SmartRegistryHandle redis1;
-    if (ERROR_SUCCESS != RegOpenKeyA(eventLogKey, cRedis.c_str(), redis1)) {
-        if (ERROR_SUCCESS != RegCreateKeyA(eventLogKey, cRedis.c_str(), redis1)) {
-            throw std::system_error(GetLastError(), system_category(), "RegCreateKeyA failed");
+    if (ERROR_SUCCESS != RegOpenKeyW(eventLogKey, eventLogName, redis1)) {
+        status = RegCreateKeyW(eventLogKey, eventLogName, redis1);
+        if (ERROR_SUCCESS != status) {
+            free(wideAppPath);
+            throw std::system_error(status, system_category(), "RegCreateKeyW failed");
         }
     }
     SmartRegistryHandle redisserver;
-    if (ERROR_SUCCESS != RegOpenKeyA(redis1, cRedisServer.c_str(), redisserver)) {
-        if (ERROR_SUCCESS != RegCreateKeyA(redis1, cRedisServer.c_str(), redisserver)) {
-            throw std::system_error(GetLastError(), system_category(), "RegCreateKeyA failed");
+    if (ERROR_SUCCESS != RegOpenKeyW(redis1, redisServer, redisserver)) {
+        status = RegCreateKeyW(redis1, redisServer, redisserver);
+        if (ERROR_SUCCESS != status) {
+            free(wideAppPath);
+            throw std::system_error(status, system_category(), "RegCreateKeyW failed");
         }
     }
-    DWORD value = 0;
-    DWORD type = REG_DWORD;
-    DWORD size = sizeof(DWORD);
-    if (ERROR_SUCCESS != RegQueryValueExA(redisserver, cTypesSupported.c_str(), 0, &type, NULL, &size)) {
-        if (ERROR_SUCCESS != RegSetValueExA(redisserver, cTypesSupported.c_str(), 0, REG_DWORD, (const BYTE*) &value, sizeof(DWORD))) {
-            throw std::system_error(GetLastError(), system_category(), "RegSetValueExA failed");
-        }
+    DWORD value = EVENTLOG_ERROR_TYPE | EVENTLOG_WARNING_TYPE |
+                  EVENTLOG_INFORMATION_TYPE;
+    status = RegSetValueExW(redisserver, typesSupported, 0, REG_DWORD,
+                            (const BYTE*) &value, sizeof(DWORD));
+    if (ERROR_SUCCESS != status) {
+        free(wideAppPath);
+        throw std::system_error(status, system_category(), "RegSetValueExW failed");
     }
-    type = REG_SZ;
-    size = 0;
-    if (ERROR_SUCCESS != RegQueryValueExA(redisserver, cEventMessageFile.c_str(), 0, &type, NULL, &size)) {
-        if (ERROR_SUCCESS != RegSetValueExA(redisserver, cEventMessageFile.c_str(), 0, REG_SZ, (BYTE*) appPath.c_str(), (DWORD) appPath.length())) {
-            throw std::system_error(GetLastError(), system_category(), "RegSetValueExA failed");
-        }
+    size_t appPathBytesSize = (wcslen(wideAppPath) + 1) * sizeof(wchar_t);
+    if (appPathBytesSize > MAXDWORD) {
+        free(wideAppPath);
+        throw std::length_error("Event log message path is too long");
+    }
+    DWORD appPathBytes = (DWORD)appPathBytesSize;
+    status = RegSetValueExW(redisserver, eventMessageFile, 0, REG_SZ,
+                            (const BYTE*)wideAppPath, appPathBytes);
+    if (ERROR_SUCCESS != status) {
+        free(wideAppPath);
+        throw std::system_error(status, system_category(), "RegSetValueExW failed");
     }
 
-    SmartRegistryHandle application;
-    if (ERROR_SUCCESS != RegOpenKeyA(eventLogKey, cApplication.c_str(), application)) {
-        throw std::system_error(GetLastError(), system_category(), "RegCreateKeyA failed");
+    SmartRegistryHandle applicationKey;
+    status = RegOpenKeyW(eventLogKey, application, applicationKey);
+    if (ERROR_SUCCESS != status) {
+        free(wideAppPath);
+        throw std::system_error(status, system_category(), "RegOpenKeyW failed");
     }
     SmartRegistryHandle redis2;
-    if (ERROR_SUCCESS != RegOpenKeyA(application, cRedis.c_str(), redis2)) {
-        if (ERROR_SUCCESS != RegCreateKeyA(application, cRedis.c_str(), redis2)) {
-            throw std::system_error(GetLastError(), system_category(), "RegCreateKeyA failed");
+    if (ERROR_SUCCESS != RegOpenKeyW(applicationKey, eventLogName, redis2)) {
+        status = RegCreateKeyW(applicationKey, eventLogName, redis2);
+        if (ERROR_SUCCESS != status) {
+            free(wideAppPath);
+            throw std::system_error(status, system_category(), "RegCreateKeyW failed");
         }
     }
-    type = REG_DWORD;
-    size = 0;
-    if (ERROR_SUCCESS != RegQueryValueExA(redis2, cTypesSupported.c_str(), 0, &type, NULL, &size)) {
-        if (ERROR_SUCCESS != RegSetValueExA(redis2, cTypesSupported.c_str(), 0, REG_DWORD, (const BYTE*) &value, sizeof(DWORD))) {
-            throw std::system_error(GetLastError(), system_category(), "RegSetValueExA failed");
-        }
+    status = RegSetValueExW(redis2, typesSupported, 0, REG_DWORD,
+                            (const BYTE*) &value, sizeof(DWORD));
+    if (ERROR_SUCCESS != status) {
+        free(wideAppPath);
+        throw std::system_error(status, system_category(), "RegSetValueExW failed");
     }
-    if (ERROR_SUCCESS != RegQueryValueExA(redis2, cEventMessageFile.c_str(), 0, &type, NULL, &size)) {
-        if (ERROR_SUCCESS != RegSetValueExA(redis2, cEventMessageFile.c_str(), 0, REG_SZ, (BYTE*) appPath.c_str(), (DWORD) appPath.length())) {
-            throw std::system_error(GetLastError(), system_category(), "RegSetValueExA failed");
-        }
+    status = RegSetValueExW(redis2, eventMessageFile, 0, REG_SZ,
+                            (const BYTE*)wideAppPath, appPathBytes);
+    if (ERROR_SUCCESS != status) {
+        free(wideAppPath);
+        throw std::system_error(status, system_category(), "RegSetValueExW failed");
     }
+    free(wideAppPath);
 }
 
 void RedisEventLog::LogMessage(LPCSTR msg, const WORD type) {
@@ -143,17 +184,25 @@ void RedisEventLog::LogMessage(LPCSTR msg, const WORD type) {
             break;
     }
 
-    HANDLE hEventLog = RegisterEventSourceA(0, this->eventLogName.c_str());
+    wchar_t *wideMessage = win32_utf8_to_wide(msg);
+    if (wideMessage == NULL) {
+        std::cerr << "Failed to convert event log message from UTF-8\n";
+        return;
+    }
+    HANDLE hEventLog = RegisterEventSourceW(0, L"redis");
 
     if (0 == hEventLog) {
         std::cerr << "Failed open source '" << this->eventLogName << "': " << GetLastError() << endl;
     } else {
-        if (FALSE == ReportEventA(hEventLog, type, 0, eventID, 0, 1, 0, &msg, 0)) {
+        LPCWSTR messages[] = {wideMessage};
+        if (FALSE == ReportEventW(hEventLog, type, 0, eventID, 0, 1, 0,
+                                  messages, 0)) {
             std::cerr << "Failed to write message: " << GetLastError() << endl;
         }
 
         DeregisterEventSource(hEventLog);
     }
+    free(wideMessage);
 }
 
 void RedisEventLog::LogError(string msg) {

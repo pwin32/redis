@@ -281,7 +281,7 @@ size_t reqresAppendResponse(client *c) {
     serverAssert(ret);
 
     /* Flush both request and response to file */
-    FILE *fp = fopen(server.req_res_logfile, "a");
+    FILE *fp = redis_fopen(server.req_res_logfile, "a");
     serverAssert(fp);
     fwrite(c->reqres.buf, c->reqres.used, 1, fp);
     fclose(fp);

@@ -222,7 +222,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
 #endif
 
     int closefile = (fp == NULL);
-    if (fp == NULL && (fp = fopen(rdbfilename,IF_WIN32("rb","r"))) == NULL) return 1;
+    if (fp == NULL && (fp = redis_fopen(rdbfilename,IF_WIN32("rb","r"))) == NULL) return 1;
 
 #ifdef _WIN32
     if (_fstat64(_fileno(fp),&sb) == -1)

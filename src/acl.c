@@ -2270,7 +2270,7 @@ sds ACLLoadFromFile(const char *filename) {
     char buf[1024];
 
     /* Open the ACL file. */
-    if ((fp = fopen(filename,"r")) == NULL) {
+    if ((fp = redis_fopen(filename,"r")) == NULL) {
         sds errors = sdscatprintf(sdsempty(),
             "Error loading ACLs, opening file '%s': %s",
             filename, strerror(errno));
@@ -2498,7 +2498,7 @@ int ACLSaveToFile(const char *filename) {
 
 cleanup:
     if (fd != -1) close(fd);
-    if (tmpfilename) unlink(tmpfilename);
+    if (tmpfilename) redis_unlink(tmpfilename);
     sdsfree(tmpfilename);
     sdsfree(acl);
     return retval;
@@ -2978,7 +2978,7 @@ void aclCommand(client *c) {
         getRandomHexChars(pass,chars);
         addReplyBulkCBuffer(c,pass,chars);
     } else if (!strcasecmp(sub,"log") && (c->argc == 2 || c->argc ==3)) {
-        long count = 10; /* Number of entries to emit by default. */
+        long long count = 10; /* Number of entries to emit by default. */
 
         /* Parse the only argument that LOG may have: it could be either
          * the number of entries the user wants to display, or alternatively
@@ -2990,7 +2990,7 @@ void aclCommand(client *c) {
                 listSetFreeMethod(ACLLog,NULL);
                 addReply(c,shared.ok);
                 return;
-            } else if (getLongFromObjectOrReply(c,c->argv[2],&count,NULL)
+            } else if (getLongLongFromObjectOrReply(c,c->argv[2],&count,NULL)
                        != C_OK)
             {
                 return;
@@ -2999,7 +2999,7 @@ void aclCommand(client *c) {
         }
 
         /* Fix the count according to the number of entries we got. */
-        if ((size_t)count > listLength(ACLLog))
+        if ((uint64_t)count > listLength(ACLLog))
             count = listLength(ACLLog);
 
         addReplyArrayLen(c,count);

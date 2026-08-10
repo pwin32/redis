@@ -141,7 +141,7 @@ void serverLogRaw(int level, const char *msg) {
     level &= 0xff; /* clear flags */
     if (level < server.verbosity) return;
 
-    fp = log_to_stdout ? stdout : fopen(server.logfile,"a");
+    fp = log_to_stdout ? stdout : redis_fopen(server.logfile,"a");
     if (!fp) return;
 
     if (rawmode) {
@@ -2692,7 +2692,7 @@ void initServer(void) {
 
     /* MinGW headers do not consistently declare RtlGenRandom.  Resolve it
      * once after the core config is initialized, matching the 6.2 bootstrap. */
-    lib = LoadLibraryA("advapi32.dll");
+    lib = LoadLibraryW(L"advapi32.dll");
     if (lib != NULL)
         RtlGenRandom = (RtlGenRandomFunc)GetProcAddress(lib, "SystemFunction036");
 #else
@@ -4366,7 +4366,7 @@ void closeListeningSockets(int unlink_unix_socket) {
         for (j = 0; j < server.clistener.count; j++) close(server.clistener.fd[j]);
     if (unlink_unix_socket && server.unixsocket) {
         serverLog(LL_NOTICE,"Removing the unix socket file.");
-        if (unlink(server.unixsocket) != 0)
+        if (redis_unlink(server.unixsocket) != 0)
             serverLog(LL_WARNING,"Error removing the unix socket file: %s",strerror(errno));
     }
 }
@@ -4601,7 +4601,7 @@ int finishShutdown(void) {
     /* Remove the pid file if possible and needed. */
     if (server.daemonize || server.pidfile) {
         serverLog(LL_NOTICE,"Removing the pid file.");
-        unlink(server.pidfile);
+        redis_unlink(server.pidfile);
     }
 
     /* Best effort flush of slave output buffers, so that we hopefully
@@ -6334,22 +6334,22 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
         getrusage(RUSAGE_CHILDREN, &c_ru);
         info = sdscatprintf(info,
         "# CPU\r\n"
-        "used_cpu_sys:%ld.%06ld\r\n"
-        "used_cpu_user:%ld.%06ld\r\n"
-        "used_cpu_sys_children:%ld.%06ld\r\n"
-        "used_cpu_user_children:%ld.%06ld\r\n",
-        (long)self_ru.ru_stime.tv_sec, (long)self_ru.ru_stime.tv_usec,
-        (long)self_ru.ru_utime.tv_sec, (long)self_ru.ru_utime.tv_usec,
-        (long)c_ru.ru_stime.tv_sec, (long)c_ru.ru_stime.tv_usec,
-        (long)c_ru.ru_utime.tv_sec, (long)c_ru.ru_utime.tv_usec);
+        "used_cpu_sys:%lld.%06lld\r\n"
+        "used_cpu_user:%lld.%06lld\r\n"
+        "used_cpu_sys_children:%lld.%06lld\r\n"
+        "used_cpu_user_children:%lld.%06lld\r\n",
+        (long long)self_ru.ru_stime.tv_sec, (long long)self_ru.ru_stime.tv_usec,
+        (long long)self_ru.ru_utime.tv_sec, (long long)self_ru.ru_utime.tv_usec,
+        (long long)c_ru.ru_stime.tv_sec, (long long)c_ru.ru_stime.tv_usec,
+        (long long)c_ru.ru_utime.tv_sec, (long long)c_ru.ru_utime.tv_usec);
 #ifdef RUSAGE_THREAD
         struct rusage m_ru;
         getrusage(RUSAGE_THREAD, &m_ru);
         info = sdscatprintf(info,
-            "used_cpu_sys_main_thread:%ld.%06ld\r\n"
-            "used_cpu_user_main_thread:%ld.%06ld\r\n",
-            (long)m_ru.ru_stime.tv_sec, (long)m_ru.ru_stime.tv_usec,
-            (long)m_ru.ru_utime.tv_sec, (long)m_ru.ru_utime.tv_usec);
+            "used_cpu_sys_main_thread:%lld.%06lld\r\n"
+            "used_cpu_user_main_thread:%lld.%06lld\r\n",
+            (long long)m_ru.ru_stime.tv_sec, (long long)m_ru.ru_stime.tv_usec,
+            (long long)m_ru.ru_utime.tv_sec, (long long)m_ru.ru_utime.tv_usec);
 #endif  /* RUSAGE_THREAD */
     }
 
@@ -6544,7 +6544,7 @@ void createPidFile(void) {
     if (!server.pidfile) server.pidfile = zstrdup(CONFIG_DEFAULT_PID_FILE);
 
     /* Try to write the pid file in a best-effort way. */
-    FILE *fp = fopen(server.pidfile,"w");
+    FILE *fp = redis_fopen(server.pidfile,"w");
     if (fp) {
         fprintf(fp,"%d\n",(int)getpid());
         fclose(fp);

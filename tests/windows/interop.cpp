@@ -1,14 +1,31 @@
 #include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #define FDAPI_NOCRTREDEFS
 #include "Win32_Interop/Win32_FDAPI.h"
 #include "Win32_Interop/Win32_Common.h"
+#include "Win32_Interop/Win32_Error.h"
 #include <unistd.h>
 
 extern "C" {
 #include "Win32_Interop/Win32_Signal_Process.h"
+#include "Win32_Interop/Win32_PThread.h"
+FILE *replace_fopen(const char *path, const char *mode);
+FILE *replace_freopen(const char *path, const char *mode, FILE *stream);
+FILE *replace_popen(const char *command, const char *mode);
+int replace_remove(const char *path);
+int replace_system(const char *command);
+int replace_unlink(const char *path);
+int replace_mkdir(const char *path);
+int replace_rmdir(const char *path);
+int replace_stat64(const char *path, struct __stat64 *buffer);
+int replace_link(const char *src, const char *dest);
+int replace_rename(const char *src, const char *dest);
+int win32_llp64_interop_test(void);
 }
 
 static bool emulate_modern_windows = false;
@@ -47,6 +64,398 @@ static void check(bool condition, const char *message) {
     }
 }
 
+static void test_error_translation() {
+    sigset_t signals;
+    sigset_t old_signals = 0;
+
+    check(win32_errno_from_system_error(WSAEWOULDBLOCK) == EAGAIN,
+          "WSAEWOULDBLOCK should map to POSIX EAGAIN");
+    check(win32_errno_from_system_error(WSAEINPROGRESS) == EINPROGRESS,
+          "WSAEINPROGRESS should map to POSIX EINPROGRESS");
+    check(win32_errno_from_system_error(WSAECONNRESET) == ECONNRESET,
+          "WSAECONNRESET should map to POSIX ECONNRESET");
+    check(win32_errno_from_system_error(0x7fffffff) == EIO,
+          "unknown Windows errors should map to POSIX EIO");
+    check(sizeof(((redis_rusage_timeval *)0)->tv_sec) == sizeof(int64_t),
+          "Windows CPU accounting seconds should be 64-bit");
+    check(sizeof(((redis_rusage_timeval *)0)->tv_usec) == sizeof(int64_t),
+          "Windows CPU accounting microseconds should be 64-bit");
+
+    sigemptyset(&signals);
+    check(sigaddset(&signals, SIGUSR2) != 0 &&
+              sigismember(&signals, SIGUSR2) != 0,
+          "Windows signal sets should represent SIGUSR2 safely");
+    sigdelset(&signals, SIGUSR2);
+    check(sigismember(&signals, SIGUSR2) == 0,
+          "Windows signal sets should remove SIGUSR2 safely");
+
+    errno = EBUSY;
+    check(pthread_sigmask(SIG_BLOCK, &signals, &old_signals) == 0 &&
+              errno == EBUSY,
+          "the Windows pthread signal-mask no-op should preserve errno");
+    check(pthread_sigmask(999, &signals, &old_signals) == EINVAL,
+          "pthread_sigmask should return POSIX error numbers directly");
+}
+
+static void test_utf8_filesystem() {
+    const char unicode_component[] =
+        "redis-interop-\xe8\xb7\xaf\xe5\xbe\x84-\xf0\x9f\x98\x80";
+    char suffix[64];
+    std::snprintf(suffix, sizeof(suffix), "-%lu-%lu",
+                  (unsigned long)GetCurrentProcessId(),
+                  (unsigned long)GetTickCount());
+    std::string root = std::string(unicode_component) + suffix;
+    std::string filename = root + "/\xe6\x95\xb0\xe6\x8d\xae.txt";
+    std::string hardlink = root + "/\xe9\x93\xbe\xe6\x8e\xa5.txt";
+    std::string renamed = root + "/\xe9\x87\x8d\xe5\x91\xbd\xe5\x90\x8d.txt";
+    std::string nested_dir = root + "/group-a";
+    std::string nested_file = nested_dir +
+        "/\xe9\x85\x8d\xe7\xbd\xae-x.conf";
+    std::vector<std::string> directories;
+    FILE *file = NULL;
+    char *full_filename = NULL;
+    char *full_nested_file = NULL;
+    char *full_root = NULL;
+    char *saved_cwd = NULL;
+    char *changed_cwd = NULL;
+    char **matches = NULL;
+    size_t match_count = 0;
+    bool found_name = false;
+    bool found_glob = false;
+    struct __stat64 statbuf = {};
+
+    check(replace_mkdir(root.c_str()) == 0,
+          "UTF-8 directory creation should succeed");
+    if (replace_stat64(root.c_str(), &statbuf) != 0) goto cleanup;
+    directories.push_back(root);
+
+    file = replace_fopen(filename.c_str(), "wb");
+    check(file != NULL, "UTF-8 file creation should succeed");
+    if (file != NULL) {
+        const char payload[] = "unicode-path-payload";
+        check(std::fwrite(payload, 1, sizeof(payload) - 1, file) ==
+                  sizeof(payload) - 1,
+              "UTF-8 file should accept data");
+        check(std::fclose(file) == 0, "UTF-8 file should close cleanly");
+        file = NULL;
+    }
+    check(replace_stat64(filename.c_str(), &statbuf) == 0 &&
+              statbuf.st_size == 20,
+          "UTF-8 file should be visible through wide stat");
+
+    file = replace_fopen(filename.c_str(), "r");
+    check(file != NULL, "UTF-8 file should reopen through wide fopen");
+    if (file != NULL) {
+        file = replace_freopen(filename.c_str(), "rb", file);
+        check(file != NULL, "UTF-8 file should reopen through wide freopen");
+        if (file != NULL) {
+            check(std::fclose(file) == 0,
+                  "wide freopen stream should close cleanly");
+            file = NULL;
+        }
+    }
+
+    full_filename = win32_get_full_path_utf8(filename.c_str());
+    check(full_filename != NULL &&
+              std::strstr(full_filename, unicode_component) != NULL,
+          "GetFullPathNameW result should round-trip as UTF-8");
+
+    {
+        win32_utf8_dir *dir = win32_opendir_utf8(root.c_str());
+        check(dir != NULL, "UTF-8 directory enumeration should open");
+        if (dir != NULL) {
+            const char *name;
+            while ((name = win32_readdir_utf8(dir)) != NULL) {
+                if (std::strcmp(name, "\xe6\x95\xb0\xe6\x8d\xae.txt") == 0)
+                    found_name = true;
+            }
+            check(win32_closedir_utf8(dir) == 0,
+                  "UTF-8 directory enumeration should close");
+        }
+    }
+    check(found_name, "wide directory enumeration should preserve UTF-8 names");
+
+    {
+        std::string pattern = root + "/*";
+        check(win32_glob_utf8(pattern.c_str(), &matches, &match_count) == 0,
+              "wide glob should succeed on a UTF-8 directory");
+        for (size_t i = 0; i < match_count; i++) {
+            if (full_filename != NULL &&
+                std::strcmp(matches[i], full_filename) == 0)
+                found_glob = true;
+        }
+        check(found_glob, "wide glob should return the UTF-8 filename");
+        win32_globfree_utf8(matches, match_count);
+        matches = NULL;
+        match_count = 0;
+    }
+
+    check(replace_mkdir(nested_dir.c_str()) == 0,
+          "nested UTF-8 glob directory creation should succeed");
+    if (replace_stat64(nested_dir.c_str(), &statbuf) == 0)
+        directories.push_back(nested_dir);
+    file = replace_fopen(nested_file.c_str(), "wb");
+    check(file != NULL, "nested UTF-8 glob file creation should succeed");
+    if (file != NULL) {
+        check(std::fclose(file) == 0,
+              "nested UTF-8 glob file should close cleanly");
+        file = NULL;
+    }
+    full_nested_file = win32_get_full_path_utf8(nested_file.c_str());
+    {
+        std::string pattern = root +
+            "/group-[ab]/\xe9\x85\x8d\xe7\xbd\xae-?.conf";
+        bool found_nested = false;
+        check(win32_glob_utf8(pattern.c_str(), &matches, &match_count) == 0,
+              "wide glob should expand wildcard directory components");
+        for (size_t i = 0; i < match_count; i++) {
+            if (full_nested_file != NULL &&
+                std::strcmp(matches[i], full_nested_file) == 0)
+                found_nested = true;
+        }
+        check(match_count == 1 && found_nested,
+              "wide glob should implement bracket and question-mark matching");
+        win32_globfree_utf8(matches, match_count);
+        matches = NULL;
+        match_count = 0;
+    }
+
+    check(replace_link(filename.c_str(), hardlink.c_str()) == 0,
+          "UTF-8 hard-link creation should succeed");
+    check(replace_rename(hardlink.c_str(), renamed.c_str()) == 0,
+          "UTF-8 rename should succeed");
+    check(replace_stat64(renamed.c_str(), &statbuf) == 0,
+          "renamed UTF-8 hard link should exist");
+
+    {
+        std::string deep = root;
+        for (int i = 0; i < 12; i++) {
+            char component[48];
+            std::snprintf(component, sizeof(component),
+                          "/segment-%02d-abcdefghijklmnop", i);
+            deep += component;
+            check(replace_mkdir(deep.c_str()) == 0,
+                  "extended-length directory creation should succeed");
+            if (replace_stat64(deep.c_str(), &statbuf) != 0) break;
+            directories.push_back(deep);
+        }
+        check(deep.size() >= MAX_PATH,
+              "interop test should cross the legacy MAX_PATH boundary");
+        std::string deep_file = deep + "/\xe6\xb7\xb1\xe5\xb1\x82.txt";
+        file = replace_fopen(deep_file.c_str(), "wb");
+        check(file != NULL,
+              "extended-length UTF-8 file creation should succeed");
+        if (file != NULL) {
+            check(std::fclose(file) == 0,
+                  "extended-length UTF-8 file should close cleanly");
+            file = NULL;
+            check(replace_stat64(deep_file.c_str(), &statbuf) == 0,
+                  "extended-length UTF-8 file should be stat-able");
+        }
+        check(replace_unlink(deep_file.c_str()) == 0,
+              "extended-length UTF-8 file should be removable");
+    }
+
+    {
+        std::string missing = root + "/missing-\xe6\x96\x87\xe4\xbb\xb6";
+        errno = 0;
+        int fd = open(missing.c_str(), _O_RDONLY, 0);
+        check(fd == -1 && errno == ENOENT,
+              "wide FD open should preserve ENOENT");
+        if (fd != -1) FDAPI_close(fd);
+    }
+
+    {
+        const char invalid_utf8[] = {'b', 'a', 'd', '-', (char)0xff, '\0'};
+        errno = 0;
+        wchar_t *wide = win32_utf8_to_wide(invalid_utf8);
+        check(wide == NULL && errno == EILSEQ,
+              "invalid UTF-8 should be rejected at the Windows boundary");
+        free(wide);
+
+        errno = 0;
+        check(replace_popen(invalid_utf8, "r") == NULL && errno == EILSEQ,
+              "wide popen should reject invalid UTF-8 without execution");
+        errno = 0;
+        check(replace_system(invalid_utf8) == -1 && errno == EILSEQ,
+              "wide system should reject invalid UTF-8 without execution");
+    }
+
+    {
+        const wchar_t env_name[] = L"REDIS_INTEROP_UTF8";
+        const wchar_t env_value[] = L"\x8def\x5f84-\xd83d\xde00";
+        check(SetEnvironmentVariableW(env_name, env_value) != 0,
+              "Unicode environment test value should be set");
+        char *value = win32_getenv_utf8("REDIS_INTEROP_UTF8");
+        check(value != NULL &&
+                  std::strcmp(value,
+                              "\xe8\xb7\xaf\xe5\xbe\x84-\xf0\x9f\x98\x80") == 0,
+              "wide getenv should return strict UTF-8");
+        free(value);
+
+        char *cached = win32_getenv_utf8_cached("REDIS_INTEROP_UTF8");
+        check(cached != NULL &&
+                  std::strcmp(cached,
+                              "\xe8\xb7\xaf\xe5\xbe\x84-\xf0\x9f\x98\x80") == 0,
+              "cached wide getenv should return UTF-8");
+        check(SetEnvironmentVariableW(env_name, L"updated") != 0,
+              "Unicode environment test value should update");
+        cached = win32_getenv_utf8_cached("REDIS_INTEROP_UTF8");
+        check(cached != NULL && std::strcmp(cached, "updated") == 0,
+              "cached wide getenv should refresh without leaking lookups");
+        SetEnvironmentVariableW(env_name, NULL);
+        check(win32_getenv_utf8_cached("REDIS_INTEROP_UTF8") == NULL,
+              "cached wide getenv should observe variable removal");
+    }
+
+    saved_cwd = win32_get_current_directory_utf8();
+    full_root = win32_get_full_path_utf8(root.c_str());
+    check(saved_cwd != NULL && full_root != NULL,
+          "wide current-directory helpers should return UTF-8 paths");
+    if (saved_cwd != NULL && full_root != NULL) {
+        check(win32_set_current_directory_utf8(root.c_str()) == 0,
+              "wide current-directory setter should accept UTF-8");
+        changed_cwd = win32_get_current_directory_utf8();
+        check(changed_cwd != NULL && std::strcmp(changed_cwd, full_root) == 0,
+              "wide current-directory getter should preserve UTF-8");
+        check(win32_set_current_directory_utf8(saved_cwd) == 0,
+              "wide current-directory setter should restore the directory");
+    }
+
+cleanup:
+    if (file != NULL) std::fclose(file);
+    free(changed_cwd);
+    free(full_root);
+    free(saved_cwd);
+    free(full_filename);
+    free(full_nested_file);
+    win32_globfree_utf8(matches, match_count);
+    if (replace_stat64(renamed.c_str(), &statbuf) == 0)
+        check(replace_remove(renamed.c_str()) == 0,
+              "wide remove should delete a UTF-8 path");
+    replace_unlink(hardlink.c_str());
+    replace_unlink(nested_file.c_str());
+    replace_unlink(filename.c_str());
+    for (std::vector<std::string>::reverse_iterator it = directories.rbegin();
+         it != directories.rend(); ++it) {
+        check(replace_rmdir(it->c_str()) == 0,
+              "interop test directory cleanup should succeed");
+    }
+}
+
+static void *return_thread_argument(void *argument) {
+    return argument;
+}
+
+static void test_pthread_join_result() {
+    int marker = 0x5a17;
+    pthread_attr_t attributes;
+    size_t stack_size = 0;
+    pthread_t thread = 0;
+    void *result = NULL;
+
+    check(pthread_attr_init(&attributes) == 0 &&
+              pthread_attr_getstacksize(&attributes, &stack_size) == 0 &&
+              stack_size == 0,
+          "pthread attributes should initialize with the default stack size");
+    check(pthread_attr_setstacksize(&attributes, 8 * 1024 * 1024) == 0 &&
+              pthread_attr_getstacksize(&attributes, &stack_size) == 0 &&
+              stack_size == 8 * 1024 * 1024,
+          "pthread stack-size attributes should round trip on Win64");
+    check(pthread_create(&thread, &attributes, return_thread_argument, &marker) == 0,
+          "pthread_create should retain a joinable Windows handle");
+    if (thread == 0) return;
+    check(pthread_join(thread, &result) == 0,
+          "pthread_join should wait for the real Windows thread handle");
+    check(result == &marker,
+          "pthread_join should return the thread routine result");
+}
+
+struct pthread_identity_context {
+    HANDLE start_event;
+    volatile LONG completed;
+    pthread_t observed_self;
+};
+
+static void *capture_pthread_identity(void *argument) {
+    pthread_identity_context *context =
+        static_cast<pthread_identity_context *>(argument);
+
+    WaitForSingleObject(context->start_event, INFINITE);
+    context->observed_self = pthread_self();
+    InterlockedExchange(&context->completed, 1);
+    return argument;
+}
+
+static bool wait_for_thread_completion(pthread_identity_context *context) {
+    for (int attempts = 0; attempts < 500; attempts++) {
+        if (InterlockedCompareExchange(&context->completed, 0, 0) != 0)
+            return true;
+        Sleep(10);
+    }
+    return false;
+}
+
+static void test_pthread_identity() {
+    pthread_identity_context first = {};
+    pthread_identity_context second = {};
+    pthread_t first_thread = 0;
+    pthread_t second_thread = 0;
+    void *result = NULL;
+
+    first.start_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    second.start_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    check(first.start_event != NULL && second.start_event != NULL,
+          "pthread identity test events should be created");
+    if (first.start_event == NULL || second.start_event == NULL) goto cleanup;
+
+    check(pthread_create(&first_thread, NULL, capture_pthread_identity, &first) == 0,
+          "first pthread identity thread should be created");
+    if (first_thread == 0) goto cleanup;
+    SetEvent(first.start_event);
+    check(wait_for_thread_completion(&first),
+          "first pthread identity thread should complete");
+    check(first.observed_self == first_thread,
+          "pthread_self should match the opaque pthread_create identity");
+
+    /* Keep the first completed thread unjoined while creating the second.
+     * Windows may recycle numeric thread IDs after exit, so pthread_t must be
+     * backed by the retained join record rather than GetCurrentThreadId(). */
+    check(pthread_create(&second_thread, NULL, capture_pthread_identity, &second) == 0,
+          "second pthread identity thread should be created");
+    if (second_thread != 0) {
+        check(second_thread != first_thread,
+              "completed unjoined pthread identities should remain distinct");
+        SetEvent(second.start_event);
+        check(wait_for_thread_completion(&second),
+              "second pthread identity thread should complete");
+        check(second.observed_self == second_thread,
+              "pthread_self should match the second opaque pthread identity");
+    }
+
+cleanup:
+    if (second_thread != 0) {
+        check(pthread_join(second_thread, &result) == 0,
+              "second pthread identity thread should join");
+        check(result == &second,
+              "second pthread identity join should return its context");
+    }
+    if (first_thread != 0) {
+        result = NULL;
+        check(pthread_join(first_thread, &result) == 0,
+              "first pthread identity thread should join after the second exits");
+        check(result == &first,
+              "first pthread identity join should return its context");
+    }
+    if (second.start_event != NULL) CloseHandle(second.start_event);
+    if (first.start_event != NULL) CloseHandle(first.start_event);
+}
+
+static void test_llp64_widths() {
+    check(win32_llp64_interop_test() != 0,
+          "Win64 logical counters and cursors should retain bits above 32");
+}
+
 static void test_address_conversion() {
     struct in_addr ipv4 = {};
     struct in_addr ipv4_roundtrip = {};
@@ -79,15 +488,19 @@ static void test_address_conversion() {
           "inet_pton should reject invalid IPv6 text");
 
     char small[4] = {};
-    check(inet_ntop(AF_INET6, &ipv6_roundtrip, small, sizeof(small)) == NULL,
-          "inet_ntop should reject a short output buffer");
+    errno = 0;
+    check(inet_ntop(AF_INET6, &ipv6_roundtrip, small, sizeof(small)) == NULL &&
+              errno == ENOSPC,
+          "inet_ntop should report ENOSPC for a short output buffer");
 
-    if (!emulate_modern_windows) {
-        errno = 0;
-        check(inet_ntop(AF_UNSPEC, &ipv4, text, sizeof(text)) == NULL &&
-                  errno == EAFNOSUPPORT,
-              "legacy inet_ntop should reject unsupported families");
-    }
+    errno = 0;
+    check(inet_ntop(AF_UNSPEC, &ipv4, text, sizeof(text)) == NULL &&
+              errno == EAFNOSUPPORT,
+          "inet_ntop should reject unsupported families");
+    errno = 0;
+    check(inet_pton(AF_UNSPEC, "192.0.2.1", &ipv4) == -1 &&
+              errno == EAFNOSUPPORT,
+          "inet_pton should reject unsupported families");
 
     check(checked_windows_6_0 && checked_windows_6_2,
           "address conversion should query the Windows version gates");
@@ -178,6 +591,10 @@ static void test_synthetic_fd_ftruncate() {
           "ftruncate extension should preserve the current file offset");
 
     errno = 0;
+    check(lseek64(fd, -1, SEEK_SET) == -1 && errno == EINVAL,
+          "signed lseek64 should preserve negative-offset errors");
+
+    errno = 0;
     check(ftruncate(fd, -1) == -1 && errno == EINVAL,
           "ftruncate should reject a negative file size");
 
@@ -187,7 +604,7 @@ cleanup:
         check(FDAPI_close(fd) == 0,
               "ftruncate test temporary file should close cleanly");
         fd = -1;
-        check(DeleteFileA(filename) != FALSE,
+        check(replace_unlink(filename) == 0,
               "ftruncate test temporary file should be removed");
     }
     if (stale_fd != -1) {
@@ -268,6 +685,14 @@ static void test_eventloop_pipe() {
     check(written == sizeof(payload),
           "event-loop pipe should accept the complete byte stream");
 
+    fd_set readfds;
+    struct timeval timeout = {0, 0};
+    FD_ZERO(&readfds);
+    FD_SET(pipefds[0], &readfds);
+    result = select(pipefds[0] + 1, &readfds, NULL, NULL, &timeout);
+    check(result == 1 && FD_ISSET(pipefds[0], &readfds),
+          "select should restore ready synthetic descriptors to the result set");
+
     size_t received_len = 0;
     while (received_len < written) {
         ssize_t chunk = read(pipefds[0], received + received_len,
@@ -302,6 +727,14 @@ static void test_eventloop_pipe() {
     check(FDAPI_GetSocketStatePtr(read_fd) == NULL &&
               FDAPI_GetSocketStatePtr(write_fd) == NULL,
           "closed event-loop pipe descriptors should leave no socket mapping");
+
+    FD_ZERO(&readfds);
+    FD_SET(read_fd, &readfds);
+    timeout.tv_sec = timeout.tv_usec = 0;
+    errno = 0;
+    check(select(read_fd + 1, &readfds, NULL, NULL, &timeout) == -1 &&
+              errno == EBADF,
+          "select should reject a stale synthetic descriptor");
 
     close_eventloop_pipe(pipefds);
 }
@@ -419,8 +852,14 @@ static void test_socket_duplication() {
           "duplicated exit reader should observe parent EOF");
 
 cleanup:
-    if (child_data_writer != -1) FDAPI_close(child_data_writer);
-    if (child_exit_reader != -1) FDAPI_close(child_exit_reader);
+    if (child_data_writer != -1) {
+        check(FDAPI_CloseDuplicatedSocket(child_data_writer) == TRUE,
+              "duplicated data writer should close cleanly");
+    }
+    if (child_exit_reader != -1) {
+        check(FDAPI_CloseDuplicatedSocket(child_exit_reader) == TRUE,
+              "duplicated exit reader should close cleanly");
+    }
     close_eventloop_pipe(data_pipe);
     close_eventloop_pipe(exit_pipe);
 }
@@ -434,6 +873,11 @@ int main(int argc, char **argv) {
     }
 
     emulate_modern_windows = std::strcmp(argv[1], "--modern") == 0;
+    test_error_translation();
+    test_utf8_filesystem();
+    test_pthread_join_result();
+    test_pthread_identity();
+    test_llp64_widths();
     test_address_conversion();
     test_getrusage();
     test_synthetic_fd_ftruncate();

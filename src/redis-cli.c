@@ -42,6 +42,7 @@
 #endif
 
 #include "fmacros.h"
+#include "config.h"
 #include "version.h"
 
 #include <stdio.h>
@@ -100,8 +101,9 @@
 
 #ifdef _WIN32
 #include "Win32_Interop/Win32_ANSI.h"
+#define getenv(name) win32_getenv_utf8_cached(name)
 #ifdef REDIS_CLI_RESTORE_USLEEP
-#define usleep(x) ((x) == 1 ? Sleep(0) : Sleep((int)((x)/1000)))
+#define usleep(x) win32_usleep((PORT_LONGLONG)(x))
 #undef REDIS_CLI_RESTORE_USLEEP
 #endif
 #endif
@@ -257,8 +259,8 @@ static struct config {
     char *hostsocket;
     int tls;
     cliSSLconfig sslconfig;
-    long repeat;
-    long interval;
+    long long repeat;
+    long long interval;
     int dbnum; /* db num currently selected */
     int interactive;
     int shutdown;
@@ -333,7 +335,7 @@ char *redisGitDirty(void);
 static int cliConnect(int flags);
 
 static char *getInfoField(char *info, char *field);
-static long getLongInfoField(char *info, char *field);
+static long long getLongInfoField(char *info, char *field);
 
 /*------------------------------------------------------------------------------
  * Utility functions
@@ -2483,7 +2485,7 @@ static void cliWaitForMessagesOrStdin(void) {
     cliRestoreTTY();
 }
 
-static int cliSendCommand(int argc, char **argv, long repeat) {
+static int cliSendCommand(int argc, char **argv, long long repeat) {
     char *command = argv[0];
     size_t *argvlen;
     int j, output_raw;
@@ -2763,8 +2765,15 @@ static int parseOptions(int argc, char **argv) {
         } else if (!strcmp(argv[i],"-r") && !lastarg) {
             config.repeat = strtoll(argv[++i],NULL,10);
         } else if (!strcmp(argv[i],"-i") && !lastarg) {
-            double seconds = atof(argv[++i]);
-            config.interval = seconds*1000000;
+            char *eptr;
+            double seconds = strtod(argv[++i], &eptr);
+            if (eptr[0] != '\0' || isnan(seconds) || seconds < 0.0 ||
+                seconds > (double)LLONG_MAX / 1000000.0)
+            {
+                fprintf(stderr, "Invalid interval for -i.\n");
+                exit(1);
+            }
+            config.interval = (long long)(seconds * 1000000.0);
         } else if (!strcmp(argv[i],"-n") && !lastarg) {
             config.conn_info.input_dbnum = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--no-auth-warning")) {
@@ -3074,7 +3083,7 @@ static void parseEnv(void) {
     /* Set auth from env, but do not overwrite CLI arguments if passed */
     char *auth = getenv(REDIS_CLI_AUTH_ENV);
     if (auth != NULL && config.conn_info.auth == NULL) {
-        config.conn_info.auth = auth;
+        config.conn_info.auth = sdsnew(auth);
     }
 
     char *cluster_yes = getenv(REDIS_CLI_CLUSTER_YES_ENV);
@@ -3245,7 +3254,7 @@ static int confirmWithYes(char *msg, int ignore_force) {
     return (nread != 0 && !strcmp("yes", buf));
 }
 
-static int issueCommandRepeat(int argc, char **argv, long repeat) {
+static int issueCommandRepeat(int argc, char **argv, long long repeat) {
     /* In Lua debugging mode, we want to pass the "help" to Redis to get
      * it's own HELP message, rather than handle it by the CLI, see ldbRepl.
      *
@@ -3339,7 +3348,7 @@ void cliSetPreferences(char **argv, int argc, int interactive) {
 void cliLoadPreferences(void) {
     sds rcfile = getDotfilePath(REDIS_CLI_RCFILE_ENV,REDIS_CLI_RCFILE_DEFAULT);
     if (rcfile == NULL) return;
-    FILE *fp = fopen(rcfile,"r");
+    FILE *fp = redis_fopen(rcfile,"r");
     char buf[1024];
 
     if (fp) {
@@ -3455,7 +3464,7 @@ static void repl(void) {
             }
             break;
         } else if (line[0] != '\0') {
-            long repeat = 1;
+            long long repeat = 1;
             int skipargs = 0;
             char *endptr = NULL;
 
@@ -3476,7 +3485,7 @@ static void repl(void) {
             /* check if we have a repeat command option and
              * need to skip the first arg */
             errno = 0;
-            repeat = strtol(argv[0], &endptr, 10);
+            repeat = strtoll(argv[0], &endptr, 10);
             if (argc > 1 && *endptr == '\0') {
                 if (errno == ERANGE || errno == EINVAL || repeat <= 0) {
                     fputs("Invalid redis-cli repeat command option value.\n", stdout);
@@ -3632,7 +3641,7 @@ static int evalMode(int argc, char **argv) {
         keys = 0;
 
         /* Load the script from the file, as an sds string. */
-        fp = fopen(config.eval,"r");
+        fp = redis_fopen(config.eval,"r");
         if (!fp) {
             fprintf(stderr,
                 "Can't open file '%s': %s\n", config.eval, strerror(errno));
@@ -4305,7 +4314,7 @@ static int clusterManagerNodeIsEmpty(clusterManagerNode *node, char **err) {
         is_empty = 0;
         goto result;
     }
-    long known_nodes = getLongInfoField(info->str, "cluster_known_nodes");
+    long long known_nodes = getLongInfoField(info->str, "cluster_known_nodes");
     is_empty = (known_nodes == 1);
 result:
     freeReplyObject(info);
@@ -7568,7 +7577,7 @@ static int clusterManagerCommandReshard(int argc, char **argv) {
                "the hash slots.\n");
         printf("  Type 'done' once you entered all the source nodes IDs.\n");
         while (1) {
-            printf("Source node #%lu: ", listLength(sources) + 1);
+            printf("Source node #%llu: ", (unsigned long long)listLength(sources) + 1);
             fflush(stdout);
             int nread = read(fileno(stdin),buf,255);
             if (nread <= 0) continue;
@@ -8190,7 +8199,7 @@ static int clusterManagerCommandBackup(int argc, char **argv) {
     jsonpath = sdscat(jsonpath, "nodes.json");
     fflush(stdout);
     clusterManagerLogInfo("Saving cluster configuration to: %s\n", jsonpath);
-    FILE *out = fopen(jsonpath, "w+");
+    FILE *out = redis_fopen(jsonpath, "w+");
     if (!out) {
         clusterManagerLogErr("Could not save nodes to: %s\n", jsonpath);
         success = 0;
@@ -9457,13 +9466,13 @@ static char *getInfoField(char *info, char *field) {
 }
 
 /* Like the above function but automatically convert the result into
- * a long. On error (missing field) LONG_MIN is returned. */
-static long getLongInfoField(char *info, char *field) {
+ * a long long. On error (missing field) LLONG_MIN is returned. */
+static long long getLongInfoField(char *info, char *field) {
     char *value = getInfoField(info,field);
-    long l;
+    long long l;
 
-    if (!value) return LONG_MIN;
-    l = strtol(value,NULL,10);
+    if (!value) return LLONG_MIN;
+    l = strtoll(value,NULL,10);
     zfree(value);
     return l;
 }
@@ -9538,23 +9547,23 @@ static void statMode(void) {
 
         /* Clients */
         aux = getLongInfoField(reply->str,"connected_clients");
-        snprintf(buf,sizeof(buf),"%ld",aux);
+        snprintf(buf,sizeof(buf),"%lld",aux);
         printf(" %-8s",buf);
 
         /* Blocked (BLPOPPING) Clients */
         aux = getLongInfoField(reply->str,"blocked_clients");
-        snprintf(buf,sizeof(buf),"%ld",aux);
+        snprintf(buf,sizeof(buf),"%lld",aux);
         printf("%-8s",buf);
 
         /* Requests */
         aux = getLongInfoField(reply->str,"total_commands_processed");
-        snprintf(buf,sizeof(buf),"%ld (+%ld)",aux,requests == 0 ? 0 : aux-requests);
+        snprintf(buf,sizeof(buf),"%lld (+%lld)",aux,requests == 0 ? 0 : aux-requests);
         printf("%-19s",buf);
         requests = aux;
 
         /* Connections */
         aux = getLongInfoField(reply->str,"total_connections_received");
-        snprintf(buf,sizeof(buf),"%ld",aux);
+        snprintf(buf,sizeof(buf),"%lld",aux);
         printf(" %-12s",buf);
 
         /* Children */
@@ -9819,7 +9828,7 @@ void testHintSuite(char *filename) {
     int argc;
     char **argv;
 
-    fp = fopen(filename, "r");
+    fp = redis_fopen(filename, "r");
     if (!fp) {
         fprintf(stderr,
             "Can't open file '%s': %s\n", filename, strerror(errno));
@@ -9877,6 +9886,13 @@ void testHintSuite(char *filename) {
  *--------------------------------------------------------------------------- */
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    if (win32_get_utf8_argv(&argc, &argv) != 0) {
+        fprintf(stderr, "Unable to decode the Windows command line as UTF-8: %s\n",
+                strerror(errno));
+        return 1;
+    }
+#endif
     int firstarg;
     struct timeval tv;
 

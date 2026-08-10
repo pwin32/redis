@@ -60,7 +60,7 @@ static int connUnixListen(connListener *listener) {
     for (int j = 0; j < listener->bindaddr_count; j++) {
         char *addr = listener->bindaddr[j];
 
-        unlink(addr); /* don't care if this fails */
+        redis_unlink(addr); /* don't care if this fails */
         fd = anetUnixServer(server.neterr, addr, *perm, server.tcp_backlog);
         if (fd == ANET_ERR) {
             serverLog(LL_WARNING, "Failed opening Unix socket: %s", server.neterr);

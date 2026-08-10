@@ -23,7 +23,9 @@
 #ifndef WIN32_INTEROP_ERROR_H
 #define WIN32_INTEROP_ERROR_H
 
+#include <stddef.h>
 #include <stdint.h>
+#include <wchar.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -36,7 +38,37 @@ extern "C"
 
 /* Converts error codes returned by GetLastError/WSAGetLastError to errno codes */
 int translate_sys_error(int sys_error);
+int win32_errno_from_system_error(int sys_error);
 void set_errno_from_last_error();
+
+/* Redis keeps text and paths as UTF-8 internally.  These helpers provide the
+ * only supported conversion boundary for Windows Unicode APIs.  Returned
+ * buffers are allocated with the system allocator and must be released with
+ * win32_free(). */
+void win32_free(void *value);
+wchar_t *win32_utf8_to_wide(const char *value);
+char *win32_wide_to_utf8(const wchar_t *value);
+wchar_t *win32_utf8_path_to_wide(const char *path);
+char *win32_get_full_path_utf8(const char *path);
+wchar_t *win32_get_module_filename_wide(void);
+char *win32_get_module_filename_utf8(void);
+char *win32_get_module_filename_for_handle_utf8(void *module);
+char *win32_get_current_directory_utf8(void);
+int win32_set_current_directory_utf8(const char *path);
+int win32_get_utf8_argv(int *argc, char ***argv);
+void win32_free_utf8_argv(int argc, char **argv);
+/* The owned form must be freed by the caller. The cached form retains one
+ * allocation per distinct environment name for process-lifetime callers such
+ * as redis-cli and refreshes that value on each lookup. */
+char *win32_getenv_utf8(const char *name);
+char *win32_getenv_utf8_cached(const char *name);
+
+typedef struct win32_utf8_dir win32_utf8_dir;
+win32_utf8_dir *win32_opendir_utf8(const char *path);
+const char *win32_readdir_utf8(win32_utf8_dir *dir);
+int win32_closedir_utf8(win32_utf8_dir *dir);
+int win32_glob_utf8(const char *pattern, char ***paths, size_t *count);
+void win32_globfree_utf8(char **paths, size_t count);
 
 int strerror_r(int err, char* buf, size_t buflen);
 char *wsa_strerror(int err);

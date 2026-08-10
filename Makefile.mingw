@@ -338,10 +338,12 @@ HIREDIS_TEST_OBJS := \
 	$(addprefix $(BUILD)/hiredis-test/,$(TOOL_WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
 
 INTEROP_TEST_C_SOURCES := \
+	src/Win32_Interop/Win32_APIs.c \
 	src/Win32_Interop/Win32_Error.c \
 	src/Win32_Interop/Win32_PThread.c \
 	src/Win32_Interop/Win32_Signal_Process.c \
-	src/Win32_Interop/Win32_ThreadControl.c
+	src/Win32_Interop/Win32_ThreadControl.c \
+	tests/windows/llp64.c
 
 INTEROP_TEST_CXX_SOURCES := \
 	tests/windows/interop.cpp \

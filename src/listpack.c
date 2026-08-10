@@ -44,6 +44,7 @@
 #include "listpack_malloc.h"
 #include "redisassert.h"
 #include "util.h"
+#include "mt19937-64.h"
 
 #define LP_HDR_SIZE 6       /* 32 bit total len + 16 bit number of elements. */
 #define LP_HDR_NUMELE_UNKNOWN UINT16_MAX
@@ -1235,7 +1236,7 @@ size_t lpEstimateBytesRepeatedInteger(long long lval, unsigned long rep) {
  * the tail, negative indexes specify elements starting from the tail, where
  * -1 means the last element, -2 the penultimate and so forth. If the index
  * is out of range, NULL is returned. */
-unsigned char *lpSeek(unsigned char *lp, long index) {
+unsigned char *lpSeek(unsigned char *lp, int64_t index) {
     int forward = 1; /* Seek forward by default. */
 
     /* We want to seek from left to right or the other way around
@@ -1244,12 +1245,12 @@ unsigned char *lpSeek(unsigned char *lp, long index) {
      * we always seek from left to right. */
     uint32_t numele = lpGetNumElements(lp);
     if (numele != LP_HDR_NUMELE_UNKNOWN) {
-        if (index < 0) index = (long)numele+index;
+        if (index < 0) index = (int64_t)numele+index;
         if (index < 0) return NULL; /* Index still < 0 means out of range. */
-        if (index >= (long)numele) return NULL; /* Out of range the other side. */
+        if (index >= (int64_t)numele) return NULL; /* Out of range the other side. */
         /* We want to scan right-to-left if the element we are looking for
          * is past the half of the listpack. */
-        if (index > (long)numele/2) {
+        if (index > (int64_t)numele/2) {
             forward = 0;
             /* Right to left scanning always expects a negative index. Convert
              * our index to negative form. */
@@ -1459,7 +1460,7 @@ void lpRandomEntries(unsigned char *lp, unsigned int count, listpackEntry *entri
     unsigned int total_size = lpLength(lp);
     assert(total_size);
     for (unsigned int i = 0; i < count; i++) {
-        picks[i].index = rand() % total_size;
+        picks[i].index = genrand64_int64() % total_size;
         picks[i].order = i;
     }
 

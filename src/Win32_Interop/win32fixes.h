@@ -17,9 +17,15 @@
 #endif
 #endif
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOGDI
 #define NOGDI
+#endif
+#ifndef __USE_W32_SOCKETS
 #define __USE_W32_SOCKETS
+#endif
 
 #include "win32_types.h"
 #include "Win32_FDAPI.h"

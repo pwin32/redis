@@ -90,7 +90,7 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
     }
 
     pGetQueuedCompletionStatusEx = NULL;
-    kernel32_module = GetModuleHandleA("kernel32.dll");
+    kernel32_module = GetModuleHandleW(L"kernel32.dll");
     if (kernel32_module != NULL) {
         pGetQueuedCompletionStatusEx = (sGetQueuedCompletionStatusEx) GetProcAddress(
                                         kernel32_module,
@@ -121,12 +121,12 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     aeApiState *state = (aeApiState *) eventLoop->apidata;
     iocpSockState *sockstate = WSIOCP_GetSocketState(fd);
     if (sockstate == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return -1;
     }
     if (sockstate->masks & SOCKET_ATTACHED) {
         if (sockstate->completion_port != state->iocp) {
-            errno = WSAEINVAL;
+            errno = EINVAL;
             return -1;
         }
     } else {
@@ -164,7 +164,7 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
 static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int mask) {
     iocpSockState *sockstate = WSIOCP_GetExistingSocketState(fd);
     if (sockstate == NULL) {
-        errno = WSAEINVAL;
+        errno = EINVAL;
         return;
     }
 
@@ -309,7 +309,8 @@ static int aeApiProcessCompletion(aeEventLoop *eventLoop,
         if (FDAPI_WSAGetOverlappedResult(rfd, &sockstate->ov_read,
                                          &connected_bytes, FALSE,
                                          &connected_flags) == FALSE) {
-            int connect_error = FDAPI_WSAGetLastError();
+            int connect_error =
+                win32_errno_from_system_error(FDAPI_WSAGetLastError());
             int visible_mask = sockstate->masks & (AE_READABLE | AE_WRITABLE);
             WSIOCP_SetDeferredError(rfd, connect_error);
             if (visible_mask == 0) visible_mask = AE_WRITABLE;
@@ -321,7 +322,8 @@ static int aeApiProcessCompletion(aeEventLoop *eventLoop,
          * this fails, surface the error through the ordinary connection
          * callback so the owner closes and retries the link. */
         if (FDAPI_UpdateConnectContext(rfd) == SOCKET_ERROR) {
-            int context_error = FDAPI_WSAGetLastError();
+            int context_error =
+                win32_errno_from_system_error(FDAPI_WSAGetLastError());
             int visible_mask = sockstate->masks & (AE_READABLE | AE_WRITABLE);
             WSIOCP_SetDeferredError(rfd, context_error);
             serverLog(LL_WARNING,

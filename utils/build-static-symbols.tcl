@@ -14,7 +14,7 @@ while {[gets $fd line] != -1} {
 set symlist [lsort -unique $symlist]
 puts "static struct redisFunctionSym symsTable\[\] = {"
 foreach sym $symlist {
-    puts "{\"$sym\",(unsigned long)$sym},"
+    puts "{\"$sym\",(uintptr_t)$sym},"
 }
 puts "{NULL,0}"
 puts "};"

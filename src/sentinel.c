@@ -972,15 +972,22 @@ void sentinelRunPendingScripts(void) {
                                                               sj->argv[j]);
         }
 
-        STARTUPINFOA si;
+        wchar_t *wide_program = win32_utf8_path_to_wide(sj->argv[0]);
+        wchar_t *wide_command_line = win32_utf8_to_wide(command_line);
+        STARTUPINFOW si;
         PROCESS_INFORMATION pi;
         ZeroMemory(&si,sizeof(si));
         ZeroMemory(&pi,sizeof(pi));
         si.cb = sizeof(si);
 
-        BOOL created = CreateProcessA(sj->argv[0], command_line,
-                                      NULL, NULL, FALSE, 0,
-                                      NULL, NULL, &si, &pi);
+        BOOL created = FALSE;
+        if (wide_program != NULL && wide_command_line != NULL) {
+            created = CreateProcessW(wide_program, wide_command_line,
+                                     NULL, NULL, FALSE, 0,
+                                     NULL, NULL, &si, &pi);
+        }
+        win32_free(wide_program);
+        win32_free(wide_command_line);
         sdsfree(command_line);
 
         if (created) {
@@ -2090,17 +2097,19 @@ const char *sentinelHandleConfiguration(char **argv, int argc) {
         /* down-after-milliseconds <name> <milliseconds> */
         ri = sentinelGetMasterByName(argv[1]);
         if (!ri) return "No such master with specified name.";
-        ri->down_after_period = atoi(argv[2]);
-        if (ri->down_after_period <= 0)
+        long long value;
+        if (!string2ll(argv[2],strlen(argv[2]),&value) || value <= 0)
             return "negative or zero time parameter.";
+        ri->down_after_period = value;
         sentinelPropagateDownAfterPeriod(ri);
     } else if (!strcasecmp(argv[0],"failover-timeout") && argc == 3) {
         /* failover-timeout <name> <milliseconds> */
         ri = sentinelGetMasterByName(argv[1]);
         if (!ri) return "No such master with specified name.";
-        ri->failover_timeout = atoi(argv[2]);
-        if (ri->failover_timeout <= 0)
+        long long value;
+        if (!string2ll(argv[2],strlen(argv[2]),&value) || value <= 0)
             return "negative or zero time parameter.";
+        ri->failover_timeout = value;
     } else if (!strcasecmp(argv[0],"parallel-syncs") && argc == 3) {
         /* parallel-syncs <name> <milliseconds> */
         ri = sentinelGetMasterByName(argv[1]);
@@ -2230,9 +2239,10 @@ const char *sentinelHandleConfiguration(char **argv, int argc) {
         /* master-reboot-down-after-period <name> <milliseconds> */
         ri = sentinelGetMasterByName(argv[1]);
         if (!ri) return "No such master with specified name.";
-        ri->master_reboot_down_after_period = atoi(argv[2]);
-        if (ri->master_reboot_down_after_period < 0)
+        long long value;
+        if (!string2ll(argv[2],strlen(argv[2]),&value) || value < 0)
             return "negative time parameter.";
+        ri->master_reboot_down_after_period = value;
     } else {
         return "Unrecognized sentinel configuration statement.";
     }

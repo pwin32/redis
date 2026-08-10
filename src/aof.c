@@ -53,7 +53,6 @@
 extern void redisForkChildStarted(pid_t childpid, int purpose, long long start);
 extern void *moduleGetForkData(void);
 #include <direct.h>
-#define MAXPATHLEN 1024
 
 /* Redis 7.2 keeps the temporary INCR AOF open while atomically renaming it
  * into the manifest namespace.  A normal CRT open on Windows does not share
@@ -62,13 +61,18 @@ extern void *moduleGetForkData(void);
  * temporary INCR file rather than changing the sharing policy of every Redis
  * file descriptor. */
 static int openWin32AofFileForRename(const char *path) {
-    HANDLE handle = CreateFileA(path,
+    wchar_t *wide_path = win32_utf8_path_to_wide(path);
+    HANDLE handle;
+
+    if (wide_path == NULL) return -1;
+    handle = CreateFileW(wide_path,
                                 GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 NULL,
                                 CREATE_ALWAYS,
                                 FILE_ATTRIBUTE_NORMAL,
                                 NULL);
+    win32_free(wide_path);
     if (handle == INVALID_HANDLE_VALUE) {
         set_errno_from_last_error();
         return -1;
@@ -302,7 +306,7 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath) {
     long long maxseq = 0;
 
     aofManifest *am = aofManifestCreate();
-    FILE *fp = fopen(am_filepath, "r");
+    FILE *fp = redis_fopen(am_filepath, "r");
     if (fp == NULL) {
         serverLog(LL_WARNING, "Fatal error: can't open the AOF manifest "
             "file %s for reading: %s", am_filepath, strerror(errno));
@@ -1520,16 +1524,16 @@ struct client *createAOFClient(void) {
  * AOF_FAILED: Failed to load the AOF file. */
 int loadSingleAppendOnlyFile(char *filename) {
     struct client *fakeClient;
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     int old_aof_state = server.aof_state;
-    long loops = 0;
+    uint64_t loops = 0;
     off_t valid_up_to = 0; /* Offset of latest well-formed command loaded. */
     off_t valid_before_multi = 0; /* Offset before MULTI command loaded. */
     off_t last_progress_report_size = 0;
     int ret = AOF_OK;
 
     sds aof_filepath = makePath(server.aof_dirname, filename);
-    FILE *fp = fopen(aof_filepath, IF_WIN32("rb","r"));
+    FILE *fp = redis_fopen(aof_filepath, IF_WIN32("rb","r"));
     if (fp == NULL) {
         int en = errno;
         if (redis_stat(aof_filepath, &sb) == 0 || errno != ENOENT) {
@@ -2479,7 +2483,7 @@ int rewriteAppendOnlyFile(char *filename) {
     /* QFork children are fresh Windows processes and do not inherit the
      * parent's CRT _fmode.  Make the mode explicit so RDB preamble bytes and
      * RESP newlines are never translated through text mode. */
-    fp = fopen(tmpfile,IF_WIN32("wb","w"));
+    fp = redis_fopen(tmpfile,IF_WIN32("wb","w"));
     if (!fp) {
         serverLog(LL_WARNING, "Opening the temp file for AOF rewrite in rewriteAppendOnlyFile(): %s", strerror(errno));
         return C_ERR;
@@ -2518,7 +2522,7 @@ int rewriteAppendOnlyFile(char *filename) {
      * if the generate DB file is ok. */
     if (rename(tmpfile,filename) == -1) {
         serverLog(LL_WARNING,"Error moving temp append only file on the final destination: %s", strerror(errno));
-        unlink(tmpfile);
+        redis_unlink(tmpfile);
         stopSaving(0);
         return C_ERR;
     }
@@ -2529,7 +2533,7 @@ int rewriteAppendOnlyFile(char *filename) {
 werr:
     serverLog(LL_WARNING,"Write error writing append only file on disk: %s", strerror(errno));
     if (fp) fclose(fp);
-    unlink(tmpfile);
+    redis_unlink(tmpfile);
     stopSaving(0);
     return C_ERR;
 }
@@ -2682,7 +2686,7 @@ void aofRemoveTempFile(pid_t childpid) {
  * The status argument is an optional output argument to be filled with
  * one of the AOF_ status values. */
 off_t getAppendOnlyFileSize(sds filename, int *status) {
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     off_t size;
     mstime_t latency;
 

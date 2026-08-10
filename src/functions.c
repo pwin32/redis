@@ -1125,11 +1125,11 @@ unsigned long functionsMemoryOverhead(void) {
 }
 
 /* Returns the number of functions */
-unsigned long functionsNum(void) {
+uint64_t functionsNum(void) {
     return dictSize(curr_functions_lib_ctx->functions);
 }
 
-unsigned long functionsLibNum(void) {
+uint64_t functionsLibNum(void) {
     return dictSize(curr_functions_lib_ctx->libraries);
 }
 

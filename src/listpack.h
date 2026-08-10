@@ -83,7 +83,7 @@ unsigned char *lpNext(unsigned char *lp, unsigned char *p);
 unsigned char *lpPrev(unsigned char *lp, unsigned char *p);
 size_t lpBytes(unsigned char *lp);
 size_t lpEstimateBytesRepeatedInteger(long long lval, unsigned long rep);
-unsigned char *lpSeek(unsigned char *lp, long index);
+unsigned char *lpSeek(unsigned char *lp, int64_t index);
 typedef int (*listpackValidateEntryCB)(unsigned char *p, unsigned int head_count, void *userdata);
 int lpValidateIntegrity(unsigned char *lp, size_t size, int deep,
                         listpackValidateEntryCB entry_cb, void *cb_userdata);

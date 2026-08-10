@@ -21,6 +21,7 @@
  */
 
 #include "Win32_Signal_Process.h"
+#include "Win32_Error.h"
 #include <errno.h>
 
 /* Redefined here to avoid server.h so it can be used in other projects */
@@ -47,11 +48,16 @@ int kill(pid_t pid, int sig) {
         return 0;
     } else if (sig == SIGKILL) {
         HANDLE h = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if (!TerminateProcess(h, 127)) {
-            errno = EINVAL; /* GetLastError() */
-            CloseHandle(h);
+        if (h == NULL) {
+            set_errno_from_last_error();
             return -1;
-        };
+        }
+        if (!TerminateProcess(h, 127)) {
+            DWORD error = GetLastError();
+            CloseHandle(h);
+            errno = translate_sys_error(error);
+            return -1;
+        }
         CloseHandle(h);
         return 0;
     } else {
@@ -79,7 +85,7 @@ int getrusage(int who, struct rusage * r) {
             &kerneltime,
             &usertime))
         {
-            errno = EFAULT;
+            set_errno_from_last_error();
             return -1;
         }
     } else if (who == RUSAGE_CHILDREN) {
@@ -98,13 +104,13 @@ int getrusage(int who, struct rusage * r) {
     }
     memcpy(&li, &kerneltime, sizeof(FILETIME));
     li.QuadPart /= 10L;
-    r->ru_stime.tv_sec = (long) (li.QuadPart / 1000000L);
-    r->ru_stime.tv_usec = (long) (li.QuadPart % 1000000L);
+    r->ru_stime.tv_sec = (PORT_LONGLONG)(li.QuadPart / 1000000L);
+    r->ru_stime.tv_usec = (PORT_LONGLONG)(li.QuadPart % 1000000L);
 
     memcpy(&li, &usertime, sizeof(FILETIME));
     li.QuadPart /= 10L;
-    r->ru_utime.tv_sec = (long) (li.QuadPart / 1000000L);
-    r->ru_utime.tv_usec = (long) (li.QuadPart % 1000000L);
+    r->ru_utime.tv_sec = (PORT_LONGLONG)(li.QuadPart / 1000000L);
+    r->ru_utime.tv_usec = (PORT_LONGLONG)(li.QuadPart % 1000000L);
 
     return 0;
 }
