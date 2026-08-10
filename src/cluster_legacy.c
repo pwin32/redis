@@ -847,7 +847,8 @@ int clusterLockConfig(char *filename) {
         } else {
 #ifdef _WIN32
             serverLog(LL_WARNING,
-                "Impossible to lock %s: %s", filename, wsa_strerror((int)lockerr));
+                "Impossible to lock %s: %s", filename,
+                win32_system_strerror((int)lockerr));
 #else
             serverLog(LL_WARNING,
                 "Impossible to lock %s: %s", filename, strerror(errno));

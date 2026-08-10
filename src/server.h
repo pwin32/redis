@@ -3215,7 +3215,7 @@ void getRandomHexChars(char *p, size_t len);
 void getRandomBytes(unsigned char *p, size_t len);
 uint64_t crc64(uint64_t crc, const unsigned char *s, uint64_t l);
 void exitFromChild(int retcode, int from_signal);
-long long redisPopcount(void *s, long count);
+long long redisPopcount(void *s, size_t count);
 int redisSetProcTitle(char *title);
 int validateProcTitleTemplate(const char *template);
 int redisCommunicateSystemd(const char *sd_notify_msg);
@@ -3455,7 +3455,7 @@ void discardTransaction(client *c);
 void flagTransaction(client *c);
 void execCommandAbort(client *c, sds error);
 
-unsigned char *getObjectReadOnlyString(robj *o, long *len, char *llbuf);
+unsigned char *getObjectReadOnlyString(robj *o, size_t *len, char *llbuf);
 
 unsigned long long estimateObjectIdleTime(robj *o);
 #define sdsEncodedObject(objptr) (objptr->encoding == OBJ_ENCODING_RAW || objptr->encoding == OBJ_ENCODING_EMBSTR)

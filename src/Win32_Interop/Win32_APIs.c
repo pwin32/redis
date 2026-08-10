@@ -82,7 +82,7 @@ int replace_rename(const char *src, const char *dst) {
     if (wide_src == NULL) return -1;
     wide_dst = win32_utf8_path_to_wide(dst);
     if (wide_dst == NULL) {
-        free(wide_src);
+        win32_free(wide_src);
         return -1;
     }
 
@@ -92,8 +92,8 @@ int replace_rename(const char *src, const char *dst) {
          * AOF, manifest, or rewritten configuration after a crash. */
         if (MoveFileExW(wide_src, wide_dst,
                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            free(wide_src);
-            free(wide_dst);
+            win32_free(wide_src);
+            win32_free(wide_dst);
             return 0;
         }
 
@@ -109,8 +109,8 @@ int replace_rename(const char *src, const char *dst) {
 
     errno = translate_sys_error((int)error);
     if (errno == -9999) errno = EIO;
-    free(wide_src);
-    free(wide_dst);
+    win32_free(wide_src);
+    win32_free(wide_dst);
     return -1;
 }
 
@@ -121,20 +121,20 @@ int replace_link(const char *src, const char *dst) {
     if (wide_src == NULL) return -1;
     wide_dst = win32_utf8_path_to_wide(dst);
     if (wide_dst == NULL) {
-        free(wide_src);
+        win32_free(wide_src);
         return -1;
     }
 
     if (CreateHardLinkW(wide_dst, wide_src, NULL)) {
-        free(wide_src);
-        free(wide_dst);
+        win32_free(wide_src);
+        win32_free(wide_dst);
         return 0;
     }
 
     errno = translate_sys_error((int)GetLastError());
     if (errno == -9999) errno = EIO;
-    free(wide_src);
-    free(wide_dst);
+    win32_free(wide_src);
+    win32_free(wide_dst);
     return -1;
 }
 
@@ -147,13 +147,13 @@ FILE *replace_fopen(const char *path, const char *mode) {
     if (wide_path == NULL) return NULL;
     wide_mode = win32_utf8_to_wide(mode);
     if (wide_mode == NULL) {
-        free(wide_path);
+        win32_free(wide_path);
         return NULL;
     }
     file = _wfopen(wide_path, wide_mode);
     saved_errno = errno;
-    free(wide_mode);
-    free(wide_path);
+    win32_free(wide_mode);
+    win32_free(wide_path);
     errno = saved_errno;
     return file;
 }
@@ -167,13 +167,13 @@ FILE *replace_freopen(const char *path, const char *mode, FILE *stream) {
     if (wide_path == NULL) return NULL;
     wide_mode = win32_utf8_to_wide(mode);
     if (wide_mode == NULL) {
-        free(wide_path);
+        win32_free(wide_path);
         return NULL;
     }
     file = _wfreopen(wide_path, wide_mode, stream);
     saved_errno = errno;
-    free(wide_mode);
-    free(wide_path);
+    win32_free(wide_mode);
+    win32_free(wide_path);
     errno = saved_errno;
     return file;
 }
@@ -187,13 +187,13 @@ FILE *replace_popen(const char *command, const char *mode) {
     if (wide_command == NULL) return NULL;
     wide_mode = win32_utf8_to_wide(mode);
     if (wide_mode == NULL) {
-        free(wide_command);
+        win32_free(wide_command);
         return NULL;
     }
     file = _wpopen(wide_command, wide_mode);
     saved_errno = errno;
-    free(wide_mode);
-    free(wide_command);
+    win32_free(wide_mode);
+    win32_free(wide_command);
     errno = saved_errno;
     return file;
 }
@@ -206,7 +206,7 @@ int replace_remove(const char *path) {
     if (wide_path == NULL) return -1;
     result = _wremove(wide_path);
     saved_errno = errno;
-    free(wide_path);
+    win32_free(wide_path);
     errno = saved_errno;
     return result;
 }
@@ -221,7 +221,7 @@ int replace_system(const char *command) {
     if (wide_command == NULL) return -1;
     result = _wsystem(wide_command);
     saved_errno = errno;
-    free(wide_command);
+    win32_free(wide_command);
     errno = saved_errno;
     return result;
 }
@@ -233,7 +233,7 @@ int replace_unlink(const char *path) {
     if (wide_path == NULL) return -1;
     result = _wunlink(wide_path);
     saved_errno = errno;
-    free(wide_path);
+    win32_free(wide_path);
     errno = saved_errno;
     return result;
 }
@@ -245,7 +245,7 @@ int replace_mkdir(const char *path) {
     if (wide_path == NULL) return -1;
     result = _wmkdir(wide_path);
     saved_errno = errno;
-    free(wide_path);
+    win32_free(wide_path);
     errno = saved_errno;
     return result;
 }
@@ -257,7 +257,7 @@ int replace_rmdir(const char *path) {
     if (wide_path == NULL) return -1;
     result = _wrmdir(wide_path);
     saved_errno = errno;
-    free(wide_path);
+    win32_free(wide_path);
     errno = saved_errno;
     return result;
 }
@@ -269,7 +269,7 @@ int replace_chmod(const char *path, int mode) {
     if (wide_path == NULL) return -1;
     result = _wchmod(wide_path, mode);
     saved_errno = errno;
-    free(wide_path);
+    win32_free(wide_path);
     errno = saved_errno;
     return result;
 }
@@ -327,7 +327,7 @@ int replace_stat64(const char *path, struct __stat64 *buffer) {
             if (saved_errno == -9999) saved_errno = EIO;
         }
     }
-    free(wide_path);
+    win32_free(wide_path);
     errno = saved_errno;
     return result;
 }
@@ -345,7 +345,7 @@ int truncate(const char *path, PORT_LONGLONG length) {
                                     OPEN_EXISTING,
                                     0,
                                     NULL);
-    free(wide_path);
+    win32_free(wide_path);
     if (toTruncate != INVALID_HANDLE_VALUE) {
         int result = 0;
         newSize.QuadPart = length;

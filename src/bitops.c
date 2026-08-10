@@ -60,11 +60,11 @@ static const uint8_t bitsinbyte[256] = {
     #undef B2
 };
 
-/* Count number of bits set in the binary array pointed by 's' and long
+/* Count number of bits set in the binary array pointed by 's' and
  * 'count' bytes. The implementation of this function is required to
  * work with an input string length up to 512 MB or more (server.proto_max_bulk_len) */
 ATTRIBUTE_TARGET_POPCNT
-long long redisPopcount(void *s, long count) {
+long long redisPopcount(void *s, size_t count) {
     long long bits = 0;
     unsigned char *p = s;
     uint32_t *p4;
@@ -165,7 +165,7 @@ remain:
  * This function is now memory bound on large bitmaps, as confirmed by perf
  * profiling, with backend stalls dominated by L1/L2 data cache refills.
  */
-long long redisPopCountAarch64(void *s, long count) {
+long long redisPopCountAarch64(void *s, size_t count) {
     long long bits = 0;
     const uint8_t *p = (const uint8_t*)s;
 
@@ -272,7 +272,7 @@ long long redisPopCountAarch64(void *s, long count) {
 /* AVX512 optimized version of redisPopcount using VPOPCNTDQ instruction.
  * This function requires AVX512F and AVX512VPOPCNTDQ support. */
 ATTRIBUTE_TARGET_AVX512_POPCOUNT
-long long redisPopCountAvx512(void *s, long count) {
+long long redisPopCountAvx512(void *s, size_t count) {
     long long bits = 0;
     unsigned char *p = s;
 
@@ -317,7 +317,7 @@ long long redisPopCountAvx512(void *s, long count) {
 /* AVX2 optimized version of redisPopcount.
  * This function requires AVX2 and POPCNT support. */
 ATTRIBUTE_TARGET_AVX2_POPCOUNT
-long long redisPopCountAvx2(void *s, long count) {
+long long redisPopCountAvx2(void *s, size_t count) {
     long long bits = 0;
     unsigned char *p = s;
 
@@ -364,7 +364,7 @@ long long redisPopCountAvx2(void *s, long count) {
 #endif
 
 /* Automatically select the best available popcount implementation */
-static inline long long redisPopcountAuto(const unsigned char *p, long count) {
+static inline long long redisPopcountAuto(const unsigned char *p, size_t count) {
 #ifdef HAVE_AVX512
     if (BITOPS_USE_AVX512_POPCOUNT) {
         return redisPopCountAvx512((void*)p, count);
@@ -383,18 +383,18 @@ static inline long long redisPopcountAuto(const unsigned char *p, long count) {
 }
 
 /* Return the position of the first bit set to one (if 'bit' is 1) or
- * zero (if 'bit' is 0) in the bitmap starting at 's' and long 'count' bytes.
+ * zero (if 'bit' is 0) in the bitmap starting at 's' and 'count' bytes.
  *
  * The function is guaranteed to return a value >= 0 if 'bit' is 0 since if
  * no zero bit is found, it returns count*8 assuming the string is zero
  * padded on the right. However if 'bit' is 1 it is possible that there is
  * not a single set bit in the bitmap. In this special case -1 is returned. */
-long long redisBitpos(void *s, unsigned long count, int bit) {
+long long redisBitpos(void *s, size_t count, int bit) {
     unsigned long *l;
     unsigned char *c;
     unsigned long skipval, word = 0, one;
     long long pos = 0; /* Position of bit, to return to the caller. */
-    unsigned long j;
+    size_t j;
     int found;
 
     /* Process whole words first, seeking for first word that is not
@@ -821,7 +821,7 @@ static kvobj *lookupStringForBitCommand(client *c, uint64_t maxbit,
  *
  * If the source object is NULL the function is guaranteed to return NULL
  * and set 'len' to 0. */
-unsigned char *getObjectReadOnlyString(robj *o, long *len, char *llbuf) {
+unsigned char *getObjectReadOnlyString(robj *o, size_t *len, char *llbuf) {
     serverAssert(!o || o->type == OBJ_STRING);
     unsigned char *p = NULL;
 
@@ -925,14 +925,14 @@ void getbitCommand(client *c) {
  * will be skipped. They will be taken care for in the unoptimized loop in the
  * main bitopCommand function. */
 ATTRIBUTE_TARGET_AVX2
-unsigned long bitopCommandAVX(unsigned char **keys, unsigned char *res,
-                              unsigned long op, unsigned long numkeys,
-                              unsigned long minlen)
+size_t bitopCommandAVX(unsigned char **keys, unsigned char *res,
+                       unsigned long op, unsigned long numkeys,
+                       size_t minlen)
 {
-    const unsigned long step = sizeof(__m256i);
+    const size_t step = sizeof(__m256i);
 
-    unsigned long i;
-    unsigned long processed = 0;
+    size_t i;
+    size_t processed = 0;
     unsigned char *res_start = res;
     unsigned char *fst_key = keys[0];
 
@@ -1081,14 +1081,14 @@ unsigned long bitopCommandAVX(unsigned char **keys, unsigned char *res,
  * will be skipped. They will be taken care for in the unoptimized loop in the
  * main bitopCommand function. */
 ATTRIBUTE_TARGET_AVX512
-unsigned long bitopCommandAVX512(unsigned char **keys, unsigned char *res,
-                                 unsigned long op, unsigned long numkeys,
-                                 unsigned long minlen)
+size_t bitopCommandAVX512(unsigned char **keys, unsigned char *res,
+                          unsigned long op, unsigned long numkeys,
+                          size_t minlen)
 {
-    const unsigned long step = sizeof(__m512i);  /* 64 bytes */
+    const size_t step = sizeof(__m512i);  /* 64 bytes */
 
-    unsigned long i;
-    unsigned long processed = 0;
+    size_t i;
+    size_t processed = 0;
     unsigned char *res_start = res;
     unsigned char *fst_key = keys[0];
 
@@ -1235,12 +1235,12 @@ REDIS_NO_SANITIZE("alignment")
 void bitopCommand(client *c) {
     char *opname = c->argv[1]->ptr;
     robj *targetkey = c->argv[2];
-    unsigned long op, j, numkeys;
+    unsigned long op, numkeys;
+    size_t j;
     robj **objects;      /* Array of source objects. */
     unsigned char **src; /* Array of source strings pointers. */
-    unsigned long *len, maxlen = 0; /* Array of length of src strings,
-                                       and max len. */
-    unsigned long minlen = 0;    /* Min len among the input keys. */
+    size_t *len, maxlen = 0; /* Array of length of src strings and max len. */
+    size_t minlen = 0;       /* Min len among the input keys. */
     unsigned char *res = NULL; /* Resulting string. */
 
     /* Parse the operation name. */
@@ -1282,7 +1282,7 @@ void bitopCommand(client *c) {
     /* Lookup keys, and store pointers to the string objects into an array. */
     numkeys = c->argc - 3;
     src = zmalloc(sizeof(unsigned char*) * numkeys);
-    len = zmalloc(sizeof(long) * numkeys);
+    len = zmalloc(sizeof(*len) * numkeys);
     objects = zmalloc(sizeof(robj*) * numkeys);
     for (j = 0; j < numkeys; j++) {
         kvobj *kv = lookupKeyRead(c->db, c->argv[j + 3]);
@@ -1296,7 +1296,7 @@ void bitopCommand(client *c) {
         }
         /* Return an error if one of the keys is not a string. */
         if (checkType(c, kv, OBJ_STRING)) {
-            unsigned long i;
+            size_t i;
             for (i = 0; i < j; i++) {
                 if (objects[i])
                     decrRefCount(objects[i]);
@@ -1317,7 +1317,7 @@ void bitopCommand(client *c) {
     if (maxlen) {
         res = (unsigned char*) sdsnewlen(NULL,maxlen);
         unsigned char output, byte, disjunction, common_bits;
-        unsigned long i;
+        size_t i;
         int useAVX = 0;
 
         /* Number of bytes processed from each source key */
@@ -1610,14 +1610,15 @@ void bitopCommand(client *c) {
         notifyKeyspaceEvent(NOTIFY_GENERIC,"del",targetkey,c->db->id);
         server.dirty++;
     }
-    addReplyLongLong(c,maxlen); /* Return the output string length in bytes. */
+    serverAssert(maxlen <= LLONG_MAX);
+    addReplyLongLong(c,(long long)maxlen); /* Return the output string length in bytes. */
 }
 
 /* BITCOUNT key [start end [BIT|BYTE]] */
 void bitcountCommand(client *c) {
     kvobj *o;
     long long start, end;
-    long strlen;
+    size_t strlen;
     unsigned char *p;
     char llbuf[LONG_STR_SIZE];
     int isbit = 0;
@@ -1641,10 +1642,9 @@ void bitcountCommand(client *c) {
         o = lookupKeyRead(c->db, c->argv[1]);
         if (checkType(c, o, OBJ_STRING)) return;
         p = getObjectReadOnlyString(o,&strlen,llbuf);
-        long long totlen = strlen;
-
         /* Make sure we will not overflow */
-        serverAssert(totlen <= LLONG_MAX >> 3);
+        serverAssert(strlen <= LLONG_MAX >> 3);
+        long long totlen = (long long)strlen;
 
         /* Convert negative indexes */
         if (start < 0 && end < 0 && start > end) {
@@ -1672,7 +1672,7 @@ void bitcountCommand(client *c) {
         p = getObjectReadOnlyString(o,&strlen,llbuf);
         /* The whole string. */
         start = 0;
-        end = strlen-1;
+        end = strlen ? (long long)strlen-1 : -1;
     } else {
         /* Syntax error. */
         addReplyErrorObject(c,shared.syntaxerr);
@@ -1690,7 +1690,7 @@ void bitcountCommand(client *c) {
     if (start > end) {
         addReply(c,shared.czero);
     } else {
-        long bytes = (long)(end-start+1);
+        size_t bytes = (size_t)(end-start+1);
         long long count;
 
         /* Use the best available popcount implementation */
@@ -1715,7 +1715,8 @@ void bitcountCommand(client *c) {
 void bitposCommand(client *c) {
     kvobj *o;
     long long start, end;
-    long bit, strlen;
+    long bit;
+    size_t strlen;
     unsigned char *p;
     char llbuf[LONG_STR_SIZE];
     int isbit = 0, end_given = 0;
@@ -1754,8 +1755,8 @@ void bitposCommand(client *c) {
         p = getObjectReadOnlyString(o, &strlen, llbuf);
 
         /* Make sure we will not overflow */
-        long long totlen = strlen;
-        serverAssert(totlen <= LLONG_MAX >> 3);
+        serverAssert(strlen <= LLONG_MAX >> 3);
+        long long totlen = (long long)strlen;
 
         if (c->argc < 5) {
             if (isbit) end = (totlen<<3) + 7;
@@ -1785,7 +1786,7 @@ void bitposCommand(client *c) {
 
         /* The whole string. */
         start = 0;
-        end = strlen-1;
+        end = strlen ? (long long)strlen-1 : -1;
     } else {
         /* Syntax error. */
         addReplyErrorObject(c,shared.syntaxerr);
@@ -1805,7 +1806,7 @@ void bitposCommand(client *c) {
     if (start > end) {
         addReplyLongLong(c, -1);
     } else {
-        long bytes = end-start+1;
+        size_t bytes = (size_t)(end-start+1);
         long long pos;
         unsigned char tmpchar;
         if (first_byte_neg_mask) {
@@ -1823,12 +1824,12 @@ void bitposCommand(client *c) {
             bytes--;
         }
         /* If the last byte has not bits in the range, we should exclude it */
-        long curbytes = bytes - (last_byte_neg_mask ? 1 : 0);
+        size_t curbytes = bytes - (last_byte_neg_mask ? 1 : 0);
         if (curbytes > 0) {
             pos = redisBitpos(p+start,curbytes,bit);
             /* If there is no more bytes or we get valid pos, we can exit early */
             if (bytes == curbytes || (pos != -1 && pos != (long long)curbytes<<3)) goto result;
-            start += curbytes;
+            start += (long long)curbytes;
             bytes -= curbytes;
         }
         if (bit) tmpchar = p[end] & ~last_byte_neg_mask;
@@ -2068,7 +2069,7 @@ void bitfieldGeneric(client *c, int flags) {
         } else {
             /* GET */
             unsigned char buf[9];
-            long strlen = 0;
+            size_t strlen = 0;
             unsigned char *src = NULL;
             char llbuf[LONG_STR_SIZE];
 

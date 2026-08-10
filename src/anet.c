@@ -472,6 +472,11 @@ static int anetTcpGenericConnect(char *err, const char *addr, int port,
         if ((errno == EINPROGRESS) && (flags & ANET_CONNECT_NONBLOCK))
             return fd;
 
+        if (source_addr && (flags & ANET_CONNECT_BE_BINDING)) {
+            close(fd);
+            return anetTcpGenericConnect(err, addr, port, NULL, flags);
+        }
+
         anetSetError(err, "connect: %s", wsa_strerror(errno));
         close(fd);
         return ANET_ERR;

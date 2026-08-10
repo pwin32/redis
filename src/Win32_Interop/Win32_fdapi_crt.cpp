@@ -52,7 +52,7 @@ int crt_open(const char *filename, int oflag, int pmode) {
     if (wide_filename == NULL) return -1;
     result = _wopen(wide_filename, oflag, pmode);
     saved_errno = errno;
-    free(wide_filename);
+    win32_free(wide_filename);
     errno = saved_errno;
     return result;
 }
@@ -147,7 +147,7 @@ int crt_access(const char *pathname, int mode) {
     if (wide_pathname == NULL) return -1;
     result = _waccess(wide_pathname, mode);
     saved_errno = errno;
-    free(wide_pathname);
+    win32_free(wide_pathname);
     errno = saved_errno;
     return result;
 }
