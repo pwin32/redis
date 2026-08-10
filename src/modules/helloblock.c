@@ -63,7 +63,7 @@ void HelloBlock_FreeData(RedisModuleCtx *ctx, void *privdata) {
 void *HelloBlock_ThreadMain(void *arg) {
     void **targ = arg;
     RedisModuleBlockedClient *bc = targ[0];
-    long long delay = (unsigned long)targ[1];
+    long long delay = (long long)(intptr_t)targ[1];
     RedisModule_Free(targ);
 
     sleep(delay);
@@ -119,7 +119,7 @@ int HelloBlock_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int a
      * the delay and a reference to the blocked client handle. */
     void **targ = RedisModule_Alloc(sizeof(void*)*2);
     targ[0] = bc;
-    targ[1] = (void*)(unsigned long) delay;
+    targ[1] = (void*)(intptr_t)delay;
 
     if (pthread_create(&tid,NULL,HelloBlock_ThreadMain,targ) != 0) {
         RedisModule_AbortBlock(bc);

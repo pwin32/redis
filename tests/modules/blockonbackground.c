@@ -153,7 +153,7 @@ int HelloBlock_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int a
     targ[0] = bc;
     targ[1] = (void*)(intptr_t)delay;
     // pass 1 as flag to enable time tracking
-    targ[2] = (void*)(unsigned long) 1;
+    targ[2] = (void*)(uintptr_t)1;
 
     if (pthread_create(&tid,NULL,BlockDebug_ThreadMain,targ) != 0) {
         RedisModule_AbortBlock(bc);
@@ -195,7 +195,7 @@ int HelloBlockNoTracking_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **a
     targ[0] = bc;
     targ[1] = (void*)(intptr_t)delay;
     // pass 0 as flag to enable time tracking
-    targ[2] = (void*)(unsigned long) 0;
+    targ[2] = (void*)(uintptr_t)0;
 
     if (pthread_create(&tid,NULL,BlockDebug_ThreadMain,targ) != 0) {
         RedisModule_AbortBlock(bc);
