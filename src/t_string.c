@@ -1315,10 +1315,10 @@ void increxCommand(client *c) {
     }
 
     if (!byfloat && o && o->refcount == 1 && o->encoding == OBJ_ENCODING_INT &&
-        value_ll >= LONG_MIN && value_ll <= LONG_MAX)
+        value_ll >= INTPTR_MIN && value_ll <= INTPTR_MAX)
     {
         new = o;
-        o->ptr = (void*)((long)value_ll);
+        o->ptr = (void*)(intptr_t)value_ll;
         updateKeysizesHist(c->db, OBJ_STRING, (int64_t)sdigits10(oldvalue_ll), (int64_t)sdigits10(value_ll));
     } else {
         if (byfloat)

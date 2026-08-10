@@ -887,7 +887,7 @@ int ldbStartSession(client *c) {
             serverLog(LL_NOTICE,"Redis forked for debugging eval");
         } else {
             /* Parent */
-            listAddNodeTail(ldb.children,(void*)(unsigned long)cp);
+            listAddNodeTail(ldb.children,(void*)(uintptr_t)cp);
             freeClientAsync(c); /* Close the client in the parent side. */
             return 0;
         }

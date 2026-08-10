@@ -525,7 +525,7 @@ robj *createGCRAObject(long long value) {
     robj *o = createObject(OBJ_GCRA,v);
 #else
     robj *o = createObject(OBJ_GCRA,NULL);
-    o->ptr = (void*)value;
+    o->ptr = (void*)(intptr_t)value;
 #endif
 
     o->encoding = OBJ_ENCODING_INT;
@@ -1215,7 +1215,7 @@ int getLongLongFromGCRAObject(robj *o, long long *target) {
 #if UINTPTR_MAX == 0xffffffff
     res = *((long long*)o->ptr);
 #else
-    res = (long long)o->ptr;
+    res = (long long)(intptr_t)o->ptr;
 #endif
     if (unlikely(res < 0)) {
         serverPanic("Invalid negative GCRA value");

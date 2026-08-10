@@ -1480,7 +1480,7 @@ void serverLogObjectDebugInfo(const robj *o) {
 #ifdef ENABLE_GCRA
     } else if (o->type == OBJ_GCRA) {
 #if UINTPTR_MAX == 0xffffffffffffffff
-        serverLog(LL_WARNING, "GCRA object: %lld", (long long)o->ptr);
+        serverLog(LL_WARNING, "GCRA object: %lld", (long long)(intptr_t)o->ptr);
 #endif
 #endif
     }
