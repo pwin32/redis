@@ -217,8 +217,8 @@ static void dbgAssertAllocSizePerSlot(redisDb *db) {
         size_t want = slot_sizes[slot];
         size_t have = dictMeta ? dictMeta->alloc_size : 0;
         if (have == want) continue;
-        serverPanic("dbgAssertAllocSizePerSlot: slot=%d expected=%zu actual=%zu",
-                    slot, want, have);
+        serverPanic("dbgAssertAllocSizePerSlot: slot=%d expected=%llu actual=%llu",
+                    slot, (unsigned long long)want, (unsigned long long)have);
     }
 }
 
@@ -1659,7 +1659,7 @@ typedef struct {
     robj *o;      /* o must be a hash/set/zset object, NULL means current db */
     long long type; /* the particular type when scan the db */
     sds pattern;  /* pattern string, NULL means no pattern */
-    long sampled; /* cumulative number of keys sampled */
+    int64_t sampled; /* cumulative number of keys sampled */
     int no_values; /* set to 1 means to return keys only */
     sds typename; /* typename string, NULL means no type filter */
     redisDb *db;  /* database reference for expiration checks */
@@ -1835,7 +1835,7 @@ static int scanShouldSkipDict(dict *d, int didx) {
  * of every element on the Hash. */
 void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
     int i, j;
-    long count = 10;
+    int64_t count = 10;
     sds pat = NULL;
     sds typename = NULL;
     long long type = LLONG_MAX;
@@ -1854,7 +1854,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
     while (i < c->argc) {
         j = c->argc - i;
         if (!strcasecmp(c->argv[i]->ptr, "count") && j >= 2) {
-            if (getLongFromObjectOrReply(c, c->argv[i+1], &count, NULL)
+            if (getLongLongFromObjectOrReply(c, c->argv[i+1], &count, NULL)
                 != C_OK)
             {
                 return;
@@ -1933,7 +1933,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
          * COUNT, so if the hash table is in a pathological state (very
          * sparsely populated) we avoid to block too much time at the cost
          * of returning no or very few elements. */
-        long maxiterations = (count > LONG_MAX / 10) ? LONG_MAX : count * 10;
+        int64_t maxiterations = (count > LLONG_MAX / 10) ? LLONG_MAX : count * 10;
 
         /* We pass scanData which have three pointers to the callback:
          * 1. data.keys: the list to which it will add new elements;
@@ -1974,7 +1974,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
             }
         } while (cursor && maxiterations-- && data.sampled < count);
     } else if (o->type == OBJ_SET) {
-        unsigned long array_reply_len = 0;
+        uint64_t array_reply_len = 0;
         void *replylen = NULL;
         vecRelease(&keys);
         char *str;
@@ -1994,7 +1994,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         }
 
         setTypeIterator si;
-        unsigned long cur_length = 0;
+        uint64_t cur_length = 0;
         setTypeInitIterator(&si, o);
         while (setTypeNext(&si, &str, &len, &llele) != -1) {
             if (str == NULL) {
@@ -2019,7 +2019,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         unsigned char *p = lpFirst(o->ptr);
         unsigned char *str;
         int64_t len;
-        unsigned long array_reply_len = 0;
+        uint64_t array_reply_len = 0;
         unsigned char intbuf[LP_INTBUF_SIZE];
         void *replylen = NULL;
         vecRelease(&keys);
@@ -2038,7 +2038,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
             }
             addReplyArrayLen(c, array_reply_len);
         }
-        unsigned long cur_length = 0;
+        uint64_t cur_length = 0;
         while(p) {
             str = lpGet(p, &len, intbuf);
             /* point to the value */
@@ -2080,7 +2080,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         addReplyBulkLongLong(c,0);
         /* In the case of OBJ_ENCODING_LISTPACK_EX we always defer the reply size given some fields might be expired */
         replylen = addReplyDeferredLen(c);
-        unsigned long cur_length = 0;
+        uint64_t cur_length = 0;
 
         while (p) {
             str = lpGet(p, &len, intbuf);
@@ -2115,14 +2115,14 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
                (o->encoding == OBJ_ENCODING_TMPL_LP ||
                 o->encoding == OBJ_ENCODING_TMPL_ARRAY))
     {
-        unsigned long n = hashTypeLength(o, 0);
+        uint64_t n = hashTypeLength(o, 0);
         vecRelease(&keys);
         addReplyArrayLen(c, 2);
         /* Cursor is always 0 given we iterate over all hash fields. */
         addReplyBulkLongLong(c, 0);
 
         void *replylen = NULL;
-        unsigned long cur_length = 0;
+        uint64_t cur_length = 0;
         if (use_pattern)
             replylen = addReplyDeferredLen(c);
         else

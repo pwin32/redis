@@ -311,7 +311,7 @@ int ebNext(EbucketsIterator *iter);
 
 int ebNextBucket(EbucketsIterator *iter);
 
-int ebScanDefrag(ebuckets *eb, EbucketsType *type, unsigned long *cursor,
+int ebScanDefrag(ebuckets *eb, EbucketsType *type, uint64_t *cursor,
                  ebDefragFunctions *defragfns, void *privdata);
 
 static inline uint64_t ebGetMetaExpTime(ExpireMeta *expMeta) {

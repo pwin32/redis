@@ -35,7 +35,17 @@
 extern void redisForkChildStarted(pid_t childpid, int purpose, long long start);
 extern void *moduleGetForkData(void);
 #include <direct.h>
-#define MAXPATHLEN 1024
+
+typedef win32_utf8_dir redisAofDir;
+static redisAofDir *redisAofOpenDir(const char *path) {
+    return win32_opendir_utf8(path);
+}
+static const char *redisAofReadDir(redisAofDir *dir) {
+    return win32_readdir_utf8(dir);
+}
+static int redisAofCloseDir(redisAofDir *dir) {
+    return win32_closedir_utf8(dir);
+}
 
 /* Redis 7.2 keeps the temporary INCR AOF open while atomically renaming it
  * into the manifest namespace.  A normal CRT open on Windows does not share
@@ -44,13 +54,18 @@ extern void *moduleGetForkData(void);
  * temporary INCR file rather than changing the sharing policy of every Redis
  * file descriptor. */
 static int openWin32AofFileForRename(const char *path) {
-    HANDLE handle = CreateFileA(path,
+    wchar_t *wide_path = win32_utf8_path_to_wide(path);
+    HANDLE handle;
+
+    if (wide_path == NULL) return -1;
+    handle = CreateFileW(wide_path,
                                 GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 NULL,
                                 CREATE_ALWAYS,
                                 FILE_ATTRIBUTE_NORMAL,
                                 NULL);
+    win32_free(wide_path);
     if (handle == INVALID_HANDLE_VALUE) {
         set_errno_from_last_error();
         return -1;
@@ -62,6 +77,18 @@ static int openWin32AofFileForRename(const char *path) {
         return -1;
     }
     return fd;
+}
+#else
+typedef DIR redisAofDir;
+static redisAofDir *redisAofOpenDir(const char *path) {
+    return opendir(path);
+}
+static const char *redisAofReadDir(redisAofDir *dir) {
+    struct dirent *entry = readdir(dir);
+    return entry == NULL ? NULL : entry->d_name;
+}
+static int redisAofCloseDir(redisAofDir *dir) {
+    return closedir(dir);
 }
 #endif
 
@@ -310,7 +337,7 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath) {
     long long maxseq = 0;
 
     aofManifest *am = aofManifestCreate();
-    FILE *fp = fopen(am_filepath, "r");
+    FILE *fp = redis_fopen(am_filepath, "r");
     if (fp == NULL) {
         serverLog(LL_WARNING, "Fatal error: can't open the AOF manifest "
             "file %s for reading: %s", am_filepath, strerror(errno));
@@ -971,7 +998,7 @@ static int aofInstallPreloadFile(char *absolute_preload_dir, char *file_name) {
     }
 
     /* Remove an existing target before installing the preload file. */
-    if (unlink(target_path) == -1 && errno != ENOENT) {
+    if (redis_unlink(target_path) == -1 && errno != ENOENT) {
         serverLog(LL_WARNING, "Can't remove old append-only file %s: %s",
                               target_path, strerror(errno));
         goto cleanup;
@@ -1004,7 +1031,7 @@ cleanup:
 }
 
 /* Return whether name is referenced by the manifest's BASE or INCR entries. */
-static int aofManifestReferencesFile(aofManifest *am, char *name) {
+static int aofManifestReferencesFile(aofManifest *am, const char *name) {
     if (am->base_aof_info && !strcmp(am->base_aof_info->file_name, name))
         return 1;
 
@@ -1051,7 +1078,7 @@ static void aofManifestAddNewIncr(aofManifest *am) {
  * non-directory entry that is neither the manifest itself nor referenced by
  * one of its BASE or INCR entries. */
 static void aofRemoveFilesOutsideManifest(aofManifest *am) {
-    DIR *dir = opendir(server.aof_dirname);
+    redisAofDir *dir = redisAofOpenDir(server.aof_dirname);
     if (!dir) {
         serverLog(LL_WARNING, "Can't open append-only dir %s for cleanup: %s",
                               server.aof_dirname, strerror(errno));
@@ -1059,9 +1086,8 @@ static void aofRemoveFilesOutsideManifest(aofManifest *am) {
     }
 
     sds manifest_name = getAofManifestFileName();
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        char *name = entry->d_name;
+    const char *name;
+    while ((name = redisAofReadDir(dir)) != NULL) {
         if (!strcmp(name, ".") || !strcmp(name, "..") ||
             !strcmp(name, manifest_name) ||
             aofManifestReferencesFile(am, name))
@@ -1070,7 +1096,7 @@ static void aofRemoveFilesOutsideManifest(aofManifest *am) {
         }
 
         sds path = makePath(server.aof_dirname, name);
-        struct redis_stat sb;
+        struct redis_stat_type sb;
         if (redis_lstat(path, &sb) == 0 && !S_ISDIR(sb.st_mode)) {
             if (bg_unlink(path) == -1) {
                 serverLog(LL_WARNING, "Can't remove obsolete AOF file %s: %s",
@@ -1079,7 +1105,7 @@ static void aofRemoveFilesOutsideManifest(aofManifest *am) {
         }
         sdsfree(path);
     }
-    closedir(dir);
+    redisAofCloseDir(dir);
     sdsfree(manifest_name);
 }
 
@@ -1951,16 +1977,16 @@ static int truncateAppendOnlyFile(char *filename, off_t valid_up_to) {
  * AOF_FAILED: Failed to load the AOF file. */
 int loadSingleAppendOnlyFile(char *filename) {
     struct client *fakeClient;
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     int old_aof_state = server.aof_state;
-    long loops = 0;
+    uint64_t loops = 0;
     off_t valid_up_to = 0; /* Offset of latest well-formed command loaded. */
     off_t valid_before_multi = 0; /* Offset before MULTI command loaded. */
     off_t last_progress_report_size = 0;
     int ret = AOF_OK;
 
     sds aof_filepath = makePath(server.aof_dirname, filename);
-    FILE *fp = fopen(aof_filepath, IF_WIN32("rb","r"));
+    FILE *fp = redis_fopen(aof_filepath, IF_WIN32("rb","r"));
     if (fp == NULL) {
         int en = errno;
         if (redis_stat(aof_filepath, &sb) == 0 || errno != ENOENT) {
@@ -3162,7 +3188,7 @@ int rewriteObject(rio *r, robj *key, robj *o, int dbid, long long expiretime) {
 int rewriteAppendOnlyFileRio(rio *aof) {
     dictEntry *de;
     int j;
-    long key_count = 0;
+    uint64_t key_count = 0;
     long long updated_time = 0;
     unsigned long long skipped = 0;
     kvstoreIterator kvs_it;
@@ -3247,7 +3273,8 @@ int rewriteAppendOnlyFileRio(rio *aof) {
         if (server.in_fork_child && !server.cluster_enabled)
             dismissKvstoreBucketsMemory(db->keys);
     }
-    serverLog(LL_NOTICE, "AOF rewrite done, %ld keys saved, %llu keys skipped.", key_count, skipped);
+    serverLog(LL_NOTICE, "AOF rewrite done, %llu keys saved, %llu keys skipped.",
+              (unsigned long long)key_count, skipped);
     return C_OK;
 
 werr2:
@@ -3274,7 +3301,7 @@ int rewriteAppendOnlyFile(char *filename) {
     /* QFork children are fresh Windows processes and do not inherit the
      * parent's CRT _fmode.  Make the mode explicit so RDB preamble bytes and
      * RESP newlines are never translated through text mode. */
-    fp = fopen(tmpfile,IF_WIN32("wb","w"));
+    fp = redis_fopen(tmpfile,IF_WIN32("wb","w"));
     if (!fp) {
         serverLog(LL_WARNING, "Opening the temp file for AOF rewrite in rewriteAppendOnlyFile(): %s", strerror(errno));
         return C_ERR;
@@ -3313,7 +3340,7 @@ int rewriteAppendOnlyFile(char *filename) {
      * if the generate DB file is ok. */
     if (rename(tmpfile,filename) == -1) {
         serverLog(LL_WARNING,"Error moving temp append only file on the final destination: %s", strerror(errno));
-        unlink(tmpfile);
+        redis_unlink(tmpfile);
         stopSaving(0);
         return C_ERR;
     }
@@ -3324,7 +3351,7 @@ int rewriteAppendOnlyFile(char *filename) {
 werr:
     serverLog(LL_WARNING,"Write error writing append only file on disk: %s", strerror(errno));
     if (fp) fclose(fp);
-    unlink(tmpfile);
+    redis_unlink(tmpfile);
     stopSaving(0);
     return C_ERR;
 }
@@ -3486,7 +3513,7 @@ void aofRemoveTempFile(pid_t childpid) {
  * The status argument is an optional output argument to be filled with
  * one of the AOF_ status values. */
 off_t getAppendOnlyFileSize(sds filename, int *status) {
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     off_t size;
     mstime_t latency;
 
@@ -3559,19 +3586,19 @@ int getBaseAndIncrAppendOnlyFilesNum(aofManifest *am) {
 /* Background-unlink all files in a Redis-owned flat directory.
  * This is not a recursive directory remover. */
 static void removeFilesInDir(char *dirname) {
-    DIR *d = opendir(dirname);
+    redisAofDir *d = redisAofOpenDir(dirname);
     if (d) {
-        struct dirent *de;
-        while ((de = readdir(d)) != NULL) {
-            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
-            sds p = makePath(dirname, de->d_name);
-            struct redis_stat sb;
+        const char *name;
+        while ((name = redisAofReadDir(d)) != NULL) {
+            if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+            sds p = makePath(dirname, name);
+            struct redis_stat_type sb;
             if (redis_lstat(p, &sb) == 0 && !S_ISDIR(sb.st_mode)) {
                 bg_unlink(p); /* Background method to avoid blocking. */
             }
             sdsfree(p);
         }
-        closedir(d);
+        redisAofCloseDir(d);
     }
 }
 

@@ -152,39 +152,52 @@ struct iovec {
 
 #define GAI_STRERROR_BUFFER_SIZE 1024
 
-WS2TCPIP_INLINE char* gai_strerrorA(_In_ int ecode) {
-    DWORD dwMsgLen;
-    static char buff[GAI_STRERROR_BUFFER_SIZE + 1];
+#ifdef __MINGW32__
+#define REDIS_WIN32_THREAD_LOCAL __thread
+#else
+#define REDIS_WIN32_THREAD_LOCAL __declspec(thread)
+#endif
 
-    dwMsgLen = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM
-                             |FORMAT_MESSAGE_IGNORE_INSERTS
-                             |FORMAT_MESSAGE_MAX_WIDTH_MASK,
-                              NULL,
-                              ecode,
-                              MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                              (LPSTR)buff,
-                              GAI_STRERROR_BUFFER_SIZE,
-                              NULL);
+static __inline char* gai_strerrorA(_In_ int ecode) {
+    WCHAR wide[GAI_STRERROR_BUFFER_SIZE + 1];
+    static REDIS_WIN32_THREAD_LOCAL char buff[(GAI_STRERROR_BUFFER_SIZE * 4) + 1];
+    DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM
+                                 |FORMAT_MESSAGE_IGNORE_INSERTS
+                                 |FORMAT_MESSAGE_MAX_WIDTH_MASK,
+                                  NULL,
+                                  ecode,
+                                  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                  wide,
+                                  GAI_STRERROR_BUFFER_SIZE,
+                                  NULL);
+
+    buff[0] = '\0';
+    if (length != 0) {
+        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1,
+                            buff, sizeof(buff), NULL, NULL);
+    }
+
+    return buff;
+}
+
+static __inline WCHAR* gai_strerrorW(_In_ int ecode) {
+    static REDIS_WIN32_THREAD_LOCAL WCHAR buff[GAI_STRERROR_BUFFER_SIZE + 1];
+
+    buff[0] = L'\0';
+    FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM
+                  |FORMAT_MESSAGE_IGNORE_INSERTS
+                  |FORMAT_MESSAGE_MAX_WIDTH_MASK,
+                   NULL,
+                   ecode,
+                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                   (LPWSTR)buff,
+                   GAI_STRERROR_BUFFER_SIZE,
+                   NULL);
 
     return buff;
 }
 
-WS2TCPIP_INLINE WCHAR* gai_strerrorW(_In_ int ecode) {
-    DWORD dwMsgLen;
-    static WCHAR buff[GAI_STRERROR_BUFFER_SIZE + 1];
-
-    dwMsgLen = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM
-                             |FORMAT_MESSAGE_IGNORE_INSERTS
-                             |FORMAT_MESSAGE_MAX_WIDTH_MASK,
-                              NULL,
-                              ecode,
-                              MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                              (LPWSTR)buff,
-                              GAI_STRERROR_BUFFER_SIZE,
-                              NULL);
-
-    return buff;
-}
+#undef REDIS_WIN32_THREAD_LOCAL
 
 #if WINVER <= _WIN32_WINNT_WS03
 #define POLLRDNORM  0x0100
@@ -238,7 +251,7 @@ typedef int (*fdapi_select)(int nfds, fd_set *readfds, fd_set *writefds,fd_set *
 typedef u_int (*fdapi_ntohl)(u_int netlong);
 typedef int (*fdapi_isatty)(int fd);
 typedef int (*fdapi_access)(const char *pathname, int mode);
-typedef u_int64 (*fdapi_lseek64)(int fd, u_int64 offset, int whence);
+typedef PORT_LONGLONG (*fdapi_lseek64)(int fd, PORT_LONGLONG offset, int whence);
 typedef int (*fdapi_fstat)(int fd, struct __stat64 *buffer);
 
 typedef BOOL fnWSIOCP_CloseSocketStateRFD(int rfd);
@@ -293,7 +306,7 @@ void    FDAPI_SaveSocketAddrStorage(int rfd, SOCKADDR_STORAGE* socketAddrStorage
 BOOL    FDAPI_SocketAttachIOCP(int rfd, HANDLE iocph);
 BOOL    FDAPI_AcceptEx(int listenFD,int acceptFD,PVOID lpOutputBuffer,DWORD dwReceiveDataLength,DWORD dwLocalAddressLength,DWORD dwRemoteAddressLength,LPDWORD lpdwBytesReceived,LPOVERLAPPED lpOverlapped);
 BOOL    FDAPI_ConnectEx(int fd,const struct sockaddr *name,int namelen,PVOID lpSendBuffer,DWORD dwSendDataLength,LPDWORD lpdwBytesSent,LPOVERLAPPED lpOverlapped);
-void    FDAPI_GetAcceptExSockaddrs(int fd, PVOID lpOutputBuffer,DWORD dwReceiveDataLength,DWORD dwLocalAddressLength,DWORD dwRemoteAddressLength,LPSOCKADDR *LocalSockaddr,LPINT LocalSockaddrLength,LPSOCKADDR *RemoteSockaddr,LPINT RemoteSockaddrLength);
+BOOL    FDAPI_GetAcceptExSockaddrs(int fd, PVOID lpOutputBuffer,DWORD dwReceiveDataLength,DWORD dwLocalAddressLength,DWORD dwRemoteAddressLength,LPSOCKADDR *LocalSockaddr,LPINT LocalSockaddrLength,LPSOCKADDR *RemoteSockaddr,LPINT RemoteSockaddrLength);
 int     FDAPI_UpdateAcceptContext( int accept_fd, int listen_fd );
 int     FDAPI_UpdateConnectContext( int fd );
 int     FDAPI_PipeSetNonBlock(int rfd, int non_blocking);

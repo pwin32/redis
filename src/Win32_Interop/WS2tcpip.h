@@ -667,18 +667,23 @@ char *
 gai_strerrorA(
     _In_ int ecode)
 {
-    DWORD dwMsgLen;
-    static char buff[GAI_STRERROR_BUFFER_SIZE + 1];
+    WCHAR wide[GAI_STRERROR_BUFFER_SIZE + 1];
+    static char buff[(GAI_STRERROR_BUFFER_SIZE * 4) + 1];
+    DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM
+                                 |FORMAT_MESSAGE_IGNORE_INSERTS
+                                 |FORMAT_MESSAGE_MAX_WIDTH_MASK,
+                                  NULL,
+                                  ecode,
+                                  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                  wide,
+                                  GAI_STRERROR_BUFFER_SIZE,
+                                  NULL);
 
-    dwMsgLen = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM
-                             |FORMAT_MESSAGE_IGNORE_INSERTS
-                             |FORMAT_MESSAGE_MAX_WIDTH_MASK,
-                              NULL,
-                              ecode,
-                              MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                              (LPSTR)buff,
-                              GAI_STRERROR_BUFFER_SIZE,
-                              NULL);
+    buff[0] = '\0';
+    if (length != 0) {
+        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1,
+                            buff, sizeof(buff), NULL, NULL);
+    }
 
     return buff;
 }

@@ -72,7 +72,7 @@ int dirExists(char *dname);
 int dirIsEmpty(char *dname);
 int dirRemove(char *dname);
 int fileExist(char *filename);
-sds makePath(char *path, char *filename);
+sds makePath(const char *path, const char *filename);
 int copyFile(char *source, char *destination);
 int fsyncFileDir(const char *filename);
 int reclaimFilePageCache(int fd, size_t offset, size_t length);

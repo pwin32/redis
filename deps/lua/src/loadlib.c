@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "config.h"
+
 
 #define loadlib_c
 #define LUA_LIB
@@ -20,6 +22,10 @@
 
 #include "lauxlib.h"
 #include "lualib.h"
+
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Error.h"
+#endif
 
 
 /* prefix for open functions in C libraries */
@@ -90,31 +96,36 @@ static lua_CFunction ll_sym (lua_State *L, void *lib, const char *sym) {
 */
 
 #include <windows.h>
+#include "Win32_Interop/Win32_Error.h"
 
 
 #undef setprogdir
 
 static void setprogdir (lua_State *L) {
-  char buff[MAX_PATH + 1];
+  char *buff = win32_get_module_filename_utf8();
   char *lb;
-  DWORD nsize = sizeof(buff)/sizeof(char);
-  DWORD n = GetModuleFileNameA(NULL, buff, nsize);
-  if (n == 0 || n == nsize || (lb = strrchr(buff, '\\')) == NULL)
+  char *slash;
+  if (buff == NULL)
     luaL_error(L, "unable to get ModuleFileName");
-  else {
-    *lb = '\0';
-    luaL_gsub(L, lua_tostring(L, -1), LUA_EXECDIR, buff);
-    lua_remove(L, -2);  /* remove original string */
+  lb = strrchr(buff, '\\');
+  slash = strrchr(buff, '/');
+  if (slash != NULL && (lb == NULL || slash > lb)) lb = slash;
+  if (lb == NULL) {
+    free(buff);
+    luaL_error(L, "unable to find ModuleFileName directory");
   }
+  *lb = '\0';
+  luaL_gsub(L, lua_tostring(L, -1), LUA_EXECDIR, buff);
+  free(buff);
+  lua_remove(L, -2);  /* remove original string */
 }
 
 
 static void pusherror (lua_State *L) {
   int error = GetLastError();
-  char buffer[128];
-  if (FormatMessageA(FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_FROM_SYSTEM,
-      NULL, error, 0, buffer, sizeof(buffer), NULL))
-    lua_pushstring(L, buffer);
+  const char *message = wsa_strerror(error);
+  if (message != NULL && message[0] != '\0')
+    lua_pushstring(L, message);
   else
     lua_pushfstring(L, "system error %d\n", error);
 }
@@ -125,7 +136,17 @@ static void ll_unloadlib (void *lib) {
 
 
 static void *ll_load (lua_State *L, const char *path) {
-  HINSTANCE lib = LoadLibraryA(path);
+  wchar_t *wide_path = win32_utf8_path_to_wide(path);
+  HINSTANCE lib;
+  DWORD error;
+  if (wide_path == NULL) {
+    pusherror(L);
+    return NULL;
+  }
+  lib = LoadLibraryExW(wide_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+  error = lib == NULL ? GetLastError() : ERROR_SUCCESS;
+  free(wide_path);
+  if (lib == NULL) SetLastError(error);
   if (lib == NULL) pusherror(L);
   return lib;
 }
@@ -330,7 +351,7 @@ static int ll_loadlib (lua_State *L) {
 
 
 static int readable (const char *filename) {
-  FILE *f = fopen(filename, "r");  /* try to open file */
+  FILE *f = redis_fopen(filename, "r");  /* try to open file */
   if (f == NULL) return 0;  /* open failed */
   fclose(f);
   return 1;
@@ -591,7 +612,12 @@ static int ll_seeall (lua_State *L) {
 
 static void setpath (lua_State *L, const char *fieldname, const char *envname,
                                    const char *def) {
+#ifdef _WIN32
+  char *envpath = win32_getenv_utf8(envname);
+  const char *path = envpath;
+#else
   const char *path = getenv(envname);
+#endif
   if (path == NULL)  /* no environment variable? */
     lua_pushstring(L, def);  /* use default */
   else {
@@ -601,6 +627,9 @@ static void setpath (lua_State *L, const char *fieldname, const char *envname,
     luaL_gsub(L, path, AUXMARK, def);
     lua_remove(L, -2);
   }
+#ifdef _WIN32
+  free(envpath);
+#endif
   setprogdir(L);
   lua_setfield(L, -2, fieldname);
 }
@@ -663,4 +692,3 @@ LUALIB_API int luaopen_package (lua_State *L) {
   lua_pop(L, 1);
   return 1;  /* return 'package' table */
 }
-

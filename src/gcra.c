@@ -79,9 +79,9 @@ void gcraCommand(client *c) {
     robj *key = c->argv[1];
 
     /* GCRA parameters */
-    long max_burst;
-    long tokens_per_period;
-    long num_tokens = 1;
+    long long max_burst;
+    long long tokens_per_period;
+    long long num_tokens = 1;
     double period;
 
     /* Variables used in the reply */
@@ -95,12 +95,12 @@ void gcraCommand(client *c) {
         return;
     }
 
-    if (getPositiveLongFromObjectOrReply(c, c->argv[2], &max_burst, NULL) != C_OK) {
+    if (getPositiveLongLongFromObjectOrReply(c, c->argv[2], &max_burst, NULL) != C_OK) {
         return;
     }
-    if (likely(max_burst < LONG_MAX)) max_burst += 1;
+    if (likely(max_burst < LLONG_MAX)) max_burst += 1;
 
-    if (getRangeLongFromObjectOrReply(c, c->argv[3], 1, LONG_MAX, &tokens_per_period, NULL) != C_OK) {
+    if (getRangeLongLongFromObjectOrReply(c, c->argv[3], 1, LLONG_MAX, &tokens_per_period, NULL) != C_OK) {
         return;
     }
 
@@ -121,7 +121,7 @@ void gcraCommand(client *c) {
             addReplyError(c, "Missing TOKENS value");
             return;
         }
-        if (getRangeLongFromObjectOrReply(c, c->argv[6], 1, LONG_MAX, &num_tokens, NULL) != C_OK) {
+        if (getRangeLongLongFromObjectOrReply(c, c->argv[6], 1, LLONG_MAX, &num_tokens, NULL) != C_OK) {
             return;
         }
     }

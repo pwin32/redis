@@ -418,7 +418,7 @@ static int updateClientOutputBufferLimit(sds *args, int arg_len, const char **er
     int class;
     unsigned long long hard, soft;
     int hard_err, soft_err;
-    int soft_seconds;
+    long long soft_seconds;
     char *soft_seconds_eptr;
     clientBufferLimitsConfig values[CLIENT_TYPE_OBUF_COUNT];
     int classes[CLIENT_TYPE_OBUF_COUNT] = {0};
@@ -452,9 +452,14 @@ static int updateClientOutputBufferLimit(sds *args, int arg_len, const char **er
             return 0;
         }
 
+        if (soft_seconds > INT_MAX) {
+            if (err) *err = "soft_seconds is out of range";
+            return 0;
+        }
+
         values[class].hard_limit_bytes = hard;
         values[class].soft_limit_bytes = soft;
-        values[class].soft_limit_seconds = soft_seconds;
+        values[class].soft_limit_seconds = (int)soft_seconds;
         classes[class] = 1;
     }
 
@@ -657,7 +662,7 @@ void loadServerConfigFromString(char *config) {
 
         /* Test if we are able to open the file. The server will not
          * be able to abort just for this problem later... */
-        logfp = fopen(server.logfile,"a");
+        logfp = redis_fopen(server.logfile,"a");
         if (logfp == NULL) {
             err = sdscatprintf(sdsempty(),
                                "Can't open the log file: %s",
@@ -746,25 +751,46 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
          *                       This will allow for empty conf.d directories to be included. */
 
 #ifdef _WIN32
-        /* The native Windows package has no POSIX glob implementation.  Keep
-         * config/include paths literal and let the normal fopen error identify
-         * an invalid path. */
-        if ((fp = fopen(filename, "r")) == NULL) {
-            serverLog(LL_WARNING,
-                      "Fatal error, can't open config file '%s': %s",
-                      filename, IF_WIN32(wsa_strerror(errno), strerror(errno)));
-            exit(1);
+        if (strchr(filename, '*') || strchr(filename, '?') || strchr(filename, '[')) {
+            char **paths = NULL;
+            size_t path_count = 0;
+            if (win32_glob_utf8(filename, &paths, &path_count) == -1) {
+                serverLog(LL_WARNING,
+                          "Fatal error expanding config pattern '%s': %s",
+                          filename, strerror(errno));
+                exit(1);
+            }
+            for (size_t i = 0; i < path_count; i++) {
+                if ((fp = redis_fopen(paths[i], "r")) == NULL) {
+                    serverLog(LL_WARNING,
+                              "Fatal error, can't open config file '%s': %s",
+                              paths[i], strerror(errno));
+                    win32_globfree_utf8(paths, path_count);
+                    exit(1);
+                }
+                while (fgets(buf, CONFIG_READ_LEN+1, fp) != NULL)
+                    config = sdscat(config, buf);
+                fclose(fp);
+            }
+            win32_globfree_utf8(paths, path_count);
+        } else {
+            if ((fp = redis_fopen(filename, "r")) == NULL) {
+                serverLog(LL_WARNING,
+                          "Fatal error, can't open config file '%s': %s",
+                          filename, strerror(errno));
+                exit(1);
+            }
+            while (fgets(buf, CONFIG_READ_LEN+1, fp) != NULL)
+                config = sdscat(config, buf);
+            fclose(fp);
         }
-        while (fgets(buf, CONFIG_READ_LEN+1, fp) != NULL)
-            config = sdscat(config, buf);
-        fclose(fp);
 #else
         if (strchr(filename, '*') || strchr(filename, '?') || strchr(filename, '[')) {
             /* A wildcard character detected in filename, so let us use glob */
             if (glob(filename, 0, NULL, &globbuf) == 0) {
 
                 for (size_t i = 0; i < globbuf.gl_pathc; i++) {
-                    if ((fp = fopen(globbuf.gl_pathv[i], "r")) == NULL) {
+                    if ((fp = redis_fopen(globbuf.gl_pathv[i], "r")) == NULL) {
                         serverLog(LL_WARNING,
                                   "Fatal error, can't open config file '%s': %s",
                                   globbuf.gl_pathv[i], strerror(errno));
@@ -780,7 +806,7 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
         } else {
             /* No wildcard in filename means we can use the original logic to read and
              * potentially fail traditionally */
-            if ((fp = fopen(filename, "r")) == NULL) {
+            if ((fp = redis_fopen(filename, "r")) == NULL) {
                 serverLog(LL_WARNING,
                           "Fatal error, can't open config file '%s': %s",
                           filename, strerror(errno));
@@ -1200,10 +1226,10 @@ void rewriteConfigMarkAsProcessed(struct rewriteConfigState *state, const char *
  * If it is impossible to read the old file, NULL is returned.
  * If the old file does not exist at all, an empty state is returned. */
 struct rewriteConfigState *rewriteConfigReadOldFile(char *path) {
-    FILE *fp = fopen(path,"r");
+    FILE *fp = redis_fopen(path,"r");
     if (fp == NULL && errno != ENOENT) return NULL;
 
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     if (fp && redis_fstat(fileno(fp),&sb) == -1) {
         fclose(fp);
         return NULL;
@@ -1496,8 +1522,8 @@ void rewriteConfigSaveOption(standardConfig *config, const char *name, struct re
         rewriteConfigRewriteLine(state,name,sdsnew("save \"\""),1);
     } else {
         for (j = 0; j < server.saveparamslen; j++) {
-            line = sdscatprintf(sdsempty(),"save %ld %d",
-                (long) server.saveparams[j].seconds, server.saveparams[j].changes);
+            line = sdscatprintf(sdsempty(),"save %jd %d",
+                (intmax_t)server.saveparams[j].seconds, server.saveparams[j].changes);
             rewriteConfigRewriteLine(state,name,line,1);
         }
     }
@@ -1541,6 +1567,16 @@ void rewriteConfigUserOption(struct rewriteConfigState *state) {
 /* Rewrite the dir option, always using absolute paths.*/
 void rewriteConfigDirOption(standardConfig *config, const char *name, struct rewriteConfigState *state) {
     UNUSED(config);
+#ifdef _WIN32
+    char *cwd = win32_get_current_directory_utf8();
+
+    if (cwd == NULL) {
+        rewriteConfigMarkAsProcessed(state,name);
+        return; /* no rewrite on error. */
+    }
+    rewriteConfigStringOption(state,name,cwd,NULL);
+    free(cwd);
+#else
     char cwd[1024];
 
     if (getcwd(cwd,sizeof(cwd)) == NULL) {
@@ -1548,6 +1584,7 @@ void rewriteConfigDirOption(standardConfig *config, const char *name, struct rew
         return; /* no rewrite on error. */
     }
     rewriteConfigStringOption(state,name,cwd,NULL);
+#endif
 }
 
 /* Rewrite the slaveof option. */
@@ -1777,18 +1814,11 @@ sds getConfigDebugInfo(void) {
 int rewriteConfigOverwriteFile(char *configfile, sds content) {
     int fd = -1;
     int retval = -1;
-    char tmp_conffile[PATH_MAX];
     const char *tmp_suffix = ".XXXXXX";
+    sds tmp_conffile = sdscat(sdsnew(configfile), tmp_suffix);
     size_t offset = 0;
     ssize_t written_bytes = 0;
     int old_errno;
-
-    int tmp_path_len = snprintf(tmp_conffile, sizeof(tmp_conffile), "%s%s", configfile, tmp_suffix);
-    if (tmp_path_len <= 0 || (unsigned int)tmp_path_len >= sizeof(tmp_conffile)) {
-        serverLog(LL_WARNING, "Config file full path is too long");
-        errno = ENAMETOOLONG;
-        return retval;
-    }
 
 #ifdef _WIN32
     fd = FDAPI_mkstemp(tmp_conffile);
@@ -1801,6 +1831,7 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
 
     if (fd == -1) {
         serverLog(LL_WARNING, "Could not create tmp config file (%s)", strerror(errno));
+        sdsfree(tmp_conffile);
         return retval;
     }
 
@@ -1848,7 +1879,8 @@ int rewriteConfigOverwriteFile(char *configfile, sds content) {
 cleanup:
     old_errno = errno;
     if (fd != -1) close(fd);
-    if (retval) unlink(tmp_conffile);
+    if (retval) redis_unlink(tmp_conffile);
+    sdsfree(tmp_conffile);
     errno = old_errno;
     return retval;
 }
@@ -3050,7 +3082,7 @@ static int setConfigDirOption(standardConfig *config, sds *argv, int argc, const
         *err = "wrong number of arguments";
         return 0;
     }
-    if (chdir(argv[0]) == -1) {
+    if (IF_WIN32(win32_set_current_directory_utf8(argv[0]), chdir(argv[0])) == -1) {
         *err = IF_WIN32(wsa_strerror(errno), strerror(errno));
         return 0;
     }
@@ -3059,12 +3091,19 @@ static int setConfigDirOption(standardConfig *config, sds *argv, int argc, const
 
 static sds getConfigDirOption(standardConfig *config) {
     UNUSED(config);
+#ifdef _WIN32
+    char *cwd = win32_get_current_directory_utf8();
+    sds result = sdsnew(cwd != NULL ? cwd : "");
+    free(cwd);
+    return result;
+#else
     char buf[1024];
 
     if (getcwd(buf,sizeof(buf)) == NULL)
         buf[0] = '\0';
 
     return sdsnew(buf);
+#endif
 }
 
 static int setConfigSaveOption(standardConfig *config, sds *argv, int argc, const char **err) {
@@ -3086,12 +3125,12 @@ static int setConfigSaveOption(standardConfig *config, sds *argv, int argc, cons
     }
     for (j = 0; j < argc; j++) {
         char *eptr;
-        long val;
+        long long val;
 
         val = strtoll(argv[j], &eptr, 10);
         if (eptr[0] != '\0' ||
-            ((j & 1) == 0 && val < 1) ||
-            ((j & 1) == 1 && val < 0)) {
+            ((j & 1) == 0 && (val < 1 || (time_t)val != val)) ||
+            ((j & 1) == 1 && (val < 0 || val > INT_MAX))) {
             *err = "Invalid save parameters";
             return 0;
         }
@@ -3114,8 +3153,8 @@ static int setConfigSaveOption(standardConfig *config, sds *argv, int argc, cons
         time_t seconds;
         int changes;
 
-        seconds = strtoll(argv[j],NULL,10);
-        changes = strtoll(argv[j+1],NULL,10);
+        seconds = (time_t)strtoll(argv[j],NULL,10);
+        changes = (int)strtoll(argv[j+1],NULL,10);
         appendServerSaveParams(seconds, changes);
     }
 
@@ -3591,13 +3630,13 @@ standardConfig static_configs[] = {
 #endif
 
     /* Unsigned Long configs */
-    createULongConfig("active-defrag-max-scan-fields", NULL, MODIFIABLE_CONFIG, 1, LONG_MAX, server.active_defrag_max_scan_fields, 1000, INTEGER_CONFIG, NULL, NULL), /* Default: keys with more than 1000 fields will be processed separately */
-    createULongConfig("slowlog-max-len", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.slowlog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
-    createULongConfig("slowlog-entry-max-string-len", NULL, MODIFIABLE_CONFIG, 1, LONG_MAX, server.slowlog_max_string_len, 128, INTEGER_CONFIG, NULL, NULL),
-    createULongConfig("acllog-max-len", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.acllog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
+    createULongLongConfig("active-defrag-max-scan-fields", NULL, MODIFIABLE_CONFIG, 1, LLONG_MAX, server.active_defrag_max_scan_fields, 1000, INTEGER_CONFIG, NULL, NULL), /* Default: keys with more than 1000 fields will be processed separately */
+    createULongLongConfig("slowlog-max-len", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.slowlog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
+    createULongLongConfig("slowlog-entry-max-string-len", NULL, MODIFIABLE_CONFIG, 1, LLONG_MAX, server.slowlog_max_string_len, 128, INTEGER_CONFIG, NULL, NULL),
+    createULongLongConfig("acllog-max-len", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.acllog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
 
     /* Long Long configs */
-    createLongLongConfig("busy-reply-threshold", "lua-time-limit", MODIFIABLE_CONFIG, 0, LONG_MAX, server.busy_reply_threshold, 5000, INTEGER_CONFIG, NULL, NULL),/* milliseconds */
+    createLongLongConfig("busy-reply-threshold", "lua-time-limit", MODIFIABLE_CONFIG, 0, LLONG_MAX, server.busy_reply_threshold, 5000, INTEGER_CONFIG, NULL, NULL),/* milliseconds */
     createLongLongConfig("cluster-node-timeout", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.cluster_node_timeout, 15000, INTEGER_CONFIG, NULL, NULL),
     createLongLongConfig("cluster-ping-interval", NULL, MODIFIABLE_CONFIG | HIDDEN_CONFIG, 0, LLONG_MAX, server.cluster_ping_interval, 0, INTEGER_CONFIG, NULL, NULL),
     createLongLongConfig("cluster-slot-migration-handoff-max-lag-bytes", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.asm_handoff_max_lag_bytes, 1*1024*1024, MEMORY_CONFIG, NULL, NULL), /* 1MB */
@@ -3605,7 +3644,7 @@ standardConfig static_configs[] = {
     createLongLongConfig("cluster-slot-migration-sync-buffer-drain-timeout", NULL, MODIFIABLE_CONFIG | HIDDEN_CONFIG, 0, LLONG_MAX, server.asm_sync_buffer_drain_timeout, 60000, INTEGER_CONFIG, NULL, NULL), /* 60 seconds */
     createLongLongConfig("slowlog-log-slower-than", NULL, MODIFIABLE_CONFIG, -1, LLONG_MAX, server.slowlog_log_slower_than, 10000, INTEGER_CONFIG, NULL, NULL),
     createLongLongConfig("latency-monitor-threshold", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.latency_monitor_threshold, 0, INTEGER_CONFIG, NULL, NULL),
-    createLongLongConfig("proto-max-bulk-len", NULL, DEBUG_CONFIG | MODIFIABLE_CONFIG, 1024*1024, LONG_MAX, server.proto_max_bulk_len, 512ll*1024*1024, MEMORY_CONFIG, NULL, NULL), /* Bulk request max size */
+    createLongLongConfig("proto-max-bulk-len", NULL, DEBUG_CONFIG | MODIFIABLE_CONFIG, 1024*1024, LLONG_MAX, server.proto_max_bulk_len, 512ll*1024*1024, MEMORY_CONFIG, NULL, NULL), /* Bulk request max size */
     createLongLongConfig("stream-node-max-entries", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.stream_node_max_entries, 100, INTEGER_CONFIG, NULL, NULL),
     createLongLongConfig("stream-idmp-duration", NULL, MODIFIABLE_CONFIG, CONFIG_STREAM_IDMP_MIN_DURATION, CONFIG_STREAM_IDMP_MAX_DURATION, server.stream_idmp_duration, 100, INTEGER_CONFIG, NULL, NULL),
     createLongLongConfig("stream-idmp-maxsize", NULL, MODIFIABLE_CONFIG, CONFIG_STREAM_IDMP_MIN_MAXSIZE, CONFIG_STREAM_IDMP_MAX_MAXSIZE, server.stream_idmp_maxsize, 100, INTEGER_CONFIG, NULL, NULL),
@@ -3617,32 +3656,32 @@ standardConfig static_configs[] = {
     createULongLongConfig("cluster-link-sendbuf-limit", NULL, MODIFIABLE_CONFIG, 0, ULLONG_MAX, server.cluster_link_msg_queue_limit_bytes, 0, MEMORY_CONFIG, NULL, NULL),
 
     /* Size_t configs */
-    createSizeTConfig("hash-max-listpack-entries", "hash-max-ziplist-entries", MODIFIABLE_CONFIG, 0, LONG_MAX, server.hash_max_listpack_entries, 512, INTEGER_CONFIG, NULL, NULL),
-    createSizeTConfig("hash-min-template-entries", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.hash_min_template_entries, 0, INTEGER_CONFIG, NULL, NULL),
-    createSizeTConfig("hash-max-template-entries", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.hash_max_template_entries, 0, INTEGER_CONFIG, NULL, NULL),
-    createSizeTConfig("hash-rdb-load-min-template-entries", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.hash_rdb_load_min_template_entries, 0, INTEGER_CONFIG, NULL, NULL),
-    createSizeTConfig("hash-rdb-load-max-template-entries", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.hash_rdb_load_max_template_entries, 0, INTEGER_CONFIG, NULL, NULL),
-    createSizeTConfig("hash-rdb-load-template-disassembly-threshold", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.hash_rdb_load_template_disassembly_threshold, 0, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("hash-max-listpack-entries", "hash-max-ziplist-entries", MODIFIABLE_CONFIG, 0, LLONG_MAX, server.hash_max_listpack_entries, 512, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("hash-min-template-entries", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.hash_min_template_entries, 0, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("hash-max-template-entries", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.hash_max_template_entries, 0, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("hash-rdb-load-min-template-entries", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.hash_rdb_load_min_template_entries, 0, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("hash-rdb-load-max-template-entries", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.hash_rdb_load_max_template_entries, 0, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("hash-rdb-load-template-disassembly-threshold", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.hash_rdb_load_template_disassembly_threshold, 0, INTEGER_CONFIG, NULL, NULL),
 
-    createSizeTConfig("set-max-intset-entries", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.set_max_intset_entries, 512, INTEGER_CONFIG, NULL, NULL),
-    createSizeTConfig("set-max-listpack-entries", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.set_max_listpack_entries, 128, INTEGER_CONFIG, NULL, NULL),
-    createSizeTConfig("set-max-listpack-value", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.set_max_listpack_value, 64, INTEGER_CONFIG, NULL, NULL),
-    createSizeTConfig("zset-max-listpack-entries", "zset-max-ziplist-entries", MODIFIABLE_CONFIG, 0, LONG_MAX, server.zset_max_listpack_entries, 128, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("set-max-intset-entries", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.set_max_intset_entries, 512, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("set-max-listpack-entries", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.set_max_listpack_entries, 128, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("set-max-listpack-value", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.set_max_listpack_value, 64, INTEGER_CONFIG, NULL, NULL),
+    createSizeTConfig("zset-max-listpack-entries", "zset-max-ziplist-entries", MODIFIABLE_CONFIG, 0, LLONG_MAX, server.zset_max_listpack_entries, 128, INTEGER_CONFIG, NULL, NULL),
     createSizeTConfig("active-defrag-ignore-bytes", NULL, MODIFIABLE_CONFIG, 1, LLONG_MAX, server.active_defrag_ignore_bytes, 100<<20, MEMORY_CONFIG, NULL, NULL), /* Default: don't defrag if frag overhead is below 100mb */
-    createSizeTConfig("hash-max-listpack-value", "hash-max-ziplist-value", MODIFIABLE_CONFIG, 0, LONG_MAX, server.hash_max_listpack_value, 64, MEMORY_CONFIG, NULL, NULL),
-    createSizeTConfig("stream-node-max-bytes", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.stream_node_max_bytes, 4096, MEMORY_CONFIG, NULL, NULL),
-    createSizeTConfig("zset-max-listpack-value", "zset-max-ziplist-value", MODIFIABLE_CONFIG, 0, LONG_MAX, server.zset_max_listpack_value, 64, MEMORY_CONFIG, NULL, NULL),
-    createSizeTConfig("hll-sparse-max-bytes", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.hll_sparse_max_bytes, 3000, MEMORY_CONFIG, NULL, NULL),
-    createSizeTConfig("tracking-table-max-keys", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.tracking_table_max_keys, 1000000, INTEGER_CONFIG, NULL, NULL), /* Default: 1 million keys max. */
-    createSizeTConfig("client-query-buffer-limit", NULL, DEBUG_CONFIG | MODIFIABLE_CONFIG, 1024*1024, LONG_MAX, server.client_max_querybuf_len, 1024*1024*1024, MEMORY_CONFIG, NULL, NULL), /* Default: 1GB max query buffer. */
+    createSizeTConfig("hash-max-listpack-value", "hash-max-ziplist-value", MODIFIABLE_CONFIG, 0, LLONG_MAX, server.hash_max_listpack_value, 64, MEMORY_CONFIG, NULL, NULL),
+    createSizeTConfig("stream-node-max-bytes", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.stream_node_max_bytes, 4096, MEMORY_CONFIG, NULL, NULL),
+    createSizeTConfig("zset-max-listpack-value", "zset-max-ziplist-value", MODIFIABLE_CONFIG, 0, LLONG_MAX, server.zset_max_listpack_value, 64, MEMORY_CONFIG, NULL, NULL),
+    createSizeTConfig("hll-sparse-max-bytes", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.hll_sparse_max_bytes, 3000, MEMORY_CONFIG, NULL, NULL),
+    createSizeTConfig("tracking-table-max-keys", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.tracking_table_max_keys, 1000000, INTEGER_CONFIG, NULL, NULL), /* Default: 1 million keys max. */
+    createSizeTConfig("client-query-buffer-limit", NULL, DEBUG_CONFIG | MODIFIABLE_CONFIG, 1024*1024, LLONG_MAX, server.client_max_querybuf_len, 1024*1024*1024, MEMORY_CONFIG, NULL, NULL), /* Default: 1GB max query buffer. */
     createSSizeTConfig("maxmemory-clients", NULL, MODIFIABLE_CONFIG, -100, SSIZE_MAX, server.maxmemory_clients, 0, MEMORY_CONFIG | PERCENT_CONFIG, NULL, applyClientMaxMemoryUsage),
 
     /* Other configs */
-    createTimeTConfig("repl-backlog-ttl", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.repl_backlog_time_limit, 60*60, INTEGER_CONFIG, NULL, NULL), /* Default: 1 hour */
-    createTimeTConfig("backup-sealed-ttl", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.backup_sealed_ttl, 0, INTEGER_CONFIG, NULL, NULL), /* Default: disabled */
+    createTimeTConfig("repl-backlog-ttl", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.repl_backlog_time_limit, 60*60, INTEGER_CONFIG, NULL, NULL), /* Default: 1 hour */
+    createTimeTConfig("backup-sealed-ttl", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.backup_sealed_ttl, 0, INTEGER_CONFIG, NULL, NULL), /* Default: disabled */
     createOffTConfig("auto-aof-rewrite-min-size", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.aof_rewrite_min_size, 64*1024*1024, MEMORY_CONFIG, NULL, NULL),
     createOffTConfig("loading-process-events-interval-bytes", NULL, MODIFIABLE_CONFIG | HIDDEN_CONFIG, 1024, INT_MAX, server.loading_process_events_interval_bytes, 1024*512, INTEGER_CONFIG, NULL, NULL),
-    createOffTConfig("aof-load-corrupt-tail-max-size", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.aof_load_corrupt_tail_max_size, 0, INTEGER_CONFIG, NULL, NULL),
+    createOffTConfig("aof-load-corrupt-tail-max-size", NULL, MODIFIABLE_CONFIG, 0, LLONG_MAX, server.aof_load_corrupt_tail_max_size, 0, INTEGER_CONFIG, NULL, NULL),
 
     createIntConfig("tls-port", NULL, MODIFIABLE_CONFIG, 0, 65535, server.tls_port, 0, INTEGER_CONFIG, NULL, applyTLSPort), /* TCP port. */
     createIntConfig("tls-session-cache-size", NULL, MODIFIABLE_CONFIG, 0, INT_MAX, server.tls_ctx_config.session_cache_size, 20*1024, INTEGER_CONFIG, NULL, applyTlsCfg),

@@ -46,6 +46,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/* Redis historically used long for dictionary sizes and cursors because its
+ * primary 64-bit platforms are LP64.  Win64 is LLP64, so long remains 32 bit.
+ * Keep the upstream ABI on POSIX while restoring the intended logical width
+ * for the Windows port. */
+#ifdef _WIN32
+#include "Win32_Interop/win32_types_hiredis.h"
+typedef PORT_LONG dict_long;
+typedef PORT_ULONG dict_ulong;
+#define DICT_LONG_MAX PORT_LONG_MAX
+#define DICT_ULONG_C(value) value##ULL
+#else
+typedef long dict_long;
+typedef unsigned long dict_ulong;
+#define DICT_LONG_MAX LONG_MAX
+#define DICT_ULONG_C(value) value##UL
+#endif
+
 #define DICT_OK 0
 #define DICT_ERR 1
 
@@ -156,16 +173,16 @@ typedef struct dictType {
     void *(*prefetchEntryValue)(const dictEntry *de);
 } dictType;
 
-#define DICTHT_SIZE(exp) ((exp) == -1 ? 0 : (unsigned long)1<<(exp))
+#define DICTHT_SIZE(exp) ((exp) == -1 ? 0 : (dict_ulong)1<<(exp))
 #define DICTHT_SIZE_MASK(exp) ((exp) == -1 ? 0 : (DICTHT_SIZE(exp))-1)
 
 struct dict {
     dictType *type;
 
     dictEntry **ht_table[2];
-    unsigned long ht_used[2];
+    dict_ulong ht_used[2];
 
-    long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    dict_long rehashidx; /* rehashing not in progress if rehashidx == -1 */
 
     /* Note: pauserehash is a full unsigned so iterator increments
      * don't perform RMW on the same storage unit as other bitfields. */
@@ -183,7 +200,7 @@ struct dict {
  * should be called while iterating. */
 typedef struct dictIterator {
     dict *d;
-    long index;
+    dict_long index;
     int table, safe;
     dictEntry *entry, *nextEntry;
     /* unsafe iterator fingerprint for misuse detection. */
@@ -192,12 +209,12 @@ typedef struct dictIterator {
 
 typedef struct dictStats {
     int htidx;
-    unsigned long buckets;
-    unsigned long maxChainLen;
-    unsigned long totalChainLen;
-    unsigned long htSize;
-    unsigned long htUsed;
-    unsigned long *clvector;
+    dict_ulong buckets;
+    dict_ulong maxChainLen;
+    dict_ulong totalChainLen;
+    dict_ulong htSize;
+    dict_ulong htUsed;
+    dict_ulong *clvector;
 } dictStats;
 
 typedef void (dictScanFunction)(void *privdata, const dictEntry *de, dictEntry **plink);
@@ -211,6 +228,16 @@ typedef struct {
 /* This is the initial size of every hash table */
 #define DICT_HT_INITIAL_EXP      2
 #define DICT_HT_INITIAL_SIZE     (1<<(DICT_HT_INITIAL_EXP))
+
+/* Return the exponent for the smallest power-of-two table that can hold
+ * size entries. This is inline so the Win64 regression test can validate the
+ * calculation above 2^32 without allocating a correspondingly large table. */
+static inline signed char dictNextExpForSize(dict_ulong size) {
+    if (size <= DICT_HT_INITIAL_SIZE) return DICT_HT_INITIAL_EXP;
+    if (size >= DICT_LONG_MAX) return (8*sizeof(dict_long)-1);
+
+    return 8*sizeof(dict_ulong) - __builtin_clzll((unsigned long long)size-1);
+}
 
 /* ------------------------------- Macros ------------------------------------*/
 #define dictFreeVal(d, entry) do {                     \
@@ -236,13 +263,11 @@ typedef struct {
 #define dictPauseAutoResize(d) ((d)->pauseAutoResize++)
 #define dictResumeAutoResize(d) ((d)->pauseAutoResize--)
 
-/* If our unsigned long type can store a 64 bit number, use a 64 bit PRNG.
- * Windows uses LLP64, so unsigned long remains 32 bit even on x64. The
- * generator is still available there; truncating its result is preferable to
- * relying on a POSIX random() function that the standalone kvstore unit does
- * not have. */
+/* Use the 64-bit generator whenever the dictionary index type is 64-bit.
+ * Windows uses LLP64, so this must be selected explicitly rather than by
+ * testing the width of the native unsigned long type alone. */
 #if defined(_WIN32) || ULONG_MAX >= 0xffffffffffffffff
-#define randomULong() ((unsigned long) genrand64_int64())
+#define randomULong() ((dict_ulong) genrand64_int64())
 #else
 #define randomULong() random()
 #endif
@@ -256,9 +281,9 @@ typedef enum {
 /* API */
 dict *dictCreate(dictType *type);
 void dictTypeAddMeta(dict **d, dictType *typeWithMeta);
-int dictExpand(dict *d, unsigned long size);
-int dictTryExpand(dict *d, unsigned long size);
-int dictShrink(dict *d, unsigned long size);
+int dictExpand(dict *d, dict_ulong size);
+int dictTryExpand(dict *d, dict_ulong size);
+int dictShrink(dict *d, dict_ulong size);
 int dictAdd(dict *d, void *key __stored_key, void *val);
 dictEntry *dictAddRaw(dict *d, void *key __stored_key, dictEntry **existing);
 dictEntry *dictAddOrFind(dict *d, void *key __stored_key);
@@ -300,8 +325,8 @@ void dictSetHashFunctionSeed(uint8_t *seed);
 #ifdef _WIN32
 uint8_t *dictGetHashFunctionSeed(void);
 #endif
-unsigned long dictScan(dict *d, unsigned long v, dictScanFunction *fn, void *privdata);
-unsigned long dictScanDefrag(dict *d, unsigned long v, dictScanFunction *fn, dictDefragFunctions *defragfns, void *privdata);
+dict_ulong dictScan(dict *d, dict_ulong v, dictScanFunction *fn, void *privdata);
+dict_ulong dictScanDefrag(dict *d, dict_ulong v, dictScanFunction *fn, dictDefragFunctions *defragfns, void *privdata);
 uint64_t dictGetHash(dict *d, const void *key);
 void dictRehashingInfo(dict *d, unsigned long long *from_size, unsigned long long *to_size);
 

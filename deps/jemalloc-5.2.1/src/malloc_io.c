@@ -95,8 +95,24 @@ malloc_write(const char *s) {
 int
 buferror(int err, char *buf, size_t buflen) {
 #ifdef _WIN32
-	FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, err, 0,
-	    (LPSTR)buf, (DWORD)buflen, NULL);
+	WCHAR wide[256];
+	DWORD length;
+	int capacity;
+	if (buflen == 0) {
+		return 0;
+	}
+	buf[0] = '\0';
+	length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM |
+	    FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, 0, wide,
+	    (DWORD)(sizeof(wide) / sizeof(wide[0])), NULL);
+	if (length == 0) {
+		return 0;
+	}
+	capacity = buflen > INT_MAX ? INT_MAX : (int)buflen;
+	if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1,
+	    buf, capacity, NULL, NULL) == 0) {
+		buf[0] = '\0';
+	}
 	return 0;
 #elif defined(JEMALLOC_STRERROR_R_RETURNS_CHAR_WITH_GNU_SOURCE) && defined(_GNU_SOURCE)
 	char *b = strerror_r(err, buf, buflen);

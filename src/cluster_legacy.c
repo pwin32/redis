@@ -330,7 +330,7 @@ static clusterMsg *getMessageFromSendBlock(clusterMsgSendBlock *msgblock) {
  * sake of locking if it does not already exist), C_ERR is returned.
  * If the configuration was loaded from the file, C_OK is returned. */
 int clusterLoadConfig(char *filename) {
-    FILE *fp = fopen(filename,IF_WIN32("rb","r"));
+    FILE *fp = redis_fopen(filename,IF_WIN32("rb","r"));
     struct IF_WIN32(_stat64,stat) sb;
     char *line;
     int maxline, j;
@@ -773,7 +773,7 @@ int clusterSaveConfig(int do_fsync) {
 
 cleanup:
     if (fd != -1) close(fd);
-    if (retval) unlink(tmpfilename);
+    if (retval) redis_unlink(tmpfilename);
     sdsfree(tmpfilename);
     sdsfree(ci);
     return retval;
@@ -1403,12 +1403,12 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 
 /* Return the approximated number of sockets we are using in order to
  * take the cluster bus connections. */
-unsigned long getClusterConnectionsCount(void) {
+uint64_t getClusterConnectionsCount(void) {
     /* We decrement the number of nodes by one, since there is the
      * "myself" node too in the list. Each node uses two file descriptors,
      * one incoming and one outgoing, thus the multiplication by 2. */
     return server.cluster_enabled ?
-           ((dictSize(server.cluster->nodes)-1)*2) : 0;
+           ((uint64_t)(dictSize(server.cluster->nodes)-1)*2) : 0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -5996,7 +5996,7 @@ sds genClusterInfoString(void) {
         "cluster_slots_ok:%d\r\n"
         "cluster_slots_pfail:%d\r\n"
         "cluster_slots_fail:%d\r\n"
-        "cluster_known_nodes:%lu\r\n"
+        "cluster_known_nodes:%llu\r\n"
         "cluster_size:%d\r\n"
         "cluster_current_epoch:%llu\r\n"
         "cluster_my_epoch:%llu\r\n"
@@ -6005,7 +6005,7 @@ sds genClusterInfoString(void) {
         slots_ok,
         slots_pfail,
         slots_fail,
-        dictSize(server.cluster->nodes),
+        (unsigned long long)dictSize(server.cluster->nodes),
         server.cluster->size,
         (unsigned long long) server.cluster->currentEpoch,
         (unsigned long long) myepoch

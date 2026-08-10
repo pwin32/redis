@@ -23,6 +23,7 @@
 #include "listpack_malloc.h"
 #include "redisassert.h"
 #include "util.h"
+#include "mt19937-64.h"
 
 #define LP_HDR_SIZE 6       /* 32 bit total len + 16 bit number of elements. */
 #define LP_HDR_NUMELE_UNKNOWN UINT16_MAX
@@ -1691,7 +1692,7 @@ size_t lpEstimateBytesRepeatedInteger(long long lval, unsigned long rep) {
  * the tail, negative indexes specify elements starting from the tail, where
  * -1 means the last element, -2 the penultimate and so forth. If the index
  * is out of range, NULL is returned. */
-unsigned char *lpSeek(unsigned char *lp, long index) {
+unsigned char *lpSeek(unsigned char *lp, int64_t index) {
     int forward = 1; /* Seek forward by default. */
 
     /* We want to seek from left to right or the other way around
@@ -1700,14 +1701,14 @@ unsigned char *lpSeek(unsigned char *lp, long index) {
      * we always seek from left to right. */
     uint32_t numele = lpGetNumElements(lp);
     if (numele != LP_HDR_NUMELE_UNKNOWN) {
-        if (index < 0) index = (long)numele+index;
+        if (index < 0) index = (int64_t)numele+index;
         if (index < 0) return NULL; /* Index still < 0 means out of range. */
-        if (index >= (long)numele) return NULL; /* Out of range the other side. */
+        if (index >= (int64_t)numele) return NULL; /* Out of range the other side. */
         /* We want to scan right-to-left if the element we are looking for
          * is past the half of the listpack. */
-        if (index > (long)numele/2) {
+        if (index > (int64_t)numele/2) {
             forward = 0;
-            index = (long)numele - index - 1; /* Backward steps from the last entry. */
+            index = (int64_t)numele - index - 1; /* Backward steps from the last entry. */
         }
     } else {
         /* If the listpack length is unspecified, for negative indexes we
@@ -1903,7 +1904,7 @@ void lpRandomPair(unsigned char *lp, unsigned long total_count,
     /* Avoid div by zero on corrupt listpack */
     assert(total_count);
 
-    int r = (rand() % total_count) * tuple_len;
+    int64_t r = (genrand64_int64() % total_count) * tuple_len;
     assert((p = lpSeek(lp, r)));
     key->sval = lpGetValue(p, &(key->slen), &(key->lval));
 
@@ -1924,7 +1925,7 @@ void lpRandomEntries(unsigned char *lp, unsigned int count, listpackEntry *entri
     unsigned int total_size = lpLength(lp);
     assert(total_size);
     for (unsigned int i = 0; i < count; i++) {
-        picks[i].index = rand() % total_size;
+        picks[i].index = genrand64_int64() % total_size;
         picks[i].order = i;
     }
 
@@ -1977,7 +1978,7 @@ void lpRandomPairs(unsigned char *lp, unsigned int count, listpackEntry *keys, l
     /* create a pool of random indexes (some may be duplicate). */
     for (unsigned int i = 0; i < count; i++) {
         /* Generate indexes that key exist at */
-        picks[i].index = (rand() % total_size) * tuple_len;
+        picks[i].index = (genrand64_int64() % total_size) * tuple_len;
         /* keep track of the order we picked them */
         picks[i].order = i;
     }
@@ -2095,7 +2096,7 @@ unsigned char *lpNextRandom(unsigned char *lp, unsigned char *p, unsigned int *i
 
         /* Do we pick this element? */
         unsigned int available = (total_size - i) / tuple_len;
-        double randomDouble = ((double)rand()) / RAND_MAX;
+        double randomDouble = genrand64_real2();
         double threshold = ((double)remaining) / available;
         if (randomDouble <= threshold) {
             *index = i;

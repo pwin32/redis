@@ -49,9 +49,9 @@ slowlogEntry *slowlogCreateEntry(client *c, robj **argv, int argc, long long dur
             {
                 sds s = sdsnewlen(argv[j]->ptr, server.slowlog_max_string_len);
 
-                s = sdscatprintf(s,"... (%lu more bytes)",
-                    (unsigned long)
-                    sdslen(argv[j]->ptr) - server.slowlog_max_string_len);
+                s = sdscatprintf(s,"... (%llu more bytes)",
+                    (unsigned long long)
+                    (sdslen(argv[j]->ptr) - server.slowlog_max_string_len));
                 se->argv[j] = createObject(OBJ_STRING,s);
             } else if (argv[j]->refcount == OBJ_SHARED_REFCOUNT) {
                 se->argv[j] = argv[j];
@@ -147,15 +147,15 @@ NULL
     } else if ((c->argc == 2 || c->argc == 3) &&
                !strcasecmp(c->argv[1]->ptr,"get"))
     {
-        long count = 10;
+        long long count = 10;
         listIter li;
         listNode *ln;
         slowlogEntry *se;
 
         if (c->argc == 3) {
             /* Consume count arg. */
-            if (getRangeLongFromObjectOrReply(c, c->argv[2], -1,
-                    LONG_MAX, &count, "count should be greater than or equal to -1") != C_OK)
+            if (getRangeLongLongFromObjectOrReply(c, c->argv[2], -1,
+                    LLONG_MAX, &count, "count should be greater than or equal to -1") != C_OK)
                 return;
 
             if (count == -1) {
@@ -165,7 +165,7 @@ NULL
             }
         }
 
-        if (count > (long)listLength(server.slowlog)) {
+        if ((uint64_t)count > listLength(server.slowlog)) {
             count = listLength(server.slowlog);
         }
         addReplyArrayLen(c, count);

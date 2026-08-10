@@ -777,7 +777,8 @@ NULL
             int remaining = sizeof(extra);
             quicklist *ql = kv->ptr;
             /* Add number of quicklist nodes */
-            int used = snprintf(nextra, remaining, " ql_nodes:%lu", ql->len);
+            int used = snprintf(nextra, remaining, " ql_nodes:%llu",
+                                (unsigned long long)ql->len);
             nextra += used;
             remaining -= used;
             /* Add average quicklist fill factor */
@@ -911,10 +912,6 @@ NULL
 #ifdef _WIN32
         if (getPositiveDebugLongFromObjectOrReply(c,c->argv[2],&keys) != C_OK)
             return;
-        if ((PORT_ULONG)keys > ULONG_MAX) {
-            addReplyError(c,"value is out of range for the Windows dictionary implementation");
-            return;
-        }
 #else
         if (getPositiveLongFromObjectOrReply(c, c->argv[2], &keys, NULL) != C_OK)
             return;
@@ -1275,7 +1272,7 @@ NULL
             } else if(!strcasecmp(c->argv[3]->ptr, "reset")) {
                 server.reply_buffer_peak_reset_time = REPLY_BUFFER_DEFAULT_PEAK_RESET_TIME;
             } else {
-                if (getLongFromObjectOrReply(c, c->argv[3], &server.reply_buffer_peak_reset_time, NULL) != C_OK)
+                if (getLongLongFromObjectOrReply(c, c->argv[3], &server.reply_buffer_peak_reset_time, NULL) != C_OK)
                     return;
             }
         } else if(!strcasecmp(c->argv[2]->ptr,"resizing")) {
@@ -1491,17 +1488,17 @@ void serverLogObjectDebugInfo(const robj *o) {
             sdsfree(repr);
         }
     } else if (o->type == OBJ_LIST) {
-        serverLog(LL_WARNING,"List length: %d", (int) listTypeLength(o));
+        serverLog(LL_WARNING,"List length: %llu", (unsigned long long)listTypeLength(o));
     } else if (o->type == OBJ_SET) {
-        serverLog(LL_WARNING,"Set size: %d", (int) setTypeSize(o));
+        serverLog(LL_WARNING,"Set size: %llu", (unsigned long long)setTypeSize(o));
     } else if (o->type == OBJ_HASH) {
-        serverLog(LL_WARNING,"Hash size: %d", (int) hashTypeLength(o, 0));
+        serverLog(LL_WARNING,"Hash size: %llu", (unsigned long long)hashTypeLength(o, 0));
     } else if (o->type == OBJ_ZSET) {
-        serverLog(LL_WARNING,"Sorted set size: %d", (int) zsetLength(o));
+        serverLog(LL_WARNING,"Sorted set size: %llu", (unsigned long long)zsetLength(o));
         if (o->encoding == OBJ_ENCODING_SKIPLIST)
             serverLog(LL_WARNING,"Skiplist level: %d", (int) ((const zset*)o->ptr)->zsl->level);
     } else if (o->type == OBJ_STREAM) {
-        serverLog(LL_WARNING,"Stream size: %d", (int) streamLength(o));
+        serverLog(LL_WARNING,"Stream size: %llu", (unsigned long long)streamLength(o));
 #ifdef ENABLE_GCRA
     } else if (o->type == OBJ_GCRA) {
 #if UINTPTR_MAX == 0xffffffffffffffff
@@ -2890,7 +2887,7 @@ void bugReportEnd(int killViaSignal, int sig) {
 );
 
     /* free(messages); Don't call free() with possibly corrupted memory. */
-    if (server.daemonize && server.supervised == 0 && server.pidfile) unlink(server.pidfile);
+    if (server.daemonize && server.supervised == 0 && server.pidfile) redis_unlink(server.pidfile);
 
     if (!killViaSignal) {
         /* To avoid issues with valgrind, we may wanna exit rather than generate a signal */

@@ -35,7 +35,7 @@
  *                      'limit' (0 means no limit). */
 void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum,
                               robj *dstkey, int op,
-                              int cardinality_only, int approx, long limit);
+                              int cardinality_only, int approx, int64_t limit);
 
 /* Factory method to return a set that *can* hold "value". When the object has
  * an integer-encodable value, an intset will be returned. Otherwise a listpack
@@ -440,7 +440,7 @@ int setTypeRandomElement(robj *setobj, char **str, size_t *len, int64_t *llele) 
         *str = NULL; /* Not needed. Defensive. */
     } else if (setobj->encoding == OBJ_ENCODING_LISTPACK) {
         unsigned char *lp = setobj->ptr;
-        int r = rand() % lpLength(lp);
+        uint64_t r = genrand64_int64() % lpLength(lp);
         unsigned char *p = lpSeek(lp, r);
         unsigned int l;
         *str = (char *)lpGetValue(p, &l, (long long *)llele);
@@ -480,7 +480,7 @@ robj *setTypePopRandom(robj *set) {
     return obj;
 }
 
-unsigned long setTypeSize(const robj *subject) {
+uint64_t setTypeSize(const robj *subject) {
     if (subject->encoding == OBJ_ENCODING_HT) {
         return dictSize((const dict*)subject->ptr);
     } else if (subject->encoding == OBJ_ENCODING_INTSET) {
@@ -519,7 +519,7 @@ void setTypeConvert(robj *setobj, int enc) {
  * The 'panic' argument controls whether to panic on OOM (panic=1) or return
  * C_ERR on OOM (panic=0). If panic=1 is given, this function always returns
  * C_OK. */
-int setTypeConvertAndExpand(robj *setobj, int enc, unsigned long cap, int panic) {
+int setTypeConvertAndExpand(robj *setobj, int enc, uint64_t cap, int panic) {
     setTypeIterator si;
     serverAssertWithInfo(NULL,setobj,setobj->type == OBJ_SET &&
                              setobj->encoding != enc);
@@ -651,7 +651,7 @@ void saddCommand(client *c) {
     if (server.memory_tracking_enabled)
         updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), set, oldsize, kvobjAllocSize(set));
     if (added) {
-        unsigned long size = setTypeSize(set);
+        uint64_t size = setTypeSize(set);
         updateKeysizesHist(c->db, OBJ_SET, size - added, size);
         keyModified(c,c->db,c->argv[1],set,1);
         notifyKeyspaceEvent(NOTIFY_SET,"sadd",c->argv[1],c->db->id);
@@ -668,7 +668,7 @@ void sremCommand(client *c) {
     if (set == NULL || checkType(c, set, OBJ_SET))
         return;
 
-    unsigned long oldSize = setTypeSize(set);
+    uint64_t oldSize = setTypeSize(set);
     if (server.memory_tracking_enabled)
         oldsize = kvobjAllocSize(set);
 
@@ -769,7 +769,7 @@ void smoveCommand(client *c) {
         oldDstAllocSize = kvobjAllocSize(dstset);
     /* An extra key has changed when ele was successfully added to dstset */
     if (setTypeAdd(dstset,ele->ptr)) {
-        unsigned long dstLen = setTypeSize(dstset);
+        uint64_t dstLen = setTypeSize(dstset);
         updateKeysizesHist(c->db, OBJ_SET, dstLen - 1, dstLen);
         server.dirty++;
         keyModified(c,c->db,c->argv[2],dstset,1);
@@ -836,13 +836,13 @@ void scardCommand(client *c) {
 #define SPOP_MOVE_STRATEGY_MUL 5
 
 void spopWithCountCommand(client *c) {
-    long l;
-    unsigned long count, size, toRemove;
+    long long l;
+    uint64_t count, size, toRemove;
     size_t oldsize = 0;
 
     /* Get the count argument */
-    if (getPositiveLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
-    count = (unsigned long) l;
+    if (getPositiveLongLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
+    count = (uint64_t)l;
 
     /* Make sure a key with the name inputted exists, and that it's type is
      * indeed a kv. Otherwise, return nil */
@@ -897,7 +897,7 @@ void spopWithCountCommand(client *c) {
     char *str;
     size_t len = 0;
     int64_t llele = 0;
-    unsigned long remaining = size-count; /* Elements left after SPOP. */
+    uint64_t remaining = size-count; /* Elements left after SPOP. */
 
     /* If we are here, the number of requested elements is less than the
      * number of elements inside the set. Also we are sure that count < size.
@@ -916,7 +916,7 @@ void spopWithCountCommand(client *c) {
         unsigned char *p = lpFirst(lp);
         unsigned int index = 0;
         unsigned char **ps = zmalloc(sizeof(char *) * count);
-        for (unsigned long i = 0; i < count; i++) {
+        for (uint64_t i = 0; i < count; i++) {
             p = lpNextRandom(lp, p, &index, count - i, 1);
             unsigned int len = 0;
             str = (char *)lpGetValue(p, &len, (long long *)&llele);
@@ -951,7 +951,7 @@ void spopWithCountCommand(client *c) {
     } else if (remaining*SPOP_MOVE_STRATEGY_MUL > count) {
         if (server.memory_tracking_enabled)
             oldsize = kvobjAllocSize(set);
-        for (unsigned long i = 0; i < count; i++) {
+        for (uint64_t i = 0; i < count; i++) {
             propargv[propindex] = setTypePopRandom(set);
             addReplyBulk(c, propargv[propindex]);
             propindex++;
@@ -988,7 +988,7 @@ void spopWithCountCommand(client *c) {
             unsigned char *p = lpFirst(lp);
             unsigned int index = 0;
             unsigned char **ps = zmalloc(sizeof(char *) * remaining);
-            for (unsigned long i = 0; i < remaining; i++) {
+            for (uint64_t i = 0; i < remaining; i++) {
                 p = lpNextRandom(lp, p, &index, remaining - i, 1);
                 unsigned int len = 0;
                 str = (char *)lpGetValue(p, &len, (long long *)&llele);
@@ -1063,7 +1063,7 @@ void spopWithCountCommand(client *c) {
 }
 
 void spopCommand(client *c) {
-    unsigned long size;
+    uint64_t size;
     robj *ele;
     size_t oldsize = 0;
 
@@ -1128,8 +1128,8 @@ void spopCommand(client *c) {
 #define SRANDFIELD_RANDOM_SAMPLE_LIMIT 1000
 
 void srandmemberWithCountCommand(client *c) {
-    long l;
-    unsigned long count, size;
+    long long l;
+    uint64_t count, size;
     int uniq = 1;
     kvobj *set;
     char *str;
@@ -1138,13 +1138,17 @@ void srandmemberWithCountCommand(client *c) {
 
     dict *d;
 
-    if (getRangeLongFromObjectOrReply(c,c->argv[2],-LONG_MAX,LONG_MAX,&l,NULL) != C_OK) return;
+    if (getLongLongFromObjectOrReply(c,c->argv[2],&l,NULL) != C_OK) return;
     if (l >= 0) {
-        count = (unsigned long) l;
+        count = (uint64_t)l;
     } else {
         /* A negative count means: return the same elements multiple times
          * (i.e. don't remove the extracted element after every extraction). */
-        count = -l;
+        if (l == LLONG_MIN) {
+            addReplyError(c,"value is out of range");
+            return;
+        }
+        count = (uint64_t)(-l);
         uniq = 0;
     }
 
@@ -1296,7 +1300,7 @@ void srandmemberWithCountCommand(client *c) {
      * to the temporary set, trying to eventually get enough unique elements
      * to reach the specified count. */
     else {
-        unsigned long added = 0;
+        uint64_t added = 0;
         sds sdsele;
 
         dictExpand(d, count);
@@ -1379,8 +1383,8 @@ int qsortCompareSetsByCardinality(const void *s1, const void *s2) {
  * be handled as empty sets. */
 int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     robj *o1 = ((setopsrc*)s1)->set, *o2 = ((setopsrc*)s2)->set;
-    unsigned long first = o1 ? setTypeSize(o1) : 0;
-    unsigned long second = o2 ? setTypeSize(o2) : 0;
+    uint64_t first = o1 ? setTypeSize(o1) : 0;
+    uint64_t second = o2 ? setTypeSize(o2) : 0;
 
     if (first < second) return 1;
     if (first > second) return -1;
@@ -1396,8 +1400,8 @@ int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
  * Passing a 0 means unlimited.
  */
 void sinterGenericCommand(client *c, robj **setkeys,
-                          unsigned long setnum, robj *dstkey,
-                          int cardinality_only, unsigned long limit) {
+                          int setnum, robj *dstkey,
+                          int cardinality_only, uint64_t limit) {
     setopsrc *sets = zmalloc(sizeof(setopsrc)*setnum);
     setTypeIterator si;
     robj *dstset = NULL;
@@ -1405,7 +1409,8 @@ void sinterGenericCommand(client *c, robj **setkeys,
     size_t len = 0;
     int64_t intobj = 0;
     void *replylen = NULL;
-    unsigned long j, cardinality = 0;
+    int j;
+    uint64_t cardinality = 0;
     int encoding, empty = 0;
 
     for (j = 0; j < setnum; j++) {
@@ -1590,7 +1595,7 @@ void smembersCommand(client *c) {
     }
 
     /* Prepare the response. */
-    unsigned long length = setTypeSize(setobj);
+    uint64_t length = setTypeSize(setobj);
     addReplySetLen(c,length);
     if (server.memory_tracking_enabled)
         oldsize = kvobjAllocSize(setobj);
@@ -1612,13 +1617,14 @@ void smembersCommand(client *c) {
 
 /* SINTERCARD numkeys key [key ...] [LIMIT limit] */
 void sinterCardCommand(client *c) {
-    long j;
-    long numkeys = 0; /* Number of keys. */
-    long limit = 0;   /* 0 means not limit. */
+    int j;
+    long long parsed_numkeys = 0; /* Number of keys. */
+    long long limit = 0;   /* 0 means not limit. */
 
-    if (getRangeLongFromObjectOrReply(c, c->argv[1], 1, LONG_MAX,
-                                      &numkeys, "numkeys should be greater than 0") != C_OK)
+    if (getRangeLongLongFromObjectOrReply(c, c->argv[1], 1, INT_MAX,
+                                          &parsed_numkeys, "numkeys should be greater than 0") != C_OK)
         return;
+    int numkeys = (int)parsed_numkeys;
     if (numkeys > (c->argc - 2)) {
         addReplyError(c, "Number of keys can't be greater than number of args");
         return;
@@ -1630,8 +1636,8 @@ void sinterCardCommand(client *c) {
 
         if (!strcasecmp(opt, "LIMIT") && moreargs) {
             j++;
-            if (getPositiveLongFromObjectOrReply(c, c->argv[j], &limit,
-                                                 "LIMIT can't be negative") != C_OK)
+            if (getPositiveLongLongFromObjectOrReply(c, c->argv[j], &limit,
+                                                     "LIMIT can't be negative") != C_OK)
                 return;
         } else {
             addReplyErrorObject(c, shared.syntaxerr);
@@ -1649,7 +1655,7 @@ void sinterstoreCommand(client *c) {
 
 void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum,
                               robj *dstkey, int op,
-                              int cardinality_only, int approx, long limit)
+                              int cardinality_only, int approx, int64_t limit)
 {
     /* Approximate cardinality is only ever requested for SUNIONCARD, i.e. a
      * non-storing UNION that returns a count. */
@@ -1756,8 +1762,8 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum,
          * HLL object (standard sparse→dense encoding, same as PFADD). */
         if (approx) hllobj = createHLLObject();
         int early_exit = 0;
-        long elements_processed = 0;
-        long check_after = limit; /* For approx: first check after `limit` elements. */
+        long long elements_processed = 0;
+        long long check_after = limit; /* For approx: first check after `limit` elements. */
         for (j = 0; j < setnum && !early_exit; j++) {
             if (!sets[j].set) continue; /* non existing keys are like empty sets */
 
@@ -1794,7 +1800,7 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum,
                         early_exit = 1;
                         break;
                     }
-                    long remaining = (long)limit - (long)est;
+                    long long remaining = limit - (long long)est;
                     check_after = elements_processed +
                         (remaining > HLL_CHECK_INTERVAL_FLOOR ? remaining : HLL_CHECK_INTERVAL_FLOOR);
                 }
@@ -1948,14 +1954,15 @@ void sunionCommand(client *c) {
 
 /* SUNIONCARD numkeys key [key ...] [APPROX] [LIMIT limit] */
 void sunioncardCommand(client *c) {
-    long j;
-    long numkeys = 0;
-    long limit = 0; /* 0 means no limit. */
+    int j;
+    long long parsed_numkeys = 0;
+    long long limit = 0; /* 0 means no limit. */
     int approx = 0;
 
-    if (getRangeLongFromObjectOrReply(c, c->argv[1], 1, LONG_MAX,
-                                      &numkeys, "numkeys should be greater than 0") != C_OK)
+    if (getRangeLongLongFromObjectOrReply(c, c->argv[1], 1, INT_MAX,
+                                          &parsed_numkeys, "numkeys should be greater than 0") != C_OK)
         return;
+    int numkeys = (int)parsed_numkeys;
     if (numkeys > (c->argc - 2)) {
         addReplyError(c, "Number of keys can't be greater than number of args");
         return;
@@ -1967,8 +1974,8 @@ void sunioncardCommand(client *c) {
 
         if (!strcasecmp(opt, "LIMIT") && moreargs) {
             j++;
-            if (getPositiveLongFromObjectOrReply(c, c->argv[j], &limit,
-                                                 "LIMIT can't be negative") != C_OK)
+            if (getPositiveLongLongFromObjectOrReply(c, c->argv[j], &limit,
+                                                     "LIMIT can't be negative") != C_OK)
                 return;
         } else if (!strcasecmp(opt, "APPROX")) {
             approx = 1;
@@ -2001,13 +2008,14 @@ void sdiffstoreCommand(client *c) {
 
 /* SDIFFCARD numkeys key [key ...] [LIMIT limit] */
 void sdiffcardCommand(client *c) {
-    long j;
-    long numkeys = 0;
-    long limit = 0; /* 0 means no limit. */
+    int j;
+    long long parsed_numkeys = 0;
+    long long limit = 0; /* 0 means no limit. */
 
-    if (getRangeLongFromObjectOrReply(c, c->argv[1], 1, LONG_MAX,
-                                      &numkeys, "numkeys should be greater than 0") != C_OK)
+    if (getRangeLongLongFromObjectOrReply(c, c->argv[1], 1, INT_MAX,
+                                          &parsed_numkeys, "numkeys should be greater than 0") != C_OK)
         return;
+    int numkeys = (int)parsed_numkeys;
     if (numkeys > (c->argc - 2)) {
         addReplyError(c, "Number of keys can't be greater than number of args");
         return;
@@ -2019,8 +2027,8 @@ void sdiffcardCommand(client *c) {
 
         if (!strcasecmp(opt, "LIMIT") && moreargs) {
             j++;
-            if (getPositiveLongFromObjectOrReply(c, c->argv[j], &limit,
-                                                 "LIMIT can't be negative") != C_OK)
+            if (getPositiveLongLongFromObjectOrReply(c, c->argv[j], &limit,
+                                                     "LIMIT can't be negative") != C_OK)
                 return;
         } else {
             addReplyErrorObject(c, shared.syntaxerr);

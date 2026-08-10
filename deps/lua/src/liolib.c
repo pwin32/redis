@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "config.h"
+
 #define liolib_c
 #define LUA_LIB
 
@@ -162,7 +164,7 @@ static int io_open (lua_State *L) {
   const char *filename = luaL_checkstring(L, 1);
   const char *mode = luaL_optstring(L, 2, "r");
   FILE **pf = newfile(L);
-  *pf = fopen(filename, mode);
+  *pf = redis_fopen(filename, mode);
   return (*pf == NULL) ? pushresult(L, 0, filename) : 1;
 }
 
@@ -175,7 +177,11 @@ static int io_popen (lua_State *L) {
   const char *filename = luaL_checkstring(L, 1);
   const char *mode = luaL_optstring(L, 2, "r");
   FILE **pf = newfile(L);
+#ifdef _WIN32
+  *pf = redis_popen(filename, mode);
+#else
   *pf = lua_popen(L, filename, mode);
+#endif
   return (*pf == NULL) ? pushresult(L, 0, filename) : 1;
 }
 
@@ -202,7 +208,7 @@ static int g_iofile (lua_State *L, int f, const char *mode) {
     const char *filename = lua_tostring(L, 1);
     if (filename) {
       FILE **pf = newfile(L);
-      *pf = fopen(filename, mode);
+      *pf = redis_fopen(filename, mode);
       if (*pf == NULL)
         fileerror(L, 1, filename);
     }
@@ -254,7 +260,7 @@ static int io_lines (lua_State *L) {
   else {
     const char *filename = luaL_checkstring(L, 1);
     FILE **pf = newfile(L);
-    *pf = fopen(filename, "r");
+    *pf = redis_fopen(filename, "r");
     if (*pf == NULL)
       fileerror(L, 1, filename);
     aux_lines(L, lua_gettop(L), 1);
@@ -553,4 +559,3 @@ LUALIB_API int luaopen_io (lua_State *L) {
   lua_pop(L, 1);  /* pop 'popen' */
   return 1;
 }
-

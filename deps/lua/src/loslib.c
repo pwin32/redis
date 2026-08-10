@@ -11,6 +11,11 @@
 #include <string.h>
 #include <time.h>
 
+#include "config.h"
+#ifdef _WIN32
+#include "Win32_Interop/Win32_Error.h"
+#endif
+
 #define loslib_c
 #define LUA_LIB
 
@@ -36,21 +41,21 @@ static int os_pushresult (lua_State *L, int i, const char *filename) {
 
 
 static int os_execute (lua_State *L) {
-  lua_pushinteger(L, system(luaL_optstring(L, 1, NULL)));
+  lua_pushinteger(L, redis_system(luaL_optstring(L, 1, NULL)));
   return 1;
 }
 
 
 static int os_remove (lua_State *L) {
   const char *filename = luaL_checkstring(L, 1);
-  return os_pushresult(L, remove(filename) == 0, filename);
+  return os_pushresult(L, redis_remove(filename) == 0, filename);
 }
 
 
 static int os_rename (lua_State *L) {
   const char *fromname = luaL_checkstring(L, 1);
   const char *toname = luaL_checkstring(L, 2);
-  return os_pushresult(L, rename(fromname, toname) == 0, fromname);
+  return os_pushresult(L, redis_rename(fromname, toname) == 0, fromname);
 }
 
 
@@ -66,7 +71,13 @@ static int os_tmpname (lua_State *L) {
 
 
 static int os_getenv (lua_State *L) {
+#ifdef _WIN32
+  char *value = win32_getenv_utf8(luaL_checkstring(L, 1));
+  lua_pushstring(L, value);  /* if NULL push nil */
+  free(value);
+#else
   lua_pushstring(L, getenv(luaL_checkstring(L, 1)));  /* if NULL push nil */
+#endif
   return 1;
 }
 
@@ -247,4 +258,3 @@ LUALIB_API int luaopen_os (lua_State *L) {
   luaL_register(L, LUA_OSLIBNAME, sandbox_syslib);
   return 1;
 }
-

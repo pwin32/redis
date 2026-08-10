@@ -78,7 +78,6 @@ static_assert(offsetof(dictEntry, key) == offsetof(dictEntryNoValue, key), "dict
 static int _dictExpandIfNeeded(dict *d);
 static void _dictShrinkIfNeeded(dict *d);
 static void _dictRehashStepIfNeeded(dict *d, uint64_t visitedIdx);
-static signed char _dictNextExp(unsigned long size);
 static int _dictInit(dict *d, dictType *type);
 static dictEntryLink dictGetNextLink(dictEntry *de);
 static void dictSetNext(dictEntry *de, dictEntry *next);
@@ -252,7 +251,7 @@ int _dictInit(dict *d, dictType *type)
 /* Resize or create the hash table,
  * when malloc_failed is non-NULL, it'll avoid panic if malloc fails (in which case it'll be set to 1).
  * Returns DICT_OK if resize was performed, and DICT_ERR if skipped. */
-int _dictResize(dict *d, unsigned long size, int* malloc_failed)
+int _dictResize(dict *d, dict_ulong size, int* malloc_failed)
 {
     if (malloc_failed) *malloc_failed = 0;
 
@@ -261,8 +260,8 @@ int _dictResize(dict *d, unsigned long size, int* malloc_failed)
 
     /* the new hash table */
     dictEntry **new_ht_table;
-    unsigned long new_ht_used;
-    signed char new_ht_size_exp = _dictNextExp(size);
+    dict_ulong new_ht_used;
+    signed char new_ht_size_exp = dictNextExpForSize(size);
 
     /* Detect overflows */
     size_t newsize = DICTHT_SIZE(new_ht_size_exp);
@@ -319,7 +318,7 @@ int _dictResize(dict *d, unsigned long size, int* malloc_failed)
     return DICT_OK;
 }
 
-int _dictExpand(dict *d, unsigned long size, int* malloc_failed) {
+int _dictExpand(dict *d, dict_ulong size, int* malloc_failed) {
     /* the size is invalid if it is smaller than the size of the hash table
      * or smaller than the number of elements already inside the hash table */
     if (dictIsRehashing(d) || d->ht_used[0] > size || DICTHT_SIZE(d->ht_size_exp[0]) >= size)
@@ -328,19 +327,19 @@ int _dictExpand(dict *d, unsigned long size, int* malloc_failed) {
 }
 
 /* return DICT_ERR if expand was not performed */
-int dictExpand(dict *d, unsigned long size) {
+int dictExpand(dict *d, dict_ulong size) {
     return _dictExpand(d, size, NULL);
 }
 
 /* return DICT_ERR if expand failed due to memory allocation failure */
-int dictTryExpand(dict *d, unsigned long size) {
+int dictTryExpand(dict *d, dict_ulong size) {
     int malloc_failed = 0;
     _dictExpand(d, size, &malloc_failed);
     return malloc_failed? DICT_ERR : DICT_OK;
 }
 
 /* return DICT_ERR if shrink was not performed */
-int dictShrink(dict *d, unsigned long size) {
+int dictShrink(dict *d, dict_ulong size) {
     /* the size is invalid if it is bigger than the size of the hash table
      * or smaller than the number of elements already inside the hash table */
     if (dictIsRehashing(d) || d->ht_used[0] > size || DICTHT_SIZE(d->ht_size_exp[0]) <= size)
@@ -419,8 +418,8 @@ static int dictCheckRehashingCompleted(dict *d) {
  * work it does would be unbound and the function may block for a long time. */
 int dictRehash(dict *d, int n) {
     int empty_visits = n*10; /* Max number of empty buckets to visit. */
-    unsigned long s0 = DICTHT_SIZE(d->ht_size_exp[0]);
-    unsigned long s1 = DICTHT_SIZE(d->ht_size_exp[1]);
+    dict_ulong s0 = DICTHT_SIZE(d->ht_size_exp[0]);
+    dict_ulong s1 = DICTHT_SIZE(d->ht_size_exp[1]);
     dictResizeEnable can_resize;
     atomicGet(dict_can_resize, can_resize);
     if (can_resize == DICT_RESIZE_FORBID || !dictIsRehashing(d)) return 0;
@@ -437,7 +436,7 @@ int dictRehash(dict *d, int n) {
     while(n-- && d->ht_used[0] != 0) {
         /* Note that rehashidx can't overflow as we are sure there are more
          * elements because ht[0].used != 0 */
-        assert(DICTHT_SIZE(d->ht_size_exp[0]) > (unsigned long)d->rehashidx);
+        assert(DICTHT_SIZE(d->ht_size_exp[0]) > (dict_ulong)d->rehashidx);
         while(d->ht_table[0][d->rehashidx] == NULL) {
             d->rehashidx++;
             if (--empty_visits == 0) return 1;
@@ -489,8 +488,8 @@ static void _dictRehashStep(dict *d) {
 /* Performs rehashing on a single bucket. */
 int _dictBucketRehash(dict *d, uint64_t idx) {
     if (d->pauserehash != 0) return 0;
-    unsigned long s0 = DICTHT_SIZE(d->ht_size_exp[0]);
-    unsigned long s1 = DICTHT_SIZE(d->ht_size_exp[1]);
+    dict_ulong s0 = DICTHT_SIZE(d->ht_size_exp[0]);
+    dict_ulong s1 = DICTHT_SIZE(d->ht_size_exp[1]);
     dictResizeEnable can_resize;
     atomicGet(dict_can_resize, can_resize);
     if (can_resize == DICT_RESIZE_FORBID || !dictIsRehashing(d)) return 0;
@@ -656,7 +655,7 @@ static dictEntry *dictGenericDelete(dict *d, const void *key, int nofree) {
     keyCmpFunc cmpFunc = dictGetCmpFunc(d);
 
     for (table = 0; table <= 1; table++) {
-        if (table == 0 && (long)idx < d->rehashidx) continue;
+        if (table == 0 && (dict_long)idx < d->rehashidx) continue;
         idx = h & DICTHT_SIZE_MASK(d->ht_size_exp[table]);
         he = d->ht_table[table][idx];
         prevHe = NULL;
@@ -725,7 +724,7 @@ void dictFreeUnlinkedEntry(dict *d, dictEntry *he) {
 
 /* Destroy an entire dictionary */
 int _dictClear(dict *d, int htidx, void(callback)(dict*)) {
-    unsigned long i;
+    dict_ulong i;
 
     /* Free all the elements */
     for (i = 0; i < DICTHT_SIZE(d->ht_size_exp[htidx]) && d->ht_used[htidx] > 0; i++) {
@@ -799,7 +798,7 @@ static dictEntryLink dictFindLinkInternal(dict *d, const void *key, dictEntryLin
 
     int tables = (dictIsRehashing(d)) ? 2 : 1;
     for (table = 0; table < tables; table++) {
-        if (table == 0 && (long)idx < d->rehashidx) continue;
+        if (table == 0 && (dict_long)idx < d->rehashidx) continue;
         idx = hash & DICTHT_SIZE_MASK(d->ht_size_exp[table]);
 
         link = &(d->ht_table[table][idx]);
@@ -829,12 +828,12 @@ dictEntry *dictFind(dict *d, const void *key)
  * return value is a pointer to the dictEntry if found, or NULL if not found. */
 dictEntry *dictFindByHashAndPtr(dict *d, const void *oldptr, const uint64_t hash) {
     dictEntry *he;
-    unsigned long idx, table;
+    dict_ulong idx, table;
 
     if (dictSize(d) == 0) return NULL; /* dict is empty */
     for (table = 0; table <= 1; table++) {
         idx = hash & DICTHT_SIZE_MASK(d->ht_size_exp[table]);
-        if (table == 0 && (long)idx < d->rehashidx) continue;
+        if (table == 0 && (dict_long)idx < d->rehashidx) continue;
         he = d->ht_table[table][idx];
         while(he) {
             if (oldptr == dictGetKey(he))
@@ -968,7 +967,7 @@ dictEntryLink dictTwoPhaseUnlinkFind(dict *d, const void *key, int *table_index)
 
     for (table = 0; table <= 1; table++) {
         idx = h & DICTHT_SIZE_MASK(d->ht_size_exp[table]);
-        if (table == 0 && (long)idx < d->rehashidx) continue;
+        if (table == 0 && (dict_long)idx < d->rehashidx) continue;
         dictEntry **ref = &d->ht_table[table][idx];
         while (ref && *ref) {
             const void *de_key = dictStoredKey2Key(d, dictGetKey(*ref));
@@ -1211,7 +1210,7 @@ dictEntry *dictNext(dictIterator *iter)
                 }
             }
             iter->index++;
-            if (iter->index >= (long) DICTHT_SIZE(iter->d->ht_size_exp[iter->table])) {
+            if (iter->index >= (dict_long) DICTHT_SIZE(iter->d->ht_size_exp[iter->table])) {
                 if (dictIsRehashing(iter->d) && iter->table == 0) {
                     iter->table++;
                     iter->index = 0;
@@ -1244,13 +1243,13 @@ void dictReleaseIterator(dictIterator *iter)
 dictEntry *dictGetRandomKey(dict *d)
 {
     dictEntry *he, *orighe;
-    unsigned long h;
+    dict_ulong h;
     int listlen, listele;
 
     if (dictSize(d) == 0) return NULL;
     if (dictIsRehashing(d)) _dictRehashStep(d);
     if (dictIsRehashing(d)) {
-        unsigned long s0 = DICTHT_SIZE(d->ht_size_exp[0]);
+        dict_ulong s0 = DICTHT_SIZE(d->ht_size_exp[0]);
         do {
             /* We are sure there are no elements in indexes from 0
              * to rehashidx-1 */
@@ -1258,7 +1257,7 @@ dictEntry *dictGetRandomKey(dict *d)
             he = (h >= s0) ? d->ht_table[1][h - s0] : d->ht_table[0][h];
         } while(he == NULL);
     } else {
-        unsigned long m = DICTHT_SIZE_MASK(d->ht_size_exp[0]);
+        dict_ulong m = DICTHT_SIZE_MASK(d->ht_size_exp[0]);
         do {
             h = randomULong() & m;
             he = d->ht_table[0][h];
@@ -1304,10 +1303,10 @@ dictEntry *dictGetRandomKey(dict *d)
  * statistics. However the function is much faster than dictGetRandomKey()
  * at producing N elements. */
 unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
-    unsigned long j; /* internal hash table id, 0 or 1. */
-    unsigned long tables; /* 1 or 2 tables? */
-    unsigned long stored = 0, maxsizemask;
-    unsigned long maxsteps;
+    dict_ulong j; /* internal hash table id, 0 or 1. */
+    dict_ulong tables; /* 1 or 2 tables? */
+    dict_ulong stored = 0, maxsizemask;
+    dict_ulong maxsteps;
 
     if (dictSize(d) < count) count = dictSize(d);
     maxsteps = count*10;
@@ -1326,14 +1325,14 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
         maxsizemask = DICTHT_SIZE_MASK(d->ht_size_exp[1]);
 
     /* Pick a random point inside the larger table. */
-    unsigned long i = randomULong() & maxsizemask;
-    unsigned long emptylen = 0; /* Continuous empty entries so far. */
+    dict_ulong i = randomULong() & maxsizemask;
+    dict_ulong emptylen = 0; /* Continuous empty entries so far. */
     while(stored < count && maxsteps--) {
         for (j = 0; j < tables; j++) {
             /* Invariant of the dict.c rehashing: up to the indexes already
              * visited in ht[0] during the rehashing, there are no populated
              * buckets, so we can skip ht[0] for indexes between 0 and idx-1. */
-            if (tables == 2 && j == 0 && i < (unsigned long) d->rehashidx) {
+            if (tables == 2 && j == 0 && i < (dict_ulong) d->rehashidx) {
                 /* Moreover, if we are currently out of range in the second
                  * table, there will be no elements in both tables up to
                  * the current rehashing index, so we jump if possible.
@@ -1366,7 +1365,7 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
                     if (stored < count) {
                         des[stored] = he;
                     } else {
-                        unsigned long r = randomULong() % (stored + 1);
+                        dict_ulong r = randomULong() % (stored + 1);
                         if (r < count) des[r] = he;
                     }
 
@@ -1446,9 +1445,9 @@ dictEntry *dictGetFairRandomKey(dict *d) {
 
 /* Function to reverse bits. Algorithm from:
  * http://graphics.stanford.edu/~seander/bithacks.html#ReverseParallel */
-static unsigned long rev(unsigned long v) {
-    unsigned long s = CHAR_BIT * sizeof(v); // bit size; must be power of 2
-    unsigned long mask = ~0UL;
+static dict_ulong rev(dict_ulong v) {
+    dict_ulong s = CHAR_BIT * sizeof(v); // bit size; must be power of 2
+    dict_ulong mask = ~(dict_ulong)0;
     while ((s >>= 1) > 0) {
         mask ^= (mask << s);
         v = ((v >> s) & mask) | ((v << s) & ~mask);
@@ -1540,8 +1539,8 @@ static unsigned long rev(unsigned long v) {
  * 3) The reverse cursor is somewhat hard to understand at first, but this
  *    comment is supposed to help.
  */
-unsigned long dictScan(dict *d,
-                       unsigned long v,
+dict_ulong dictScan(dict *d,
+                       dict_ulong v,
                        dictScanFunction *fn,
                        void *privdata)
 {
@@ -1582,14 +1581,14 @@ void dictScanDefragBucket(dict *d,dictScanFunction *fn,
  * can reallocate. The callbacks should return a new memory address or NULL,
  * where NULL means that no reallocation happened and the old memory is still
  * valid. */
-unsigned long dictScanDefrag(dict *d,
-                             unsigned long v,
+dict_ulong dictScanDefrag(dict *d,
+                             dict_ulong v,
                              dictScanFunction *fn,
                              dictDefragFunctions *defragfns,
                              void *privdata)
 {
     int htidx0, htidx1;
-    unsigned long m0, m1;
+    dict_ulong m0, m1;
 
     if (dictSize(d) == 0) return 0;
 
@@ -1653,7 +1652,7 @@ unsigned long dictScanDefrag(dict *d,
 static int dictTypeResizeAllowed(dict *d, size_t size) {
     if (d->type->resizeAllowed == NULL) return 1;
     return d->type->resizeAllowed(
-                    DICTHT_SIZE(_dictNextExp(size)) * sizeof(dictEntry*),
+                    DICTHT_SIZE(dictNextExpForSize(size)) * sizeof(dictEntry*),
                     (double)d->ht_used[0] / DICTHT_SIZE(d->ht_size_exp[0]));
 }
 
@@ -1735,7 +1734,7 @@ static void _dictRehashStepIfNeeded(dict *d, uint64_t visitedIdx) {
     if ((!dictIsRehashing(d)) || (d->pauserehash != 0))
         return;
     /* rehashing not in progress if rehashidx == -1 */
-    if ((long)visitedIdx >= d->rehashidx && d->ht_table[0][visitedIdx]) {
+    if ((dict_long)visitedIdx >= d->rehashidx && d->ht_table[0][visitedIdx]) {
         /* If we have a valid hash entry at `idx` in ht0, we perform
          * rehash on the bucket at `idx` (being more CPU cache friendly) */
         _dictBucketRehash(d, visitedIdx);
@@ -1746,21 +1745,12 @@ static void _dictRehashStepIfNeeded(dict *d, uint64_t visitedIdx) {
     }
 }
 
-/* Our hash table capability is a power of two */
-static signed char _dictNextExp(unsigned long size)
-{
-    if (size <= DICT_HT_INITIAL_SIZE) return DICT_HT_INITIAL_EXP;
-    if (size >= LONG_MAX) return (8*sizeof(long)-1);
-
-    return 8*sizeof(long) - __builtin_clzl(size-1);
-}
-
 /* Finds and returns the link within the dict where the provided key should
  * be inserted using dictInsertKeyAtLink() if the key does not already exist in
  * the dict. If the key exists in the dict, NULL is returned and the optional
  * 'existing' entry pointer is populated, if provided. */
 dictEntryLink dictFindLinkForInsert(dict *d, const void *key, dictEntry **existing) {
-    unsigned long idx, table;
+    dict_ulong idx, table;
     dictCmpCache cmpCache = {0};
     dictEntry *he;
     uint64_t hash = dictGetHash(d, key);
@@ -1775,7 +1765,7 @@ dictEntryLink dictFindLinkForInsert(dict *d, const void *key, dictEntry **existi
     keyCmpFunc cmpFunc = dictGetCmpFunc(d);
 
     for (table = 0; table <= 1; table++) {
-        if (table == 0 && (long)idx < d->rehashidx) continue;
+        if (table == 0 && (dict_long)idx < d->rehashidx) continue;
         idx = hash & DICTHT_SIZE_MASK(d->ht_size_exp[table]);
         /* Search if this slot does not already contain the given key */
         he = d->ht_table[table][idx];
@@ -1851,7 +1841,7 @@ void dictCombineStats(dictStats *from, dictStats *into) {
 }
 
 dictStats *dictGetStatsHt(dict *d, int htidx, int full) {
-    unsigned long *clvector = zcalloc(sizeof(unsigned long) * DICT_STATS_VECTLEN);
+    dict_ulong *clvector = zcalloc(sizeof(dict_ulong) * DICT_STATS_VECTLEN);
     dictStats *stats = zcalloc(sizeof(dictStats));
     stats->htidx = htidx;
     stats->clvector = clvector;
@@ -1859,7 +1849,7 @@ dictStats *dictGetStatsHt(dict *d, int htidx, int full) {
     stats->htUsed = d->ht_used[htidx];
     if (!full) return stats;
     /* Compute stats. */
-    for (unsigned long i = 0; i < DICTHT_SIZE(d->ht_size_exp[htidx]); i++) {
+    for (dict_ulong i = 0; i < DICTHT_SIZE(d->ht_size_exp[htidx]); i++) {
         dictEntry *he;
 
         if (d->ht_table[htidx][i] == NULL) {
@@ -1868,7 +1858,7 @@ dictStats *dictGetStatsHt(dict *d, int htidx, int full) {
         }
         stats->buckets++;
         /* For each hash entry on this slot... */
-        unsigned long chainlen = 0;
+        dict_ulong chainlen = 0;
         he = d->ht_table[htidx][i];
         while(he) {
             chainlen++;
@@ -1893,26 +1883,27 @@ size_t dictGetStatsMsg(char *buf, size_t bufsize, dictStats *stats, int full) {
     size_t l = 0;
     l += snprintf(buf + l, bufsize - l,
                   "Hash table %d stats (%s):\n"
-                  " table size: %lu\n"
-                  " number of elements: %lu\n",
+                  " table size: %llu\n"
+                  " number of elements: %llu\n",
                   stats->htidx, (stats->htidx == 0) ? "main hash table" : "rehashing target",
-                  stats->htSize, stats->htUsed);
+                  (unsigned long long)stats->htSize, (unsigned long long)stats->htUsed);
     if (full) {
         l += snprintf(buf + l, bufsize - l,
-                      " different slots: %lu\n"
-                      " max chain length: %lu\n"
+                      " different slots: %llu\n"
+                      " max chain length: %llu\n"
                       " avg chain length (counted): %.02f\n"
                       " avg chain length (computed): %.02f\n"
                       " Chain length distribution:\n",
-                      stats->buckets, stats->maxChainLen,
+                      (unsigned long long)stats->buckets, (unsigned long long)stats->maxChainLen,
                       (float) stats->totalChainLen / stats->buckets, (float) stats->htUsed / stats->buckets);
 
-        for (unsigned long i = 0; i < DICT_STATS_VECTLEN - 1; i++) {
+        for (dict_ulong i = 0; i < DICT_STATS_VECTLEN - 1; i++) {
             if (stats->clvector[i] == 0) continue;
             if (l >= bufsize) break;
             l += snprintf(buf + l, bufsize - l,
-                          "   %ld: %ld (%.02f%%)\n",
-                          i, stats->clvector[i], ((float) stats->clvector[i] / stats->htSize) * 100);
+                          "   %llu: %llu (%.02f%%)\n",
+                          (unsigned long long)i, (unsigned long long)stats->clvector[i],
+                          ((float) stats->clvector[i] / stats->htSize) * 100);
         }
     }
 
@@ -2046,7 +2037,7 @@ int dictTest(int argc, char **argv, int flags) {
     dictEntry* de = NULL;
     dictEntry* existing = NULL;
     long count = 0;
-    unsigned long new_dict_size, current_dict_used, remain_keys;
+    dict_ulong new_dict_size, current_dict_used, remain_keys;
     int accurate = (flags & REDIS_TEST_ACCURATE);
 
     if (argc == 4) {
@@ -2088,7 +2079,7 @@ int dictTest(int argc, char **argv, int flags) {
         retval = dictAdd(d,stringFromLongLong(current_dict_used),(void*)(current_dict_used));
         assert(retval == DICT_OK);
         current_dict_used++;
-        new_dict_size = 1UL << _dictNextExp(current_dict_used);
+        new_dict_size = DICT_ULONG_C(1) << dictNextExpForSize(current_dict_used);
         assert(dictSize(d) == current_dict_used);
         assert(DICTHT_SIZE(d->ht_size_exp[0]) == 16);
         assert(DICTHT_SIZE(d->ht_size_exp[1]) == new_dict_size);
@@ -2120,8 +2111,8 @@ int dictTest(int argc, char **argv, int flags) {
         char *key = stringFromLongLong(current_dict_used);
         retval = dictDelete(d, key);
         zfree(key);
-        unsigned long oldDictSize = new_dict_size;
-        new_dict_size = 1UL << _dictNextExp(current_dict_used);
+        dict_ulong oldDictSize = new_dict_size;
+        new_dict_size = DICT_ULONG_C(1) << dictNextExpForSize(current_dict_used);
         assert(retval == DICT_OK);
         assert(dictSize(d) == current_dict_used);
         assert(DICTHT_SIZE(d->ht_size_exp[0]) == oldDictSize);
@@ -2166,7 +2157,7 @@ int dictTest(int argc, char **argv, int flags) {
         char *key = stringFromLongLong(current_dict_used);
         retval = dictDelete(d, key);
         zfree(key);
-        new_dict_size = 1UL << _dictNextExp(current_dict_used);
+        new_dict_size = DICT_ULONG_C(1) << dictNextExpForSize(current_dict_used);
         assert(retval == DICT_OK);
         assert(dictSize(d) == current_dict_used);
         assert(DICTHT_SIZE(d->ht_size_exp[0]) == 128);
@@ -2209,7 +2200,7 @@ int dictTest(int argc, char **argv, int flags) {
         /* Identical keys and resize policy => identical bucket geometry, so the
          * two dicts' reported memory differs only by the value union that each
          * of the n no_value entries drops: n * 8 bytes. */
-        assert(dictSize(dn) == (unsigned long)n && dictSize(dv) == (unsigned long)n);
+        assert(dictSize(dn) == (dict_ulong)n && dictSize(dv) == (dict_ulong)n);
         assert(dictBuckets(dn) == dictBuckets(dv));
         assert(dictMemUsage(dn) - dictMemUsage(dv) == (size_t)n * value_union_bytes);
 
@@ -2230,7 +2221,7 @@ int dictTest(int argc, char **argv, int flags) {
         if (de == NULL) zfree(key);
     }
     end_benchmark("Inserting random substrings (100-500B) from large string with symbols");
-    assert((long)dictSize(d) <= count);
+    assert(dictSize(d) <= (dict_ulong)count);
     dictEmpty(d, NULL);
 
     start_benchmark();
@@ -2239,7 +2230,7 @@ int dictTest(int argc, char **argv, int flags) {
         assert(retval == DICT_OK);
     }
     end_benchmark("Inserting via dictAdd() non existing");
-    assert((long)dictSize(d) == count);
+    assert(dictSize(d) == (dict_ulong)count);
 
     dictEmpty(d, NULL);
 
@@ -2249,7 +2240,7 @@ int dictTest(int argc, char **argv, int flags) {
         assert(de != NULL);
     }
     end_benchmark("Inserting via dictAddRaw() non existing");
-    assert((long)dictSize(d) == count);
+    assert(dictSize(d) == (dict_ulong)count);
 
     start_benchmark();
     for (j = 0; j < count; j++) {
@@ -2259,7 +2250,7 @@ int dictTest(int argc, char **argv, int flags) {
         zfree(key);
     }
     end_benchmark("Inserting via dictAddRaw() existing (no insertion)");
-    assert((long)dictSize(d) == count);
+    assert(dictSize(d) == (dict_ulong)count);
 
     /* Wait for rehashing. */
     while (dictIsRehashing(d)) {

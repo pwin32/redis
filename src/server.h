@@ -64,8 +64,10 @@
 #include <inttypes.h>
 #include <pthread.h>
 #include <syslog.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+typedef struct timeval redis_rusage_timeval;
 #else
 #include "Win32_Interop/Win32_PThread.h"
 #endif
@@ -1282,7 +1284,7 @@ typedef struct redisDb {
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
     int id;                     /* Database ID */
     long long avg_ttl;          /* Average TTL, just for stats */
-    unsigned long expires_cursor; /* Cursor of the active expire cycle. */
+    uint64_t expires_cursor; /* Cursor of the active expire cycle. */
 } redisDb;
 
 /* maximum number of bins of keysizes histogram */
@@ -1582,7 +1584,7 @@ typedef struct client {
                                anything (admin). */
     int reqtype;            /* Request protocol type: PROTO_REQ_* */
     int multibulklen;       /* Number of multi bulk arguments left to read. */
-    long bulklen;           /* Length of bulk argument in multi bulk request. */
+    int64_t bulklen;        /* Length of bulk argument in multi bulk request. */
     list *reply;            /* List of reply objects to send to the client. */
     unsigned long long reply_bytes; /* Tot bytes of objects in reply list. */
     unsigned long long reply_bytes_shared; /* Bytes shared with keyspace objects in reply list. */
@@ -1591,7 +1593,7 @@ typedef struct client {
     size_t sentlen;         /* Amount of bytes already sent in the current
                                buffer or object being sent. */
     time_t ctime;           /* Client creation time. */
-    long duration;          /* Current command duration. Used for measuring latency of blocking/non-blocking cmds */
+    ustime_t duration;      /* Current command duration. Used for measuring latency of blocking/non-blocking cmds */
     int slot;               /* The slot the client is executing against. Set to -1 if no slot is being used */
     int cluster_compatibility_check_slot; /* The slot the client is executing against for cluster compatibility check.
                                            * -2 means we don't need to check slot violation, or we already found
@@ -1849,14 +1851,14 @@ typedef struct zskiplistNode {
         struct zskiplistNode *forward;
         /* Span is the number of elements between this node and the next node at this level.
          * At level 0, span is repurposed to store zskiplistNodeInfo for regular nodes, */
-        unsigned long span;
+        uint64_t span;
     } level[];
     /* sds ele is embedded after level[] array (assist zslGetNodeElement(node) to access it) */
 } zskiplistNode;
 
 typedef struct zskiplist {
     struct zskiplistNode *header, *tail;
-    unsigned long length;
+    uint64_t length;
     int level;
     size_t alloc_size;
 } zskiplist;
@@ -1932,7 +1934,7 @@ struct redisMemOverhead {
     size_t num_dbs;
     size_t overhead_db_hashtable_lut;
     size_t overhead_db_hashtable_rehashing;
-    unsigned long db_dict_rehashing_count;
+    uint64_t db_dict_rehashing_count;
     size_t asm_import_input_buffer;
     size_t asm_migrate_output_buffer;
     struct {
@@ -2255,8 +2257,8 @@ struct redisServer {
     list *slowlog;                  /* SLOWLOG list of commands */
     long long slowlog_entry_id;     /* SLOWLOG current entry ID */
     long long slowlog_log_slower_than; /* SLOWLOG time limit (to get logged) */
-    unsigned long slowlog_max_len;     /* SLOWLOG max number of items logged */
-    unsigned long slowlog_max_string_len; /* SLOWLOG max string length of a command's argument logged */
+    uint64_t slowlog_max_len;     /* SLOWLOG max number of items logged */
+    uint64_t slowlog_max_string_len; /* SLOWLOG max string length of a command's argument logged */
     int slowlog_max_argc;           /* SLOWLOG max argument count per command logged */
     long long stat_slowlog_count;          /* Total slowlog entries ever pushed */
     long long stat_slowlog_time_us_sum;    /* Sum of all slowlog entry durations (usec) */
@@ -2337,7 +2339,7 @@ struct redisServer {
     int active_defrag_threshold_upper; /* maximum percentage of fragmentation at which we use maximum effort */
     int active_defrag_cycle_min;       /* minimal effort for defrag in CPU percentage */
     int active_defrag_cycle_max;       /* maximal effort for defrag in CPU percentage */
-    unsigned long active_defrag_max_scan_fields; /* maximum number of fields of set/hash/zset/list to process from within the main dict scan */
+    uint64_t active_defrag_max_scan_fields; /* maximum number of fields of set/hash/zset/list to process from within the main dict scan */
     size_t client_max_querybuf_len; /* Limit for client query buffer length */
     int lookahead;                  /* how many commands in each client pipeline to decode and prefetch */
     int dbnum;                      /* Total number of configured DBs */
@@ -2385,7 +2387,7 @@ struct redisServer {
     time_t aof_cur_timestamp;       /* Current record timestamp in AOF */
     int aof_timestamp_enabled;      /* Enable record timestamp in AOF */
     int aof_lastbgrewrite_status;   /* C_OK or C_ERR */
-    unsigned long aof_delayed_fsync;  /* delayed AOF fsync() counter */
+    uint64_t aof_delayed_fsync;       /* delayed AOF fsync() counter */
     int aof_rewrite_incremental_fsync;/* fsync incrementally while aof rewriting? */
     int rdb_save_incremental_fsync;   /* fsync incrementally while rdb saving? */
     int aof_last_write_status;      /* C_OK or C_ERR */
@@ -2712,7 +2714,7 @@ struct redisServer {
     dict *latency_events;
     /* ACLs */
     char *acl_filename;           /* ACL Users file. NULL if not configured. */
-    unsigned long acllog_max_len; /* Maximum length of the ACL LOG list. */
+    uint64_t acllog_max_len; /* Maximum length of the ACL LOG list. */
     sds requirepass;              /* Remember the cleartext password set with
                                      the old "requirepass" directive for
                                      backward compatibility with Redis <= 5. */
@@ -2744,7 +2746,7 @@ struct redisServer {
     int failover_state; /* Failover state */
     int cluster_allow_pubsubshard_when_down; /* Is pubsubshard allowed when the cluster
                                                 is down, doesn't affect pubsub global. */
-    long reply_buffer_peak_reset_time; /* The amount of time (in milliseconds) to wait between reply buffer peak resets */
+    mstime_t reply_buffer_peak_reset_time; /* The amount of time (in milliseconds) to wait between reply buffer peak resets */
     int reply_buffer_resizing_enabled; /* Is reply buffer resizing enabled (1 by default) */
     int reply_copy_avoidance_enabled; /* Is reply copy avoidance enabled (1 by default) */
     /* Local environment */
@@ -2805,8 +2807,8 @@ struct hotkeyStats {
     uint64_t net_bytes_all_commands_all_slots;
 
     /* rusage stats for CPU time tracking */
-    struct timeval ru_utime;
-    struct timeval ru_stime;
+    redis_rusage_timeval ru_utime;
+    redis_rusage_timeval ru_stime;
 
     int tracking_count; /* Count of top hotkeys we want to track */
     int sample_ratio; /* Track a key with probability 1 / sample_ratio */
@@ -3160,7 +3162,7 @@ struct redisError {
 
 struct redisFunctionSym {
     char *name;
-    unsigned long pointer;
+    uintptr_t pointer;
 };
 
 typedef struct _redisSortObject {
@@ -3371,11 +3373,11 @@ void freeClientDeferredObjects(client *c, int free_array);
 void freeClientIODeferredObjects(client *c, int free_array);
 void sendReplyToClient(connection *conn);
 void *addReplyDeferredLen(client *c);
-void setDeferredArrayLen(client *c, void *node, long length);
-void setDeferredMapLen(client *c, void *node, long length);
-void setDeferredSetLen(client *c, void *node, long length);
-void setDeferredAttributeLen(client *c, void *node, long length);
-void setDeferredPushLen(client *c, void *node, long length);
+void setDeferredArrayLen(client *c, void *node, long long length);
+void setDeferredMapLen(client *c, void *node, long long length);
+void setDeferredSetLen(client *c, void *node, long long length);
+void setDeferredAttributeLen(client *c, void *node, long long length);
+void setDeferredPushLen(client *c, void *node, long long length);
 int isClientReadErrorFatal(client *c);
 int processInputBuffer(client *c);
 void statsUpdateActiveClients(client *c);
@@ -3418,17 +3420,17 @@ void addReplyHumanLongDouble(client *c, long double d);
 void addReplyLongLong(client *c, long long ll);
 void addReplyLongLongFromStr(client *c, robj* str);
 void addReplyUnsignedLongLong(client *c, uint64_t v);
-void addReplyArrayLen(client *c, long length);
-void addReplyMapLen(client *c, long length);
-void addReplySetLen(client *c, long length);
-void addReplyAttributeLen(client *c, long length);
-void addReplyPushLen(client *c, long length);
+void addReplyArrayLen(client *c, long long length);
+void addReplyMapLen(client *c, long long length);
+void addReplySetLen(client *c, long long length);
+void addReplyAttributeLen(client *c, long long length);
+void addReplyPushLen(client *c, long long length);
 void addReplyHelp(client *c, const char **help);
 void addExtendedReplyHelp(client *c, const char **help, const char **extended_help);
 void addReplySubcommandSyntaxError(client *c);
 void addReplyLoadedModules(client *c);
 void copyReplicaOutputBuffer(client *dst, client *src);
-void addListRangeReply(client *c, robj *o, long start, long end, int reverse);
+void addListRangeReply(client *c, robj *o, int64_t start, int64_t end, int reverse);
 void deferredAfterErrorReply(client *c, list *errors);
 unsigned int formatBulkStrRefPrefix(bulkStrRef *str_ref);
 size_t sdsZmallocSize(sds s);
@@ -3550,9 +3552,9 @@ int checkPrefixCollisionsOrReply(client *c, robj **prefix, size_t numprefix);
 /* List data type */
 void listTypePush(robj *subject, robj *value, int where);
 robj *listTypePop(robj *subject, int where);
-unsigned long listTypeLength(const robj *subject);
+uint64_t listTypeLength(const robj *subject);
 size_t listTypeAllocSize(const robj *o);
-void listTypeInitIterator(listTypeIterator *li, robj *subject, long index, unsigned char direction);
+void listTypeInitIterator(listTypeIterator *li, robj *subject, int64_t index, unsigned char direction);
 void listTypeResetIterator(listTypeIterator *li);
 void listTypeSetIteratorDirection(listTypeIterator *li, listTypeEntry *entry, unsigned char direction);
 int listTypeNext(listTypeIterator *li, listTypeEntry *entry);
@@ -3564,9 +3566,9 @@ int listTypeEqual(listTypeEntry *entry, robj *o, size_t object_len,
                   long long *cached_longval, int *cached_valid);
 void listTypeDelete(listTypeIterator *iter, listTypeEntry *entry);
 robj *listTypeDup(robj *o);
-void listTypeDelRange(robj *o, long start, long stop);
+void listTypeDelRange(robj *o, int64_t start, int64_t stop);
 void popGenericCommand(client *c, int where);
-void listElementsRemoved(client *c, robj *key, int where, robj *o, long count, size_t oldsize, int signal, int *deleted);
+void listElementsRemoved(client *c, robj *key, int where, robj *o, int64_t count, size_t oldsize, int signal, int *deleted);
 typedef enum {
     LIST_CONV_AUTO,
     LIST_CONV_GROWING,
@@ -3574,7 +3576,7 @@ typedef enum {
 } list_conv_type;
 typedef void (*beforeConvertCB)(void *data);
 void listTypeTryConversion(robj *o, list_conv_type lct, beforeConvertCB fn, void *data);
-void listTypeTryConversionAppend(robj *o, robj **argv, int start, int end, beforeConvertCB fn, void *data);
+void listTypeTryConversionAppend(robj *o, robj **argv, size_t start, size_t end, beforeConvertCB fn, void *data);
 
 /* MULTI/EXEC/WATCH... */
 void unwatchAllKeys(client *c);
@@ -3675,7 +3677,7 @@ sds writeCommandsGetDiskErrorMessage(int);
 #include "rdb.h"
 #ifdef _WIN32
 #ifdef REDIS_WIN32_RESTORE_USLEEP
-#define usleep(x) ((x) == 1 ? Sleep(0) : Sleep((int)((x)/1000)))
+#define usleep(x) win32_usleep((PORT_LONGLONG)(x))
 #undef REDIS_WIN32_RESTORE_USLEEP
 #endif
 #endif
@@ -3826,23 +3828,23 @@ sds zslGetNodeElement(const zskiplistNode *node);
 int zslCompareWithNode(double score, sds ele, const zskiplistNode *n);
 zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele);
 unsigned char *zzlInsert(unsigned char *zl, sds ele, double score);
-zskiplistNode *zslNthInRange(zskiplist *zsl, zrangespec *range, long n, unsigned long *out_rank);
+zskiplistNode *zslNthInRange(zskiplist *zsl, zrangespec *range, int64_t n, uint64_t *out_rank);
 double zzlGetScore(unsigned char *sptr);
 void zzlNext(unsigned char *zl, unsigned char **eptr, unsigned char **sptr);
 void zzlPrev(unsigned char *zl, unsigned char **eptr, unsigned char **sptr);
 unsigned char *zzlFirstInRange(unsigned char *zl, zrangespec *range);
 unsigned char *zzlLastInRange(unsigned char *zl, zrangespec *range);
-unsigned long zsetLength(const robj *zobj);
+uint64_t zsetLength(const robj *zobj);
 size_t zsetAllocSize(const robj *o);
 void zsetConvert(robj *zobj, int encoding);
 void zsetConvertToListpackIfNeeded(robj *zobj, size_t maxelelen, size_t totelelen);
 int zsetScore(robj *zobj, sds member, double *score);
-unsigned long zslGetRank(zskiplist *zsl, double score, sds o);
+uint64_t zslGetRank(zskiplist *zsl, double score, sds o);
 int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, double *newscore);
-long zsetRank(robj *zobj, sds ele, int reverse, double *score);
+int64_t zsetRank(robj *zobj, sds ele, int reverse, double *score);
 int zsetDel(robj *zobj, sds ele);
 robj *zsetDup(robj *o);
-void genericZpopCommand(client *c, robj **keyv, int keyc, int where, int emitkey, long count, int use_nested_array, int reply_nil_when_empty, int *deleted);
+void genericZpopCommand(client *c, robj **keyv, int keyc, int where, int emitkey, int64_t count, int use_nested_array, int reply_nil_when_empty, int *deleted);
 sds lpGetObject(unsigned char *sptr);
 int zslValueGteMin(double value, zrangespec *spec);
 int zslValueLteMax(double value, zrangespec *spec);
@@ -3850,7 +3852,7 @@ void zslFreeLexRange(zlexrangespec *spec);
 int zslParseLexRange(robj *min, robj *max, zlexrangespec *spec);
 unsigned char *zzlFirstInLexRange(unsigned char *zl, zlexrangespec *range);
 unsigned char *zzlLastInLexRange(unsigned char *zl, zlexrangespec *range);
-zskiplistNode *zslNthInLexRange(zskiplist *zsl, zlexrangespec *range, long n, unsigned long *out_rank);
+zskiplistNode *zslNthInLexRange(zskiplist *zsl, zlexrangespec *range, int64_t n, uint64_t *out_rank);
 int zzlLexValueGteMin(unsigned char *p, zlexrangespec *spec);
 int zzlLexValueLteMax(unsigned char *p, zlexrangespec *spec);
 int zslLexValueGteMin(sds value, zlexrangespec *spec);
@@ -3992,10 +3994,10 @@ void setTypeResetIterator(setTypeIterator *si);
 int setTypeNext(setTypeIterator *si, char **str, size_t *len, int64_t *llele);
 sds setTypeNextObject(setTypeIterator *si);
 int setTypeRandomElement(robj *setobj, char **str, size_t *len, int64_t *llele);
-unsigned long setTypeSize(const robj *subject);
+uint64_t setTypeSize(const robj *subject);
 size_t setTypeAllocSize(const robj *o);
 void setTypeConvert(robj *subject, int enc);
-int setTypeConvertAndExpand(robj *setobj, int enc, unsigned long cap, int panic);
+int setTypeConvertAndExpand(robj *setobj, int enc, uint64_t cap, int panic);
 robj *setTypeDup(robj *o);
 
 /* Data structure for OBJ_ENCODING_LISTPACK_EX for hash. It contains listpack
@@ -4128,7 +4130,7 @@ int hashTypeTryConvertToTemplate(robj *o, size_t min_fields, size_t max_fields,
 void hashTypeTryConversion(redisDb *db, kvobj *kv, robj **argv, int start, int end);
 int hashTypeExists(redisDb *db, kvobj *kv, sds field, int hfeFlags, int *isHashDeleted);
 int hashTypeDelete(robj *o, void *key);
-unsigned long hashTypeLength(const robj *o, int subtractExpiredFields);
+uint64_t hashTypeLength(const robj *o, int subtractExpiredFields);
 size_t hashTypeAllocSize(const robj *o);
 size_t hashTemplatePerKeyMemoryShare(const robj *o);
 void hashTypeInitIterator(hashTypeIterator *hi, robj *subject);
@@ -4162,7 +4164,7 @@ hashTemplate *hashTemplateGetOrCreate(sds *fields, unsigned long long field_coun
 hashTemplate *hashTemplateGetByFieldsLp(unsigned char *fields_lp);
 hashTemplate *hashTemplateGetById(uint64_t id);
 hashTemplate *hashTemplateDefrag(hashTemplate *tmpl);
-int hashTemplateDefragByIdChunk(unsigned long chunk_idx);
+int hashTemplateDefragByIdChunk(size_t chunk_idx);
 hashTemplate *hashTypeGetTemplate(robj *o);
 void hashTemplateIncrKeyRef(hashTemplate *tmpl);
 void hashTemplateIncrHoldRef(hashTemplate *tmpl);
@@ -4470,9 +4472,9 @@ int ldbIsEnabled(void);
 void ldbLog(sds entry);
 void ldbLogRedisReply(char *reply);
 void sha1hex(char *digest, char *script, size_t len);
-unsigned long evalScriptsMemoryVM(void);
+size_t evalScriptsMemoryVM(void);
 dict* evalScriptsDict(void);
-unsigned long evalScriptsMemoryEngine(void);
+size_t evalScriptsMemoryEngine(void);
 uint64_t evalGetCommandFlags(client *c, uint64_t orig_flags);
 uint64_t fcallGetCommandFlags(client *c, uint64_t orig_flags);
 int isInsideYieldingLongCommand(void);
@@ -4508,9 +4510,9 @@ void blockPostponeClientWithType(client *c, int btype);
 void blockForReplication(client *c, mstime_t timeout, long long offset, long numreplicas);
 void blockForAofFsync(client *c, mstime_t timeout, long long offset, int numlocal, long numreplicas);
 void signalDeletedKeyAsReady(redisDb *db, robj *key, int type);
-void updateStatsOnUnblock(client *c, long blocked_us, long reply_us, int had_errors);
+void updateStatsOnUnblock(client *c, ustime_t blocked_us, ustime_t reply_us, int had_errors);
 void scanDatabaseForDeletedKeys(redisDb *emptied, redisDb *replaced_with, struct slotRangeArray *slots);
-void totalNumberOfStatefulKeys(unsigned long *blocking_keys, unsigned long *bloking_keys_on_nokey, unsigned long *watched_keys);
+void totalNumberOfStatefulKeys(uint64_t *blocking_keys, uint64_t *bloking_keys_on_nokey, uint64_t *watched_keys);
 void blockedBeforeSleep(void);
 
 /* timeout.c -- Blocked clients timeout and connections timeout. */

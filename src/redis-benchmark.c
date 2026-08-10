@@ -55,7 +55,7 @@ POSIX_ONLY(#include <pthread.h>)
 #include "mt19937-64.h"
 
 #ifdef REDIS_BENCHMARK_RESTORE_USLEEP
-#define usleep(x) ((x) == 1 ? Sleep(0) : Sleep((int)((x)/1000)))
+#define usleep(x) win32_usleep((PORT_LONGLONG)(x))
 #undef REDIS_BENCHMARK_RESTORE_USLEEP
 #endif
 
@@ -484,7 +484,7 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 #ifdef _WIN32
     ssize_t nread = read(c->context->fd,buf,sizeof(buf));
     if (nread == -1) {
-        if (errno == ENOENT || errno == EAGAIN || errno == WSAEWOULDBLOCK) {
+        if (errno == ENOENT || errno == EAGAIN) {
             errno = EAGAIN;
             if (WSIOCP_QueueNextRead((int)c->context->fd) == -1) {
                 fprintf(stderr,"Error rearming socket read: %s\n",wsa_strerror(errno));
@@ -671,7 +671,7 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                                        c,
                                        NULL,
                                        writeHandlerDone);
-        if (result == SOCKET_ERROR && errno != WSA_IO_PENDING) {
+        if (result == SOCKET_ERROR && errno != EINPROGRESS) {
             if (errno != EPIPE)
                 fprintf(stderr,"Writing to socket: %s\n",wsa_strerror(errno));
             freeClient(c);
@@ -1836,6 +1836,13 @@ int test_is_selected(const char *name) {
 }
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    if (win32_get_utf8_argv(&argc, &argv) != 0) {
+        fprintf(stderr, "Unable to decode the Windows command line as UTF-8: %s\n",
+                strerror(errno));
+        return 1;
+    }
+#endif
     int i;
     char *data, *cmd, *tag;
     int len;

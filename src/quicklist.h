@@ -107,8 +107,8 @@ typedef struct quicklistBookmark {
 typedef struct quicklist {
     quicklistNode *head;
     quicklistNode *tail;
-    unsigned long count;        /* total count of all entries in all listpacks */
-    unsigned long len;          /* number of quicklistNodes */
+    uint64_t count;              /* total count of all entries in all listpacks */
+    uint64_t len;                /* number of quicklistNodes */
     size_t alloc_size;          /* total allocated memory (in bytes) */
     signed int fill : QL_FILL_BITS;       /* fill factor for individual nodes */
     unsigned int compress : QL_COMP_BITS; /* depth of end nodes not to compress;0=off */
@@ -173,9 +173,9 @@ void quicklistInsertBefore(quicklistIter *iter, quicklistEntry *entry,
 void quicklistDelEntry(quicklistIter *iter, quicklistEntry *entry);
 void quicklistReplaceEntry(quicklistIter *iter, quicklistEntry *entry,
                            void *data, size_t sz);
-int quicklistReplaceAtIndex(quicklist *quicklist, long index, void *data,
+int quicklistReplaceAtIndex(quicklist *quicklist, int64_t index, void *data,
                             const size_t sz);
-int quicklistDelRange(quicklist *quicklist, const long start, const long count);
+int quicklistDelRange(quicklist *quicklist, int64_t start, int64_t count);
 void quicklistInitIterator(quicklistIter *iter, quicklist *quicklist, int direction);
 int quicklistInitIteratorAtIdx(quicklistIter *iter, quicklist *quicklist,
                                int direction, const long long idx);
@@ -191,7 +191,7 @@ int quicklistPopCustom(quicklist *quicklist, int where, unsigned char **data,
                        void *(*saver)(unsigned char *data, size_t sz));
 int quicklistPop(quicklist *quicklist, int where, unsigned char **data,
                  size_t *sz, long long *slong);
-unsigned long quicklistCount(const quicklist *ql);
+uint64_t quicklistCount(const quicklist *ql);
 size_t quicklistAllocSize(const quicklist *ql);
 int quicklistCompare(quicklistEntry *entry, unsigned char *p2, const size_t p2_len,
                      long long *cached_longval, int *cached_valid);

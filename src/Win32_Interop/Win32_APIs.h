@@ -27,6 +27,7 @@
 #include <Windows.h>
 #include <limits.h>
 #include <stdio.h>      // for rename
+#include <sys/stat.h>
 
 // API replacement for non-fd stdio functions
 #define fseeko      _fseeki64
@@ -42,13 +43,19 @@
 #define strtoul     _strtoui64
 #endif
 
-#define sleep(x) Sleep((x)*1000)
-/* Redis calls usleep(1) to give thread some time.
- * Sleep(0) should do the same on Windows.
- * In other cases, usleep is called with millisec resolution
- * which can be directly translated to WinAPI Sleep() */
+/* Keep long delays out of the 32-bit Sleep() argument.  Sleep(INFINITE)
+ * never returns, so the implementation also chunks MAXDWORD-sized waits. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+unsigned int win32_sleep(PORT_LONGLONG seconds);
+int win32_usleep(PORT_LONGLONG usec);
+#ifdef __cplusplus
+}
+#endif
+#define sleep(x) win32_sleep((PORT_LONGLONG)(x))
 #undef usleep
-#define usleep(x) ((x) == 1 ? Sleep(0) : Sleep((int)((x)/1000)))
+#define usleep(x) win32_usleep((PORT_LONGLONG)(x))
 
 
 /* following defined to choose little endian byte order */
@@ -83,6 +90,19 @@ int replace_rename(const char *src, const char *dest);
 /* Create a hard link using the Win32 path API while preserving the POSIX
  * link(oldpath, newpath) argument order expected by Redis. */
 int replace_link(const char *src, const char *dest);
+
+/* UTF-8 path wrappers for CRT interfaces which otherwise use the active
+ * Windows code page. */
+FILE *replace_fopen(const char *path, const char *mode);
+FILE *replace_freopen(const char *path, const char *mode, FILE *stream);
+FILE *replace_popen(const char *command, const char *mode);
+int replace_remove(const char *path);
+int replace_system(const char *command);
+int replace_unlink(const char *path);
+int replace_mkdir(const char *path);
+int replace_rmdir(const char *path);
+int replace_chmod(const char *path, int mode);
+int replace_stat64(const char *path, struct __stat64 *buffer);
 
 int truncate(const char *path, PORT_LONGLONG length);
 

@@ -12,6 +12,34 @@
 
 #include <sys/param.h>
 
+#ifdef _WIN32
+#include <stdio.h>
+#include <sys/stat.h>
+
+/* Keep these declarations local instead of including Win32_APIs.h here.
+ * config.h is pulled in before system headers in a few translation units,
+ * while Win32_APIs.h deliberately defines compatibility macros such as
+ * usleep().  Exposing those macros this early breaks later declarations. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+FILE *replace_fopen(const char *path, const char *mode);
+FILE *replace_freopen(const char *path, const char *mode, FILE *stream);
+FILE *replace_popen(const char *command, const char *mode);
+int replace_remove(const char *path);
+int replace_rename(const char *src, const char *dest);
+int replace_system(const char *command);
+int replace_unlink(const char *path);
+int replace_mkdir(const char *path);
+int replace_rmdir(const char *path);
+int replace_chmod(const char *path, int mode);
+int replace_stat64(const char *path, struct __stat64 *buffer);
+int replace_link(const char *src, const char *dest);
+#ifdef __cplusplus
+}
+#endif
+#endif
+
 #ifdef __APPLE__
 #include <fcntl.h> // for fcntl(fd, F_FULLFSYNC)
 #include <AvailabilityMacros.h>
@@ -31,20 +59,47 @@
 #define redis_fstat fstat64
 #define redis_stat stat64
 #define redis_lstat lstat64
+#define redis_stat_type stat64
 #define redis_link link
 #elif defined(_WIN32)
 /* FDAPI exposes the 64-bit stat shape used by the Windows descriptor layer.
  * Keep the Redis call sites expressed as redis_fstat/redis_stat so they do
  * not accidentally bind to the CRT's native descriptor table. */
 #define redis_fstat fdapi_fstat64
-#define redis_stat __stat64
-#define redis_lstat __stat64
+#define redis_stat replace_stat64
+#define redis_lstat replace_stat64
+#define redis_stat_type __stat64
 #define redis_link replace_link
 #else
 #define redis_fstat fstat
 #define redis_stat stat
 #define redis_lstat lstat
+#define redis_stat_type stat
 #define redis_link link
+#endif
+
+#ifdef _WIN32
+#define redis_fopen replace_fopen
+#define redis_freopen replace_freopen
+#define redis_popen replace_popen
+#define redis_remove replace_remove
+#define redis_rename replace_rename
+#define redis_system replace_system
+#define redis_unlink replace_unlink
+#define redis_mkdir(path, mode) replace_mkdir(path)
+#define redis_rmdir replace_rmdir
+#define redis_chmod replace_chmod
+#else
+#define redis_fopen fopen
+#define redis_freopen freopen
+#define redis_popen popen
+#define redis_remove remove
+#define redis_rename rename
+#define redis_system system
+#define redis_unlink unlink
+#define redis_mkdir mkdir
+#define redis_rmdir rmdir
+#define redis_chmod chmod
 #endif
 
 #ifndef CACHE_LINE_SIZE

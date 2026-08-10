@@ -487,7 +487,7 @@ static int isSafeToPerformEvictions(void) {
 }
 
 /* Algorithm for converting tenacity (0-100) to a time limit.  */
-static unsigned long evictionTimeLimitUs(void) {
+static uint64_t evictionTimeLimitUs(void) {
     serverAssert(server.maxmemory_eviction_tenacity >= 0);
     serverAssert(server.maxmemory_eviction_tenacity <= 100);
 
@@ -498,10 +498,10 @@ static unsigned long evictionTimeLimitUs(void) {
 
     if (server.maxmemory_eviction_tenacity < 100) {
         /* A 15% geometric progression, resulting in a limit of ~2 min at tenacity==99  */
-        return (unsigned long)(500.0 * pow(1.15, server.maxmemory_eviction_tenacity - 10.0));
+        return (uint64_t)(500.0 * pow(1.15, server.maxmemory_eviction_tenacity - 10.0));
     }
 
-    return ULONG_MAX;   /* No limit to eviction time */
+    return UINT64_MAX;   /* No limit to eviction time */
 }
 
 /* Check that memory usage is within the current "maxmemory" limit.  If over
@@ -550,7 +550,7 @@ int performEvictions(void) {
         goto update_metrics;
     }
 
-    unsigned long eviction_time_limit_us = evictionTimeLimitUs();
+    uint64_t eviction_time_limit_us = evictionTimeLimitUs();
 
     mem_freed = 0;
 
@@ -576,8 +576,8 @@ int performEvictions(void) {
         {
             struct evictionPoolEntry *pool = EvictionPoolLRU;
             while (bestkey == NULL) {
-                unsigned long total_keys = 0;
-                unsigned long total_sampled_keys = 0;
+                uint64_t total_keys = 0;
+                uint64_t total_sampled_keys = 0;
 
                 /* We don't want to make local-db choices when expiring keys,
                  * so to start populate the eviction pool sampling keys from
@@ -590,8 +590,8 @@ int performEvictions(void) {
                     } else {
                         kvs = db->expires;
                     }
-                    unsigned long sampled_keys = 0;
-                    unsigned long current_db_keys = kvstoreSize(kvs);
+                    uint64_t sampled_keys = 0;
+                    uint64_t current_db_keys = kvstoreSize(kvs);
                     if (current_db_keys == 0) continue;
 
                     total_keys += current_db_keys;
@@ -601,12 +601,12 @@ int performEvictions(void) {
                         sampled_keys += evictionPoolPopulate(db, kvs, pool);
                         total_sampled_keys += sampled_keys;
                         /* We have sampled enough keys in the current db, exit the loop. */
-                        if (sampled_keys >= (unsigned long) server.maxmemory_samples)
+                        if (sampled_keys >= (uint64_t)server.maxmemory_samples)
                             break;
                         /* If there are not a lot of keys in the current db, dict/s may be very
                          * sparsely populated, exit the loop without meeting the sampling
                          * requirement. */
-                        if (current_db_keys < (unsigned long) server.maxmemory_samples*10)
+                        if (current_db_keys < (uint64_t)server.maxmemory_samples*10)
                             break;
                     }
                 }

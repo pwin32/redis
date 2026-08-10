@@ -26,16 +26,10 @@ struct {
     rio *rio;
     robj *key;                      /* Current key we are reading. */
     int key_type;                   /* Current key type if != -1. */
-#ifdef _WIN32
-    PORT_ULONG keys;                /* Number of keys processed. */
-    PORT_ULONG expires;             /* Number of keys with an expire. */
-    PORT_ULONG already_expired;     /* Number of keys already expired. */
-#else
-    unsigned long keys;             /* Number of keys processed. */
-    unsigned long expires;          /* Number of keys with an expire. */
-    unsigned long already_expired;  /* Number of keys already expired. */
-#endif
-    unsigned long subexpires;        /* Number of keys with subexpires */
+    uint64_t keys;                  /* Number of keys processed. */
+    uint64_t expires;               /* Number of keys with an expire. */
+    uint64_t already_expired;       /* Number of keys already expired. */
+    uint64_t subexpires;            /* Number of keys with subexpires. */
     int doing;                      /* The state while reading the RDB. */
     int error_set;                  /* True if error is populated. */
     char error[1024];
@@ -108,20 +102,10 @@ char *rdb_type_string[] = {
 
 /* Show a few stats collected into 'rdbstate' */
 void rdbShowGenericInfo(void) {
-#ifdef _WIN32
     printf("[info] %llu keys read\n", (unsigned long long)rdbstate.keys);
     printf("[info] %llu expires\n", (unsigned long long)rdbstate.expires);
     printf("[info] %llu already expired\n", (unsigned long long)rdbstate.already_expired);
-#else
-    printf("[info] %lu keys read\n", rdbstate.keys);
-    printf("[info] %lu expires\n", rdbstate.expires);
-    printf("[info] %lu already expired\n", rdbstate.already_expired);
-#endif
-#ifdef _WIN32
     printf("[info] %llu subexpires\n", (unsigned long long)rdbstate.subexpires);
-#else
-    printf("[info] %lu subexpires\n", rdbstate.subexpires);
-#endif
 }
 
 /* Called on RDB errors. Provides details about the RDB and the offset
@@ -222,7 +206,7 @@ int redis_check_rdb(char *rdbfilename, FILE *fp) {
 #endif
 
     int closefile = (fp == NULL);
-    if (fp == NULL && (fp = fopen(rdbfilename,IF_WIN32("rb","r"))) == NULL) return 1;
+    if (fp == NULL && (fp = redis_fopen(rdbfilename,IF_WIN32("rb","r"))) == NULL) return 1;
 
 #ifdef _WIN32
     if (_fstat64(_fileno(fp),&sb) == -1)

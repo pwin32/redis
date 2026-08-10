@@ -1914,7 +1914,7 @@ void ebDefragRaxBucket(EbucketsType *type, raxIterator *ri,
 
 /* Defragments items in rax-based bucket.
  * returns 0 if no more work needs to be been done, and 1 if more work is needed. */
-int ebDefragRax(ebuckets *eb, EbucketsType *type, unsigned long *cursor,
+int ebDefragRax(ebuckets *eb, EbucketsType *type, uint64_t *cursor,
                 ebDefragFunctions *defragfns, void *privdata)
 {
     rax *newrax, *rax = ebGetRaxPtr(*eb);
@@ -1982,7 +1982,7 @@ int ebDefragRax(ebuckets *eb, EbucketsType *type, unsigned long *cursor,
  *
  * Returns 0 if no more work needs to be been done. Otherwise 1.
  */
-int ebScanDefrag(ebuckets *eb, EbucketsType *type, unsigned long *cursor,
+int ebScanDefrag(ebuckets *eb, EbucketsType *type, uint64_t *cursor,
                  ebDefragFunctions *defragfns, void *privdata)
 {
     if (ebIsEmpty(*eb)) {
@@ -2701,7 +2701,7 @@ int ebucketsTest(int argc, char **argv, int flags) {
             }
             assert((s <= EB_LIST_MAX_ITEMS) ? ebIsList(eb) : !ebIsList(eb));
             /* Defrag all the items. */
-            unsigned long cursor = 0;
+            uint64_t cursor = 0;
             ebDefragFunctions defragfns = {
                 .defragAlloc = defragCallback,
                 .defragItem = defragItemCallback,

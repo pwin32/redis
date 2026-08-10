@@ -198,7 +198,7 @@ size_t hotkeysGetMemoryUsage(hotkeyStats *hotkeys) {
     return memory_usage;
 }
 
-static int64_t time_diff_ms(struct timeval a, struct timeval b) {
+static int64_t time_diff_ms(redis_rusage_timeval a, redis_rusage_timeval b) {
     int64_t sec = (int64_t)(a.tv_sec - b.tv_sec);
     int64_t usec = (int64_t)(a.tv_usec - b.tv_usec);
 

@@ -497,7 +497,7 @@ hashTemplate *hashTemplateDefrag(hashTemplate *tmpl) {
 }
 
 /* Defrag by_id top array (once, at idx 0) and the chunk at 'idx'. */
-int hashTemplateDefragByIdChunk(unsigned long chunk_idx) {
+int hashTemplateDefragByIdChunk(size_t chunk_idx) {
     if (htemplates->by_id == NULL || chunk_idx >= htemplates->by_id_cap)
         return 0;
     if (chunk_idx == 0) {
@@ -876,7 +876,7 @@ static void fieldsLpReclaimCollect(void *privdata, const dictEntry *de, dictEntr
  * These blobs are built lazily during DUMP/RESTORE/ASM for O(1) template lookup;
  * once idle they are dead weight (rebuilt on the next DUMP if needed). */
 static void hashTemplatesCleanupFieldsLpCron(void) {
-    static unsigned long cursor = 0;
+    static dict_ulong cursor = 0;
     dict *d = htemplates ? htemplates->by_fields_lp : NULL;
     if (!d || dictSize(d) == 0) return;
 
@@ -1791,7 +1791,7 @@ GetFieldRes hashTypeGetValue(redisDb *db, kvobj *o, sds field, unsigned char **v
     /* If the field is the last one in the hash, then the hash will be deleted */
     res = GETF_EXPIRED;
     robj *keyObj = createStringObject(key, sdslen(key));
-    unsigned long length = hashTypeLength(o, 0);
+    uint64_t length = hashTypeLength(o, 0);
     if ((length != 0) && !(hfeFlags & HFE_LAZY_NO_NOTIFICATION)) {
         robj fobj, *farr[1] = {&fobj};
         initStaticStringObject(fobj, field);
@@ -2451,8 +2451,8 @@ int hashTypeDelete(robj *o, void *field) {
  *
  * Note, subtractExpiredFields=1 might be pricy in case there are many HFEs
  */
-unsigned long hashTypeLength(const robj *o, int subtractExpiredFields) {
-    unsigned long length = ULONG_MAX;
+uint64_t hashTypeLength(const robj *o, int subtractExpiredFields) {
+    uint64_t length = UINT64_MAX;
     /* If expired field access is allowed, don't subtract expired fields from the count.
      * Check subtractExpiredFields first so that populateDeltaHistograms(),
      * which reaches here with subtractExpiredFields==0 from a BIO thread, never
@@ -3609,7 +3609,7 @@ void hashReplyFromListpackEntry(client *c, listpackEntry *e) {
  * 'key' and 'val' will be set to hold the element.
  * The memory in them is not to be freed or modified by the caller.
  * 'val' can be NULL in which case it's not extracted. */
-void hashTypeRandomElement(robj *hashobj, unsigned long hashsize, CommonEntry *key, CommonEntry *val) {
+void hashTypeRandomElement(robj *hashobj, uint64_t hashsize, CommonEntry *key, CommonEntry *val) {
     if (hashobj->encoding == OBJ_ENCODING_HT) {
         dictEntry *de = dictGetFairRandomKey(hashobj->ptr);
         Entry *entry = dictGetKey(de);
@@ -3906,7 +3906,7 @@ ebuckets *hashTypeGetDictMetaHFE(dict *d) {
  *----------------------------------------------------------------------------*/
 
 void hsetnxCommand(client *c) {
-    unsigned long hlen;
+    uint64_t hlen;
     int isHashDeleted;
     size_t oldsize = 0;
     robj *kv = hashTypeLookupWriteOrCreate(c,c->argv[1]);
@@ -4038,7 +4038,7 @@ void hsetCommand(client *c) {
         addReply(c, shared.ok);
     }
     keyModified(c,c->db,c->argv[1],kv,1);
-    unsigned long l = hashTypeLength(kv, 0);
+    uint64_t l = hashTypeLength(kv, 0);
     updateKeysizesHist(c->db, OBJ_HASH, l - created, l);
     if (server.memory_tracking_enabled)
         updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), kv, oldsize, kvobjAllocSize(kv));
@@ -4771,7 +4771,7 @@ void hincrbyCommand(client *c) {
         } /* Else hashTypeGetValue() already stored it into &value */
     } else if ((res == GETF_NOT_FOUND) || (res == GETF_EXPIRED)) {
         value = 0;
-        unsigned long l = hashTypeLength(o, 0);
+        uint64_t l = hashTypeLength(o, 0);
         updateKeysizesHist(c->db, OBJ_HASH, l, l + 1);
     } else {
         /* Field expired and in turn hash deleted. Create new one! */
@@ -4834,7 +4834,7 @@ void hincrbyfloatCommand(client *c) {
         }
     } else if ((res == GETF_NOT_FOUND) || (res == GETF_EXPIRED)) {
         value = 0;
-        unsigned long l = hashTypeLength(o, 0);
+        uint64_t l = hashTypeLength(o, 0);
         updateKeysizesHist(c->db, OBJ_HASH, l, l + 1);
     } else {
         /* Field expired and in turn hash deleted. Create new one! */
@@ -5549,8 +5549,8 @@ static void hrandfieldAddTmplReply(client *c, robj *hash, hashTemplate *tmpl,
     }
 }
 
-void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
-    unsigned long count, size;
+void hrandfieldWithCountCommand(client *c, long long l, int withvalues) {
+    uint64_t count, size;
     int uniq = 1;
     kvobj *hash;
     size_t oldsize = 0;
@@ -5559,9 +5559,10 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
         == NULL || checkType(c,hash,OBJ_HASH)) return;
 
     if(l >= 0) {
-        count = (unsigned long) l;
+        count = (uint64_t)l;
     } else {
-        count = -l;
+        serverAssert(l != LLONG_MIN);
+        count = (uint64_t)(-l);
         uniq = 0;
     }
 
@@ -5657,7 +5658,7 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
     }
 
     /* Initiate reply count, RESP3 responds with nested array, RESP2 with flat one. */
-    long reply_size = count < size ? count : size;
+    uint64_t reply_size = count < size ? count : size;
     if (withvalues && c->resp == 2)
         addReplyArrayLen(c, reply_size*2);
     else
@@ -5755,7 +5756,7 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
         dict *ht = hash->ptr;
         dictIterator di;
         dictEntry *de;
-        unsigned long idx = 0;
+        uint64_t idx = 0;
 
         /* Allocate a temporary array of pointers to stored key-values in dict and
          * assist it to remove random elements to reach the right count. */
@@ -5774,7 +5775,7 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
 
         /* Remove random elements to reach the right count. */
         while (size > count) {
-            unsigned long toDiscardIdx = rand() % size;
+            uint64_t toDiscardIdx = randomULong() % size;
             pairs[toDiscardIdx] = pairs[--size];
         }
 
@@ -5803,7 +5804,7 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
         dictExpand(dictUnique, count);
 
         /* Hashtable encoding (generic implementation) */
-        unsigned long added = 0;
+        uint64_t added = 0;
 
         while(added < count) {
             dictEntry *de = dictGetFairRandomKey(hash->ptr);
@@ -5867,20 +5868,20 @@ out:
  *  behind for hash-fields, it is better to keep it simple and choose the option #1.
  */
 void hrandfieldCommand(client *c) {
-    long l;
+    long long l;
     int withvalues = 0;
     kvobj *hash;
     CommonEntry ele;
     size_t oldsize = 0;
 
     if (c->argc >= 3) {
-        if (getRangeLongFromObjectOrReply(c,c->argv[2],-LONG_MAX,LONG_MAX,&l,NULL) != C_OK) return;
+        if (getRangeLongLongFromObjectOrReply(c,c->argv[2],-LLONG_MAX,LLONG_MAX,&l,NULL) != C_OK) return;
         if (c->argc > 4 || (c->argc == 4 && strcasecmp(c->argv[3]->ptr,"withvalues"))) {
             addReplyErrorObject(c,shared.syntaxerr);
             return;
         } else if (c->argc == 4) {
             withvalues = 1;
-            if (l < -LONG_MAX/2 || l > LONG_MAX/2) {
+            if (l < -LLONG_MAX/2 || l > LLONG_MAX/2) {
                 addReplyError(c,"value is out of range");
                 return;
             }
@@ -5986,7 +5987,7 @@ static ExpireAction onFieldExpire(eItem item, void *ctx) {
     propagateHashFieldDeletion(expCtx->db, key, field, sdslen(field));
 
     /* update keysizes */
-    unsigned long l = hashTypeLength(expCtx->hashObj, 0);
+    uint64_t l = hashTypeLength(expCtx->hashObj, 0);
     updateKeysizesHist(expCtx->db, OBJ_HASH, l, l - 1);
 
     serverAssert(hashTypeDelete(expCtx->hashObj, field) == 1);

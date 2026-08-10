@@ -170,7 +170,7 @@ void serverLogRaw(int level, const char *msg) {
     level &= 0xff; /* clear flags */
     if (level < server.verbosity) return;
 
-    fp = log_to_stdout ? stdout : fopen(server.logfile,"a");
+    fp = log_to_stdout ? stdout : redis_fopen(server.logfile,"a");
     if (!fp) return;
 
     if (rawmode) {
@@ -1758,8 +1758,8 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     if (!server.sentinel_mode) {
         run_with_period(5000) {
             serverLog(LL_DEBUG,
-                "%lu clients connected (%lu replicas), %zu bytes in use",
-                listLength(server.clients)-listLength(server.slaves),
+                "%llu clients connected (%lu replicas), %zu bytes in use",
+                (unsigned long long)(listLength(server.clients)-listLength(server.slaves)),
                 replicationLogicalReplicaCount(),
                 zmalloc_used_memory());
         }
@@ -3136,7 +3136,7 @@ void initServer(void) {
 
     /* MinGW headers do not consistently declare RtlGenRandom.  Resolve it
      * once after the core config is initialized, matching the 6.2 bootstrap. */
-    lib = LoadLibraryA("advapi32.dll");
+    lib = LoadLibraryW(L"advapi32.dll");
     if (lib != NULL)
         RtlGenRandom = (RtlGenRandomFunc)GetProcAddress(lib, "SystemFunction036");
 #else
@@ -5111,7 +5111,7 @@ void closeListeningSockets(int unlink_unix_socket) {
         for (j = 0; j < server.clistener.count; j++) close(server.clistener.fd[j]);
     if (unlink_unix_socket && server.unixsocket) {
         serverLog(LL_NOTICE,"Removing the unix socket file.");
-        if (unlink(server.unixsocket) != 0)
+        if (redis_unlink(server.unixsocket) != 0)
             serverLog(LL_WARNING,"Error removing the unix socket file: %s",strerror(errno));
     }
 }
@@ -5368,7 +5368,7 @@ int finishShutdown(void) {
     /* Remove the pid file if possible and needed. */
     if (server.daemonize || server.pidfile) {
         serverLog(LL_NOTICE,"Removing the pid file.");
-        unlink(server.pidfile);
+        redis_unlink(server.pidfile);
     }
 
     /* Best effort flush of slave output buffers, so that we hopefully
@@ -6511,8 +6511,8 @@ dict *genInfoSectionDict(robj **argv, int argc, char **defaults, int *out_all, i
  * sets blocking_keys_on_nokey to the total number of keys which has at least one client
  * blocked on them to be written or deleted.
  * sets watched_keys to the total number of keys which has at least on client watching on them. */
-void totalNumberOfStatefulKeys(unsigned long *blocking_keys, unsigned long *blocking_keys_on_nokey, unsigned long *watched_keys) {
-    unsigned long bkeys=0, bkeys_on_nokey=0, wkeys=0;
+void totalNumberOfStatefulKeys(uint64_t *blocking_keys, uint64_t *blocking_keys_on_nokey, uint64_t *watched_keys) {
+    uint64_t bkeys=0, bkeys_on_nokey=0, wkeys=0;
     for (int j = 0; j < server.dbnum; j++) {
         bkeys += dictSize(server.db[j].blocking_keys);
         bkeys_on_nokey += dictSize(server.db[j].blocking_keys_unblock_on_nokey);
@@ -6657,13 +6657,13 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
     /* Clients */
     if (all_sections || (dictFind(section_dict,"clients") != NULL)) {
         size_t maxin, maxout;
-        unsigned long blocking_keys, blocking_keys_on_nokey, watched_keys;
+        uint64_t blocking_keys, blocking_keys_on_nokey, watched_keys;
         getExpansiveClientsInfo(&maxin,&maxout);
         totalNumberOfStatefulKeys(&blocking_keys, &blocking_keys_on_nokey, &watched_keys);
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info, "# Clients\r\n" FMTARGS(
-            "connected_clients:%lu\r\n", listLength(server.clients) - listLength(server.slaves),
-            "cluster_connections:%lu\r\n", getClusterConnectionsCount(),
+            "connected_clients:%llu\r\n", (unsigned long long)(listLength(server.clients) - listLength(server.slaves)),
+            "cluster_connections:%llu\r\n", (unsigned long long)getClusterConnectionsCount(),
             "maxclients:%u\r\n", server.maxclients,
             "client_recent_max_input_buffer:%zu\r\n", maxin,
             "client_recent_max_output_buffer:%zu\r\n", maxout,
@@ -6673,9 +6673,9 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "watching_clients:%d\r\n", server.watching_clients,
             "clients_in_timeout_table:%llu\r\n", (unsigned long long) raxSize(server.clients_timeout_table),
             "active_clients:%d\r\n", getActiveClientsInWindow(),
-            "total_watched_keys:%lu\r\n", watched_keys,
-            "total_blocking_keys:%lu\r\n", blocking_keys,
-            "total_blocking_keys_on_nokey:%lu\r\n", blocking_keys_on_nokey));
+            "total_watched_keys:%llu\r\n", (unsigned long long)watched_keys,
+            "total_blocking_keys:%llu\r\n", (unsigned long long)blocking_keys,
+            "total_blocking_keys_on_nokey:%llu\r\n", (unsigned long long)blocking_keys_on_nokey));
     }
 
     /* Memory */
@@ -6691,8 +6691,8 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
         size_t zmalloc_used = zmalloc_used_memory();
         size_t total_system_mem = server.system_memory_size;
         const char *evict_policy = evictPolicyToString();
-        long long memory_lua = evalScriptsMemoryVM();
-        long long memory_functions = functionsMemoryVM();
+        size_t memory_lua = evalScriptsMemoryVM();
+        size_t memory_functions = functionsMemoryVM();
         struct redisMemOverhead *mh = getMemoryOverheadData();
 
         /* Peak memory is updated from time to time by serverCron() so it
@@ -6728,23 +6728,23 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "allocator_active:%zu\r\n", server.cron_malloc_stats.allocator_active,
             "allocator_resident:%zu\r\n", server.cron_malloc_stats.allocator_resident,
             "allocator_muzzy:%zu\r\n", server.cron_malloc_stats.allocator_muzzy,
-            "total_system_memory:%lu\r\n", (unsigned long)total_system_mem,
+            "total_system_memory:%zu\r\n", total_system_mem,
             "total_system_memory_human:%s\r\n", total_system_hmem,
-            "used_memory_lua:%lld\r\n", memory_lua, /* deprecated, renamed to used_memory_vm_eval */
-            "used_memory_vm_eval:%lld\r\n", memory_lua,
+            "used_memory_lua:%zu\r\n", memory_lua, /* deprecated, renamed to used_memory_vm_eval */
+            "used_memory_vm_eval:%zu\r\n", memory_lua,
             "used_memory_lua_human:%s\r\n", used_memory_lua_hmem, /* deprecated */
             "used_memory_scripts_eval:%lld\r\n", (long long)mh->eval_caches,
-            "number_of_cached_scripts:%lu\r\n", dictSize(evalScriptsDict()),
-            "number_of_functions:%lu\r\n", functionsNum(),
-            "number_of_libraries:%lu\r\n", functionsLibNum(),
-            "used_memory_vm_functions:%lld\r\n", memory_functions,
-            "used_memory_vm_total:%lld\r\n", memory_functions + memory_lua,
+            "number_of_cached_scripts:%llu\r\n", (unsigned long long)dictSize(evalScriptsDict()),
+            "number_of_functions:%llu\r\n", (unsigned long long)functionsNum(),
+            "number_of_libraries:%llu\r\n", (unsigned long long)functionsLibNum(),
+            "used_memory_vm_functions:%zu\r\n", memory_functions,
+            "used_memory_vm_total:%zu\r\n", memory_functions + memory_lua,
             "used_memory_vm_total_human:%s\r\n", used_memory_vm_total_hmem,
             "used_memory_functions:%lld\r\n", (long long)mh->functions_caches,
             "used_memory_hash_templates:%zu\r\n", mh->hash_templates,
             "used_memory_scripts:%lld\r\n", (long long)mh->eval_caches + (long long)mh->functions_caches,
             "used_memory_scripts_human:%s\r\n", used_memory_scripts_hmem,
-            "maxmemory:%lld\r\n", server.maxmemory,
+            "maxmemory:%llu\r\n", server.maxmemory,
             "maxmemory_human:%s\r\n", maxmemory_hmem,
             "maxmemory_policy:%s\r\n", evict_policy,
             "allocator_frag_ratio:%.2f\r\n", mh->allocator_frag,
@@ -6837,8 +6837,8 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
                 "aof_base_size:%lld\r\n", (long long) server.aof_rewrite_base_size,
                 "aof_pending_rewrite:%d\r\n", server.aof_rewrite_scheduled,
                 "aof_buffer_length:%zu\r\n", sdslen(server.aof_buf),
-                "aof_pending_bio_fsync:%lu\r\n", bioPendingJobsOfType(BIO_AOF_FSYNC),
-                "aof_delayed_fsync:%lu\r\n", server.aof_delayed_fsync));
+                "aof_pending_bio_fsync:%llu\r\n", (unsigned long long)bioPendingJobsOfType(BIO_AOF_FSYNC),
+                "aof_delayed_fsync:%llu\r\n", (unsigned long long)server.aof_delayed_fsync));
         }
 
         if (server.loading) {
@@ -6966,11 +6966,11 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "keyspace_hits:%lld\r\n", server.stat_keyspace_hits,
             "keyspace_misses:%lld\r\n", server.stat_keyspace_misses,
             "pubsub_channels:%llu\r\n", kvstoreSize(server.pubsub_channels),
-            "pubsub_patterns:%lu\r\n", dictSize(server.pubsub_patterns),
+            "pubsub_patterns:%llu\r\n", (unsigned long long)dictSize(server.pubsub_patterns),
             "pubsubshard_channels:%llu\r\n", kvstoreSize(server.pubsubshard_channels),
             "latest_fork_usec:%lld\r\n", server.stat_fork_time,
             "total_forks:%lld\r\n", server.stat_total_forks,
-            "migrate_cached_sockets:%ld\r\n", dictSize(server.migrate_cached_sockets),
+            "migrate_cached_sockets:%llu\r\n", (unsigned long long)dictSize(server.migrate_cached_sockets),
             "slave_expires_tracked_keys:%zu\r\n", getSlaveKeyWithExpireCount(),
             "active_defrag_hits:%lld\r\n", server.stat_active_defrag_hits,
             "active_defrag_misses:%lld\r\n", server.stat_active_defrag_misses,
@@ -6978,9 +6978,9 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "active_defrag_key_misses:%lld\r\n", server.stat_active_defrag_key_misses,
             "total_active_defrag_time:%lld\r\n", (server.stat_total_active_defrag_time + current_active_defrag_time) / 1000,
             "current_active_defrag_time:%lld\r\n", current_active_defrag_time / 1000,
-            "tracking_total_keys:%lld\r\n", (unsigned long long) trackingGetTotalKeys(),
-            "tracking_total_items:%lld\r\n", (unsigned long long) trackingGetTotalItems(),
-            "tracking_total_prefixes:%lld\r\n", (unsigned long long) trackingGetTotalPrefixes(),
+            "tracking_total_keys:%llu\r\n", (unsigned long long) trackingGetTotalKeys(),
+            "tracking_total_items:%llu\r\n", (unsigned long long) trackingGetTotalItems(),
+            "tracking_total_prefixes:%llu\r\n", (unsigned long long) trackingGetTotalPrefixes(),
             "unexpected_error_replies:%lld\r\n", server.stat_unexpected_error_replies,
             "total_error_replies:%lld\r\n", server.stat_total_error_replies,
             "dump_payload_sanitizations:%lld\r\n", server.stat_dump_payload_sanitizations,
@@ -7163,22 +7163,22 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
         getrusage(RUSAGE_CHILDREN, &c_ru);
         info = sdscatprintf(info,
         "# CPU\r\n"
-        "used_cpu_sys:%ld.%06ld\r\n"
-        "used_cpu_user:%ld.%06ld\r\n"
-        "used_cpu_sys_children:%ld.%06ld\r\n"
-        "used_cpu_user_children:%ld.%06ld\r\n",
-        (long)self_ru.ru_stime.tv_sec, (long)self_ru.ru_stime.tv_usec,
-        (long)self_ru.ru_utime.tv_sec, (long)self_ru.ru_utime.tv_usec,
-        (long)c_ru.ru_stime.tv_sec, (long)c_ru.ru_stime.tv_usec,
-        (long)c_ru.ru_utime.tv_sec, (long)c_ru.ru_utime.tv_usec);
+        "used_cpu_sys:%lld.%06lld\r\n"
+        "used_cpu_user:%lld.%06lld\r\n"
+        "used_cpu_sys_children:%lld.%06lld\r\n"
+        "used_cpu_user_children:%lld.%06lld\r\n",
+        (long long)self_ru.ru_stime.tv_sec, (long long)self_ru.ru_stime.tv_usec,
+        (long long)self_ru.ru_utime.tv_sec, (long long)self_ru.ru_utime.tv_usec,
+        (long long)c_ru.ru_stime.tv_sec, (long long)c_ru.ru_stime.tv_usec,
+        (long long)c_ru.ru_utime.tv_sec, (long long)c_ru.ru_utime.tv_usec);
 #ifdef RUSAGE_THREAD
         struct rusage m_ru;
         getrusage(RUSAGE_THREAD, &m_ru);
         info = sdscatprintf(info,
-            "used_cpu_sys_main_thread:%ld.%06ld\r\n"
-            "used_cpu_user_main_thread:%ld.%06ld\r\n",
-            (long)m_ru.ru_stime.tv_sec, (long)m_ru.ru_stime.tv_usec,
-            (long)m_ru.ru_utime.tv_sec, (long)m_ru.ru_utime.tv_usec);
+            "used_cpu_sys_main_thread:%lld.%06lld\r\n"
+            "used_cpu_user_main_thread:%lld.%06lld\r\n",
+            (long long)m_ru.ru_stime.tv_sec, (long long)m_ru.ru_stime.tv_usec,
+            (long long)m_ru.ru_utime.tv_sec, (long long)m_ru.ru_utime.tv_usec);
 #endif  /* RUSAGE_THREAD */
     }
 
@@ -7427,7 +7427,7 @@ void createPidFile(void) {
     if (!server.pidfile) server.pidfile = zstrdup(CONFIG_DEFAULT_PID_FILE);
 
     /* Try to write the pid file in a best-effort way. */
-    FILE *fp = fopen(server.pidfile,"w");
+    FILE *fp = redis_fopen(server.pidfile,"w");
     if (fp) {
         fprintf(fp,"%d\n",(int)getpid());
         fclose(fp);

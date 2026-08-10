@@ -209,7 +209,7 @@ size_t lazyfreeGetFreeEffort(robj *key, robj *obj, int dbid) {
         size_t effort = moduleGetFreeEffort(key, obj, dbid);
         /* If the module's free_effort returns 0, we will use asynchronous free
          * memory by default. */
-        return effort == 0 ? ULONG_MAX : effort;
+        return effort == 0 ? SIZE_MAX : effort;
     } else if (obj->type == OBJ_ARRAY) {
         redisArray *ar = obj->ptr;
         return arCount(ar);

@@ -22,8 +22,12 @@
 
 #include "Win32_fdapi_crt.h"
 #include "Win32_Common.h"
+#include "Win32_Error.h"
+#include <fcntl.h>
 #include <io.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 
 int crt_pipe(int *pfds, unsigned int psize, int textmode) {
     return _pipe(pfds, psize, textmode);
@@ -42,11 +46,61 @@ int crt_write(int fd, const void *buffer, unsigned int count) {
 }
 
 int crt_open(const char *filename, int oflag, int pmode) {
-    return _open(filename, oflag, pmode);
+    wchar_t *wide_filename = win32_utf8_path_to_wide(filename);
+    int result;
+    int saved_errno;
+    if (wide_filename == NULL) return -1;
+    result = _wopen(wide_filename, oflag, pmode);
+    saved_errno = errno;
+    free(wide_filename);
+    errno = saved_errno;
+    return result;
 }
 
 int crt_mkstemp(char *filename_template) {
-    return ::mkstemp(filename_template);
+    static volatile LONG sequence;
+    static const char alphabet[] =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    size_t length;
+    char *suffix;
+    uint64_t state;
+
+    if (filename_template == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    length = strlen(filename_template);
+    if (length < 6) {
+        errno = EINVAL;
+        return -1;
+    }
+    suffix = filename_template + length - 6;
+    if (memcmp(suffix, "XXXXXX", 6) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    state = ((uint64_t)GetTickCount64() << 32) ^
+            ((uint64_t)GetCurrentProcessId() << 16) ^
+            (uint64_t)GetCurrentThreadId() ^
+            (uint64_t)(unsigned long)InterlockedIncrement(&sequence);
+    for (int attempt = 0; attempt < 256; attempt++) {
+        for (int index = 0; index < 6; index++) {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            suffix[index] = alphabet[state % (sizeof(alphabet) - 1)];
+        }
+        int fd = crt_open(filename_template,
+                          _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY |
+                              _O_NOINHERIT,
+                          _S_IREAD | _S_IWRITE);
+        if (fd != -1) return fd;
+        if (errno != EEXIST) return -1;
+        state += (uint64_t)attempt + UINT64_C(0x9e3779b97f4a7c15);
+    }
+    errno = EEXIST;
+    return -1;
 }
 
 int crt_open_osfhandle(intptr_t osfhandle, int flags) {
@@ -66,7 +120,11 @@ size_t crt_fwrite(const void *buffer, size_t size, size_t count, FILE *file) {
     // the VEH will be called to load the missing pages. Although the page gets loaded, fwrite() will not see the loaded page. The result is
     // that fwrite will fail with errno set to ERROR_INVALID_USER_BUFFER. The fix is to force the buffer into memory before fwrite(). This only
     // impacts writes that straddle page boundaries.
-    EnsureMemoryIsMapped(buffer, size);
+    if (size != 0 && count > SIZE_MAX / size) {
+        errno = EINVAL;
+        return 0;
+    }
+    EnsureMemoryIsMapped(buffer, size * count);
     return ::fwrite(buffer, size, count, file);
 }
 
@@ -83,7 +141,15 @@ int crt_isatty(int fd) {
 }
 
 int crt_access(const char *pathname, int mode) {
-    return _access(pathname, mode);
+    wchar_t *wide_pathname = win32_utf8_path_to_wide(pathname);
+    int result;
+    int saved_errno;
+    if (wide_pathname == NULL) return -1;
+    result = _waccess(wide_pathname, mode);
+    saved_errno = errno;
+    free(wide_pathname);
+    errno = saved_errno;
+    return result;
 }
 
 __int64 crt_lseek64(int fd, __int64 offset, int origin) {

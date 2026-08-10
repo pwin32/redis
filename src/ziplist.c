@@ -190,6 +190,7 @@
 #include "config.h"
 #include "endianconv.h"
 #include "redisassert.h"
+#include "mt19937-64.h"
 
 #define ZIP_END 255         /* Special "end of ziplist" entry. */
 #define ZIP_BIG_PREVLEN 254 /* ZIP_BIG_PREVLEN - 1 is the max number of bytes of
@@ -1148,7 +1149,7 @@ unsigned char *ziplistPush(unsigned char *zl, unsigned char *s, unsigned int sle
 /* Returns an offset to use for iterating with ziplistNext. When the given
  * index is negative, the list is traversed back to front. When the list
  * doesn't contain an element at the provided index, NULL is returned. */
-unsigned char *ziplistIndex(unsigned char *zl, int index) {
+unsigned char *ziplistIndex(unsigned char *zl, int64_t index) {
     unsigned char *p;
     unsigned int prevlensize, prevlen = 0;
     size_t zlbytes = intrev32ifbe(ZIPLIST_BYTES(zl));
@@ -1566,7 +1567,7 @@ void ziplistRandomPair(unsigned char *zl, unsigned long total_count, ziplistEntr
     assert(total_count);
 
     /* Generate even numbers, because ziplist saved K-V pair */
-    int r = (rand() % total_count) * 2;
+    int64_t r = (genrand64_int64() % total_count) * 2;
     p = ziplistIndex(zl, r);
     ret = ziplistGet(p, &key->sval, &key->slen, &key->lval);
     assert(ret != 0);
@@ -1612,7 +1613,7 @@ void ziplistRandomPairs(unsigned char *zl, unsigned int count, ziplistEntry *key
 
     /* create a pool of random indexes (some may be duplicate). */
     for (unsigned int i = 0; i < count; i++) {
-        picks[i].index = (rand() % total_size) * 2; /* Generate even indexes */
+        picks[i].index = (genrand64_int64() % total_size) * 2; /* Generate even indexes */
         /* keep track of the order we picked them */
         picks[i].order = i;
     }
@@ -1662,7 +1663,7 @@ unsigned int ziplistRandomPairsUnique(unsigned char *zl, unsigned int count, zip
     p = ziplistIndex(zl, 0);
     unsigned int picked = 0, remaining = count;
     while (picked < count && p) {
-        double randomDouble = ((double)rand()) / RAND_MAX;
+        double randomDouble = genrand64_real2();
         double threshold = ((double)remaining) / (total_size - index);
         if (randomDouble <= threshold) {
             assert(ziplistGet(p, &key, &klen, &klval));

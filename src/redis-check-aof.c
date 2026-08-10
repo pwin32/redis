@@ -63,11 +63,13 @@ static time_t to_timestamp = 0;
 
 #ifdef _WIN32
 typedef PORT_LONG aof_check_long;
+#define AOF_CHECK_LONG_MAX PORT_LONG_MAX
 #else
 typedef long aof_check_long;
+#define AOF_CHECK_LONG_MAX LONG_MAX
 #endif
 
-static int aofFileStat(FILE *fp, struct redis_stat *sb) {
+static int aofFileStat(FILE *fp, struct redis_stat_type *sb) {
 #ifdef _WIN32
     return _fstat64(_fileno(fp),sb);
 #else
@@ -162,7 +164,7 @@ int readString(FILE *fp, char** target) {
         return 0;
     }
 
-    if (len < 0 || len > LONG_MAX - 2) {
+    if (len < 0 || len > AOF_CHECK_LONG_MAX - 2) {
 #ifdef _WIN32
         ERROR("Expected to read string of %lld bytes, which is not in the suitable range",
               (long long)len);
@@ -294,13 +296,13 @@ int checkSingleAof(char *aof_filename, char *aof_filepath, int last_file, int fi
     int multi = 0;
     char buf[2];
 
-    FILE *fp = fopen(aof_filepath,IF_WIN32("r+b","r+"));
+    FILE *fp = redis_fopen(aof_filepath,IF_WIN32("r+b","r+"));
     if (fp == NULL) {
         printf("Cannot open file %s: %s, aborting...\n", aof_filepath, strerror(errno));
         exit(1);
     }
 
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     if (aofFileStat(fp,&sb) == -1) {
         printf("Cannot stat file: %s, aborting...\n", aof_filename);
         fclose(fp);
@@ -407,13 +409,13 @@ int checkSingleAof(char *aof_filename, char *aof_filepath, int last_file, int fi
  * 2. The file is a BASE AOF in Multi Part AOF
  * */
 int fileIsRDB(char *filepath) {
-    FILE *fp = fopen(filepath,IF_WIN32("rb","r"));
+    FILE *fp = redis_fopen(filepath,IF_WIN32("rb","r"));
     if (fp == NULL) {
         printf("Cannot open file %s: %s\n", filepath, strerror(errno));
         exit(1);
     }
 
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     if (aofFileStat(fp,&sb) == -1) {
         printf("Cannot stat file: %s\n", filepath);
         fclose(fp);
@@ -444,13 +446,13 @@ int fileIsRDB(char *filepath) {
 #define MANIFEST_MAX_LINE 1024
 int fileIsManifest(char *filepath) {
     int is_manifest = 0;
-    FILE *fp = fopen(filepath, "r");
+    FILE *fp = redis_fopen(filepath, "r");
     if (fp == NULL) {
         printf("Cannot open file %s: %s\n", filepath, strerror(errno));
         exit(1);
     }
 
-    struct redis_stat sb;
+    struct redis_stat_type sb;
     if (aofFileStat(fp,&sb) == -1) {
         printf("Cannot stat file: %s\n", filepath);
         fclose(fp);
@@ -587,7 +589,7 @@ void checkOldStyleAof(char *filepath, int fix, int preamble) {
 
 int redis_check_aof_main(int argc, char **argv) {
     char *filepath;
-    char temp_filepath[PATH_MAX + 1];
+    sds temp_filepath;
     char *dirpath;
     int fix = 0;
 
@@ -637,14 +639,8 @@ int redis_check_aof_main(int argc, char **argv) {
         goto invalid_args;
     }
 
-    /* Check if filepath is longer than PATH_MAX */
-    if (strlen(filepath) > PATH_MAX) {
-        printf("Error: filepath is too long (exceeds PATH_MAX)\n");
-        goto invalid_args;
-    }
-
     /* In the glibc implementation dirname may modify their argument. */
-    memcpy(temp_filepath, filepath, strlen(filepath) + 1);
+    temp_filepath = sdsnew(filepath);
     dirpath = aofDirname(temp_filepath);
 
     /* Select the corresponding verification method according to the input file type. */
@@ -661,6 +657,7 @@ int redis_check_aof_main(int argc, char **argv) {
         break;
     }
 
+    sdsfree(temp_filepath);
     exit(0);
 
 invalid_args:
