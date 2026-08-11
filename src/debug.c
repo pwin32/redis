@@ -816,7 +816,7 @@ NULL
 #endif
 
 #ifdef _WIN32
-        if (dictTryExpand(c->db->dict,(unsigned long)keys) != DICT_OK) {
+        if (dictTryExpand(c->db->dict,(dict_ulong)keys) != DICT_OK) {
 #else
         if (dictTryExpand(c->db->dict,keys) != DICT_OK) {
 #endif

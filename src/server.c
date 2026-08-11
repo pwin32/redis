@@ -2218,7 +2218,9 @@ void initServerConfig(void) {
     server.watchdog_period = 0;
 }
 
+#ifndef _WIN32
 extern char **environ;
+#endif
 
 /* Restart the server, executing the same executable that started this
  * instance, with the same arguments and configuration file.

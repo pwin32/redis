@@ -85,7 +85,7 @@ using namespace std;
 string g_serviceName = DEFAULT_SERVICE_NAME;
 wstring g_serviceNameWide = L"Redis";
 
-SERVICE_STATUS g_ServiceStatus = { 0 };
+SERVICE_STATUS g_ServiceStatus = {};
 HANDLE g_ServiceStopEvent = INVALID_HANDLE_VALUE;
 HANDLE g_ServiceStoppedEvent = INVALID_HANDLE_VALUE;
 HANDLE g_ServiceReadyEvent = INVALID_HANDLE_VALUE;
@@ -257,7 +257,7 @@ BOOL RelaunchAsElevatedProcess(int argc, char** argv) {
     wstring executable = GetServiceExecutablePathWide();
 
     // Launch itself as administrator.
-    SHELLEXECUTEINFOW sei = { 0 };
+    SHELLEXECUTEINFOW sei = {};
     sei.cbSize = sizeof(SHELLEXECUTEINFOW);
     sei.lpVerb = L"runas";
     sei.lpFile = executable.c_str();

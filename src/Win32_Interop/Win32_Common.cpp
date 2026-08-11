@@ -51,7 +51,8 @@ void EnsureMemoryIsMapped(const void *buffer, size_t size) {
 }
 
 bool IsWindowsVersionAtLeast(WORD wMajorVersion, WORD wMinorVersion, WORD wServicePackMajor) {
-    OSVERSIONINFOEXW osvi = {sizeof(osvi), 0, 0, 0, 0, {0}, 0, 0};
+    OSVERSIONINFOEXW osvi = {};
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
     DWORDLONG const dwlConditionMask = VerSetConditionMask(
         VerSetConditionMask(
         VerSetConditionMask(
