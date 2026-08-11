@@ -43,7 +43,7 @@ static BOOL CALLBACK InitializeThreadControlOnce(PINIT_ONCE once,
     (void)parameter;
     (void)context;
 
-    g_hResumeFromSuspension = CreateEvent(NULL, TRUE, TRUE, NULL);
+    g_hResumeFromSuspension = CreateEventW(NULL, TRUE, TRUE, NULL);
     if (g_hResumeFromSuspension == NULL) return FALSE;
 
     InitializeCriticalSection(&g_ThreadControlMutex);

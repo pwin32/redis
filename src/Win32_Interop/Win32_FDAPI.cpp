@@ -532,7 +532,7 @@ int FDAPI_PipeSetNonBlock(int rfd, int non_blocking) {
             if (GetFileType(h) == FILE_TYPE_PIPE) {
                 /* h is a pipe or socket.  */
                 DWORD state;
-                if (GetNamedPipeHandleState(h, &state, NULL, NULL, NULL, NULL, 0)) {
+                if (GetNamedPipeHandleStateW(h, &state, NULL, NULL, NULL, NULL, 0)) {
                     /* h is a pipe.  */
                     if ((state & PIPE_NOWAIT) != 0) {
                         if (non_blocking)

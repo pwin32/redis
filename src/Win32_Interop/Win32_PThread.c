@@ -286,14 +286,14 @@ int pthread_cond_init(pthread_cond_t *cond, const void *unused) {
 
     InitializeCriticalSection(&cond->waiters_lock);
 
-    cond->sema = CreateSemaphore(NULL, 0, LONG_MAX, NULL);
+    cond->sema = CreateSemaphoreW(NULL, 0, LONG_MAX, NULL);
     if (!cond->sema) {
         int error = pthread_win32_error(GetLastError());
         DeleteCriticalSection(&cond->waiters_lock);
         return error;
     }
 
-    cond->continue_broadcast = CreateEvent(NULL,    /* security */
+    cond->continue_broadcast = CreateEventW(NULL,    /* security */
                                            FALSE,   /* auto-reset */
                                            FALSE,   /* not signaled */
                                            NULL);   /* name */
