@@ -705,13 +705,19 @@ static void freeCompletions(linenoiseCompletions *lc) {
  *
  * The state of the editing is encapsulated into the pointed linenoiseState
  * structure as described in the structure definition. */
-static int completeLine(struct linenoiseState *ls, char *input, size_t input_capacity) {
+static int completeLine(struct linenoiseState *ls, char *input, size_t input_capacity,
+                        int *win32_key_action) {
     linenoiseCompletions lc = { 0, NULL };
     int nread = 0, nwritten;
     char c;
 
     if (input_capacity == 0) return -1;
     input[0] = 0;
+#ifdef _WIN32
+    *win32_key_action = WIN32_KEY_NONE;
+#else
+    (void)win32_key_action;
+#endif
 
     completionCallback(ls->buf,&lc);
     if (lc.len == 0) {
@@ -738,7 +744,7 @@ static int completeLine(struct linenoiseState *ls, char *input, size_t input_cap
             if (getenv("FAKETTY_WITH_PROMPT") != NULL)
                 nread = (int)read(ls->ifd,input,1);
             else
-                nread = win32read(input,input_capacity);
+                nread = win32read(input,input_capacity,win32_key_action);
 #else
             nread = (int)read(ls->ifd,input,1);                                 WIN_PORT_FIX /* cast (int) */
 #endif
@@ -746,6 +752,12 @@ static int completeLine(struct linenoiseState *ls, char *input, size_t input_cap
                 freeCompletions(&lc);
                 return -1;
             }
+#ifdef _WIN32
+            if (*win32_key_action != WIN32_KEY_NONE) {
+                stop = 1;
+                continue;
+            }
+#endif
             c = input[0];
 
             switch(nread == 1 ? c : 0) {
@@ -1312,11 +1324,31 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
          * there was an error reading from fd. Otherwise it will return the
          * character that should be handled next. */
         if (nread == 1 && c == TAB && completionCallback != NULL && !reverse_search_mode_enabled) {
-            nread = completeLine(&l,input,sizeof(input));
+#ifdef _WIN32
+            nread = completeLine(&l,input,sizeof(input),&win32_key_action);
+#else
+            nread = completeLine(&l,input,sizeof(input),NULL);
+#endif
             /* Return on errors */
             if (nread < 0) return (int)l.len;
             /* Read next character when 0 */
             if (nread == 0) continue;
+#ifdef _WIN32
+            if (win32_key_action != WIN32_KEY_NONE) {
+                switch (win32_key_action) {
+                case WIN32_KEY_DELETE:
+                    linenoiseEditDelete(&l);
+                    break;
+                case WIN32_KEY_WORD_LEFT:
+                    linenoiseEditMoveWordLeft(&l);
+                    break;
+                case WIN32_KEY_WORD_RIGHT:
+                    linenoiseEditMoveWordRight(&l);
+                    break;
+                }
+                continue;
+            }
+#endif
             c = input[0];
         }
 
