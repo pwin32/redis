@@ -2021,10 +2021,10 @@ BOOL QForkParentInit() {
         SwitchToQForkJemallocArena();
 
         g_pQForkControl->typeOfOperation = OperationType::otINVALID;
-        g_pQForkControl->operationComplete = CreateEvent(NULL, TRUE, FALSE, NULL);
+        g_pQForkControl->operationComplete = CreateEventW(NULL, TRUE, FALSE, NULL);
         IFFAILTHROW(g_pQForkControl->operationComplete, "QForkMasterInit: CreateEvent failed.");
 
-        g_pQForkControl->operationFailed = CreateEvent(NULL, TRUE, FALSE, NULL);
+        g_pQForkControl->operationFailed = CreateEventW(NULL, TRUE, FALSE, NULL);
         IFFAILTHROW(g_pQForkControl->operationFailed, "QForkMasterInit: CreateEvent failed.");
 
         return TRUE;

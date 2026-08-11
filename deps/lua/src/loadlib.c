@@ -123,7 +123,7 @@ static void setprogdir (lua_State *L) {
 
 static void pusherror (lua_State *L) {
   int error = GetLastError();
-  const char *message = wsa_strerror(error);
+  const char *message = win32_system_strerror(error);
   if (message != NULL && message[0] != '\0')
     lua_pushstring(L, message);
   else
