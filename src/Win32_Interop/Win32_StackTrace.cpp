@@ -151,9 +151,8 @@ void StackTraceInfo() {
 }
 
 void ServerInfo() {
-    serverLog(LL_WARNING, "--- INFO OUTPUT");
-    // Call antirez routine to log the info output
-    serverLogRaw(LL_WARNING | LL_RAW, genRedisInfoString("all"));
+    /* Keep the native exception path on the Redis 7.2 C crash-report API. */
+    logServerInfo();
 }
 
 void BugReportEnd(){

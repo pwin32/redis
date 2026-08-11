@@ -9505,7 +9505,7 @@ void bytesToHuman(char *s, size_t size, long long n) {
 
 static void statMode(void) {
     redisReply *reply;
-    long aux, requests = 0;
+    long long aux, requests = 0;
     int i = 0;
 
     while(1) {
@@ -9530,14 +9530,14 @@ static void statMode(void) {
         /* Keys */
         aux = 0;
         for (j = 0; j < 20; j++) {
-            long k;
+            long long k;
 
             snprintf(buf,sizeof(buf),"db%d:keys",j);
             k = getLongInfoField(reply->str,buf);
-            if (k == LONG_MIN) continue;
+            if (k == LLONG_MIN) continue;
             aux += k;
         }
-        snprintf(buf,sizeof(buf),"%ld",aux);
+        snprintf(buf,sizeof(buf),"%lld",aux);
         printf("%-11s",buf);
 
         /* Used memory */

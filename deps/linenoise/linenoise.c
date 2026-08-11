@@ -261,14 +261,11 @@ static int win32read(char *bytes, size_t capacity, int *key_action) {
             case 'D': bytes[0] = CTRL_D; return 1;
             case 'E': bytes[0] = CTRL_E; return 1;
             case 'F': bytes[0] = CTRL_F; return 1;
-            case 'G': bytes[0] = CTRL_G; return 1;
             case 'H': bytes[0] = CTRL_H; return 1;
             case 'K': bytes[0] = CTRL_K; return 1;
             case 'L': bytes[0] = CTRL_L; return 1;
             case 'N': bytes[0] = CTRL_N; return 1;
             case 'P': bytes[0] = CTRL_P; return 1;
-            case 'R': bytes[0] = CTRL_R; return 1;
-            case 'S': bytes[0] = CTRL_S; return 1;
             case 'T': bytes[0] = CTRL_T; return 1;
             case 'U': bytes[0] = CTRL_U; return 1;
             case 'W': bytes[0] = CTRL_W; return 1;

@@ -6017,7 +6017,7 @@ sds genClusterInfoString(void) {
         "cluster_slots_ok:%d\r\n"
         "cluster_slots_pfail:%d\r\n"
         "cluster_slots_fail:%d\r\n"
-        "cluster_known_nodes:%lu\r\n"
+        "cluster_known_nodes:%llu\r\n"
         "cluster_size:%d\r\n"
         "cluster_current_epoch:%llu\r\n"
         "cluster_my_epoch:%llu\r\n"
@@ -6026,7 +6026,7 @@ sds genClusterInfoString(void) {
         slots_ok,
         slots_pfail,
         slots_fail,
-        dictSize(server.cluster->nodes),
+        (unsigned long long) dictSize(server.cluster->nodes),
         server.cluster->size,
         (unsigned long long) server.cluster->currentEpoch,
         (unsigned long long) myepoch
