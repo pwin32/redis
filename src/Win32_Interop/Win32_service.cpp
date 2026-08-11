@@ -705,9 +705,9 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR *argv) {
         g_ServiceStatus.dwWaitHint = cPreshutdownInterval;
         if (!SetServiceStatus(g_StatusHandle, &g_ServiceStatus)) return;
 
-        g_ServiceStoppedEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-        g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-        g_ServiceReadyEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        g_ServiceStoppedEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+        g_ServiceStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+        g_ServiceReadyEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
         if (g_ServiceStoppedEvent == NULL || g_ServiceStopEvent == NULL ||
             g_ServiceReadyEvent == NULL) {
             failureCode = GetLastError();

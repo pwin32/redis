@@ -74,6 +74,10 @@ static void test_error_translation() {
           "WSAEINPROGRESS should map to POSIX EINPROGRESS");
     check(win32_errno_from_system_error(WSAECONNRESET) == ECONNRESET,
           "WSAECONNRESET should map to POSIX ECONNRESET");
+    check(win32_errno_from_system_error(WSAEINTR) == EINTR,
+          "WSAEINTR should map to POSIX EINTR");
+    check(win32_errno_from_system_error(ERROR_OPERATION_ABORTED) == ECANCELED,
+          "an aborted Windows operation should map to POSIX ECANCELED");
     check(win32_errno_from_system_error(0x7fffffff) == EIO,
           "unknown Windows errors should map to POSIX EIO");
     check(std::strcmp(wsa_strerror(EACCES), std::strerror(EACCES)) == 0,
