@@ -933,9 +933,10 @@ void hrandfieldWithCountCommand(client *c, long long l, int withvalues) {
     size = hashTypeLength(hash);
 
     if(l >= 0) {
-        count = (unsigned long) l;
+        count = (uint64_t)l;
     } else {
-        count = -l;
+        serverAssert(l != LLONG_MIN);
+        count = (uint64_t)(-l);
         uniq = 0;
     }
 
