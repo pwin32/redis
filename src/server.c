@@ -6006,14 +6006,14 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
                 "aof_base_size:%lld\r\n"
                 "aof_pending_rewrite:%d\r\n"
                 "aof_buffer_length:%zu\r\n"
-                "aof_pending_bio_fsync:%lu\r\n"
-                "aof_delayed_fsync:%lu\r\n",
+                "aof_pending_bio_fsync:%llu\r\n"
+                "aof_delayed_fsync:%llu\r\n",
                 (long long) server.aof_current_size,
                 (long long) server.aof_rewrite_base_size,
                 server.aof_rewrite_scheduled,
                 sdslen(server.aof_buf),
-                bioPendingJobsOfType(BIO_AOF_FSYNC),
-                server.aof_delayed_fsync);
+                (unsigned long long) bioPendingJobsOfType(BIO_AOF_FSYNC),
+                (unsigned long long) server.aof_delayed_fsync);
         }
 
         if (server.loading) {
@@ -6101,12 +6101,12 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             "current_eviction_exceeded_time:%lld\r\n"
             "keyspace_hits:%lld\r\n"
             "keyspace_misses:%lld\r\n"
-            "pubsub_channels:%ld\r\n"
-            "pubsub_patterns:%lu\r\n"
-            "pubsubshard_channels:%lu\r\n"
+            "pubsub_channels:%llu\r\n"
+            "pubsub_patterns:%llu\r\n"
+            "pubsubshard_channels:%llu\r\n"
             "latest_fork_usec:%lld\r\n"
             "total_forks:%lld\r\n"
-            "migrate_cached_sockets:%ld\r\n"
+            "migrate_cached_sockets:%llu\r\n"
             "slave_expires_tracked_keys:%zu\r\n"
             "active_defrag_hits:%lld\r\n"
             "active_defrag_misses:%lld\r\n"
@@ -6156,12 +6156,12 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
             current_eviction_exceeded_time / 1000,
             server.stat_keyspace_hits,
             server.stat_keyspace_misses,
-            dictSize(server.pubsub_channels),
-            dictSize(server.pubsub_patterns),
-            dictSize(server.pubsubshard_channels),
+            (unsigned long long) dictSize(server.pubsub_channels),
+            (unsigned long long) dictSize(server.pubsub_patterns),
+            (unsigned long long) dictSize(server.pubsubshard_channels),
             server.stat_fork_time,
             server.stat_total_forks,
-            dictSize(server.migrate_cached_sockets),
+            (unsigned long long) dictSize(server.migrate_cached_sockets),
             getSlaveKeyWithExpireCount(),
             server.stat_active_defrag_hits,
             server.stat_active_defrag_misses,
