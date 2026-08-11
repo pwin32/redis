@@ -611,7 +611,8 @@ NULL
             int remaining = sizeof(extra);
             quicklist *ql = val->ptr;
             /* Add number of quicklist nodes */
-            int used = snprintf(nextra, remaining, " ql_nodes:%lu", ql->len);
+            int used = snprintf(nextra, remaining, " ql_nodes:%llu",
+                                (unsigned long long)ql->len);
             nextra += used;
             remaining -= used;
             /* Add average quicklist fill factor */
@@ -633,7 +634,8 @@ NULL
             for (quicklistNode *node = ql->head; node; node = node->next) {
                 sz += node->sz;
             }
-            used = snprintf(nextra, remaining, " ql_uncompressed_size:%llu", sz); WIN_PORT_FIX /* PORT_ULONG */
+            used = snprintf(nextra, remaining, " ql_uncompressed_size:%llu",
+                            (unsigned long long)sz); WIN_PORT_FIX /* PORT_ULONG */
             nextra += used;
             remaining -= used;
         }

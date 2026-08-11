@@ -1221,7 +1221,7 @@ struct redisServer {
     int activerehashing;        /* Incremental rehash in serverCron() */
     int active_defrag_running;  /* Active defragmentation running (holds current scan aggressiveness) */
     char *pidfile;              /* PID file path */
-    int arch_bits;              /* 32 or 64 depending on sizeof(long) */
+    int arch_bits;              /* 32 or 64 depending on pointer width */
     int cronloops;              /* Number of times the cron function run */
     char runid[CONFIG_RUN_ID_SIZE+1];  /* ID always different at every exec. */
     int sentinel_mode;          /* True if this instance is a Sentinel. */
@@ -1835,7 +1835,7 @@ void getRandomHexChars(char *p, size_t len);
 void getRandomBytes(unsigned char *p, size_t len);
 uint64_t crc64(uint64_t crc, const unsigned char *s, uint64_t l);
 void exitFromChild(int retcode);
-long long redisPopcount(void *s, long count);
+long long redisPopcount(void *s, size_t count);
 int redisSetProcTitle(char *title);
 int validateProcTitleTemplate(const char *template);
 int redisCommunicateSystemd(const char *sd_notify_msg);
@@ -2137,7 +2137,7 @@ void stopAppendOnly(void);
 int startAppendOnly(void);
 void backgroundRewriteDoneHandler(int exitcode, int bysignal);
 void aofRewriteBufferReset(void);
-unsigned long aofRewriteBufferSize(void);
+size_t aofRewriteBufferSize(void);
 ssize_t aofReadDiffFromParent(void);
 void killAppendOnlyChild(void);
 void restartAOFAfterSYNC();

@@ -91,10 +91,10 @@ void aofRewriteBufferReset(void) {
 }
 
 /* Return the current size of the AOF rewrite buffer. */
-unsigned long aofRewriteBufferSize(void) {
+size_t aofRewriteBufferSize(void) {
     listNode *ln;
     listIter li;
-    unsigned long size = 0;
+    size_t size = 0;
 
     listRewind(server.aof_rewrite_buf_blocks,&li);
     while((ln = listNext(&li))) {
@@ -177,7 +177,7 @@ void aofRewriteBufferAppend(unsigned char *s, PORT_ULONG len) {
             if (((numblocks+1) % 10) == 0) {
                 int level = ((numblocks+1) % 100) == 0 ? LL_WARNING :
                                                          LL_NOTICE;
-                serverLog(level,"Background AOF buffer size: %lu MB",
+                serverLog(level,"Background AOF buffer size: %zu MB",
                     aofRewriteBufferSize()/(1024*1024));
             }
         }

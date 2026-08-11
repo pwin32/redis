@@ -144,7 +144,7 @@ int _dictInit(dict *d, dictType *type,
  * but with the invariant of a USED/BUCKETS ratio near to <= 1 */
 int dictResize(dict *d)
 {
-    unsigned long minimal;
+    dict_ulong minimal;
 
     if (dict_can_resize != DICT_RESIZE_ENABLE || dictIsRehashing(d)) return DICT_ERR;
     minimal = d->ht[0].used;
@@ -166,7 +166,7 @@ int _dictExpand(dict *d, dict_ulong size, int* malloc_failed)
         return DICT_ERR;
 
     dictht n; /* the new hash table */
-    unsigned long realsize = _dictNextPower(size);
+    dict_ulong realsize = _dictNextPower(size);
 
     /* Detect overflows */
     if (realsize < size || realsize * sizeof(dictEntry*) < realsize)
@@ -231,8 +231,8 @@ int dictRehash(dict *d, int n) {
 #endif
 
     int empty_visits = n*10; /* Max number of empty buckets to visit. */
-    unsigned long s0 = d->ht[0].size;
-    unsigned long s1 = d->ht[1].size;
+    dict_ulong s0 = d->ht[0].size;
+    dict_ulong s1 = d->ht[1].size;
     if (dict_can_resize == DICT_RESIZE_FORBID || !dictIsRehashing(d)) return 0;
     if (dict_can_resize == DICT_RESIZE_AVOID && 
         ((s1 > s0 && s1 / s0 < dict_force_resize_ratio) ||
@@ -571,10 +571,10 @@ unsigned long long dictFingerprint(dict *d) {
     unsigned long long integers[6], hash = 0;
     int j;
 
-    integers[0] = (PORT_LONG) d->ht[0].table;
+    integers[0] = (uintptr_t)d->ht[0].table;
     integers[1] = d->ht[0].size;
     integers[2] = d->ht[0].used;
-    integers[3] = (PORT_LONG) d->ht[1].table;
+    integers[3] = (uintptr_t)d->ht[1].table;
     integers[4] = d->ht[1].size;
     integers[5] = d->ht[1].used;
 
@@ -670,7 +670,7 @@ void dictReleaseIterator(dictIterator *iter)
 dictEntry *dictGetRandomKey(dict *d)
 {
     dictEntry *he, *orighe;
-    unsigned long h;
+    dict_ulong h;
     int listlen, listele;
 
     if (dictSize(d) == 0) return NULL;
@@ -746,13 +746,13 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
     }
 
     tables = dictIsRehashing(d) ? 2 : 1;
-    maxsizemask = (unsigned int) d->ht[0].sizemask;                             WIN_PORT_FIX /* cast (unsigned int) */
+    maxsizemask = d->ht[0].sizemask;
     if (tables > 1 && maxsizemask < d->ht[1].sizemask)
-        maxsizemask = (unsigned int) d->ht[1].sizemask;                         WIN_PORT_FIX /* cast (unsigned int) */
+        maxsizemask = d->ht[1].sizemask;
 
     /* Pick a random point inside the larger table. */
-    unsigned long i = randomULong() & maxsizemask;
-    unsigned long emptylen = 0; /* Continuous empty entries so far. */
+    dict_ulong i = randomULong() & maxsizemask;
+    dict_ulong emptylen = 0; /* Continuous empty entries so far. */
     while(stored < count && maxsteps--) {
         for (j = 0; j < tables; j++) {
             /* Invariant of the dict.c rehashing: up to the indexes already
@@ -1183,7 +1183,9 @@ size_t _dictGetStatsHt(char *buf, size_t bufsize, dictht *ht, int tableid) {
         l += snprintf(buf+l,bufsize-l,
             "   %s%llu: %llu (%.02f%%)\n",                              WIN_PORT_FIX /* PORT_ULONG */
             (i == DICT_STATS_VECTLEN-1)?">= ":"",
-            i, clvector[i], ((float)clvector[i]/ht->size)*100);
+            (unsigned long long)i,
+            (unsigned long long)clvector[i],
+            ((float)clvector[i]/ht->size)*100);
     }
 
     /* Unlike snprintf(), return the number of characters actually written. */

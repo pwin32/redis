@@ -181,6 +181,15 @@ enum KEY_ACTION{
 	BACKSPACE =  127    /* Backspace */
 };
 
+#ifdef _WIN32
+enum WIN32_KEY_ACTION {
+    WIN32_KEY_NONE = 0,
+    WIN32_KEY_DELETE,
+    WIN32_KEY_WORD_LEFT,
+    WIN32_KEY_WORD_RIGHT
+};
+#endif
+
 static void linenoiseAtExit(void);
 int linenoiseHistoryAdd(const char *line);
 static void refreshLine(struct linenoiseState *l);
@@ -194,111 +203,185 @@ HANDLE hOut;
 HANDLE hIn;
 DWORD consolemode;
 
-static int win32read(char *c) {
+static int win32Utf8Encode(unsigned int codepoint, char *bytes, size_t capacity) {
+    if (codepoint <= 0x7f && capacity >= 1) {
+        bytes[0] = (char)codepoint;
+        return 1;
+    }
+    if (codepoint <= 0x7ff && capacity >= 2) {
+        bytes[0] = (char)(0xc0 | (codepoint >> 6));
+        bytes[1] = (char)(0x80 | (codepoint & 0x3f));
+        return 2;
+    }
+    if (codepoint <= 0xffff && capacity >= 3) {
+        bytes[0] = (char)(0xe0 | (codepoint >> 12));
+        bytes[1] = (char)(0x80 | ((codepoint >> 6) & 0x3f));
+        bytes[2] = (char)(0x80 | (codepoint & 0x3f));
+        return 3;
+    }
+    if (codepoint <= 0x10ffff && capacity >= 4) {
+        bytes[0] = (char)(0xf0 | (codepoint >> 18));
+        bytes[1] = (char)(0x80 | ((codepoint >> 12) & 0x3f));
+        bytes[2] = (char)(0x80 | ((codepoint >> 6) & 0x3f));
+        bytes[3] = (char)(0x80 | (codepoint & 0x3f));
+        return 4;
+    }
+    return 0;
+}
 
-    DWORD foo;
-    INPUT_RECORD b;
-    KEY_EVENT_RECORD e;
-    BOOL altgr;
+static int win32read(char *bytes, size_t capacity, int *key_action) {
+    static WCHAR high_surrogate;
+    DWORD count;
+    INPUT_RECORD record;
 
     while (1) {
-        if (!ReadConsoleInput(hIn, &b, 1, &foo)) return 0;
-        if (!foo) return 0;
+        KEY_EVENT_RECORD event;
+        BOOL altgr;
+        unsigned int codepoint;
 
-        if (b.EventType == KEY_EVENT && b.Event.KeyEvent.bKeyDown) {
+        *key_action = WIN32_KEY_NONE;
+        if (!ReadConsoleInputW(hIn, &record, 1, &count)) return 0;
+        if (!count) return 0;
+        if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown)
+            continue;
 
-            e = b.Event.KeyEvent;
-            *c = b.Event.KeyEvent.uChar.AsciiChar;
+        event = record.Event.KeyEvent;
+        altgr = (event.dwControlKeyState & LEFT_CTRL_PRESSED) != 0 &&
+                (event.dwControlKeyState & RIGHT_ALT_PRESSED) != 0;
 
-            altgr = e.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED);
-
-            if (e.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) && !altgr) {
-
-                /* Ctrl+Key */
-                switch (*c) {
-                    case 'D':
-                        *c = 4;
-                        return 1;
-                    case 'C':
-                        *c = 3;
-                        return 1;
-                    case 'H':
-                        *c = 8;
-                        return 1;
-                    case 'T':
-                        *c = 20;
-                        return 1;
-                    case 'B': /* ctrl-b, left_arrow */
-                        *c = 2;
-                        return 1;
-                    case 'F': /* ctrl-f right_arrow*/
-                        *c = 6;
-                        return 1;
-                    case 'P': /* ctrl-p up_arrow*/
-                        *c = 16;
-                        return 1;
-                    case 'N': /* ctrl-n down_arrow*/
-                        *c = 14;
-                        return 1;
-                    case 'U': /* Ctrl+u, delete the whole line. */
-                        *c = 21;
-                        return 1;
-                    case 'K': /* Ctrl+k, delete from current to end of line. */
-                        *c = 11;
-                        return 1;
-                    case 'A': /* Ctrl+a, go to the start of the line */
-                        *c = 1;
-                        return 1;
-                    case 'E': /* ctrl+e, go to the end of the line */
-                        *c = 5;
-                        return 1;
-                }
-
-                /* Other Ctrl+KEYs ignored */
-            } else {
-
-                switch (e.wVirtualKeyCode) {
-
-                    case VK_ESCAPE: /* ignore - send ctrl-c, will return -1 */
-                        *c = 3;
-                        return 1;
-                    case VK_RETURN:  /* enter */
-                        *c = 13;
-                        return 1;
-                    case VK_LEFT:   /* left */
-                        *c = 2;
-                        return 1;
-                    case VK_RIGHT: /* right */
-                        *c = 6;
-                        return 1;
-                    case VK_UP:   /* up */
-                        *c = 16;
-                        return 1;
-                    case VK_DOWN:  /* down */
-                        *c = 14;
-                        return 1;
-                    case VK_HOME:
-                        *c = 1;
-                        return 1;
-                    case VK_END:
-                        *c = 5;
-                        return 1;
-                    case VK_BACK:
-                        *c = 8;
-                        return 1;
-                    case VK_DELETE:
-                        *c = 127;
-                        return 1;
-                    default:
-                        if (*c) return 1;
-                }
+        if ((event.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) &&
+            !altgr)
+        {
+            high_surrogate = 0;
+            switch (event.wVirtualKeyCode) {
+            case 'A': bytes[0] = CTRL_A; return 1;
+            case 'B': bytes[0] = CTRL_B; return 1;
+            case 'C': bytes[0] = CTRL_C; return 1;
+            case 'D': bytes[0] = CTRL_D; return 1;
+            case 'E': bytes[0] = CTRL_E; return 1;
+            case 'F': bytes[0] = CTRL_F; return 1;
+            case 'H': bytes[0] = CTRL_H; return 1;
+            case 'K': bytes[0] = CTRL_K; return 1;
+            case 'L': bytes[0] = CTRL_L; return 1;
+            case 'N': bytes[0] = CTRL_N; return 1;
+            case 'P': bytes[0] = CTRL_P; return 1;
+            case 'T': bytes[0] = CTRL_T; return 1;
+            case 'U': bytes[0] = CTRL_U; return 1;
+            case 'W': bytes[0] = CTRL_W; return 1;
+            case VK_LEFT:  *key_action = WIN32_KEY_WORD_LEFT; return 1;
+            case VK_RIGHT: *key_action = WIN32_KEY_WORD_RIGHT; return 1;
+            default: continue;
             }
         }
-    }
 
-    return -1; /* Makes compiler happy */
+        switch (event.wVirtualKeyCode) {
+        case VK_ESCAPE: high_surrogate = 0; bytes[0] = CTRL_C; return 1;
+        case VK_RETURN: high_surrogate = 0; bytes[0] = ENTER; return 1;
+        case VK_LEFT:   high_surrogate = 0; bytes[0] = CTRL_B; return 1;
+        case VK_RIGHT:  high_surrogate = 0; bytes[0] = CTRL_F; return 1;
+        case VK_UP:     high_surrogate = 0; bytes[0] = CTRL_P; return 1;
+        case VK_DOWN:   high_surrogate = 0; bytes[0] = CTRL_N; return 1;
+        case VK_HOME:   high_surrogate = 0; bytes[0] = CTRL_A; return 1;
+        case VK_END:    high_surrogate = 0; bytes[0] = CTRL_E; return 1;
+        case VK_BACK:   high_surrogate = 0; bytes[0] = CTRL_H; return 1;
+        case VK_DELETE: high_surrogate = 0; *key_action = WIN32_KEY_DELETE; return 1;
+        default: break;
+        }
+
+        codepoint = event.uChar.UnicodeChar;
+        if (!codepoint) continue;
+        if (codepoint >= 0xd800 && codepoint <= 0xdbff) {
+            high_surrogate = (WCHAR)codepoint;
+            continue;
+        }
+        if (codepoint >= 0xdc00 && codepoint <= 0xdfff) {
+            if (high_surrogate) {
+                codepoint = 0x10000 +
+                    (((unsigned int)high_surrogate - 0xd800) << 10) +
+                    (codepoint - 0xdc00);
+                high_surrogate = 0;
+            } else {
+                codepoint = 0xfffd;
+            }
+        } else {
+            high_surrogate = 0;
+        }
+        return win32Utf8Encode(codepoint, bytes, capacity);
+    }
 }
 #endif
+
+/* Linenoise stores UTF-8 byte offsets, but editing and terminal positioning
+ * must advance by complete Unicode scalar values. Invalid input bytes remain
+ * independently editable instead of making the line buffer unusable. */
+static size_t utf8CharLen(const char *s, size_t len) {
+    const unsigned char *p = (const unsigned char *)s;
+    unsigned int codepoint;
+    size_t needed;
+
+    if (len == 0) return 0;
+    if (p[0] < 0x80) return 1;
+    if (p[0] >= 0xc2 && p[0] <= 0xdf) {
+        codepoint = p[0] & 0x1f;
+        needed = 2;
+    } else if (p[0] >= 0xe0 && p[0] <= 0xef) {
+        codepoint = p[0] & 0x0f;
+        needed = 3;
+    } else if (p[0] >= 0xf0 && p[0] <= 0xf4) {
+        codepoint = p[0] & 0x07;
+        needed = 4;
+    } else {
+        return 1;
+    }
+    if (needed > len) return 1;
+    for (size_t i = 1; i < needed; i++) {
+        if ((p[i] & 0xc0) != 0x80) return 1;
+        codepoint = (codepoint << 6) | (p[i] & 0x3f);
+    }
+    if ((needed == 2 && codepoint < 0x80) ||
+        (needed == 3 && codepoint < 0x800) ||
+        (needed == 4 && codepoint < 0x10000) ||
+        (codepoint >= 0xd800 && codepoint <= 0xdfff) ||
+        codepoint > 0x10ffff)
+        return 1;
+    return needed;
+}
+
+static size_t utf8NextChar(const char *s, size_t len, size_t pos) {
+    size_t charlen;
+    if (pos >= len) return len;
+    charlen = utf8CharLen(s + pos, len - pos);
+    return pos + (charlen ? charlen : 1);
+}
+
+static size_t utf8PrevChar(const char *s, size_t pos) {
+    size_t candidate;
+    if (pos == 0) return 0;
+    candidate = pos - 1;
+    while (candidate > 0 && pos - candidate < 4 &&
+           (((unsigned char)s[candidate] & 0xc0) == 0x80))
+        candidate--;
+    if (candidate + utf8CharLen(s + candidate, pos - candidate) == pos)
+        return candidate;
+    return pos - 1;
+}
+
+static size_t utf8Columns(const char *s, size_t len) {
+    size_t columns = 0;
+    size_t pos = 0;
+    while (pos < len) {
+        pos = utf8NextChar(s, len, pos);
+        columns++;
+    }
+    return columns;
+}
+
+static size_t utf8BytesForColumns(const char *s, size_t len, size_t columns) {
+    size_t pos = 0;
+    while (pos < len && columns--)
+        pos = utf8NextChar(s, len, pos);
+    return pos;
+}
 
 /* Debugging macro. */
 #if 0
@@ -530,10 +613,19 @@ static void freeCompletions(linenoiseCompletions *lc) {
  *
  * The state of the editing is encapsulated into the pointed linenoiseState
  * structure as described in the structure definition. */
-static int completeLine(struct linenoiseState *ls) {
+static int completeLine(struct linenoiseState *ls, char *input, size_t input_capacity,
+                        int *win32_key_action) {
     linenoiseCompletions lc = { 0, NULL };
-    int nread, nwritten;
-    char c = 0;
+    int nread = 0, nwritten;
+    char c;
+
+    if (input_capacity == 0) return -1;
+    input[0] = 0;
+#ifdef _WIN32
+    *win32_key_action = WIN32_KEY_NONE;
+#else
+    (void)win32_key_action;
+#endif
 
     completionCallback(ls->buf,&lc);
     if (lc.len == 0) {
@@ -556,13 +648,27 @@ static int completeLine(struct linenoiseState *ls) {
                 refreshLine(ls);
             }
 
-            nread = (int)read(ls->ifd,&c,1);                                    WIN_PORT_FIX /* cast (int) */
+#ifdef _WIN32
+            if (getenv("FAKETTY_WITH_PROMPT") != NULL)
+                nread = (int)read(ls->ifd,input,1);
+            else
+                nread = win32read(input,input_capacity,win32_key_action);
+#else
+            nread = (int)read(ls->ifd,input,1);                                 WIN_PORT_FIX /* cast (int) */
+#endif
             if (nread <= 0) {
                 freeCompletions(&lc);
                 return -1;
             }
+#ifdef _WIN32
+            if (*win32_key_action != WIN32_KEY_NONE) {
+                stop = 1;
+                continue;
+            }
+#endif
+            c = input[0];
 
-            switch(c) {
+            switch(nread == 1 ? c : 0) {
                 case 9: /* tab */
                     i = (i+1) % (lc.len+1);
                     if (i == lc.len) linenoiseBeep();
@@ -585,7 +691,7 @@ static int completeLine(struct linenoiseState *ls) {
     }
 
     freeCompletions(&lc);
-    return c; /* Return last read character */
+    return nread; /* Return the number of bytes in the last input character. */
 }
 
 /* Register a callback function to be called for tab-completion. */
@@ -656,22 +762,24 @@ static void abFree(struct abuf *ab) {
 
 /* Helper of refreshSingleLine() and refreshMultiLine() to show hints
  * to the right of the prompt. */
-void refreshShowHints(struct abuf *ab, struct linenoiseState *l, int plen) {
+void refreshShowHints(struct abuf *ab, struct linenoiseState *l, size_t plen) {
     char seq[64];
-    if (hintsCallback && plen+l->len < l->cols) {
+    size_t line_columns = utf8Columns(l->buf,l->len);
+
+    if (hintsCallback && plen+line_columns < l->cols) {
         int color = -1, bold = 0;
         char *hint = hintsCallback(l->buf,&color,&bold);
         if (hint) {
-            int hintlen = strlen(hint);
-            int hintmaxlen = l->cols-(plen+l->len);
-            if (hintlen > hintmaxlen) hintlen = hintmaxlen;
+            size_t hintlen = strlen(hint);
+            size_t hintmaxlen = l->cols-(plen+line_columns);
+            hintlen = utf8BytesForColumns(hint,hintlen,hintmaxlen);
             if (bold == 1 && color == -1) color = 37;
             if (color != -1 || bold != 0)
                 snprintf(seq,64,"\033[%d;%d;49m",bold,color);
             else
                 seq[0] = '\0';
             abAppend(ab,seq,strlen(seq));
-            abAppend(ab,hint,hintlen);
+            abAppend(ab,hint,(int)hintlen);
             if (color != -1 || bold != 0)
                 abAppend(ab,"\033[0m",4);
             /* Call the function to free the hint returned. */
@@ -686,20 +794,22 @@ void refreshShowHints(struct abuf *ab, struct linenoiseState *l, int plen) {
  * cursor position, and number of columns of the terminal. */
 static void refreshSingleLine(struct linenoiseState *l) {
     char seq[64];
-    size_t plen = strlen(l->prompt);
+    size_t plen = utf8Columns(l->prompt,strlen(l->prompt));
     int fd = l->ofd;
-    char *buf = l->buf;
-    size_t len = l->len;
-    size_t pos = l->pos;
+    size_t start = 0;
+    size_t end = l->len;
+    size_t pos = utf8Columns(l->buf,l->pos);
+    size_t visible_columns;
     struct abuf ab;
 
-    while((plen+pos) >= l->cols) {
-        buf++;
-        len--;
+    while((plen+pos) >= l->cols && start < l->pos) {
+        start = utf8NextChar(l->buf,l->len,start);
         pos--;
     }
-    while (plen+len > l->cols) {
-        len--;
+    visible_columns = utf8Columns(l->buf+start,end-start);
+    while (plen+visible_columns > l->cols && end > start) {
+        end = utf8PrevChar(l->buf,end);
+        visible_columns--;
     }
 
     abInit(&ab);
@@ -709,9 +819,9 @@ static void refreshSingleLine(struct linenoiseState *l) {
     /* Write the prompt and the current buffer content */
     abAppend(&ab,l->prompt,strlen(l->prompt));
     if (maskmode == 1) {
-        while (len--) abAppend(&ab,"*",1);
+        while (visible_columns--) abAppend(&ab,"*",1);
     } else {
-        abAppend(&ab,buf,len);
+        abAppend(&ab,l->buf+start,(int)(end-start));
     }
     /* Show hits if any. */
     refreshShowHints(&ab,l,plen);
@@ -731,9 +841,12 @@ static void refreshSingleLine(struct linenoiseState *l) {
  * cursor position, and number of columns of the terminal. */
 static void refreshMultiLine(struct linenoiseState *l) {
     char seq[64];
-    int plen = (int)strlen(l->prompt);
-    int rows = (int)((plen+l->len+l->cols-1)/l->cols); /* rows used by current buf. */
-    int rpos = (int)((plen+l->oldpos+l->cols)/l->cols); /* cursor relative row. */
+    size_t plen = utf8Columns(l->prompt,strlen(l->prompt));
+    size_t len = utf8Columns(l->buf,l->len);
+    size_t oldpos = utf8Columns(l->buf,l->oldpos);
+    size_t pos = utf8Columns(l->buf,l->pos);
+    int rows = (int)((plen+len+l->cols-1)/l->cols); /* rows used by current buf. */
+    int rpos = (int)((plen+oldpos+l->cols)/l->cols); /* cursor relative row. */
     int rpos2; /* rpos after refresh. */
     int col; /* colum position, zero-based. */
     int old_rows = (int)l->maxrows;
@@ -767,8 +880,8 @@ static void refreshMultiLine(struct linenoiseState *l) {
     /* Write the prompt and the current buffer content */
     abAppend(&ab,l->prompt,strlen(l->prompt));
     if (maskmode == 1) {
-        unsigned int i;
-        for (i = 0; i < l->len; i++) abAppend(&ab,"*",1);
+        size_t i;
+        for (i = 0; i < len; i++) abAppend(&ab,"*",1);
     } else {
         abAppend(&ab,l->buf,l->len);
     }
@@ -780,7 +893,7 @@ static void refreshMultiLine(struct linenoiseState *l) {
      * emit a newline and move the prompt to the first column. */
     if (l->pos &&
         l->pos == l->len &&
-        (l->pos+plen) % l->cols == 0)
+        (pos+plen) % l->cols == 0)
     {
         lndebug("<newline>");
         abAppend(&ab,"\n",1);
@@ -791,7 +904,7 @@ static void refreshMultiLine(struct linenoiseState *l) {
     }
 
     /* Move cursor to right position. */
-    rpos2 = (int)((plen+l->pos+l->cols)/l->cols); /* current cursor relative row. */
+    rpos2 = (int)((plen+pos+l->cols)/l->cols); /* current cursor relative row. */
     lndebug("rpos2 %d", rpos2);
 
     /* Go up till we reach the expected position. */
@@ -802,7 +915,7 @@ static void refreshMultiLine(struct linenoiseState *l) {
     }
 
     /* Set column. */
-    col = (plen+(int)l->pos) % (int)l->cols;
+    col = (int)((plen+pos) % l->cols);
     lndebug("set col %d", 1+col);
     if (col)
         snprintf(seq,64,"\r\x1b[%dC", col);
@@ -826,29 +939,37 @@ static void refreshLine(struct linenoiseState *l) {
         refreshSingleLine(l);
 }
 
-/* Insert the character 'c' at cursor current position.
- *
- * On error writing to the terminal -1 is returned, otherwise 0. */
-int linenoiseEditInsert(struct linenoiseState *l, char c) {
-    if (l->len < l->buflen) {
+/* Insert one complete input character at the current UTF-8 byte offset. */
+static int linenoiseEditInsertBytes(struct linenoiseState *l,
+                                    const char *bytes, size_t count) {
+    if (count && l->len + count <= l->buflen) {
         if (l->len == l->pos) {
-            l->buf[l->pos] = c;
-            l->pos++;
-            l->len++;
+            memcpy(l->buf+l->pos,bytes,count);
+            l->pos += count;
+            l->len += count;
             l->buf[l->len] = '\0';
-            if ((!mlmode && l->plen+l->len < l->cols && !hintsCallback)) {
+            if (!mlmode &&
+                utf8Columns(l->prompt,l->plen) + utf8Columns(l->buf,l->len) < l->cols &&
+                !hintsCallback)
+            {
                 /* Avoid a full update of the line in the
                  * trivial case. */
-                char d = (maskmode==1) ? '*' : c;
-                if (write(l->ofd,&d,1) == -1) return -1;
+                if (maskmode == 1) {
+                    size_t columns = utf8Columns(bytes,count);
+                    while (columns--) {
+                        if (write(l->ofd,"*",1) == -1) return -1;
+                    }
+                } else if (write(l->ofd,bytes,count) == -1) {
+                    return -1;
+                }
             } else {
                 refreshLine(l);
             }
         } else {
-            memmove(l->buf+l->pos+1,l->buf+l->pos,l->len-l->pos);
-            l->buf[l->pos] = c;
-            l->len++;
-            l->pos++;
+            memmove(l->buf+l->pos+count,l->buf+l->pos,l->len-l->pos);
+            memcpy(l->buf+l->pos,bytes,count);
+            l->len += count;
+            l->pos += count;
             l->buf[l->len] = '\0';
             refreshLine(l);
         }
@@ -856,10 +977,15 @@ int linenoiseEditInsert(struct linenoiseState *l, char c) {
     return 0;
 }
 
+/* On error writing to the terminal -1 is returned, otherwise 0. */
+int linenoiseEditInsert(struct linenoiseState *l, char c) {
+    return linenoiseEditInsertBytes(l,&c,1);
+}
+
 /* Move cursor on the left. */
 void linenoiseEditMoveLeft(struct linenoiseState *l) {
     if (l->pos > 0) {
-        l->pos--;
+        l->pos = utf8PrevChar(l->buf,l->pos);
         refreshLine(l);
     }
 }
@@ -867,9 +993,46 @@ void linenoiseEditMoveLeft(struct linenoiseState *l) {
 /* Move cursor on the right. */
 void linenoiseEditMoveRight(struct linenoiseState *l) {
     if (l->pos != l->len) {
-        l->pos++;
+        l->pos = utf8NextChar(l->buf,l->len,l->pos);
         refreshLine(l);
     }
+}
+
+/* Consider letters/digits/underscore as “word”; others as delimiters. */
+static int isWordChar(const char *s, size_t pos) {
+    unsigned char c = (unsigned char)s[pos];
+    if (c >= 0x80) return 1;
+    return (c == '_' || (c >= '0' && c <= '9') ||
+            (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'));
+}
+
+static void linenoiseEditMoveWordLeft(struct linenoiseState *l) {
+    size_t previous;
+    if (l->pos == 0) return;
+    /* Skip any delimiters, then move left over the previous word */
+    while (l->pos > 0) {
+        previous = utf8PrevChar(l->buf,l->pos);
+        if (isWordChar(l->buf,previous)) break;
+        l->pos = previous;
+    }
+    /* Then move to the start of that word */
+    while (l->pos > 0) {
+        previous = utf8PrevChar(l->buf,l->pos);
+        if (!isWordChar(l->buf,previous)) break;
+        l->pos = previous;
+    }
+    refreshLine(l);
+}
+
+static void linenoiseEditMoveWordRight(struct linenoiseState *l) {
+    if (l->pos == l->len) return;
+    /* Skip the current word to the right */
+    while (l->pos < l->len && isWordChar(l->buf,l->pos))
+        l->pos = utf8NextChar(l->buf,l->len,l->pos);
+    /* Then skip any delimiters to reach the next word */
+    while (l->pos < l->len && !isWordChar(l->buf,l->pos))
+        l->pos = utf8NextChar(l->buf,l->len,l->pos);
+    refreshLine(l);
 }
 
 /* Move cursor to the start of the line. */
@@ -918,8 +1081,9 @@ void linenoiseEditHistoryNext(struct linenoiseState *l, int dir) {
  * position. Basically this is what happens with the "Delete" keyboard key. */
 void linenoiseEditDelete(struct linenoiseState *l) {
     if (l->len > 0 && l->pos < l->len) {
-        memmove(l->buf+l->pos,l->buf+l->pos+1,l->len-l->pos-1);
-        l->len--;
+        size_t next = utf8NextChar(l->buf,l->len,l->pos);
+        memmove(l->buf+l->pos,l->buf+next,l->len-next);
+        l->len -= next-l->pos;
         l->buf[l->len] = '\0';
         refreshLine(l);
     }
@@ -928,9 +1092,11 @@ void linenoiseEditDelete(struct linenoiseState *l) {
 /* Backspace implementation. */
 void linenoiseEditBackspace(struct linenoiseState *l) {
     if (l->pos > 0 && l->len > 0) {
-        memmove(l->buf+l->pos-1,l->buf+l->pos,l->len-l->pos);
-        l->pos--;
-        l->len--;
+        size_t previous = utf8PrevChar(l->buf,l->pos);
+        size_t removed = l->pos-previous;
+        memmove(l->buf+previous,l->buf+l->pos,l->len-l->pos);
+        l->pos = previous;
+        l->len -= removed;
         l->buf[l->len] = '\0';
         refreshLine(l);
     }
@@ -941,14 +1107,38 @@ void linenoiseEditBackspace(struct linenoiseState *l) {
 void linenoiseEditDeletePrevWord(struct linenoiseState *l) {
     size_t old_pos = l->pos;
     size_t diff;
+    size_t previous;
 
-    while (l->pos > 0 && l->buf[l->pos-1] == ' ')
-        l->pos--;
-    while (l->pos > 0 && l->buf[l->pos-1] != ' ')
-        l->pos--;
+    while (l->pos > 0) {
+        previous = utf8PrevChar(l->buf,l->pos);
+        if (l->buf[previous] != ' ') break;
+        l->pos = previous;
+    }
+    while (l->pos > 0) {
+        previous = utf8PrevChar(l->buf,l->pos);
+        if (l->buf[previous] == ' ') break;
+        l->pos = previous;
+    }
     diff = old_pos - l->pos;
     memmove(l->buf+l->pos,l->buf+old_pos,l->len-old_pos+1);
     l->len -= diff;
+    refreshLine(l);
+}
+
+static void linenoiseEditTranspose(struct linenoiseState *l) {
+    size_t previous, next, previous_len, next_len;
+    char previous_bytes[4];
+
+    if (l->pos == 0 || l->pos == l->len) return;
+    previous = utf8PrevChar(l->buf,l->pos);
+    next = utf8NextChar(l->buf,l->len,l->pos);
+    previous_len = l->pos-previous;
+    next_len = next-l->pos;
+    if (previous_len > sizeof(previous_bytes)) return;
+    memcpy(previous_bytes,l->buf+previous,previous_len);
+    memmove(l->buf+previous,l->buf+l->pos,next_len);
+    memcpy(l->buf+previous+next_len,previous_bytes,previous_len);
+    l->pos = next < l->len ? next : previous+next_len;
     refreshLine(l);
 }
 
@@ -988,26 +1178,77 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
 
     if (write(l.ofd,prompt,l.plen) == -1) return -1;
     while(1) {
+        char input[4];
         char c;
         int nread;
         char seq[3];
+#ifdef _WIN32
+        int win32_key_action = WIN32_KEY_NONE;
+#endif
 
 #ifdef _WIN32
-        nread = win32read(&c);
+        if (getenv("FAKETTY_WITH_PROMPT") != NULL) {
+            nread = (int)read(l.ifd,input,1);
+        } else {
+            nread = win32read(input,sizeof(input),&win32_key_action);
+        }
 #else
-        nread = read(l.ifd,&c,1);
+        nread = read(l.ifd,input,1);
 #endif
         if (nread <= 0) return (int)l.len;
+#ifdef _WIN32
+        if (win32_key_action != WIN32_KEY_NONE) {
+            switch (win32_key_action) {
+            case WIN32_KEY_DELETE:
+                linenoiseEditDelete(&l);
+                break;
+            case WIN32_KEY_WORD_LEFT:
+                linenoiseEditMoveWordLeft(&l);
+                break;
+            case WIN32_KEY_WORD_RIGHT:
+                linenoiseEditMoveWordRight(&l);
+                break;
+            }
+            continue;
+        }
+#endif
+        c = input[0];
 
         /* Only autocomplete when the callback is set. It returns < 0 when
          * there was an error reading from fd. Otherwise it will return the
          * character that should be handled next. */
-        if (c == 9 && completionCallback != NULL) {
-            c = completeLine(&l);
+        if (nread == 1 && c == TAB && completionCallback != NULL) {
+#ifdef _WIN32
+            nread = completeLine(&l,input,sizeof(input),&win32_key_action);
+#else
+            nread = completeLine(&l,input,sizeof(input),NULL);
+#endif
             /* Return on errors */
-            if (c < 0) return (int)l.len;
+            if (nread < 0) return (int)l.len;
             /* Read next character when 0 */
-            if (c == 0) continue;
+            if (nread == 0) continue;
+#ifdef _WIN32
+            if (win32_key_action != WIN32_KEY_NONE) {
+                switch (win32_key_action) {
+                case WIN32_KEY_DELETE:
+                    linenoiseEditDelete(&l);
+                    break;
+                case WIN32_KEY_WORD_LEFT:
+                    linenoiseEditMoveWordLeft(&l);
+                    break;
+                case WIN32_KEY_WORD_RIGHT:
+                    linenoiseEditMoveWordRight(&l);
+                    break;
+                }
+                continue;
+            }
+#endif
+            c = input[0];
+        }
+
+        if (nread > 1) {
+            if (linenoiseEditInsertBytes(&l,input,(size_t)nread)) return -1;
+            continue;
         }
 
         switch(c) {
@@ -1042,13 +1283,7 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
             }
             break;
         case CTRL_T:    /* ctrl-t, swaps current character with previous. */
-            if (l.pos > 0 && l.pos < l.len) {
-                int aux = buf[l.pos-1];
-                buf[l.pos-1] = buf[l.pos];
-                buf[l.pos] = aux;
-                if (l.pos != l.len-1) l.pos++;
-                refreshLine(&l);
-            }
+            linenoiseEditTranspose(&l);
             break;
         case CTRL_B:     /* ctrl-b */
             linenoiseEditMoveLeft(&l);

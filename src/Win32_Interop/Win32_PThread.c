@@ -286,14 +286,14 @@ int pthread_cond_init(pthread_cond_t *cond, const void *unused) {
 
     InitializeCriticalSection(&cond->waiters_lock);
 
-    cond->sema = CreateSemaphore(NULL, 0, LONG_MAX, NULL);
+    cond->sema = CreateSemaphoreW(NULL, 0, LONG_MAX, NULL);
     if (!cond->sema) {
         int error = pthread_win32_error(GetLastError());
         DeleteCriticalSection(&cond->waiters_lock);
         return error;
     }
 
-    cond->continue_broadcast = CreateEvent(NULL,    /* security */
+    cond->continue_broadcast = CreateEventW(NULL,    /* security */
                                            FALSE,   /* auto-reset */
                                            FALSE,   /* not signaled */
                                            NULL);   /* name */
@@ -591,11 +591,13 @@ static int pthread_abi_cond_wait(win32_pthread_abi_cond_t *cond,
 {
     win32_pthread_abi_cond_state *state = pthread_abi_get_cond(cond);
     CRITICAL_SECTION *cs = pthread_abi_get_mutex(mutex);
+    DWORD error;
 
     if (state == NULL || cs == NULL) return ENOMEM;
     if (SleepConditionVariableCS(&state->condition, cs, timeout)) return 0;
-    if (GetLastError() == ERROR_TIMEOUT) return ETIMEDOUT;
-    return pthread_win32_error(GetLastError());
+    error = GetLastError();
+    if (error == ERROR_TIMEOUT) return ETIMEDOUT;
+    return pthread_win32_error(error);
 }
 
 int pthread_cond_wait(win32_pthread_abi_cond_t *cond,

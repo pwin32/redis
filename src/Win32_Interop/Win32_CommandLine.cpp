@@ -749,7 +749,7 @@ void ParseCommandLineArguments(int argc, char** argv) {
                             params.push_back(p);
                         }
                     }
-                    catch (invalid_argument iaerr) {
+                    catch (const invalid_argument &) {
                         // if no subcommands could be mapped, then assume this is the parameterless --sentinel command line only argument
                     }
                 }

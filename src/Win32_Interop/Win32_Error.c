@@ -59,7 +59,7 @@ int translate_sys_error(int sys_error) {
     case ERROR_PIPE_BUSY:                   return EBUSY;
     case ERROR_SHARING_VIOLATION:           return EBUSY;
     case ERROR_OPERATION_ABORTED:           return ECANCELED;
-    case WSAEINTR:                          return ECANCELED;
+    case WSAEINTR:                          return EINTR;
     case WSAEINPROGRESS:                    return EINPROGRESS;
     case ERROR_CONNECTION_ABORTED:          return ECONNABORTED;
     case WSAECONNABORTED:                   return ECONNABORTED;
@@ -1092,32 +1092,21 @@ static char *win32_format_message_utf8(DWORD error) {
 
 /* */
 int strerror_r(int err, char* buf, size_t buflen) {
-    char *message;
+    const char *message;
     size_t length;
 
     if (buf == NULL || buflen == 0) {
         errno = ERANGE;
         return -1;
     }
-    message = win32_format_message_utf8((DWORD)err);
-    if (message == NULL) {
-        const char *fallback = strerror(err);
-        length = strlen(fallback);
-        if (length >= buflen) {
-            errno = ERANGE;
-            return -1;
-        }
-        memcpy(buf, fallback, length + 1);
-        return 0;
-    }
+    message = strerror(err);
+    if (message == NULL) message = "Unknown error";
     length = strlen(message);
     if (length >= buflen) {
-        free(message);
         errno = ERANGE;
         return -1;
     }
     memcpy(buf, message, length + 1);
-    free(message);
     return 0;
 }
 
@@ -1128,13 +1117,28 @@ static __declspec(thread) char wsa_strerror_buf[2048];
 #endif
 /* */
 char *wsa_strerror(int err) {
-    char *message = win32_format_message_utf8((DWORD)err);
-    if (message == NULL) {
-        return strerror(err);
-    }
+    const char *message = strerror(err);
+    if (message == NULL) message = "Unknown error";
     strncpy(wsa_strerror_buf, message, sizeof(wsa_strerror_buf) - 1);
     wsa_strerror_buf[sizeof(wsa_strerror_buf) - 1] = '\0';
-    free(message);
+    return wsa_strerror_buf;
+}
+
+char *win32_system_strerror(int error) {
+    char *message = win32_format_message_utf8((DWORD)error);
+    const char *fallback;
+
+    if (message != NULL) {
+        strncpy(wsa_strerror_buf, message, sizeof(wsa_strerror_buf) - 1);
+        wsa_strerror_buf[sizeof(wsa_strerror_buf) - 1] = '\0';
+        free(message);
+        return wsa_strerror_buf;
+    }
+
+    fallback = strerror(win32_errno_from_system_error(error));
+    if (fallback == NULL) fallback = "Unknown Windows error";
+    strncpy(wsa_strerror_buf, fallback, sizeof(wsa_strerror_buf) - 1);
+    wsa_strerror_buf[sizeof(wsa_strerror_buf) - 1] = '\0';
     return wsa_strerror_buf;
 }
 

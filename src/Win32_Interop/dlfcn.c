@@ -34,7 +34,7 @@ static void clear_error(void) {
 }
 
 static void save_error(const char *operation, const char *target, DWORD code) {
-    const char *system_message = wsa_strerror((int)code);
+    const char *system_message = win32_system_strerror((int)code);
 
     if (target == NULL) target = "(null)";
     if (system_message == NULL || system_message[0] == '\0') {
@@ -58,7 +58,7 @@ static HMODULE load_library_utf8(const char *file) {
     if (wide_path == NULL) return NULL;
     module = LoadLibraryExW(wide_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
     code = module == NULL ? GetLastError() : ERROR_SUCCESS;
-    free(wide_path);
+    win32_free(wide_path);
     if (module == NULL) SetLastError(code);
     return module;
 }

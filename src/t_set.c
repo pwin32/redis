@@ -669,7 +669,7 @@ void srandmemberWithCountCommand(client *c) {
 
     if (getRangeLongFromObjectOrReply(c,c->argv[2],-PORT_LONG_MAX,PORT_LONG_MAX,&l,NULL) != C_OK) return;
     if (l >= 0) {
-        count = (unsigned long) l;
+        count = (PORT_ULONG) l;
     } else {
         /* A negative count means: return the same elements multiple times
          * (i.e. don't remove the extracted element after every extraction). */

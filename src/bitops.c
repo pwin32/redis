@@ -34,10 +34,10 @@
  * Helpers and low level bit functions.
  * -------------------------------------------------------------------------- */
 
-/* Count number of bits set in the binary array pointed by 's' and long
+/* Count number of bits set in the binary array pointed by 's' and
  * 'count' bytes. The implementation of this function is required to
  * work with an input string length up to 512 MB or more (server.proto_max_bulk_len) */
-long long redisPopcount(void *s, long count) {
+long long redisPopcount(void *s, size_t count) {
     long long bits = 0;
     unsigned char *p = s;
     uint32_t *p4;
@@ -823,7 +823,7 @@ void bitcountCommand(client *c) {
     if (start > end) {
         addReply(c,shared.czero);
     } else {
-        PORT_LONG bytes = end-start+1;
+        size_t bytes = (size_t)(end-start+1);
 
         addReplyLongLong(c,redisPopcount(p+start,bytes));
     }
@@ -888,7 +888,7 @@ void bitposCommand(client *c) {
     if (start > end) {
         addReplyLongLong(c, -1);
     } else {
-        long bytes = end-start+1;
+        size_t bytes = (size_t)(end-start+1);
         long long pos = redisBitpos(p+start,(PORT_ULONG)bytes,(int)bit);
 
         /* If we are looking for clear bits, and the user specified an exact

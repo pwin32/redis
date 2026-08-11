@@ -4177,8 +4177,8 @@ void sentinelInfoCommand(client *c) {
                 "slaves=%llu,sentinels=%llu\r\n",                    WIN_PORT_FIX /* PORT_ULONG */
                 master_id++, ri->name, status,
                 announceSentinelAddr(ri->addr), ri->addr->port,
-                dictSize(ri->slaves),
-                dictSize(ri->sentinels)+1);
+                (unsigned long long)dictSize(ri->slaves),
+                (unsigned long long)dictSize(ri->sentinels)+1);
         }
         dictReleaseIterator(di);
     }

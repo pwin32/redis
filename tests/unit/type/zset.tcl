@@ -1742,6 +1742,12 @@ start_server {tags {"zset"}} {
         assert_error {*value is out of range*} {r zrandmember myzset -9223372036854775808}
     } {}
 
+    test "ZRANDMEMBER count is not limited by Windows long" {
+        r del myzset
+        r zadd myzset 0 a
+        r zrandmember myzset 4294967296
+    } {a}
+
     # Make sure we can distinguish between an empty array and a null response
     r readraw 1
 

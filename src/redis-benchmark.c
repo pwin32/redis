@@ -629,17 +629,17 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                         if (config.num_threads == 0) {
                             hdr_record_value(
                             config.latency_histogram,  // Histogram to record to
-                            (long)c->latency<=CONFIG_LATENCY_HISTOGRAM_MAX_VALUE ? (long)c->latency : CONFIG_LATENCY_HISTOGRAM_MAX_VALUE);  // Value to record
+                            (int64_t)c->latency<=CONFIG_LATENCY_HISTOGRAM_MAX_VALUE ? (int64_t)c->latency : CONFIG_LATENCY_HISTOGRAM_MAX_VALUE);  // Value to record
                             hdr_record_value(
                             config.current_sec_latency_histogram,  // Histogram to record to
-                            (long)c->latency<=CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE ? (long)c->latency : CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE);  // Value to record
+                            (int64_t)c->latency<=CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE ? (int64_t)c->latency : CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE);  // Value to record
                         } else {
                             hdr_record_value_atomic(
                             config.latency_histogram,  // Histogram to record to
-                            (long)c->latency<=CONFIG_LATENCY_HISTOGRAM_MAX_VALUE ? (long)c->latency : CONFIG_LATENCY_HISTOGRAM_MAX_VALUE);  // Value to record
+                            (int64_t)c->latency<=CONFIG_LATENCY_HISTOGRAM_MAX_VALUE ? (int64_t)c->latency : CONFIG_LATENCY_HISTOGRAM_MAX_VALUE);  // Value to record
                             hdr_record_value_atomic(
                             config.current_sec_latency_histogram,  // Histogram to record to
-                            (long)c->latency<=CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE ? (long)c->latency : CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE);  // Value to record
+                            (int64_t)c->latency<=CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE ? (int64_t)c->latency : CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE);  // Value to record
                         }
                 }
                 c->pending--;

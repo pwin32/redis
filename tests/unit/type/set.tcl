@@ -593,6 +593,12 @@ start_server {
         assert_error {*value is out of range*} {r srandmember myset -9223372036854775808}
     } {}
 
+    test "SRANDMEMBER count is not limited by Windows long" {
+        r del myset
+        r sadd myset a
+        r srandmember myset 4294967296
+    } {a}
+
     # Make sure we can distinguish between an empty array and a null response
     r readraw 1
 

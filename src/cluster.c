@@ -769,7 +769,7 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 
 /* Return the approximated number of sockets we are using in order to
  * take the cluster bus connections. */
-unsigned long getClusterConnectionsCount(void) {
+uint64_t getClusterConnectionsCount(void) {
     /* We decrement the number of nodes by one, since there is the
      * "myself" node too in the list. Each node uses two file descriptors,
      * one incoming and one outgoing, thus the multiplication by 2. */
@@ -1798,8 +1798,8 @@ int clusterProcessPacket(clusterLink *link) {
 
     if (type < CLUSTERMSG_TYPE_COUNT)
         server.cluster->stats_bus_messages_received[type]++;
-    serverLog(LL_DEBUG,"--- Processing packet of type %d, %lu bytes",
-        type, (unsigned long) totlen);
+    serverLog(LL_DEBUG,"--- Processing packet of type %d, %u bytes",
+        type, totlen);
 
     /* Perform sanity checks */
     if (totlen < 16) return 1; /* At least signature, version, totlen, count. */
@@ -4770,7 +4770,7 @@ NULL
             slots_ok,
             slots_pfail,
             slots_fail,
-            dictSize(server.cluster->nodes),
+            (unsigned long long)dictSize(server.cluster->nodes),
             server.cluster->size,
             (unsigned long long) server.cluster->currentEpoch,
             (unsigned long long) myepoch

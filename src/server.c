@@ -2846,7 +2846,9 @@ void initServerConfig(void) {
     initConfigValues();
 }
 
+#ifndef _WIN32
 extern char **environ;
+#endif
 
 /* Restart the server, executing the same executable that started this
  * instance, with the same arguments and configuration file.
@@ -4897,15 +4899,15 @@ sds genRedisInfoString(const char *section) {
         info = sdscatprintf(info,
             "# Clients\r\n"
             "connected_clients:%llu\r\n"
-            "cluster_connections:%lu\r\n"
+            "cluster_connections:%llu\r\n"
             "maxclients:%u\r\n"
             "client_recent_max_input_buffer:%zu\r\n"
             "client_recent_max_output_buffer:%zu\r\n"
             "blocked_clients:%d\r\n"
             "tracking_clients:%d\r\n"
             "clients_in_timeout_table:%llu\r\n",
-            listLength(server.clients)-listLength(server.slaves),
-            getClusterConnectionsCount(),
+            (unsigned long long)(listLength(server.clients)-listLength(server.slaves)),
+            (unsigned long long)getClusterConnectionsCount(),
             server.maxclients,
             maxin, maxout,
             server.blocked_clients,
@@ -5105,7 +5107,7 @@ sds genRedisInfoString(const char *section) {
                 "aof_base_size:%lld\r\n"
                 "aof_pending_rewrite:%d\r\n"
                 "aof_buffer_length:%zu\r\n"
-                "aof_rewrite_buffer_length:%lu\r\n"
+                "aof_rewrite_buffer_length:%zu\r\n"
                 "aof_pending_bio_fsync:%llu\r\n"
                 "aof_delayed_fsync:%llu\r\n",
                 (PORT_LONGLONG) server.aof_current_size,
@@ -5113,7 +5115,7 @@ sds genRedisInfoString(const char *section) {
                 server.aof_rewrite_scheduled,
                 sdslen(server.aof_buf),
                 aofRewriteBufferSize(),
-                bioPendingJobsOfType(BIO_AOF_FSYNC),
+                (unsigned long long)bioPendingJobsOfType(BIO_AOF_FSYNC),
                 (unsigned long long)server.aof_delayed_fsync);
         }
 
@@ -5226,11 +5228,11 @@ sds genRedisInfoString(const char *section) {
             server.stat_evictedkeys,
             server.stat_keyspace_hits,
             server.stat_keyspace_misses,
-            dictSize(server.pubsub_channels),
-            dictSize(server.pubsub_patterns),
+            (unsigned long long)dictSize(server.pubsub_channels),
+            (unsigned long long)dictSize(server.pubsub_patterns),
             server.stat_fork_time,
             server.stat_total_forks,
-            dictSize(server.migrate_cached_sockets),
+            (unsigned long long)dictSize(server.migrate_cached_sockets),
             getSlaveKeyWithExpireCount(),
             server.stat_active_defrag_hits,
             server.stat_active_defrag_misses,
@@ -5322,7 +5324,7 @@ sds genRedisInfoString(const char *section) {
 
         info = sdscatprintf(info,
             "connected_slaves:%llu\r\n", WIN_PORT_FIX /* PORT_ULONG */
-            listLength(server.slaves));
+            (unsigned long long)listLength(server.slaves));
 
         /* If min-slaves-to-write is active, write the number of slaves
          * currently considered 'good'. */

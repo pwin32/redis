@@ -138,7 +138,7 @@ void LogStackTrace() {
             stack.Params[2],
             stack.Params[3]
             );
-        free(modulePath);
+        win32_free(modulePath);
     }
 }
 #else
@@ -151,9 +151,9 @@ void StackTraceInfo() {
 }
 
 void ServerInfo() {
-    serverLog(LL_WARNING, "--- INFO OUTPUT");
-    // Call antirez routine to log the info output
-    serverLogRaw(LL_WARNING | LL_RAW, genRedisInfoString("all"));
+    /* Use the core crash-report path so its temporary SDS values are freed and
+     * the client-list diagnostics are included consistently. */
+    logServerInfo();
 }
 
 void BugReportEnd(){

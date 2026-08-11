@@ -85,7 +85,7 @@ using namespace std;
 string g_serviceName = DEFAULT_SERVICE_NAME;
 wstring g_serviceNameWide = L"Redis";
 
-SERVICE_STATUS g_ServiceStatus = { 0 };
+SERVICE_STATUS g_ServiceStatus = {};
 HANDLE g_ServiceStopEvent = INVALID_HANDLE_VALUE;
 HANDLE g_ServiceStoppedEvent = INVALID_HANDLE_VALUE;
 HANDLE g_ServiceReadyEvent = INVALID_HANDLE_VALUE;
@@ -151,7 +151,7 @@ static wstring Utf8ToWideString(const string& value) {
                                 "UTF-8 to UTF-16 conversion failed");
     }
     wstring result(wide);
-    free(wide);
+    win32_free(wide);
     return result;
 }
 
@@ -162,7 +162,7 @@ static string WideToUtf8String(const wstring& value) {
                                 "UTF-16 to UTF-8 conversion failed");
     }
     string result(utf8);
-    free(utf8);
+    win32_free(utf8);
     return result;
 }
 
@@ -170,7 +170,7 @@ static void OutputDebugStringUtf8(const string& value) {
     wchar_t *wide = win32_utf8_to_wide(value.c_str());
     if (wide == NULL) return;
     OutputDebugStringW(wide);
-    free(wide);
+    win32_free(wide);
 }
 
 static void AppendQuotedArgument(wstring& commandLine, const wstring& argument) {
@@ -212,7 +212,7 @@ static wstring GetServiceExecutablePathWide() {
                                 "GetModuleFileNameW failed");
     }
     wstring result(path);
-    free(path);
+    win32_free(path);
     return result;
 }
 
@@ -257,7 +257,7 @@ BOOL RelaunchAsElevatedProcess(int argc, char** argv) {
     wstring executable = GetServiceExecutablePathWide();
 
     // Launch itself as administrator.
-    SHELLEXECUTEINFOW sei = { 0 };
+    SHELLEXECUTEINFOW sei = {};
     sei.cbSize = sizeof(SHELLEXECUTEINFOW);
     sei.lpVerb = L"runas";
     sei.lpFile = executable.c_str();
@@ -388,7 +388,7 @@ VOID SetAccessACLOnFolder(string user, string folder) {
         wideFolder, SE_OBJECT_TYPE::SE_FILE_OBJECT,
         const_cast<LPWSTR>(wideUser.c_str()), TRUSTEE_FORM::TRUSTEE_IS_NAME,
         GENERIC_ALL, GRANT_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT);
-    free(wideFolder);
+    win32_free(wideFolder);
     if (status != ERROR_SUCCESS) {
         throw std::system_error(status, system_category(),
                                 "ServiceInstall: AddAceToObjectsSecurityDescriptor failed");
@@ -705,9 +705,9 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR *argv) {
         g_ServiceStatus.dwWaitHint = cPreshutdownInterval;
         if (!SetServiceStatus(g_StatusHandle, &g_ServiceStatus)) return;
 
-        g_ServiceStoppedEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-        g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-        g_ServiceReadyEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        g_ServiceStoppedEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+        g_ServiceStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+        g_ServiceReadyEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
         if (g_ServiceStoppedEvent == NULL || g_ServiceStopEvent == NULL ||
             g_ServiceReadyEvent == NULL) {
             failureCode = GetLastError();

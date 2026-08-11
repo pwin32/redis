@@ -36,7 +36,6 @@ static HANDLE iocph;
     ((result) || (FDAPI_WSAGetLastError() == WSA_IO_PENDING))
 
 /* For zero length reads use shared buf */
-static DWORD wsarecvflags;
 static char zreadchar[1];
 
 iocpSockState* WSIOCP_GetExistingSocketState(int fd) {

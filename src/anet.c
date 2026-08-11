@@ -34,7 +34,7 @@
 #include "Win32_Interop/win32fixes.h"
 #include "Win32_Interop/win32_wsiocp2.h"
 #include "Win32_Interop/Win32_Error.h"
-#define ANET_NOTUSED(V) V
+#define ANET_NOTUSED(V) ((void)(V))
 #include <Mstcpip.h>
 #endif
 

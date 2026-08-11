@@ -463,7 +463,7 @@ int hllPatLen(unsigned char *ele, size_t elesize, long *regp) {
      *
      * This may sound like inefficient, but actually in the average case
      * there are high probabilities to find a 1 after a few iterations. */
-    hash = MurmurHash64A(ele,(int)elesize,0xadc83b19ULL);                       WIN_PORT_FIX /* cast (int) */
+    hash = MurmurHash64A(ele,elesize,0xadc83b19ULL);
     index = hash & HLL_P_MASK; /* Register index. */
     hash >>= HLL_P; /* Remove bits used to address the register. */
     hash |= ((uint64_t)1<<HLL_Q); /* Make sure the loop terminates
