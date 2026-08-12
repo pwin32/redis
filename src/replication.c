@@ -2993,7 +2993,7 @@ void syncWithMaster(connection *conn) {
     if (!useDisklessLoad()) {
         while(maxtries--) {
             snprintf(tmpfile,256,
-                "temp-%jd.%ld.rdb",(intmax_t)server.unixtime,(long int)getpid());
+                "temp-%lld.%ld.rdb",(long long)server.unixtime,(long int)getpid());
             dfd = open(tmpfile,O_CREAT|O_WRONLY|O_EXCL,0644);
             if (dfd != -1) break;
             sleep(1);

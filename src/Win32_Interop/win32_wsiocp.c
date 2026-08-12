@@ -41,28 +41,33 @@ static volatile LONG writeRearmPending;
 static char zreadchar[1];
 
 iocpSockState* WSIOCP_GetExistingSocketState(int fd) {
-    iocpSockState** socketState = (iocpSockState**) FDAPI_GetSocketStatePtr(fd);
-    if (socketState == NULL) {
+    void *state = NULL;
+    if (!FDAPI_GetSocketState(fd, &state)) {
         return NULL;
     } else {
-        return *socketState;
+        return (iocpSockState *)state;
     }
 }
 
 /* Get the socket state. Create if not found. */
 iocpSockState* WSIOCP_GetSocketState(int fd) {
-    iocpSockState** socketState = (iocpSockState**) FDAPI_GetSocketStatePtr(fd);
-    if (socketState == NULL) {
+    iocpSockState *existing = WSIOCP_GetExistingSocketState(fd);
+    if (existing != NULL) return existing;
+
+    iocpSockState *candidate =
+        (iocpSockState *) CallocMemoryNoCOW(sizeof(iocpSockState));
+    if (candidate == NULL) return NULL;
+    candidate->fd = fd;
+
+    void *actual = NULL;
+    if (!FDAPI_InstallSocketState(fd, candidate, &actual)) {
+        FreeMemoryNoCOW(candidate);
         return NULL;
     } else {
-        if (*socketState == NULL) {
-            // Not found. Do lazy create of socket state.
-            *socketState = (iocpSockState *) CallocMemoryNoCOW(sizeof(iocpSockState));
-            if (*socketState != NULL) {
-                (*socketState)->fd = fd;
-            }
+        if (actual != candidate) {
+            FreeMemoryNoCOW(candidate);
         }
-        return *socketState;
+        return (iocpSockState *)actual;
     }
 }
 
@@ -167,8 +172,8 @@ BOOL WSIOCP_TryFinalizeClosedState(iocpSockState *socketState) {
     int fd = socketState->fd;
     WSIOCP_DisposeCompletedAccepts(socketState);
     socketState->masks &= ~CLOSE_PENDING;
-    FreeMemoryNoCOW(socketState);
     FDAPI_ClearSocketInfo(fd);
+    FreeMemoryNoCOW(socketState);
     return TRUE;
 }
 
@@ -187,6 +192,7 @@ BOOL WSIOCP_CloseSocketState(iocpSockState* socketState) {
     socketState->masks &= ~(SOCKET_ATTACHED | AE_WRITABLE | AE_READABLE);
     WSIOCP_DisposeCompletedAccepts(socketState);
     if (!WSIOCP_HasOutstandingState(socketState)) {
+        FDAPI_ClearSocketState(socketState->fd, socketState);
         FreeMemoryNoCOW(socketState);
         return TRUE;
     } else {

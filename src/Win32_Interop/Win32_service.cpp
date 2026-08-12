@@ -62,6 +62,7 @@ this should preceed the other arguments passed to redis. For instance:
 #include <tchar.h>
 #include <strsafe.h>
 #include <aclapi.h>
+#include <sddl.h>
 #include "Win32_EventLog.h"
 #include <algorithm>
 #include <cerrno>
@@ -74,6 +75,7 @@ this should preceed the other arguments passed to redis. For instance:
 #include "Win32_RedisLog.h"
 #include "Win32_CommandLine.h"
 #include "Win32_Error.h"
+#include "Win32_APIs.h"
 using namespace std;
 
 #include "Win32_SmartHandle.h"
@@ -94,9 +96,10 @@ SERVICE_STATUS_HANDLE g_StatusHandle;
 const ULONGLONG cThirtySeconds = 30 * 1000;
 BOOL g_isRunningAsService = FALSE;
 const int cPreshutdownInterval = 180000;
-const wchar_t* cServiceInstallPipeName = L"\\\\.\\pipe\\redis-service-install";
+wstring g_serviceInstallPipeName;
 
 extern "C" int main(int argc, char** argv);
+static wstring Utf8ToWideString(const string& value);
 
 typedef class ServicePipeWriter {
 public:
@@ -108,7 +111,12 @@ public:
 private:
     HANDLE pipe = INVALID_HANDLE_VALUE;
     ServicePipeWriter() {
-        pipe = CreateFileW(cServiceInstallPipeName, GENERIC_WRITE,
+        auto pipeArgument = g_argMap.find(cServicePipe);
+        if (pipeArgument == g_argMap.end() ||
+            pipeArgument->second.empty() ||
+            pipeArgument->second[0].empty()) return;
+        wstring pipeName = Utf8ToWideString(pipeArgument->second[0][0]);
+        pipe = CreateFileW(pipeName.c_str(), GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL, NULL);
     }
@@ -143,6 +151,113 @@ public:
         }
     }
 } ServicePipeWriter;
+
+static SECURITY_ATTRIBUTES BuildCurrentUserPipeSecurity(
+    PSECURITY_DESCRIPTOR *descriptorOut) {
+    *descriptorOut = NULL;
+    HANDLE token = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        throw std::system_error(GetLastError(), system_category(),
+                                "OpenProcessToken failed");
+
+    DWORD size = 0;
+    GetTokenInformation(token, TokenUser, NULL, 0, &size);
+    if (size == 0) {
+        DWORD error = GetLastError();
+        CloseHandle(token);
+        throw std::system_error(error, system_category(),
+                                "GetTokenInformation failed");
+    }
+    vector<BYTE> tokenBuffer(size);
+    if (!GetTokenInformation(token, TokenUser, tokenBuffer.data(), size,
+                             &size)) {
+        DWORD error = GetLastError();
+        CloseHandle(token);
+        throw std::system_error(error, system_category(),
+                                "GetTokenInformation failed");
+    }
+    PSID userSid = reinterpret_cast<PTOKEN_USER>(tokenBuffer.data())->User.Sid;
+    LPWSTR sidString = NULL;
+    if (!ConvertSidToStringSidW(userSid, &sidString)) {
+        DWORD error = GetLastError();
+        CloseHandle(token);
+        throw std::system_error(error, system_category(),
+                                "ConvertSidToStringSid failed");
+    }
+    wstring sddl = L"D:P(A;;GA;;;";
+    sddl += sidString;
+    sddl += L")";
+    LocalFree(sidString);
+    CloseHandle(token);
+
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.c_str(), SDDL_REVISION_1, descriptorOut, NULL))
+        throw std::system_error(GetLastError(), system_category(),
+                                "ConvertStringSecurityDescriptor failed");
+
+    SECURITY_ATTRIBUTES attributes = {};
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = *descriptorOut;
+    attributes.bInheritHandle = FALSE;
+    return attributes;
+}
+
+static wstring CreateServiceInstallPipeName() {
+    unsigned char randomBytes[16];
+    if (win32_secure_random_bytes(randomBytes, sizeof(randomBytes)) != 0)
+        throw std::system_error(errno, generic_category(),
+                                "Unable to generate service pipe name");
+    static const wchar_t hex[] = L"0123456789abcdef";
+    wstring suffix;
+    suffix.reserve(sizeof(randomBytes) * 2);
+    for (unsigned char byte : randomBytes) {
+        suffix.push_back(hex[byte >> 4]);
+        suffix.push_back(hex[byte & 0x0f]);
+    }
+    wstringstream stream;
+    stream << L"\\\\.\\pipe\\redis-service-install-"
+           << GetCurrentProcessId() << L"-" << suffix;
+    return stream.str();
+}
+
+static bool IsValidServiceInstallPipeName(const string& value) {
+    static const string prefix = "\\\\.\\pipe\\redis-service-install-";
+    if (value.compare(0, prefix.length(), prefix) != 0) return false;
+    size_t cursor = prefix.length();
+    size_t pidStart = cursor;
+    while (cursor < value.length() && value[cursor] >= '0' &&
+           value[cursor] <= '9') cursor++;
+    if (cursor == pidStart || cursor >= value.length() ||
+        value[cursor++] != '-') return false;
+    if (value.length() - cursor != 32) return false;
+    for (; cursor < value.length(); cursor++) {
+        char c = value[cursor];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+static void InitializeServicePipeName() {
+    auto pipeArgument = g_argMap.find(cServicePipe);
+    if (pipeArgument == g_argMap.end()) return;
+    if (pipeArgument->second.empty() || pipeArgument->second[0].size() != 1 ||
+        !IsValidServiceInstallPipeName(pipeArgument->second[0][0]))
+        throw std::invalid_argument("Invalid internal service pipe name");
+}
+
+typedef BOOL (WINAPI *GetNamedPipeClientProcessIdFunc)(HANDLE, PULONG);
+
+static bool VerifyServicePipeClient(HANDLE pipe, DWORD expectedPid) {
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    GetNamedPipeClientProcessIdFunc getClientPid =
+        kernel32 == NULL ? NULL :
+        reinterpret_cast<GetNamedPipeClientProcessIdFunc>(
+            GetProcAddress(kernel32, "GetNamedPipeClientProcessId"));
+    if (getClientPid == NULL) return false;
+    ULONG clientPid = 0;
+    return getClientPid(pipe, &clientPid) && clientPid == expectedPid;
+}
 
 static wstring Utf8ToWideString(const string& value) {
     wchar_t *wide = win32_utf8_to_wide(value.c_str());
@@ -237,9 +352,21 @@ static void DrainServicePipe(HANDLE pipe) {
 
 BOOL RelaunchAsElevatedProcess(int argc, char** argv) {
     // create pipe for launched process to communicate back on
+    g_serviceInstallPipeName = CreateServiceInstallPipeName();
+    PSECURITY_DESCRIPTOR pipeDescriptor = NULL;
+    SECURITY_ATTRIBUTES pipeAttributes =
+        BuildCurrentUserPipeSecurity(&pipeDescriptor);
+    DWORD pipeOpenMode = PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE;
+#ifdef PIPE_REJECT_REMOTE_CLIENTS
+    DWORD pipeMode = PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT |
+                     PIPE_REJECT_REMOTE_CLIENTS;
+#else
+    DWORD pipeMode = PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT;
+#endif
     HANDLE rawPipe = CreateNamedPipeW(
-        cServiceInstallPipeName, PIPE_ACCESS_INBOUND,
-        PIPE_TYPE_BYTE, 1, 0, 0, PIPE_NOWAIT, NULL);
+        g_serviceInstallPipeName.c_str(), pipeOpenMode,
+        pipeMode, 1, 0, 0, 0, &pipeAttributes);
+    if (pipeDescriptor != NULL) LocalFree(pipeDescriptor);
     if (rawPipe == INVALID_HANDLE_VALUE) {
         throw std::system_error(GetLastError(), system_category(),
                                 "CreateNamedPipeW failed");
@@ -250,6 +377,8 @@ BOOL RelaunchAsElevatedProcess(int argc, char** argv) {
     for (int n = 1; n < argc; n++) {
         parameterArguments.push_back(Utf8ToWideString(argv[n]));
     }
+    parameterArguments.push_back(Utf8ToWideString("--" + cServicePipe));
+    parameterArguments.push_back(g_serviceInstallPipeName);
     wstring params = BuildWindowsCommandLine(parameterArguments);
     if (params.length() >= 32767) {
         throw std::length_error("Elevated command line exceeds Windows limit");
@@ -267,26 +396,62 @@ BOOL RelaunchAsElevatedProcess(int argc, char** argv) {
     sei.lpDirectory = 0;
     sei.hInstApp = 0;
 
-    if (ShellExecuteExW(&sei)) {
-        if (sei.hProcess != NULL) {
+    BOOL launchResult = ShellExecuteExW(&sei);
+    DWORD launchError = launchResult ? ERROR_SUCCESS : GetLastError();
+    bool connected = false;
+    if (launchResult && sei.hProcess != NULL) {
+        SmartHandle elevatedProcess(sei.hProcess);
+        DWORD expectedPid = GetProcessId(elevatedProcess);
+        if (expectedPid == 0) {
+            throw std::system_error(GetLastError(), system_category(),
+                                    "GetProcessId failed");
+        }
+        for (;;) {
+            BOOL connectedResult = ConnectNamedPipe(pipe, NULL);
+            if (connectedResult || GetLastError() == ERROR_PIPE_CONNECTED) {
+                connected = VerifyServicePipeClient(pipe, expectedPid);
+                if (!connected) {
+                    DisconnectNamedPipe(pipe);
+                    continue;
+                }
+                break;
+            }
+            DWORD connectError = GetLastError();
+            if (connectError != ERROR_PIPE_LISTENING &&
+                connectError != ERROR_NO_DATA) {
+                SetLastError(connectError);
+                break;
+            }
+            DrainServicePipe(pipe);
+            DWORD waitResult = WaitForSingleObject(elevatedProcess, 50);
+            if (waitResult == WAIT_OBJECT_0) break;
+            if (waitResult == WAIT_FAILED) {
+                DWORD error = GetLastError();
+                throw std::system_error(error, system_category(),
+                                        "WaitForSingleObject failed");
+            }
+        }
+        if (connected) {
             for (;;) {
                 DrainServicePipe(pipe);
-                DWORD waitResult = WaitForSingleObject(sei.hProcess, 50);
+                DWORD waitResult = WaitForSingleObject(elevatedProcess, 50);
                 if (waitResult == WAIT_OBJECT_0) break;
                 if (waitResult == WAIT_FAILED) {
                     DWORD error = GetLastError();
-                    CloseHandle(sei.hProcess);
                     throw std::system_error(error, system_category(),
                                             "WaitForSingleObject failed");
                 }
             }
             DrainServicePipe(pipe);
-            CloseHandle(sei.hProcess);
         }
-        return TRUE;
-    } else {
-        throw std::system_error(GetLastError(), system_category(), "ShellExecuteExW failed");
     }
+    if (!launchResult)
+        throw std::system_error(launchError, system_category(),
+                                "ShellExecuteExW failed");
+    if (!connected)
+        throw std::system_error(ERROR_ACCESS_DENIED, system_category(),
+                                "Elevated process did not connect to service pipe");
+    return TRUE;
 }
 
 bool IsProcessElevated() {
@@ -412,6 +577,8 @@ VOID ServiceInstall(int argc, char ** argv) {
         } else if (a == 1) {
             // replace --service-install argument with --service-run
             serviceArguments.push_back(Utf8ToWideString("--" + cServiceRun));
+        } else if (_stricmp(argv[a], ("--" + cServicePipe).c_str()) == 0) {
+            if (a + 1 < argc) a++;
         } else {
             serviceArguments.push_back(Utf8ToWideString(argv[a]));
         }
@@ -839,6 +1006,9 @@ void BuildServiceRunArguments(int argc, char** argv) {
             serviceRunArguments.push_back(GetServiceExecutablePath());
         } else if (_stricmp(argv[n], ("--" + cServiceRun).c_str()) == 0) {
             continue;
+        } else if (_stricmp(argv[n], ("--" + cServicePipe).c_str()) == 0) {
+            if (n + 1 < argc) n++;
+            continue;
         } else {
 			if (_stricmp(argv[n], serviceNameFullArgument.c_str()) == 0) {
                 // bypass --service-name argument and the name of the service
@@ -853,6 +1023,7 @@ void BuildServiceRunArguments(int argc, char** argv) {
 
 extern "C" BOOL HandleServiceCommands(int argc, char **argv) {
     try {
+        InitializeServicePipeName();
         if (argc > 1) {
             string servicearg = string(argv[1]);
             servicearg = servicearg.substr(2, servicearg.length());

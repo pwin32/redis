@@ -24,6 +24,9 @@
 #include "fmacros.h"
 
 #include <stdio.h>
+#ifdef _WIN32
+#include "Win32_Interop/Win32_ANSI.h"
+#endif
 #include <string.h>
 #include <stdlib.h>
 POSIX_ONLY(#include <unistd.h>)

@@ -35,6 +35,7 @@
 #include "Win32_Error.h"
 #include "Win32_Assert.h"
 #include <system_error>
+#include <vector>
 
 using namespace std;
 
@@ -92,7 +93,6 @@ auto f_closesocket = dllfunctor_stdcall<int, SOCKET>("ws2_32.dll", "closesocket"
 auto f_connect = dllfunctor_stdcall<int, SOCKET, const struct sockaddr*, int>("ws2_32.dll", "connect");
 auto f_freeaddrinfo = dllfunctor_stdcall<void, addrinfo*>("ws2_32.dll", "freeaddrinfo");
 auto f_getaddrinfo = dllfunctor_stdcall<int, PCSTR, PCSTR, const ADDRINFOA*, ADDRINFOA**>("ws2_32.dll", "getaddrinfo");
-auto f_gethostbyname = dllfunctor_stdcall<struct hostent*, const char*>("ws2_32.dll", "gethostbyname");
 auto f_getpeername = dllfunctor_stdcall<int, SOCKET, struct sockaddr*, int*>("ws2_32.dll", "getpeername");
 auto f_getsockname = dllfunctor_stdcall<int, SOCKET, struct sockaddr*, int*>("ws2_32.dll", "getsockname");
 auto f_getsockopt = dllfunctor_stdcall<int, SOCKET, int, int, char*, int*>("ws2_32.dll", "getsockopt");
@@ -191,21 +191,7 @@ int FDAPI_IsSocketWritable(int rfd) {
  * by the child process.
  */
 BOOL FDAPI_CloseDuplicatedSocket(int rfd) {
-    try {
-        SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
-        if (socket != INVALID_SOCKET) {
-            if (f_closesocket(socket) == SOCKET_ERROR) {
-                set_errno_from_wsa_error();
-                return FALSE;
-            }
-            RFDMap::getInstance().removeRFDToSocketInfo(rfd);
-            RFDMap::getInstance().removeSocketToRFD(socket);
-            return TRUE;
-        }
-    } CATCH_AND_REPORT();
-
-    errno = EBADF;
-    return FALSE;
+    return FDAPI_close(rfd) == 0 ? TRUE : FALSE;
 }
 
 int FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFOW lpProtocolInfo) {
@@ -234,8 +220,9 @@ int FDAPI_WSASocket(int af, int type, int protocol, LPWSAPROTOCOL_INFOW lpProtoc
         if (socket != INVALID_SOCKET) {
             int rfd = RFDMap::getInstance().addSocket(socket);
             if (rfd != INVALID_FD) return rfd;
+            int map_error = errno != 0 ? errno : EMFILE;
             f_closesocket(socket);
-            errno = EMFILE;
+            errno = map_error;
             return -1;
         }
         set_errno_from_wsa_error();
@@ -310,23 +297,25 @@ int FDAPI_WSAIoctl(int rfd, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD cbI
 }
 
 void FDAPI_SaveSocketAddrStorage(int rfd, SOCKADDR_STORAGE* socketAddrStorage) {
-    SocketInfo* socket_info = RFDMap::getInstance().lookupSocketInfo(rfd);
-    if (socket_info != NULL) {
-        memcpy(&(socket_info->socketAddrStorage), socketAddrStorage, sizeof(SOCKADDR_STORAGE));
-    }
+    RFDMap::getInstance().saveSocketAddrStorage(rfd, socketAddrStorage);
 }
 
 BOOL FDAPI_SocketAttachIOCP(int rfd, HANDLE iocph) {
-    SocketInfo* socket_info = RFDMap::getInstance().lookupSocketInfo(rfd);
-    if (socket_info != NULL && socket_info->socket != INVALID_SOCKET) {
-        SOCKET socket = socket_info->socket;
+    SocketInfo socket_info;
+    if (RFDMap::getInstance().getSocketInfo(rfd, &socket_info) &&
+        socket_info.socket != INVALID_SOCKET) {
+        SOCKET socket = socket_info.socket;
         // Set the socket to nonblocking mode
         DWORD yes = 1;
         if (f_ioctlsocket(socket, FIONBIO, &yes) == SOCKET_ERROR) {
             set_errno_from_wsa_error();
             return FALSE;
         }
-        socket_info->flags |= O_NONBLOCK;
+        if (!RFDMap::getInstance().setSocketFlags(
+                rfd, socket, socket_info.flags | O_NONBLOCK)) {
+            errno = EBADF;
+            return FALSE;
+        }
 
         // Make the socket non-inheritable.
         if (!SetHandleInformation((HANDLE)socket, HANDLE_FLAG_INHERIT, 0)) {
@@ -492,24 +481,30 @@ int FDAPI_UpdateConnectContext(int rfd) {
     return SOCKET_ERROR;
 }
 
-void** FDAPI_GetSocketStatePtr(int rfd) {
-    SocketInfo* socket_info = RFDMap::getInstance().lookupSocketInfo(rfd);
-    if (socket_info == NULL) {
-        return NULL;
-    } else {
-        return &(socket_info->state);
-    }
+BOOL FDAPI_GetSocketState(int rfd, void **state) {
+    return RFDMap::getInstance().getSocketState(rfd, state) ? TRUE : FALSE;
+}
+
+BOOL FDAPI_InstallSocketState(int rfd, void *state, void **actual_state) {
+    return RFDMap::getInstance().installSocketState(
+               rfd, state, actual_state) ? TRUE : FALSE;
+}
+
+BOOL FDAPI_ClearSocketState(int rfd, void *expected_state) {
+    return RFDMap::getInstance().clearSocketState(
+               rfd, expected_state) ? TRUE : FALSE;
 }
 
 void FDAPI_ClearSocketInfo(int rfd) {
-    SocketInfo* socketInfo = RFDMap::getInstance().lookupSocketInfo(rfd);
+    SocketInfo socket_info;
+    bool found = RFDMap::getInstance().getSocketInfo(rfd, &socket_info);
 
-    ASSERT(socketInfo != NULL);
-    ASSERT(socketInfo->socket == INVALID_SOCKET);
+    ASSERT(found);
+    ASSERT(!found || socket_info.socket == INVALID_SOCKET);
 
-    if (socketInfo != NULL) {
-        if (socketInfo->socket == INVALID_SOCKET) {
-            RFDMap::getInstance().removeRFDToSocketInfo(rfd);
+    if (found) {
+        if (socket_info.socket == INVALID_SOCKET) {
+            RFDMap::getInstance().removeSocket(rfd);
             return;
         } else {
             serverLog(LL_WARNING, "FDAPI_ClearSocketInfo called on non closed socket.");
@@ -570,6 +565,10 @@ int FDAPI_PipeSetNonBlock(int rfd, int non_blocking) {
 
 int FDAPI_pipe(int *pfds) {
     int result = -1;
+    if (pfds == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
     try {
         // Not passing _O_NOINHERIT, the underlying handles are inheritable by default
         result = crt_pipe(pfds, 8192, _O_BINARY);
@@ -580,12 +579,13 @@ int FDAPI_pipe(int *pfds) {
             int write_rfd = read_rfd == INVALID_FD ? INVALID_FD :
                 RFDMap::getInstance().addCrtFD(write_crt_fd);
             if (read_rfd == INVALID_FD || write_rfd == INVALID_FD) {
+                int map_error = errno != 0 ? errno : EMFILE;
                 if (read_rfd != INVALID_FD)
                     RFDMap::getInstance().removeCrtFD(read_crt_fd);
                 crt_close(read_crt_fd);
                 crt_close(write_crt_fd);
                 pfds[0] = pfds[1] = INVALID_FD;
-                errno = EMFILE;
+                errno = map_error;
                 return -1;
             }
             pfds[0] = read_rfd;
@@ -604,6 +604,10 @@ int FDAPI_pipe_for_eventloop(int *pfds) {
     SOCKET read_socket = INVALID_SOCKET;
     SOCKET write_socket = INVALID_SOCKET;
 
+    if (pfds == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
     pfds[0] = pfds[1] = -1;
     errno = 0;
     try {
@@ -641,12 +645,10 @@ int FDAPI_pipe_for_eventloop(int *pfds) {
 
             read_rfd = RFDMap::getInstance().addSocket(read_socket);
             if (read_rfd == INVALID_FD) {
-                errno = EMFILE;
                 break;
             }
             write_rfd = RFDMap::getInstance().addSocket(write_socket);
             if (write_rfd == INVALID_FD) {
-                errno = EMFILE;
                 break;
             }
 
@@ -658,18 +660,18 @@ int FDAPI_pipe_for_eventloop(int *pfds) {
         if (result != 0 && errno == 0) set_errno_from_wsa_error();
     } CATCH_AND_REPORT();
 
+    int failure_errno = errno;
     if (listener != INVALID_SOCKET) f_closesocket(listener);
     if (result != 0) {
         if (read_rfd != INVALID_FD) {
-            RFDMap::getInstance().removeRFDToSocketInfo(read_rfd);
-            RFDMap::getInstance().removeSocketToRFD(read_socket);
+            RFDMap::getInstance().removeSocket(read_rfd);
         }
         if (write_rfd != INVALID_FD) {
-            RFDMap::getInstance().removeRFDToSocketInfo(write_rfd);
-            RFDMap::getInstance().removeSocketToRFD(write_socket);
+            RFDMap::getInstance().removeSocket(write_rfd);
         }
         if (read_socket != INVALID_SOCKET) f_closesocket(read_socket);
         if (write_socket != INVALID_SOCKET) f_closesocket(write_socket);
+        errno = failure_errno != 0 ? failure_errno : EIO;
     }
 
     return result;
@@ -685,8 +687,9 @@ int FDAPI_socket(int af, int type, int protocol) {
         if (socket != INVALID_SOCKET) {
             int rfd = RFDMap::getInstance().addSocket(socket);
             if (rfd != INVALID_FD) return rfd;
+            int map_error = errno != 0 ? errno : EMFILE;
             f_closesocket(socket);
-            errno = EMFILE;
+            errno = map_error;
             return -1;
         } else {
             set_errno_from_wsa_error();
@@ -701,31 +704,21 @@ int FDAPI_socket(int af, int type, int protocol) {
 // In unix a fd is a fd. All are closed with close().
 int FDAPI_close(int rfd) {
     try {
-        SocketInfo* socketInfo = RFDMap::getInstance().lookupSocketInfo(rfd);
-        if (socketInfo != NULL) {
-
-            ASSERT(socketInfo->socket != INVALID_SOCKET);
-
-            if (socketInfo->socket != INVALID_SOCKET) {
-                SOCKET socket = socketInfo->socket;
-                if (f_closesocket(socket) == SOCKET_ERROR) {
-                    set_errno_from_wsa_error();
-                    return -1;
-                }
-                socketInfo->socket = INVALID_SOCKET;
-
-                if (socketInfo->state != NULL) {
-                    if (wsiocp_CloseSocketState != NULL) {
-                        if (wsiocp_CloseSocketState(rfd)) {
-                            RFDMap::getInstance().removeRFDToSocketInfo(rfd);
-                        }
-                    }
-                } else {
-                    RFDMap::getInstance().removeRFDToSocketInfo(rfd);
-                }
-                RFDMap::getInstance().removeSocketToRFD(socket);
-                return 0;
+        SOCKET socket;
+        void *state;
+        if (RFDMap::getInstance().markSocketClosed(rfd, &socket, &state)) {
+            int close_result = f_closesocket(socket);
+            if (state != NULL && wsiocp_CloseSocketState != NULL) {
+                if (wsiocp_CloseSocketState(rfd))
+                    RFDMap::getInstance().removeSocket(rfd);
+            } else {
+                RFDMap::getInstance().removeSocket(rfd);
             }
+            if (close_result == SOCKET_ERROR) {
+                set_errno_from_wsa_error();
+                return -1;
+            }
+            return 0;
         } else {
             int crt_fd = RFDMap::getInstance().lookupCrtFD(rfd);
             if (crt_fd != INVALID_FD) {
@@ -761,8 +754,9 @@ int FDAPI_open(const char * _Filename, int _OpenFlag, int flags = 0) {
         int rfd = RFDMap::getInstance().addCrtFD(crt_fd);
         if (rfd != INVALID_FD) return rfd;
 
+        int map_error = errno != 0 ? errno : EMFILE;
         crt_close(crt_fd);
-        errno = EMFILE;
+        errno = map_error;
         return -1;
     } CATCH_AND_REPORT();
 
@@ -775,8 +769,9 @@ int FDAPI_mkstemp(char *filename_template) {
         if (crt_fd != INVALID_FD) {
             int rfd = RFDMap::getInstance().addCrtFD(crt_fd);
             if (rfd != INVALID_FD) return rfd;
+            int map_error = errno != 0 ? errno : EMFILE;
             crt_close(crt_fd);
-            errno = EMFILE;
+            errno = map_error;
         }
     } CATCH_AND_REPORT();
 
@@ -791,8 +786,9 @@ int FDAPI_accept(int rfd, struct sockaddr *addr, socklen_t *addrlen) {
             if (sAccept != INVALID_SOCKET) {
                 int accept_rfd = RFDMap::getInstance().addSocket(sAccept);
                 if (accept_rfd != INVALID_FD) return accept_rfd;
+                int map_error = errno != 0 ? errno : EMFILE;
                 f_closesocket(sAccept);
-                errno = EMFILE;
+                errno = map_error;
                 return -1;
             } else {
                 set_errno_from_wsa_error();
@@ -824,25 +820,30 @@ int FDAPI_setsockopt(int rfd, int level, int optname, const void *optval, sockle
 
 int FDAPI_fcntl(int rfd, int cmd, int flags = 0 ) {
     try {
-        SocketInfo* socket_info = RFDMap::getInstance().lookupSocketInfo(rfd);
-        if (socket_info != NULL && socket_info->socket != INVALID_SOCKET) {
+        SocketInfo socket_info;
+        if (RFDMap::getInstance().getSocketInfo(rfd, &socket_info) &&
+            socket_info.socket != INVALID_SOCKET) {
             switch (cmd) {
                 case F_GETFL:
                 {
                     // Since in WinSock there is no way to determine if a socket
                     // is blocking, we keep track of this separately.
-                    return socket_info->flags;
+                    return socket_info.flags;
                 }
                 case F_SETFL:
                 {
                     u_long fionbio_flags = (flags & O_NONBLOCK);
-                    if (SOCKET_ERROR == f_ioctlsocket(socket_info->socket,
+                    if (SOCKET_ERROR == f_ioctlsocket(socket_info.socket,
                         FIONBIO,
                         &fionbio_flags)) {
                         set_errno_from_wsa_error();
                         return -1;
                     } else {
-                        socket_info->flags = flags;
+                        if (!RFDMap::getInstance().setSocketFlags(
+                                rfd, socket_info.socket, flags)) {
+                            errno = EBADF;
+                            return -1;
+                        }
                         return 0;
                     }
                     break;
@@ -861,18 +862,48 @@ int FDAPI_fcntl(int rfd, int cmd, int flags = 0 ) {
 }
 
 int FDAPI_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    if (fds == NULL && nfds != 0) {
+        errno = EFAULT;
+        return -1;
+    }
     try {
-        struct pollfd* pollCopy = new struct pollfd[nfds];
-        if (pollCopy == NULL) {
-            errno = ENOMEM;
-            return -1;
+        std::vector<WSAPOLLFD> pollCopy;
+        std::vector<nfds_t> indexMap;
+        int invalid_count = 0;
+        pollCopy.reserve(nfds);
+        indexMap.reserve(nfds);
+
+        for (nfds_t n = 0; n < nfds; n++) {
+            fds[n].revents = 0;
+            intptr_t requested_fd = (intptr_t)fds[n].fd;
+            if (requested_fd < 0) continue;
+            if (requested_fd > INT_MAX) {
+                fds[n].revents = POLLNVAL;
+                invalid_count++;
+                continue;
+            }
+            SOCKET socket = RFDMap::getInstance().lookupSocket(
+                                (RFD)requested_fd);
+            if (socket == INVALID_SOCKET) {
+                fds[n].revents = POLLNVAL;
+                invalid_count++;
+                continue;
+            }
+            WSAPOLLFD entry = {};
+            entry.fd = socket;
+            entry.events = fds[n].events;
+            pollCopy.push_back(entry);
+            indexMap.push_back(n);
         }
 
-        // NOTE: Treating the fds.fd as a Redis file descriptor and converting to a SOCKET for WSAPoll. 
-        for (nfds_t n = 0; n < nfds; n ++) {
-            pollCopy[n].fd = RFDMap::getInstance().lookupSocket((RFD)(fds[n].fd));
-            pollCopy[n].events = fds[n].events;
-            pollCopy[n].revents = fds[n].revents;
+        int effective_timeout = invalid_count != 0 ? 0 : timeout;
+        if (pollCopy.empty()) {
+            if (invalid_count != 0) return invalid_count;
+            if (effective_timeout < 0)
+                Sleep(INFINITE);
+            else if (effective_timeout > 0)
+                Sleep((DWORD)effective_timeout);
+            return 0;
         }
 
         if (WindowsVersion::getInstance().IsAtLeast_6_0()) {
@@ -881,18 +912,15 @@ int FDAPI_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
             // WSAPoll implementation has a bug that cause the client
             // to wait forever on a non-existant endpoint
             // See https://github.com/MSOpenTech/redis/issues/214
-            int ret = f_WSAPoll(pollCopy, nfds, timeout);
-            if (ret == SOCKET_ERROR) set_errno_from_wsa_error();
-
-            for (nfds_t n = 0; n < nfds; n++) {
-                fds[n].events = pollCopy[n].events;
-                fds[n].revents = pollCopy[n].revents;
+            int ret = f_WSAPoll(pollCopy.data(), (ULONG)pollCopy.size(),
+                                effective_timeout);
+            if (ret == SOCKET_ERROR) {
+                set_errno_from_wsa_error();
+                return -1;
             }
-
-            delete[] pollCopy;
-            pollCopy = NULL;
-
-            return ret;
+            for (size_t n = 0; n < pollCopy.size(); n++)
+                fds[indexMap[n]].revents = pollCopy[n].revents;
+            return ret + invalid_count;
         } else {
             int ret;
             fd_set readSet;
@@ -903,55 +931,45 @@ int FDAPI_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
             FD_ZERO(&writeSet);
             FD_ZERO(&excepSet);
 
-            if (nfds >= FD_SETSIZE) {
-                delete[] pollCopy;
+            if (pollCopy.size() >= FD_SETSIZE) {
                 errno = EINVAL;
                 return -1;
             }
 
-            nfds_t i;
-            for (i = 0; i < nfds; i++) {
-                if (fds[i].fd == INVALID_SOCKET) {
-                    continue;
-                }
-                if (pollCopy[i].fd >= FD_SETSIZE) {
-                    delete[] pollCopy;
-                    errno = EINVAL;
-                    return -1;
-                }
-
-                if (pollCopy[i].events & POLLIN) FD_SET(pollCopy[i].fd, &readSet);
-                if (pollCopy[i].events & POLLOUT) FD_SET(pollCopy[i].fd, &writeSet);
-                if (pollCopy[i].events & POLLERR) FD_SET(pollCopy[i].fd, &excepSet);
+            for (size_t i = 0; i < pollCopy.size(); i++) {
+                if (pollCopy[i].events & POLLIN)
+                    FD_SET(pollCopy[i].fd, &readSet);
+                if (pollCopy[i].events & POLLOUT)
+                    FD_SET(pollCopy[i].fd, &writeSet);
+                if (pollCopy[i].events & (POLLERR | POLLHUP))
+                    FD_SET(pollCopy[i].fd, &excepSet);
             }
 
-            if (timeout < 0) {
+            if (effective_timeout < 0) {
                 ret = select(0, &readSet, &writeSet, &excepSet, NULL);
             } else {
                 struct timeval tv;
-                tv.tv_sec = timeout / 1000;
-                tv.tv_usec = 1000 * (timeout % 1000);
+                tv.tv_sec = effective_timeout / 1000;
+                tv.tv_usec = 1000 * (effective_timeout % 1000);
                 ret = select(0, &readSet, &writeSet, &excepSet, &tv);
             }
 
             if (ret < 0) {
                 set_errno_from_wsa_error();
-                delete[] pollCopy;
                 return ret;
             }
 
-            for (i = 0; i < nfds; i++) {
-                fds[i].revents = 0;
-
-                if (f_WSAFDIsSet(pollCopy[i].fd, &readSet)) fds[i].revents |= POLLIN;
-                if (f_WSAFDIsSet(pollCopy[i].fd, &writeSet)) fds[i].revents |= POLLOUT;
-                if (f_WSAFDIsSet(pollCopy[i].fd, &excepSet)) fds[i].revents |= POLLERR;
+            for (size_t i = 0; i < pollCopy.size(); i++) {
+                short revents = 0;
+                if (f_WSAFDIsSet(pollCopy[i].fd, &readSet))
+                    revents |= POLLIN;
+                if (f_WSAFDIsSet(pollCopy[i].fd, &writeSet))
+                    revents |= POLLOUT;
+                if (f_WSAFDIsSet(pollCopy[i].fd, &excepSet))
+                    revents |= POLLERR;
+                fds[indexMap[i]].revents = revents;
             }
-
-            delete[] pollCopy;
-            pollCopy = NULL;
-
-            return ret;
+            return ret + invalid_count;
         }
     } CATCH_AND_REPORT();
 
@@ -1273,10 +1291,6 @@ int FDAPI_bind(int rfd, const struct sockaddr *addr, socklen_t addrlen) {
     return -1;
 }
 
-struct hostent* FDAPI_gethostbyname(const char *name) {
-    return f_gethostbyname(name);
-}
-
 u_short FDAPI_htons(u_short hostshort) {
     return f_htons(hostshort);
 }
@@ -1292,15 +1306,16 @@ int FDAPI_getpeername(int rfd, struct sockaddr *addr, socklen_t * addrlen) {
             int result = f_getpeername(socket, addr, addrlen);
             // Workaround for getpeername failing to retrieve the endpoint address
             if (result != 0) {
-                SocketInfo* socket_info = RFDMap::getInstance().lookupSocketInfo(rfd);
-                if (socket_info != NULL && addr != NULL && addrlen != NULL &&
-                    socket_info->socketAddrStorage.ss_family != 0) {
+                SocketInfo socket_info;
+                if (RFDMap::getInstance().getSocketInfo(rfd, &socket_info) &&
+                    addr != NULL && addrlen != NULL &&
+                    socket_info.socketAddrStorage.ss_family != 0) {
                     socklen_t actual_len =
-                        socket_info->socketAddrStorage.ss_family == AF_INET ?
+                        socket_info.socketAddrStorage.ss_family == AF_INET ?
                         (socklen_t)sizeof(struct sockaddr_in) :
                         (socklen_t)sizeof(struct sockaddr_in6);
                     socklen_t copy_len = *addrlen < actual_len ? *addrlen : actual_len;
-                    memcpy(addr, &(socket_info->socketAddrStorage), copy_len);
+                    memcpy(addr, &(socket_info.socketAddrStorage), copy_len);
                     *addrlen = actual_len;
                     return 0;
                 }
@@ -1337,7 +1352,48 @@ int FDAPI_setmode(int fd, int mode) {
 }
 
 size_t FDAPI_fwrite(const void *buffer, size_t size, size_t count, FILE *file) {
-    return crt_fwrite(buffer, size, count, file);
+    int crt_fd;
+    HANDLE output;
+    DWORD console_mode;
+    size_t total;
+    size_t offset = 0;
+
+    if (size == 0 || count == 0) return 0;
+    if (buffer == NULL || count > SIZE_MAX / size) {
+        errno = EINVAL;
+        return 0;
+    }
+
+    crt_fd = crt_fileno(file);
+    if (crt_fd == crt_fileno(stdout))
+        output = GetStdHandle(STD_OUTPUT_HANDLE);
+    else if (crt_fd == crt_fileno(stderr))
+        output = GetStdHandle(STD_ERROR_HANDLE);
+    else
+        return crt_fwrite(buffer, size, count, file);
+
+    if (output == INVALID_HANDLE_VALUE || output == NULL ||
+        !GetConsoleMode(output, &console_mode))
+        return crt_fwrite(buffer, size, count, file);
+
+    total = size * count;
+    while (offset < total) {
+        DWORD chunk = total - offset > (size_t)MAXDWORD ?
+                      MAXDWORD : (DWORD)(total - offset);
+        DWORD bytes_written = 0;
+        if (!ParseAndPrintANSIString(output,
+                                     (const char *)buffer + offset,
+                                     chunk, &bytes_written)) {
+            set_errno_from_win32_file_error(GetLastError());
+            break;
+        }
+        offset += bytes_written;
+        if (bytes_written != chunk) {
+            errno = EIO;
+            break;
+        }
+    }
+    return offset / size;
 }
 
 int FDAPI_fclose(FILE *file) {
@@ -1479,8 +1535,19 @@ int FDAPI_open_osfhandle(intptr_t osfhandle, int flags) {
     try {
         int crt_fd = crt_open_osfhandle(osfhandle, flags);
         if (crt_fd != INVALID_FD) {
-            return RFDMap::getInstance().addCrtFD(crt_fd);
+            int rfd = RFDMap::getInstance().addCrtFD(crt_fd);
+            if (rfd != INVALID_FD) return rfd;
+            int map_error = errno != 0 ? errno : EMFILE;
+            crt_close(crt_fd);
+            errno = map_error;
+            return -1;
         }
+        int saved_errno = errno;
+        if ((HANDLE)osfhandle != NULL &&
+            (HANDLE)osfhandle != INVALID_HANDLE_VALUE)
+            CloseHandle((HANDLE)osfhandle);
+        errno = saved_errno != 0 ? saved_errno : EBADF;
+        return -1;
     } CATCH_AND_REPORT();
 
     errno = EBADF;
@@ -1492,6 +1559,19 @@ void FDAPI_freeaddrinfo(struct addrinfo *ai) {
 }
 
 int FDAPI_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
+    const unsigned char *cursor;
+
+    if (res != NULL) *res = NULL;
+    if (node != NULL) {
+        for (cursor = (const unsigned char *)node; *cursor != '\0'; cursor++) {
+            if (*cursor >= 0x80) return EAI_NONAME;
+        }
+    }
+    if (service != NULL) {
+        for (cursor = (const unsigned char *)service; *cursor != '\0'; cursor++) {
+            if (*cursor >= 0x80) return EAI_SERVICE;
+        }
+    }
     return f_getaddrinfo(node, service,hints, res);
 }
 

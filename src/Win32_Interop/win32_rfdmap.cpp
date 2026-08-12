@@ -23,6 +23,22 @@
 #include "win32_types.h"
 #include "win32_rfdmap.h"
 #include "Win32_Assert.h"
+#include <new>
+
+namespace {
+class CriticalSectionGuard {
+public:
+    explicit CriticalSectionGuard(CRITICAL_SECTION *section)
+        : section(section) {
+        EnterCriticalSection(section);
+    }
+    ~CriticalSectionGuard() {
+        LeaveCriticalSection(section);
+    }
+private:
+    CRITICAL_SECTION *section;
+};
+}
 
 RFDMap& RFDMap::getInstance() {
     static RFDMap instance; // Instantiated on first use. Guaranteed to be destroyed.
@@ -31,17 +47,19 @@ RFDMap& RFDMap::getInstance() {
 
 RFDMap::RFDMap() {
     InitializeCriticalSection(&mutex);
-    // stdin, assigned rfd = 0
-    addCrtFD(0);
-    // stdout, assigned rfd = 1
-    addCrtFD(1);
-    // stderr, assigned rfd = 2
-    addCrtFD(2);
+    for (int fd = FIRST_RESERVED_RFD_INDEX;
+         fd <= LAST_RESERVED_RFD_INDEX; fd++) {
+        CrtFDToRFDMap.emplace(fd, fd);
+        RFDToCrtFDMap.emplace(fd, fd);
+    }
+}
+
+RFDMap::~RFDMap() {
+    DeleteCriticalSection(&mutex);
 }
 
 RFD RFDMap::getNextRFDAvailable() {
-    RFD rfd;
-    EnterCriticalSection(&mutex);
+    RFD rfd = INVALID_FD;
     if (RFDRecyclePool.empty() == false) {
         rfd = RFDRecyclePool.front();
         RFDRecyclePool.pop();
@@ -52,58 +70,100 @@ RFD RFDMap::getNextRFDAvailable() {
             rfd = INVALID_FD;
         }
     }
-    LeaveCriticalSection(&mutex);
     return rfd;
+}
+
+void RFDMap::recycleRFD(RFD rfd) noexcept {
+    if (rfd <= LAST_RESERVED_RFD_INDEX) return;
+    try {
+        RFDRecyclePool.push(rfd);
+    } catch (...) {
+        /* Recycling is only an optimization.  Do not turn close/rollback
+         * into a failure if the free-descriptor queue cannot grow. */
+    }
 }
 
 RFD RFDMap::addSocket(SOCKET s) {
-    RFD rfd;
-    EnterCriticalSection(&mutex);
+    CriticalSectionGuard guard(&mutex);
     if (SocketToRFDMap.find(s) != SocketToRFDMap.end()) {
-        rfd = INVALID_FD;
-    } else {
-        rfd = getNextRFDAvailable();
-        if (rfd != INVALID_FD) {
-            SocketToRFDMap[s] = rfd;
-
-            SocketInfo socket_info;
-            socket_info.socket = s;
-            socket_info.state = NULL;
-            socket_info.flags = 0;
-            memset(&(socket_info.socketAddrStorage), 0, sizeof(SOCKADDR_STORAGE));
-            RFDToSocketInfoMap[rfd] = socket_info;
-        }
+        errno = EEXIST;
+        return INVALID_FD;
     }
-    LeaveCriticalSection(&mutex);
+    RFD rfd = getNextRFDAvailable();
+    if (rfd == INVALID_FD) {
+        errno = EMFILE;
+        return INVALID_FD;
+    }
+
+    SocketInfo socket_info = {};
+    socket_info.socket = s;
+    try {
+        if (!SocketToRFDMap.emplace(s, rfd).second ||
+            !RFDToSocketInfoMap.emplace(rfd, socket_info).second) {
+            SocketToRFDMap.erase(s);
+            RFDToSocketInfoMap.erase(rfd);
+            recycleRFD(rfd);
+            errno = EIO;
+            return INVALID_FD;
+        }
+    } catch (const std::bad_alloc&) {
+        SocketToRFDMap.erase(s);
+        RFDToSocketInfoMap.erase(rfd);
+        recycleRFD(rfd);
+        errno = ENOMEM;
+        return INVALID_FD;
+    } catch (...) {
+        SocketToRFDMap.erase(s);
+        RFDToSocketInfoMap.erase(rfd);
+        recycleRFD(rfd);
+        errno = EIO;
+        return INVALID_FD;
+    }
     return rfd;
 }
 
-void RFDMap::removeSocketToRFD(SOCKET s) {
-    EnterCriticalSection(&mutex);
-    SocketToRFDMap.erase(s);
-    LeaveCriticalSection(&mutex);
-}
-
-void RFDMap::removeRFDToSocketInfo(RFD rfd) {
-    EnterCriticalSection(&mutex);
-    RFDToSocketInfoMap.erase(rfd);
-    RFDRecyclePool.push(rfd);
-    LeaveCriticalSection(&mutex);
+void RFDMap::removeSocket(RFD rfd) {
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info == RFDToSocketInfoMap.end()) return;
+    if (info->second.socket != INVALID_SOCKET)
+        SocketToRFDMap.erase(info->second.socket);
+    RFDToSocketInfoMap.erase(info);
+    recycleRFD(rfd);
 }
 
 RFD RFDMap::addCrtFD(int crt_fd) {
-    RFD rfd;
-    EnterCriticalSection(&mutex);
-    if (CrtFDToRFDMap.find(crt_fd) != CrtFDToRFDMap.end()) {
-        rfd = CrtFDToRFDMap[crt_fd];
-    } else {
-        rfd = getNextRFDAvailable();
-        if (rfd != INVALID_FD) {
-            CrtFDToRFDMap[crt_fd] = rfd;
-            RFDToCrtFDMap[rfd] = crt_fd;
-        }
+    CriticalSectionGuard guard(&mutex);
+    auto existing = CrtFDToRFDMap.find(crt_fd);
+    if (existing != CrtFDToRFDMap.end()) return existing->second;
+
+    RFD rfd = getNextRFDAvailable();
+    if (rfd == INVALID_FD) {
+        errno = EMFILE;
+        return INVALID_FD;
     }
-    LeaveCriticalSection(&mutex);
+    try {
+        if (!CrtFDToRFDMap.emplace(crt_fd, rfd).second ||
+            !RFDToCrtFDMap.emplace(rfd, crt_fd).second) {
+            CrtFDToRFDMap.erase(crt_fd);
+            RFDToCrtFDMap.erase(rfd);
+            recycleRFD(rfd);
+            errno = EIO;
+            return INVALID_FD;
+        }
+    } catch (const std::bad_alloc&) {
+        CrtFDToRFDMap.erase(crt_fd);
+        RFDToCrtFDMap.erase(rfd);
+        recycleRFD(rfd);
+        errno = ENOMEM;
+        return INVALID_FD;
+    } catch (...) {
+        CrtFDToRFDMap.erase(crt_fd);
+        RFDToCrtFDMap.erase(rfd);
+        recycleRFD(rfd);
+        errno = EIO;
+        return INVALID_FD;
+    }
     return rfd;
 }
 
@@ -112,47 +172,102 @@ void RFDMap::removeCrtFD(int crt_fd) {
     // should never be removed.
     ASSERT(FIRST_RESERVED_RFD_INDEX == 0);
     if (crt_fd > RFDMap::LAST_RESERVED_RFD_INDEX) {
-        EnterCriticalSection(&mutex);
+        CriticalSectionGuard guard(&mutex);
         map<int, RFD>::iterator mit = CrtFDToRFDMap.find(crt_fd);
         if (mit != CrtFDToRFDMap.end()) {
             RFD rfd = (*mit).second;
-            RFDRecyclePool.push(rfd);
+            recycleRFD(rfd);
             RFDToCrtFDMap.erase(rfd);
             CrtFDToRFDMap.erase(crt_fd);
         }
-        LeaveCriticalSection(&mutex);
     }
 }
 
 SOCKET RFDMap::lookupSocket(RFD rfd) {
     SOCKET socket = INVALID_SOCKET;
-    EnterCriticalSection(&mutex);
-    if (RFDToSocketInfoMap.find(rfd) != RFDToSocketInfoMap.end()) {
-        socket = RFDToSocketInfoMap[rfd].socket;
-    }
-    LeaveCriticalSection(&mutex);
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info != RFDToSocketInfoMap.end()) socket = info->second.socket;
     return socket;
 }
 
-SocketInfo* RFDMap::lookupSocketInfo(RFD rfd) {
-    SocketInfo* socket_info = NULL;
-    EnterCriticalSection(&mutex);
-    if (RFDToSocketInfoMap.find(rfd) != RFDToSocketInfoMap.end()) {
-        socket_info = &RFDToSocketInfoMap[rfd];
-    }
-    LeaveCriticalSection(&mutex);
-    return socket_info;
+bool RFDMap::getSocketInfo(RFD rfd, SocketInfo *socket_info) {
+    if (socket_info == NULL) return false;
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info == RFDToSocketInfoMap.end()) return false;
+    *socket_info = info->second;
+    return true;
+}
+
+bool RFDMap::saveSocketAddrStorage(
+    RFD rfd, const SOCKADDR_STORAGE *socket_addr) {
+    if (socket_addr == NULL) return false;
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info == RFDToSocketInfoMap.end()) return false;
+    info->second.socketAddrStorage = *socket_addr;
+    return true;
+}
+
+bool RFDMap::setSocketFlags(RFD rfd, SOCKET socket, int flags) {
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info == RFDToSocketInfoMap.end() || info->second.socket != socket)
+        return false;
+    info->second.flags = flags;
+    return true;
+}
+
+bool RFDMap::markSocketClosed(RFD rfd, SOCKET *socket, void **state) {
+    if (socket == NULL || state == NULL) return false;
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info == RFDToSocketInfoMap.end() ||
+        info->second.socket == INVALID_SOCKET)
+        return false;
+    *socket = info->second.socket;
+    *state = info->second.state;
+    SocketToRFDMap.erase(*socket);
+    info->second.socket = INVALID_SOCKET;
+    return true;
+}
+
+bool RFDMap::getSocketState(RFD rfd, void **state) {
+    if (state == NULL) return false;
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info == RFDToSocketInfoMap.end()) return false;
+    *state = info->second.state;
+    return true;
+}
+
+bool RFDMap::installSocketState(RFD rfd, void *state, void **actual_state) {
+    if (state == NULL || actual_state == NULL) return false;
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info == RFDToSocketInfoMap.end() ||
+        info->second.socket == INVALID_SOCKET)
+        return false;
+    if (info->second.state == NULL) info->second.state = state;
+    *actual_state = info->second.state;
+    return true;
+}
+
+bool RFDMap::clearSocketState(RFD rfd, void *expected_state) {
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToSocketInfoMap.find(rfd);
+    if (info == RFDToSocketInfoMap.end() ||
+        info->second.state != expected_state)
+        return false;
+    info->second.state = NULL;
+    return true;
 }
 
 int RFDMap::lookupCrtFD(RFD rfd) {
     int crt_fd = INVALID_FD;
-    EnterCriticalSection(&mutex);
-    if (RFDToCrtFDMap.find(rfd) != RFDToCrtFDMap.end()) {
-        crt_fd = RFDToCrtFDMap[rfd];
-    } else if (rfd >= RFDMap::FIRST_RESERVED_RFD_INDEX
-        && rfd <= RFDMap::LAST_RESERVED_RFD_INDEX) {
-        crt_fd = rfd;
-    }
-    LeaveCriticalSection(&mutex);
+    CriticalSectionGuard guard(&mutex);
+    auto info = RFDToCrtFDMap.find(rfd);
+    if (info != RFDToCrtFDMap.end()) crt_fd = info->second;
     return crt_fd;
 }
