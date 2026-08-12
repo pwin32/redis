@@ -24,15 +24,46 @@
 #include "Win32_Error.h"
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 
 static INIT_ONCE secure_random_once = INIT_ONCE_STATIC_INIT;
 static RtlGenRandomFunc secure_random_function;
 static DWORD secure_random_error = ERROR_SUCCESS;
 
+int win32_get_proc_address(HMODULE module, const char *name,
+                           void *function, size_t function_size) {
+    const unsigned char *cursor;
+    FARPROC raw_function;
+    DWORD error;
+
+    if (module == NULL || name == NULL || name[0] == '\0' || function == NULL ||
+        function_size != sizeof(raw_function)) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    for (cursor = (const unsigned char *)name; *cursor != '\0'; cursor++) {
+        if (*cursor > 0x7f) {
+            SetLastError(ERROR_INVALID_NAME);
+            return -1;
+        }
+    }
+
+    raw_function = GetProcAddress(module, name);
+    if (raw_function == NULL) {
+        error = GetLastError();
+        if (error == ERROR_SUCCESS) error = ERROR_PROC_NOT_FOUND;
+        SetLastError(error);
+        return -1;
+    }
+
+    memcpy(function, &raw_function, sizeof(raw_function));
+    return 0;
+}
+
 static BOOL CALLBACK initialize_secure_random(PINIT_ONCE once, PVOID parameter,
                                               PVOID *context) {
     HMODULE module;
-    RtlGenRandomFunc function;
+    RtlGenRandomFunc function = NULL;
 
     (void)once;
     (void)parameter;
@@ -43,8 +74,8 @@ static BOOL CALLBACK initialize_secure_random(PINIT_ONCE once, PVOID parameter,
         secure_random_error = GetLastError();
         return TRUE;
     }
-    function = (RtlGenRandomFunc)GetProcAddress(module, "SystemFunction036");
-    if (function == NULL) {
+    if (win32_get_proc_address(module, "SystemFunction036", &function,
+                               sizeof(function)) != 0) {
         secure_random_error = GetLastError();
         FreeLibrary(module);
         return TRUE;

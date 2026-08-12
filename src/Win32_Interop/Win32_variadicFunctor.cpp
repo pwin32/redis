@@ -23,6 +23,7 @@
 #include "win32_types.h"
 
 #include "Win32_variadicFunctor.h"
+#include "Win32_APIs.h"
 #include "Win32_Error.h"
 
 #include <windows.h>
@@ -40,7 +41,7 @@ DLLMap& DLLMap::getInstance() {
 
 DLLMap::DLLMap() { };
 
-LPVOID DLLMap::getProcAddress(string dll, string functionName)
+FARPROC DLLMap::getProcAddress(const string& dll, const string& functionName)
 {
 	if (find(dll) == end()) {
 		wchar_t *wide_dll = win32_utf8_to_wide(dll.c_str());
@@ -56,9 +57,10 @@ LPVOID DLLMap::getProcAddress(string dll, string functionName)
 	}
 
 	HMODULE mod = (*this)[dll];
-	LPVOID fp = reinterpret_cast<LPVOID>(GetProcAddress(mod, functionName.c_str()));
-	if (fp == nullptr) {
-		throw system_error(GetLastError(), system_category(), "LoadLibrary failed");
+	FARPROC fp = nullptr;
+	if (win32_get_proc_address(mod, functionName.c_str(), &fp,
+	                           sizeof(fp)) != 0) {
+		throw system_error(GetLastError(), system_category(), "GetProcAddress failed");
 	}
 
 	return fp;

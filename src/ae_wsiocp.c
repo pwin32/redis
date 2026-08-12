@@ -86,9 +86,10 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
     pGetQueuedCompletionStatusEx = NULL;
     kernel32_module = GetModuleHandleW(L"kernel32.dll");
     if (kernel32_module != NULL) {
-        pGetQueuedCompletionStatusEx = (sGetQueuedCompletionStatusEx) GetProcAddress(
-                                        kernel32_module,
-                                        "GetQueuedCompletionStatusEx");
+        win32_get_proc_address(kernel32_module,
+                               "GetQueuedCompletionStatusEx",
+                               &pGetQueuedCompletionStatusEx,
+                               sizeof(pGetQueuedCompletionStatusEx));
     }
 
     state->setsize = eventLoop->setsize;
