@@ -851,7 +851,9 @@ typedef void (*RedisModuleUserChangedFunc) (uint64_t client_id, void *privdata);
 #endif
 
 #ifndef REDISMODULE_ATTR_PRINTF
-#    ifdef __GNUC__
+#    if defined(__GNUC__) && defined(__MINGW32__)
+#        define REDISMODULE_ATTR_PRINTF(idx,cnt) __attribute__((format(gnu_printf,idx,cnt)))
+#    elif defined(__GNUC__)
 #        define REDISMODULE_ATTR_PRINTF(idx,cnt) __attribute__((format(printf,idx,cnt)))
 #    else
 #        define REDISMODULE_ATTR_PRINTF(idx,cnt)

@@ -27,6 +27,8 @@ int replace_link(const char *src, const char *dest);
 int replace_rename(const char *src, const char *dest);
 int replace_random(void);
 int win32_secure_random_bytes(void *buffer, size_t length);
+int win32_get_proc_address(HMODULE module, const char *name,
+                           void *function, size_t function_size);
 int win32_llp64_interop_test(void);
 }
 
@@ -112,6 +114,37 @@ static void test_secure_random() {
         check(value >= 0 && value <= INT_MAX,
               "replace_random should return a nonnegative 31-bit value");
     }
+}
+
+static void test_proc_address_policy() {
+    typedef DWORD (WINAPI *GetCurrentProcessIdFunction)(void);
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    GetCurrentProcessIdFunction function = NULL;
+    const char non_ascii_name[] = {'G', 'e', 't', (char)0xc3, '\0'};
+
+    check(kernel32 != NULL, "kernel32 should already be loaded");
+    if (kernel32 == NULL) return;
+
+    errno = EBUSY;
+    check(win32_get_proc_address(kernel32, "GetCurrentProcessId", &function,
+                                 sizeof(function)) == 0 &&
+              function != NULL && function() == GetCurrentProcessId(),
+          "ASCII PE export names should resolve to typed function pointers");
+    check(errno == EBUSY,
+          "procedure lookup should preserve the caller's errno");
+
+    function = NULL;
+    SetLastError(ERROR_SUCCESS);
+    check(win32_get_proc_address(kernel32, non_ascii_name, &function,
+                                 sizeof(function)) == -1 &&
+              function == NULL && GetLastError() == ERROR_INVALID_NAME,
+          "non-ASCII PE export names should be rejected explicitly");
+
+    SetLastError(ERROR_SUCCESS);
+    check(win32_get_proc_address(kernel32, "GetCurrentProcessId", &function,
+                                 sizeof(function) - 1) == -1 &&
+              GetLastError() == ERROR_INVALID_PARAMETER,
+          "procedure lookup should reject incompatible pointer sizes");
 }
 
 static void test_dns_ascii_policy() {
@@ -1006,6 +1039,7 @@ int main(int argc, char **argv) {
 
     emulate_modern_windows = std::strcmp(argv[1], "--modern") == 0;
     test_secure_random();
+    test_proc_address_policy();
     test_dns_ascii_policy();
     test_error_translation();
     test_utf8_filesystem();

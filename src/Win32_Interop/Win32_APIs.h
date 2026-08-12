@@ -76,6 +76,14 @@ extern "C" {
 
 int win32_secure_random_bytes(void *buffer, size_t length);
 
+/* GetProcAddress has no wide-character form because PE export names are byte
+ * identifiers.  Redis only looks up documented ASCII export names.  Copy the
+ * result into a typed function pointer without an incompatible-function cast.
+ * This follows Win32 error semantics: inspect GetLastError() after failure;
+ * errno is deliberately left unchanged. */
+int win32_get_proc_address(HMODULE module, const char *name,
+                           void *function, size_t function_size);
+
 #define random()    replace_random()
 #define rand()      replace_random()
 #ifdef RAND_MAX

@@ -250,10 +250,10 @@ typedef BOOL (WINAPI *GetNamedPipeClientProcessIdFunc)(HANDLE, PULONG);
 
 static bool VerifyServicePipeClient(HANDLE pipe, DWORD expectedPid) {
     HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
-    GetNamedPipeClientProcessIdFunc getClientPid =
-        kernel32 == NULL ? NULL :
-        reinterpret_cast<GetNamedPipeClientProcessIdFunc>(
-            GetProcAddress(kernel32, "GetNamedPipeClientProcessId"));
+    GetNamedPipeClientProcessIdFunc getClientPid = NULL;
+    if (kernel32 != NULL)
+        win32_get_proc_address(kernel32, "GetNamedPipeClientProcessId",
+                               &getClientPid, sizeof(getClientPid));
     if (getClientPid == NULL) return false;
     ULONG clientPid = 0;
     return getClientPid(pipe, &clientPid) && clientPid == expectedPid;
@@ -647,7 +647,7 @@ VOID ServiceStart(int argc, char ** argv) {
     // it will take atleast a couple of seconds for the service to start.
     Sleep(2000);
 
-    SERVICE_STATUS status;
+    SERVICE_STATUS status = {};
     DWORD start = GetTickCount();
     for (;;) {
         if (QueryServiceStatus(shService, &status) == FALSE) {
@@ -689,7 +689,7 @@ VOID ServiceStop(int argc, char ** argv) {
     if (shService.Invalid()) {
         throw std::system_error(GetLastError(), system_category(), "OpenService failed");
     }
-    SERVICE_STATUS status;
+    SERVICE_STATUS status = {};
     if (FALSE == ControlService(shService, SERVICE_CONTROL_STOP, &status)) {
         throw std::system_error(GetLastError(), system_category(), "ControlService failed");
     }
