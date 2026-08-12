@@ -54,6 +54,7 @@ typedef struct iocpSockState {
     int masks;
     int fd;
     aacceptreq *reqs;
+    aacceptreq *accept_pending;
     int wreqs;
     OVERLAPPED ov_read;
     list wreqlist;
@@ -76,6 +77,8 @@ int            WSIOCP_SocketAttachToPort(int fd, iocpSockState *socketState,
                                          HANDLE iocp);
 BOOL           WSIOCP_CloseSocketState(iocpSockState* pSocketState);
 BOOL           WSIOCP_CloseSocketStateRFD(int rfd);
+BOOL           WSIOCP_TryFinalizeClosedState(iocpSockState *socketState);
+void           WSIOCP_DisposeAcceptRequest(aacceptreq *request);
 
 
 void* CallocMemoryNoCOW(size_t size);

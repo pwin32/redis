@@ -659,6 +659,22 @@ static void test_allocator_injection(void) {
 }
 
 #define HIREDIS_BAD_DOMAIN "idontexist-noreally.com"
+#ifdef _WIN32
+static void test_windows_dns_ascii_policy(void) {
+    struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM};
+    struct addrinfo *result = (struct addrinfo *)(uintptr_t)1;
+
+    test("Windows resolver rejects non-ASCII DNS nodes: ");
+    int rv = getaddrinfo("host-\xc3\xa9", "6379", &hints, &result);
+    test_cond(rv == EAI_NONAME && result == NULL);
+
+    result = (struct addrinfo *)(uintptr_t)1;
+    test("Windows resolver rejects non-ASCII DNS services: ");
+    rv = getaddrinfo("localhost", "port-\xc3\xa9", &hints, &result);
+    test_cond(rv == EAI_SERVICE && result == NULL);
+}
+#endif
+
 static void test_blocking_connection_errors(void) {
     redisContext *c;
     struct addrinfo hints = {.ai_family = AF_INET};
@@ -1375,6 +1391,9 @@ int main(int argc, char **argv) {
 
     test_format_commands();
     test_reply_reader();
+#ifdef _WIN32
+    test_windows_dns_ascii_policy();
+#endif
     test_blocking_connection_errors();
     test_free_null();
 

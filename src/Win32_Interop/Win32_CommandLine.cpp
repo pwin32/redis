@@ -21,6 +21,8 @@
 */
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <exception>
 #include <fstream>
 #include <functional>
@@ -388,6 +390,7 @@ static RedisParameterMapper g_redisArgMap =
     { cServiceUninstall,                &fp0 },    // service-uninstall
     { cServiceStart,                    &fp0 },    // service-start
     { cServiceStop,                     &fp0 },    // service-stop
+    { cServicePipe,                     &fp1 },    // service-pipe [internal pipe name]
 
     // redis commands (ordered as they appear in config.c/loadServerConfigFromString())
     { "timeout",                        &fp1 },    // timeout [value]
@@ -508,12 +511,222 @@ static RedisParameterMapper g_redisArgMap =
     { "min-replicas-max-lag",           &fp1 },    // min-replicas-max-lag [number]
     { "notify-keyspace-events",         &fp1 },    // notify-keyspace-events [string]
     { "supervised",                     &fp1 },    // supervised [upstart|systemd|auto|no]
-    { "loadmodule",                     &fp1 },    // loadmodule [filename]
+    /* loadmodule accepts arbitrary module arguments after the filename.
+     * It is not needed by the Windows bootstrap layer, so let the generic
+     * forwarding path consume the complete directive. */
     { "sentinel",                       &sp  },    // sentinel commands
     { "watchdog-period",                &fp1 },    // watchdog-period [number]
     { cInclude,                         &fp1 }     // include [path]
 };
 
+/*
+ * The Windows bootstrap runs before redis_main() and only needs a small
+ * subset of command-line configuration directives.  Keep the complete map
+ * above for config-file scanning (service installation needs to discover
+ * paths and persistence metadata), but do not make this layer the
+ * authoritative parser for ordinary Redis options.  Redis' core parser must
+ * see those options unchanged so it can provide its normal arity and value
+ * diagnostics.
+ */
+static bool IsBootstrapCommandLineArgument(const string& argument) {
+    return argument == cQFork ||
+        argument == cPersistenceAvailable ||
+        argument == cServiceName ||
+        argument == cServiceRun ||
+        argument == cServiceInstall ||
+        argument == cServiceUninstall ||
+        argument == cServiceStart ||
+        argument == cServiceStop ||
+        argument == cServicePipe ||
+        argument == cSyslogEnabled ||
+        argument == cSyslogIdent ||
+        argument == cLogfile ||
+        argument == cDir;
+}
+
+/* These options are owned by the Windows wrapper.  A malformed value must
+ * fail before QFork/service setup can inspect it. */
+static bool IsStrictBootstrapCommandLineArgument(const string& argument) {
+    return argument == cQFork ||
+        argument == cPersistenceAvailable ||
+        argument == cServiceName ||
+        argument == cServiceRun ||
+        argument == cServiceInstall ||
+        argument == cServiceUninstall ||
+        argument == cServiceStart ||
+        argument == cServiceStop ||
+        argument == cServicePipe;
+}
+
+static bool IsServiceActionArgument(const string& argument) {
+    return argument == cServiceRun ||
+        argument == cServiceInstall ||
+        argument == cServiceUninstall ||
+        argument == cServiceStart ||
+        argument == cServiceStop;
+}
+
+static bool IsCommandLineHexDigit(char value) {
+    return (value >= '0' && value <= '9') ||
+        (value >= 'a' && value <= 'f') ||
+        (value >= 'A' && value <= 'F');
+}
+
+static int CommandLineHexDigitToInt(char value) {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    return value - 'A' + 10;
+}
+
+/* Match sdssplitargs() without linking the Windows bootstrap layer to Redis'
+ * allocator-backed SDS implementation.  Win32_CommandLine.cpp is shared by
+ * redis-server, redis-cli, redis-benchmark, and hiredis-test, while only the
+ * server otherwise links src/sds.c. */
+static vector<string> SplitCommandLineArgument(const char *argument) {
+    vector<string> tokens;
+    if (argument == NULL) return tokens;
+
+    const char *p = argument;
+    while (true) {
+        while (*p && isspace(static_cast<unsigned char>(*p))) p++;
+        if (!*p) return tokens;
+
+        string current;
+        bool inDoubleQuotes = false;
+        bool inSingleQuotes = false;
+        bool done = false;
+        while (!done) {
+            if (inDoubleQuotes) {
+                if (*p == '\\' && *(p + 1) == 'x' &&
+                    IsCommandLineHexDigit(*(p + 2)) &&
+                    IsCommandLineHexDigit(*(p + 3))) {
+                    current.push_back(static_cast<char>(
+                        CommandLineHexDigitToInt(*(p + 2)) * 16 +
+                        CommandLineHexDigitToInt(*(p + 3))));
+                    p += 3;
+                }
+                else if (*p == '\\' && *(p + 1)) {
+                    p++;
+                    switch (*p) {
+                    case 'n': current.push_back('\n'); break;
+                    case 'r': current.push_back('\r'); break;
+                    case 't': current.push_back('\t'); break;
+                    case 'b': current.push_back('\b'); break;
+                    case 'a': current.push_back('\a'); break;
+                    default: current.push_back(*p); break;
+                    }
+                }
+                else if (*p == '"') {
+                    if (*(p + 1) &&
+                        !isspace(static_cast<unsigned char>(*(p + 1)))) {
+                        return vector<string>();
+                    }
+                    done = true;
+                }
+                else if (!*p) {
+                    return vector<string>();
+                }
+                else {
+                    current.push_back(*p);
+                }
+            }
+            else if (inSingleQuotes) {
+                if (*p == '\\' && *(p + 1) == '\'') {
+                    p++;
+                    current.push_back('\'');
+                }
+                else if (*p == '\'') {
+                    if (*(p + 1) &&
+                        !isspace(static_cast<unsigned char>(*(p + 1)))) {
+                        return vector<string>();
+                    }
+                    done = true;
+                }
+                else if (!*p) {
+                    return vector<string>();
+                }
+                else {
+                    current.push_back(*p);
+                }
+            }
+            else {
+                switch (*p) {
+                case ' ':
+                case '\n':
+                case '\r':
+                case '\t':
+                case '\0':
+                    done = true;
+                    break;
+                case '"':
+                    inDoubleQuotes = true;
+                    break;
+                case '\'':
+                    inSingleQuotes = true;
+                    break;
+                default:
+                    current.push_back(*p);
+                    break;
+                }
+            }
+            if (*p) p++;
+        }
+        tokens.push_back(current);
+    }
+}
+
+static bool IsLongCommandLineArgument(const char *argument) {
+    return argument != NULL && argument[0] == '-' && argument[1] == '-';
+}
+
+/* Redis 6.2 treats every argv item beginning with "--" as a new option.
+ * Preserve that behavior here so a malformed bootstrap option cannot consume
+ * the following option as its value.  A quoted "--name value" in one argv
+ * item is still one option, as it is in redis_main(). */
+static vector<bool> RedisCommandLineOptionMask(int argc, char **argv,
+    int startIndex) {
+    vector<bool> option(argc, false);
+    for (int i = startIndex; i < argc; i++) {
+        option[i] = IsLongCommandLineArgument(argv[i]);
+    }
+    return option;
+}
+
+static bool IsBootstrapCommandLineArgumentAt(const string& argument,
+    int index, bool serviceInvocation, int serviceNameIndex) {
+    if (!IsBootstrapCommandLineArgument(argument)) {
+        return false;
+    }
+
+    /* QFork and service actions are generated/recognized only at argv[1]. */
+    if (argument == cQFork) {
+        return index == 1;
+    }
+    if (IsServiceActionArgument(argument)) {
+        return serviceInvocation && index == 1;
+    }
+    if (argument == cServicePipe) {
+        return serviceInvocation;
+    }
+
+    /* --service-name is a prefix modifier, not a Redis value. */
+    return argument != cServiceName || index == serviceNameIndex;
+}
+
+static void RecordCommandLineArgument(const string& argument,
+    const vector<string>& params) {
+    /* ParseConfFile() runs after the command line.  Keep the latest command
+     * line occurrence at slot zero so the Windows consumers retain the same
+     * precedence as Redis' core parser; config-file values are appended
+     * afterward and do not displace it. */
+    vector<vector<string>>& values = g_argMap[argument];
+    if (values.empty()) {
+        values.push_back(params);
+    }
+    else {
+        values[0] = params;
+    }
+}
 std::vector<std::string> &split(const std::string &s, char delim, std::vector<std::string> &elems) {
     std::stringstream ss(s);
     std::string item;
@@ -716,79 +929,145 @@ void ParseCommandLineArguments(int argc, char** argv) {
 
     bool confFile = false;
     string confFilePath;
-    for (int n = (confFile ? 2 : 1); n < argc; n++) {
-        if (string(argv[n]).substr(0, 2) == "--") {
-            string argumentString = string(argv[n]);
-            string argument = argumentString.substr(2, argumentString.length() - 2);
-            transform(argument.begin(), argument.end(), argument.begin(), ::tolower);
+    bool serviceInvocation = false;
+    int serviceNameIndex = -1;
+    int redisArgumentStart = 1;
 
-            // Some -- arguments are passed directly to redis.c::main()
-            if (find(cRedisArgsForMainC.begin(), cRedisArgsForMainC.end(), argument) != cRedisArgsForMainC.end()) {
-                if (strcasecmp(argument.c_str(), "test-memory") == 0) {
-                    // The test-memory argument is followed by a integer value
-                    n++;
+    /* Redis normally accepts a config file only as argv[1].  The Windows
+     * service wrapper is the sole exception: its action and optional
+     * --service-name pair precede the Redis argument list that the service
+     * worker later reconstructs.  Resolve that one filename up front so
+     * option values can never be mistaken for replacement config files. */
+    if (argv[1][0] != '-') {
+        confFile = true;
+        confFilePath = argv[1];
+        redisArgumentStart = 2;
+    }
+    else if (IsLongCommandLineArgument(argv[1])) {
+        vector<string> firstTokens = SplitCommandLineArgument(argv[1]);
+        string firstArgument;
+        if (firstTokens.size() == 1 &&
+            firstTokens[0].substr(0, 2) == "--") {
+            firstArgument = firstTokens[0].substr(2);
+        }
+        transform(firstArgument.begin(), firstArgument.end(),
+            firstArgument.begin(), ::tolower);
+        if (IsServiceActionArgument(firstArgument)) {
+            serviceInvocation = true;
+            int candidate = 2;
+            if (candidate < argc) {
+                vector<string> serviceNameTokens =
+                    SplitCommandLineArgument(argv[candidate]);
+                if (!serviceNameTokens.empty() &&
+                    serviceNameTokens[0].substr(0, 2) == "--") {
+                    string serviceNameArgument =
+                        serviceNameTokens[0].substr(2);
+                    transform(serviceNameArgument.begin(),
+                        serviceNameArgument.end(),
+                        serviceNameArgument.begin(), ::tolower);
+                    if (serviceNameArgument == cServiceName) {
+                        serviceNameIndex = candidate;
+                        candidate += serviceNameTokens.size() > 1 ? 1 : 2;
+                    }
                 }
+            }
+            if (candidate < argc && argv[candidate][0] != '-') {
+                confFile = true;
+                confFilePath = argv[candidate];
+                redisArgumentStart = candidate + 1;
             }
             else {
-                // -- arguments processed before calling redis.c::main()
-                vector<string> params;
-                auto extractor = g_redisArgMap.find(argument);
-                if (extractor == g_redisArgMap.end()) {
-                    /* Redis configuration options not needed by the Windows
-                     * bootstrap layer are forwarded to redis_main unchanged.
-                     * The documented syntax places the optional config file
-                     * before command-line configuration overrides. */
-                    while (n + 1 < argc && string(argv[n + 1]).substr(0, 2) != "--") {
-                        params.push_back(argv[++n]);
-                    }
-                }
-                else if (argument == cSentinel) {
-                    try {
-                        vector<string> sentinelSubCommands = extractor->second->Extract(n, argc, argv);
-                        for (auto p : sentinelSubCommands) {
-                            params.push_back(p);
-                        }
-                    }
-                    catch (const invalid_argument &) {
-                        // if no subcommands could be mapped, then assume this is the parameterless --sentinel command line only argument
-                    }
-                }
-                else if (argument == cServiceRun) {
-                    // When the service starts the current directory is %systemdir%. This needs to be changed to the
-                    // directory the executable is in so that the .conf file can be loaded.
-                    char *modulePath = win32_get_module_filename_utf8();
-                    if (modulePath == NULL) {
-                        throw std::system_error(errno, generic_category(),
-                                                "GetModuleFileNameW failed");
-                    }
-                    string currentDir = modulePath;
-                    win32_free(modulePath);
-                    auto pos = currentDir.find_last_of("\\/");
-                    if (pos == string::npos) {
-                        throw std::runtime_error("Executable path has no directory");
-                    }
-                    currentDir.erase(pos);
-
-                    if (win32_set_current_directory_utf8(currentDir.c_str()) != 0) {
-                        throw std::system_error(errno, generic_category(),
-                                                "SetCurrentDirectoryW failed");
-                    }
-                }
-                else {
-                    params = extractor->second->Extract(n, argc, argv);
-                }
-                g_argMap[argument].push_back(params);
-                if (extractor != g_redisArgMap.end()) {
-                    n += (int) params.size();
-                }
+                redisArgumentStart = candidate;
             }
         }
-        else if (string(argv[n]).substr(0, 1) == "-") {
-            // Do nothing, the - arguments are passed to redis.c::main() as they are
+    }
+
+    vector<bool> optionArgument =
+        RedisCommandLineOptionMask(argc, argv, redisArgumentStart);
+    if (serviceInvocation) {
+        optionArgument[1] = true;
+    }
+    if (serviceNameIndex >= 0 && serviceNameIndex < argc) {
+        optionArgument[serviceNameIndex] = true;
+    }
+
+    for (int n = 1; n < argc; n++) {
+        if (!optionArgument[n]) {
+            continue;
         }
-        else {
-            confFile = true;
-            confFilePath = argv[n];
+
+        vector<string> tokens = SplitCommandLineArgument(argv[n]);
+        if (tokens.empty() || tokens[0].substr(0, 2) != "--") {
+            continue;
+        }
+        string argument = tokens[0].substr(2);
+        transform(argument.begin(), argument.end(), argument.begin(), ::tolower);
+
+        // Some -- arguments are passed directly to redis.c::main().
+        if (find(cRedisArgsForMainC.begin(), cRedisArgsForMainC.end(),
+            argument) != cRedisArgsForMainC.end()) {
+            continue;
+        }
+
+        bool bootstrapArgumentAt = IsBootstrapCommandLineArgumentAt(
+            argument, n, serviceInvocation, serviceNameIndex);
+        if (!bootstrapArgumentAt) {
+            /* Ordinary Redis options remain untouched for redis_main().
+             * Record their presence for the Windows no-persistence
+             * compatibility check, but do not consume values or perform
+             * syntax validation in this bootstrap layer. */
+            if (!IsBootstrapCommandLineArgument(argument)) {
+                RecordCommandLineArgument(argument, vector<string>());
+            }
+            continue;
+        }
+
+        // -- arguments processed before calling redis.c::main()
+        vector<string> params;
+        auto extractor = g_redisArgMap.find(argument);
+        bool inlineValues = tokens.size() > 1;
+        try {
+            if (argument == cServiceRun) {
+                // When the service starts the current directory is %systemdir%. This needs to be changed to the
+                // directory the executable is in so that the .conf file can be loaded.
+                char *modulePath = win32_get_module_filename_utf8();
+                if (modulePath == NULL) {
+                    throw std::system_error(errno, generic_category(),
+                                            "GetModuleFileNameW failed");
+                }
+                string currentDir = modulePath;
+                win32_free(modulePath);
+                auto pos = currentDir.find_last_of("\\/");
+                if (pos == string::npos)
+                    throw std::runtime_error("Executable path has no directory");
+                currentDir.erase(pos);
+
+                if (win32_set_current_directory_utf8(currentDir.c_str()) != 0) {
+                    throw std::system_error(errno, generic_category(),
+                                            "SetCurrentDirectoryW failed");
+                }
+            }
+            else if (inlineValues) {
+                params = extractor->second->Extract(tokens);
+            }
+            else {
+                params = extractor->second->Extract(n, argc, argv);
+            }
+        }
+        catch (const invalid_argument&) {
+            if (IsStrictBootstrapCommandLineArgument(argument)) {
+                throw;
+            }
+            /* Let redis_main() report malformed ordinary metadata options
+             * (for example --logfile without a value). */
+            continue;
+        }
+        RecordCommandLineArgument(argument, params);
+        if (!inlineValues && extractor != g_redisArgMap.end()) {
+            if (params.size() > (size_t)(INT_MAX - n)) {
+                throw length_error("Command line has too many arguments");
+            }
+            n += (int) params.size();
         }
     }
 

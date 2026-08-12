@@ -38,38 +38,100 @@ static HANDLE iocph;
 /* For zero length reads use shared buf */
 static char zreadchar[1];
 
+static BOOL WSIOCP_RemoveWriteRequest(list *requestlist, void *value) {
+    listNode *node;
+    if (requestlist == NULL) return FALSE;
+    node = listFirst(requestlist);
+    while (node != NULL) {
+        if (listNodeValue(node) == value) {
+            listDelNode(requestlist, node);
+            return TRUE;
+        }
+        node = listNextNode(node);
+    }
+    return FALSE;
+}
+
 iocpSockState* WSIOCP_GetExistingSocketState(int fd) {
-    iocpSockState** socketState = (iocpSockState**) FDAPI_GetSocketStatePtr(fd);
-    if (socketState == NULL) {
+    void *state = NULL;
+    if (!FDAPI_GetSocketState(fd, &state)) {
         return NULL;
     } else {
-        return *socketState;
+        return (iocpSockState *)state;
     }
 }
 
 /* Get the socket state. Create if not found. */
 iocpSockState* WSIOCP_GetSocketState(int fd) {
-    iocpSockState** socketState = (iocpSockState**) FDAPI_GetSocketStatePtr(fd);
-    if (socketState == NULL) {
+    iocpSockState *existing = WSIOCP_GetExistingSocketState(fd);
+    if (existing != NULL) return existing;
+
+    iocpSockState *candidate =
+        (iocpSockState *) CallocMemoryNoCOW(sizeof(iocpSockState));
+    if (candidate == NULL) return NULL;
+    candidate->fd = fd;
+
+    void *actual = NULL;
+    if (!FDAPI_InstallSocketState(fd, candidate, &actual)) {
+        FreeMemoryNoCOW(candidate);
         return NULL;
     } else {
-        if (*socketState == NULL) {
-            // Not found. Do lazy create of socket state.
-            *socketState = (iocpSockState *) CallocMemoryNoCOW(sizeof(iocpSockState));
-            if (*socketState != NULL) {
-                (*socketState)->fd = fd;
-            }
+        if (actual != candidate) {
+            FreeMemoryNoCOW(candidate);
         }
-        return *socketState;
+        return (iocpSockState *)actual;
     }
+}
+
+void WSIOCP_DisposeAcceptRequest(aacceptreq *request) {
+    if (request == NULL) return;
+    if ((int)request->accept != -1) close((int)request->accept);
+    FreeMemoryNoCOW(request->buf);
+    FreeMemoryNoCOW(request);
+}
+
+static void WSIOCP_DisposeCompletedAccepts(iocpSockState *socketState) {
+    aacceptreq *request = socketState->reqs;
+    socketState->reqs = NULL;
+    while (request != NULL) {
+        aacceptreq *next = request->next;
+        WSIOCP_DisposeAcceptRequest(request);
+        request = next;
+    }
+}
+
+static BOOL WSIOCP_HasOutstandingState(const iocpSockState *socketState) {
+    return socketState->wreqs != 0 || socketState->accept_pending != NULL ||
+           (socketState->masks &
+            (READ_QUEUED | CONNECT_PENDING | ACCEPT_PENDING)) != 0;
+}
+
+/* Finalize a descriptor whose underlying Winsock socket has already been
+ * closed once its last overlapped completion has been consumed. */
+BOOL WSIOCP_TryFinalizeClosedState(iocpSockState *socketState) {
+    if (socketState == NULL ||
+        (socketState->masks & CLOSE_PENDING) == 0 ||
+        WSIOCP_HasOutstandingState(socketState)) {
+        return FALSE;
+    }
+
+    int fd = socketState->fd;
+    WSIOCP_DisposeCompletedAccepts(socketState);
+    socketState->masks &= ~CLOSE_PENDING;
+    FDAPI_ClearSocketState(fd, socketState);
+    FDAPI_ClearSocketInfo(fd);
+    FreeMemoryNoCOW(socketState);
+    return TRUE;
 }
 
 /* Closes the socket state or sets the CLOSE_PENDING mask bit.
  * Returns TRUE if closed, FALSE if pending. */
 BOOL WSIOCP_CloseSocketState(iocpSockState* socketState) {
+    if (socketState == NULL) return TRUE;
     socketState->masks &= ~(SOCKET_ATTACHED | AE_WRITABLE | AE_READABLE);
-    if (socketState->wreqs == 0 &&
-        (socketState->masks & (READ_QUEUED | CONNECT_PENDING)) == 0) {
+    WSIOCP_DisposeCompletedAccepts(socketState);
+    if (!WSIOCP_HasOutstandingState(socketState)) {
+        FDAPI_ClearSocketState(socketState->fd, socketState);
         FreeMemoryNoCOW(socketState);
         return TRUE;
     } else {
@@ -122,6 +184,11 @@ int WSIOCP_QueueAccept(int listenfd) {
         errno = EINVAL;
         return -1;
     }
+    if (sockstate->accept_pending != NULL ||
+        (sockstate->masks & ACCEPT_PENDING) != 0) {
+        errno = EALREADY;
+        return -1;
+    }
 
     if (getsockname(listenfd, (struct sockaddr *) &listenaddr,
                     &listenaddrlen) == SOCKET_ERROR) {
@@ -163,6 +230,7 @@ int WSIOCP_QueueAccept(int listenfd) {
     }
     areq->accept = acceptfd;
     areq->next = NULL;
+    sockstate->accept_pending = areq;
 
     result = FDAPI_AcceptEx(listenfd, acceptfd,
                             areq->buf, 0,
@@ -173,6 +241,7 @@ int WSIOCP_QueueAccept(int listenfd) {
         sockstate->masks |= ACCEPT_PENDING;
     } else {
         int saved_errno = errno;
+        sockstate->accept_pending = NULL;
         sockstate->masks &= ~ACCEPT_PENDING;
         accsockstate->masks = 0;
         close(acceptfd);
@@ -384,6 +453,16 @@ int WSIOCP_SocketSend(int fd, char *buf, int len, void *eventLoop,
     areq->req.buf = buf;
     areq->proc = (aeFileProc *) proc;
 
+    /* Publish ownership before submitting the overlapped operation. A very
+     * fast completion must never race ahead of the request list, and list
+     * allocation failure is still recoverable before WSASend starts. */
+    if (listAddNodeTail(&sockstate->wreqlist, areq) == NULL) {
+        FreeMemoryNoCOW(areq);
+        errno = ENOMEM;
+        return SOCKET_ERROR;
+    }
+    sockstate->wreqs++;
+
     result = FDAPI_WSASend(fd,
                            &areq->wbuf,
                            1,
@@ -394,10 +473,10 @@ int WSIOCP_SocketSend(int fd, char *buf, int len, void *eventLoop,
 	
     if (SUCCEEDED_WITH_IOCP(result == 0)) {
         errno = EINPROGRESS;
-        sockstate->wreqs++;
-        listAddNodeTail(&sockstate->wreqlist, areq);
     } else {
         errno = win32_errno_from_system_error(FDAPI_WSAGetLastError());
+        WSIOCP_RemoveWriteRequest(&sockstate->wreqlist, areq);
+        sockstate->wreqs--;
         FreeMemoryNoCOW(areq);
     }
     return SOCKET_ERROR;

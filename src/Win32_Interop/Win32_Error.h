@@ -49,6 +49,7 @@ void win32_free(void *value);
 wchar_t *win32_utf8_to_wide(const char *value);
 char *win32_wide_to_utf8(const wchar_t *value);
 wchar_t *win32_utf8_path_to_wide(const char *path);
+wchar_t *win32_utf8_directory_path_to_wide(const char *path);
 char *win32_get_full_path_utf8(const char *path);
 wchar_t *win32_get_module_filename_wide(void);
 char *win32_get_module_filename_utf8(void);

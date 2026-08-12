@@ -3239,7 +3239,6 @@ void makeThreadKillable(void) {
 
 void initServer(void) {
     int j;
-    WIN32_ONLY(HMODULE lib;)
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
     setupSignalHandlers();
@@ -3258,11 +3257,6 @@ void initServer(void) {
     /* The Windows logger is initialized before Redis parses its configuration. */
     setLogVerbosityLevel(server.verbosity);
     setLogFile(server.logfile);
-
-    /* MingGW 32 lacks declaration of RtlGenRandom, MinGw64 don't */
-    lib = LoadLibraryW(L"advapi32.dll");
-    if (lib != NULL)
-        RtlGenRandom = (RtlGenRandomFunc) GetProcAddress(lib, "SystemFunction036");
 #else
     if (server.syslog_enabled) {
         openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,

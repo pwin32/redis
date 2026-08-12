@@ -142,16 +142,26 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
             // If no write active, then need to queue write ready
             if (sockstate->wreqs == 0) {
                 asendreq *areq = (asendreq *) CallocMemoryNoCOW(sizeof(asendreq));
+                if (areq == NULL) {
+                    errno = ENOMEM;
+                    return -1;
+                }
+                if (listAddNodeTail(&sockstate->wreqlist, areq) == NULL) {
+                    FreeMemoryNoCOW(areq);
+                    errno = ENOMEM;
+                    return -1;
+                }
+                sockstate->wreqs++;
                 if (PostQueuedCompletionStatus(state->iocp,
                                                0,
                                                fd,
                                                &areq->ov) == 0) {
                     set_errno_from_last_error();
+                    removeMatchFromList(&sockstate->wreqlist, areq);
+                    sockstate->wreqs--;
                     FreeMemoryNoCOW(areq);
                     return -1;
                 }
-                sockstate->wreqs++;
-                listAddNodeTail(&sockstate->wreqlist, areq);
             }
         }
     }
@@ -211,10 +221,11 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                                                 &state->entries[numComplete].lpCompletionKey,
                                                 &state->entries[numComplete].lpOverlapped,
                                                 0);
-                if (lrc) {
+                if (lrc ||
+                    state->entries[numComplete].lpOverlapped != NULL) {
                     numComplete++;
                 } else {
-                    if (state->entries[numComplete].lpOverlapped == NULL) break;
+                    break;
                 }
             }
         }
@@ -231,9 +242,12 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
             }
 
             if ((sockstate->masks & CLOSE_PENDING) == FALSE) {
-                if ((sockstate->masks & LISTEN_SOCK) && entry->lpOverlapped != NULL) {
+                if ((sockstate->masks & LISTEN_SOCK) &&
+                    sockstate->accept_pending != NULL &&
+                    entry->lpOverlapped == &sockstate->accept_pending->ov) {
                     // Need to set event for listening
-                    aacceptreq *areq = (aacceptreq *) entry->lpOverlapped;
+                    aacceptreq *areq = sockstate->accept_pending;
+                    sockstate->accept_pending = NULL;
                     areq->next = sockstate->reqs;
                     sockstate->reqs = areq;
                     sockstate->masks &= ~ACCEPT_PENDING;
@@ -288,7 +302,13 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     }
                 }
             } else {
-                if (sockstate->masks & CONNECT_PENDING) {
+                if (sockstate->accept_pending != NULL &&
+                    entry->lpOverlapped == &sockstate->accept_pending->ov) {
+                    aacceptreq *areq = sockstate->accept_pending;
+                    sockstate->accept_pending = NULL;
+                    sockstate->masks &= ~ACCEPT_PENDING;
+                    WSIOCP_DisposeAcceptRequest(areq);
+                } else if (sockstate->masks & CONNECT_PENDING) {
                     // Check if connect complete
                     if (entry->lpOverlapped == &sockstate->ov_read) {
                         sockstate->masks &= ~CONNECT_PENDING;
@@ -304,13 +324,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                         FreeMemoryNoCOW(areq);
                     }
                 }
-                if (sockstate->wreqs == 0 &&
-                    (sockstate->masks & (CONNECT_PENDING | READ_QUEUED | SOCKET_ATTACHED)) == 0) {
-                    sockstate->masks &= ~(CLOSE_PENDING);
-                    if (WSIOCP_CloseSocketState(sockstate)) {
-                        FDAPI_ClearSocketInfo(rfd);
-                    }
-                }
+                WSIOCP_TryFinalizeClosedState(sockstate);
             }
         }
     }

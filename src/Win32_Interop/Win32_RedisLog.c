@@ -32,6 +32,7 @@
 #include "Win32_Error.h"
 #include "Win32_EventLog.h"
 #include "Win32_Time.h"
+#include "Win32_ANSI.h"
 #include <assert.h>
 
 static const char ellipsis[] = "[...]";
@@ -169,7 +170,19 @@ truncated:
     }
 
 write_message:
-    WriteFile(hLogFile, completeMessage, completeMessageLength, &dwBytesWritten, NULL);
+    if (isStdout) {
+        DWORD consoleMode;
+        if (GetConsoleMode(hLogFile, &consoleMode)) {
+            ParseAndPrintANSIString(hLogFile, completeMessage,
+                                    completeMessageLength, &dwBytesWritten);
+        } else {
+            WriteFile(hLogFile, completeMessage, completeMessageLength,
+                      &dwBytesWritten, NULL);
+        }
+    } else {
+        WriteFile(hLogFile, completeMessage, completeMessageLength,
+                  &dwBytesWritten, NULL);
+    }
 
     /* FlushFileBuffers() ensures that all data and metadata is written to disk, but it's effect
      * on performance is severe.
