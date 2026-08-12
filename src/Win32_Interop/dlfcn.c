@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "dlfcn.h"
+#include "Win32_APIs.h"
 #include "Win32_Error.h"
 
 /* POSIX does not require dlerror() to be thread-safe. Redis calls these
@@ -103,7 +104,7 @@ int dlclose(void *handle) {
 }
 
 void *dlsym(void *handle, const char *name) {
-    FARPROC symbol;
+    void *result = NULL;
 
     clear_error();
     if (handle == NULL || name == NULL || name[0] == '\0') {
@@ -112,14 +113,14 @@ void *dlsym(void *handle, const char *name) {
         return NULL;
     }
 
-    symbol = GetProcAddress((HMODULE)handle, name);
-    if (symbol == NULL) {
+    if (win32_get_proc_address((HMODULE)handle, name, &result,
+                               sizeof(result)) != 0) {
         DWORD code = GetLastError();
         save_error("GetProcAddress", name, code);
         return NULL;
     }
 
-    return (void *)(uintptr_t)symbol;
+    return result;
 }
 
 char *dlerror(void) {

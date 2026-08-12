@@ -63,6 +63,7 @@ public:
 
 private:
     RFDMap();
+    ~RFDMap();
     RFDMap(RFDMap const&);          // Don't implement to guarantee singleton semantics
     void operator=(RFDMap const&);  // Don't implement to guarantee singleton semantics
 
@@ -84,6 +85,7 @@ private:
      * are always non-negative integers, with the first three being reserved 
      * for stdin(0), stdout(1) and stderr(2). */
     RFD getNextRFDAvailable();
+    void recycleRFD(RFD rfd) noexcept;
 
 public:
     /* Adds a socket to SocketToRFDMap and to RFDToSocketInfoMap.
@@ -91,12 +93,8 @@ public:
      * Returns INVALID_RFD if the socket is already added to the collection. */
     RFD addSocket(SOCKET socket);
 
-    /* Removes a socket from SocketToRFDMap. */
-    void removeSocketToRFD(SOCKET socket);
-
-    /* Removes a RFD from RFDToSocketInfoMap.
-     * It frees the associated RFD adding it to RFDRecyclePool. */
-    void removeRFDToSocketInfo(RFD rfd);
+    /* Removes a socket and its descriptor mapping atomically. */
+    void removeSocket(RFD rfd);
 
     /* Adds a CRT fd (used with low-level CRT posix file functions) to RFDToCrtFDMap.
      * Returns the RFD value for the crt_fd.
@@ -111,9 +109,16 @@ public:
      * Returns INVALID_SOCKET if the socket is not found. */
     SOCKET lookupSocket(RFD rfd);
 
-    /* Returns a pointer to the socket info structure associated with a RFD.
-     * Return NULL if the info socket info structure is not found. */
-    SocketInfo* lookupSocketInfo(RFD rfd);
+    /* Copies the socket information while holding the map lock. */
+    bool getSocketInfo(RFD rfd, SocketInfo *socket_info);
+
+    bool saveSocketAddrStorage(RFD rfd,
+                               const SOCKADDR_STORAGE *socket_addr);
+    bool setSocketFlags(RFD rfd, SOCKET socket, int flags);
+    bool markSocketClosed(RFD rfd, SOCKET *socket, void **state);
+    bool getSocketState(RFD rfd, void **state);
+    bool installSocketState(RFD rfd, void *state, void **actual_state);
+    bool clearSocketState(RFD rfd, void *expected_state);
 
     /* Returns the crt_fd associated with a RFD.
      * Returns INVALID_FD if the crt_fd is not found. */

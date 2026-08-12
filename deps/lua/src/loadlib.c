@@ -24,6 +24,7 @@
 #include "lualib.h"
 
 #ifdef _WIN32
+#include "Win32_Interop/Win32_APIs.h"
 #include "Win32_Interop/Win32_Error.h"
 #endif
 
@@ -153,8 +154,9 @@ static void *ll_load (lua_State *L, const char *path) {
 
 
 static lua_CFunction ll_sym (lua_State *L, void *lib, const char *sym) {
-  lua_CFunction f = (lua_CFunction)GetProcAddress((HINSTANCE)lib, sym);
-  if (f == NULL) pusherror(L);
+  lua_CFunction f = NULL;
+  if (win32_get_proc_address((HINSTANCE)lib, sym, &f, sizeof(f)) != 0)
+    pusherror(L);
   return f;
 }
 

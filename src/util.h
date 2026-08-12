@@ -80,7 +80,10 @@ int reclaimFilePageCache(int fd, size_t offset, size_t length);
 char *fgets_async_signal_safe(char *dest, int buff_size, int fd);
 #endif
 int vsnprintf_async_signal_safe(char *to, size_t size, const char *format, va_list ap);
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+int snprintf_async_signal_safe(char *to, size_t n, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 3, 4)));
+#elif defined(__GNUC__)
 int snprintf_async_signal_safe(char *to, size_t n, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 #else

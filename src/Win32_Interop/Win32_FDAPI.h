@@ -310,7 +310,9 @@ BOOL    FDAPI_GetAcceptExSockaddrs(int fd, PVOID lpOutputBuffer,DWORD dwReceiveD
 int     FDAPI_UpdateAcceptContext( int accept_fd, int listen_fd );
 int     FDAPI_UpdateConnectContext( int fd );
 int     FDAPI_PipeSetNonBlock(int rfd, int non_blocking);
-void**  FDAPI_GetSocketStatePtr(int rfd);
+BOOL    FDAPI_GetSocketState(int rfd, void **state);
+BOOL    FDAPI_InstallSocketState(int rfd, void *state, void **actual_state);
+BOOL    FDAPI_ClearSocketState(int rfd, void *expected_state);
 void    FDAPI_ClearSocketInfo(int fd);
 
 int     FDAPI_WSAIoctl(int rfd, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD cbInBuffer, LPVOID lpvOutBuffer, DWORD cbOutBuffer, LPDWORD lpcbBytesReturned, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);

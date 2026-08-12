@@ -313,7 +313,7 @@ public:
     HANDLE Assign(HANDLE mmFile, DWORD protectionFlags, DWORD maxSizeHigh, DWORD maxSizeLow, string errorToReport)
     {
         Unmap();
-        m_handle = CreateFileMapping(mmFile, NULL, protectionFlags, maxSizeHigh, maxSizeLow, NULL);
+        m_handle = CreateFileMappingW(mmFile, NULL, protectionFlags, maxSizeHigh, maxSizeLow, NULL);
         if (Invalid()) {
             if (IsDebuggerPresent()) DebugBreak();
             throw std::system_error(GetLastError(), system_category(), errorToReport);
@@ -327,7 +327,7 @@ public:
 
     SmartFileMapHandle(HANDLE mmFile, DWORD protectionFlags, DWORD maxSizeHigh, DWORD maxSizeLow, string errorToReport)
     {
-        m_handle = CreateFileMapping(mmFile, NULL, protectionFlags, maxSizeHigh, maxSizeLow, NULL);
+        m_handle = CreateFileMappingW(mmFile, NULL, protectionFlags, maxSizeHigh, maxSizeLow, NULL);
         if (Invalid()) {
             throw std::system_error(GetLastError(), system_category(), errorToReport);
         }
@@ -348,7 +348,7 @@ public:
     void Remap(HANDLE mmFile, DWORD protectionFlags, DWORD maxSizeHigh, DWORD maxSizeLow, string errorToReport)
     {
         Unmap();
-        m_handle = CreateFileMapping(mmFile, NULL, protectionFlags, maxSizeHigh, maxSizeLow, NULL);
+        m_handle = CreateFileMappingW(mmFile, NULL, protectionFlags, maxSizeHigh, maxSizeLow, NULL);
         if (Invalid()) {
             throw std::system_error(GetLastError(), system_category(), errorToReport);
         }

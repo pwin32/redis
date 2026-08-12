@@ -3516,7 +3516,14 @@ void reqresSaveClientReplyOffset(client *c);
 size_t reqresAppendRequest(client *c);
 size_t reqresAppendResponse(client *c);
 
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+void addReplyErrorFormatEx(client *c, int flags, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 3, 4)));
+void addReplyErrorFormat(client *c, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
+void addReplyStatusFormat(client *c, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
+#elif defined(__GNUC__)
 void addReplyErrorFormatEx(client *c, int flags, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 void addReplyErrorFormat(client *c, const char *fmt, ...)
@@ -4911,7 +4918,10 @@ void *realloc(void *ptr, size_t size) __attribute__ ((deprecated));
 /* Debugging stuff */
 void _serverAssertWithInfo(const client *c, const robj *o, const char *estr, const char *file, int line);
 void _serverAssert(const char *estr, const char *file, int line);
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+void _serverPanic(const char *file, int line, const char *msg, ...)
+    __attribute__ ((format (gnu_printf, 3, 4)));
+#elif defined(__GNUC__)
 void _serverPanic(const char *file, int line, const char *msg, ...)
     __attribute__ ((format (printf, 3, 4)));
 #else

@@ -277,32 +277,72 @@ static wchar_t *win32_get_full_path_wide(const wchar_t *path) {
     }
 }
 
-wchar_t *win32_utf8_path_to_wide(const char *path) {
-    wchar_t *wide = win32_utf8_to_wide(path);
-    wchar_t *full;
-    size_t length;
-
-    if (wide == NULL) return NULL;
-    if (wcsncmp(wide, L"\\\\?\\", 4) == 0 ||
-        wcsncmp(wide, L"\\\\.\\", 4) == 0) {
-        return wide;
+static int win32_component_equals(const wchar_t *component, size_t length,
+                                  const wchar_t *name) {
+    size_t index;
+    if (wcslen(name) != length) return 0;
+    for (index = 0; index < length; index++) {
+        if (towupper(component[index]) != towupper(name[index])) return 0;
     }
+    return 1;
+}
 
-    full = win32_get_full_path_wide(wide);
-    if (full == NULL) {
-        free(wide);
-        return NULL;
+static int win32_component_requires_verbatim(const wchar_t *component,
+                                             size_t length) {
+    size_t base_length = 0;
+
+    if (length == 0 ||
+        (length == 1 && component[0] == L'.') ||
+        (length == 2 && component[0] == L'.' && component[1] == L'.'))
+        return 0;
+    if (component[length - 1] == L'.' || component[length - 1] == L' ')
+        return 1;
+
+    while (base_length < length && component[base_length] != L'.' &&
+           component[base_length] != L':')
+        base_length++;
+    while (base_length != 0 && component[base_length - 1] == L' ')
+        base_length--;
+
+    if (win32_component_equals(component, base_length, L"CON") ||
+        win32_component_equals(component, base_length, L"PRN") ||
+        win32_component_equals(component, base_length, L"AUX") ||
+        win32_component_equals(component, base_length, L"NUL") ||
+        win32_component_equals(component, base_length, L"CONIN$") ||
+        win32_component_equals(component, base_length, L"CONOUT$"))
+        return 1;
+    if (base_length == 4 &&
+        ((towupper(component[0]) == L'C' &&
+          towupper(component[1]) == L'O' &&
+          towupper(component[2]) == L'M') ||
+         (towupper(component[0]) == L'L' &&
+          towupper(component[1]) == L'P' &&
+          towupper(component[2]) == L'T')) &&
+        component[3] >= L'1' && component[3] <= L'9')
+        return 1;
+    return 0;
+}
+
+static int win32_path_requires_verbatim(const wchar_t *path) {
+    const wchar_t *component = path;
+    const wchar_t *cursor = path;
+
+    while (*cursor != L'\0') {
+        if (*cursor == L'\\' || *cursor == L'/') {
+            if (win32_component_requires_verbatim(
+                    component, (size_t)(cursor - component)))
+                return 1;
+            component = cursor + 1;
+        }
+        cursor++;
     }
-    length = wcslen(full);
+    return win32_component_requires_verbatim(
+        component, (size_t)(cursor - component));
+}
 
-    /* Short paths retain ordinary Win32 parsing.  Prefix only paths which
-     * need the extended-length namespace, avoiding the legacy MAX_PATH cap. */
-    if (length < MAX_PATH) {
-        free(full);
-        return wide;
-    }
+static wchar_t *win32_make_extended_path(wchar_t *full) {
+    size_t length = wcslen(full);
 
-    free(wide);
     if (wcsncmp(full, L"\\\\", 2) == 0) {
         const wchar_t prefix[] = L"\\\\?\\UNC\\";
         size_t prefix_length = (sizeof(prefix) / sizeof(prefix[0])) - 1;
@@ -336,6 +376,47 @@ wchar_t *win32_utf8_path_to_wide(const char *path) {
         free(full);
         return extended;
     }
+}
+
+static wchar_t *win32_utf8_path_to_wide_with_threshold(const char *path,
+                                                        size_t threshold) {
+    wchar_t *wide = win32_utf8_to_wide(path);
+    wchar_t *full;
+    size_t length;
+    int requires_verbatim;
+
+    if (wide == NULL) return NULL;
+    if (wcsncmp(wide, L"\\\\?\\", 4) == 0 ||
+        wcsncmp(wide, L"\\\\.\\", 4) == 0) {
+        return wide;
+    }
+    requires_verbatim = win32_path_requires_verbatim(wide);
+
+    full = win32_get_full_path_wide(wide);
+    if (full == NULL) {
+        free(wide);
+        return NULL;
+    }
+    length = wcslen(full);
+
+    /* Ordinary short paths retain relative Win32 parsing. Paths that are long
+     * for the target API or require exact component semantics use the
+     * normalized extended namespace representation. */
+    if (length < threshold && !requires_verbatim) {
+        free(full);
+        return wide;
+    }
+
+    free(wide);
+    return win32_make_extended_path(full);
+}
+
+wchar_t *win32_utf8_path_to_wide(const char *path) {
+    return win32_utf8_path_to_wide_with_threshold(path, MAX_PATH);
+}
+
+wchar_t *win32_utf8_directory_path_to_wide(const char *path) {
+    return win32_utf8_path_to_wide_with_threshold(path, MAX_PATH - 12);
 }
 
 char *win32_get_full_path_utf8(const char *path) {
@@ -446,14 +527,33 @@ char *win32_get_current_directory_utf8(void) {
 }
 
 int win32_set_current_directory_utf8(const char *path) {
-    wchar_t *wide = win32_utf8_path_to_wide(path);
+    wchar_t *wide = win32_utf8_to_wide(path);
+    wchar_t *full;
     BOOL result;
     DWORD error;
 
     if (wide == NULL) return -1;
-    result = SetCurrentDirectoryW(wide);
-    error = result ? ERROR_SUCCESS : GetLastError();
+    if (wcsncmp(wide, L"\\\\?\\", 4) == 0 ||
+        wcsncmp(wide, L"\\\\.\\", 4) == 0 ||
+        win32_path_requires_verbatim(wide)) {
+        free(wide);
+        errno = ENAMETOOLONG;
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return -1;
+    }
+    full = win32_get_full_path_wide(wide);
     free(wide);
+    if (full == NULL) return -1;
+    if (wcslen(full) >= MAX_PATH) {
+        free(full);
+        errno = ENAMETOOLONG;
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return -1;
+    }
+
+    result = SetCurrentDirectoryW(full);
+    error = result ? ERROR_SUCCESS : GetLastError();
+    free(full);
     if (result) return 0;
 
     set_errno_from_win32_error(error);
@@ -586,9 +686,14 @@ static __declspec(thread) win32_utf8_env_cache_entry *win32_utf8_env_cache;
 
 char *win32_getenv_utf8_cached(const char *name) {
     win32_utf8_env_cache_entry *entry;
-    char *value = win32_getenv_utf8(name);
+    char *value;
 
-    if (name == NULL) return NULL;
+    if (name == NULL) {
+        errno = EINVAL;
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+    value = win32_getenv_utf8(name);
     for (entry = win32_utf8_env_cache; entry != NULL; entry = entry->next) {
         if (strcmp(entry->name, name) == 0) {
             free(entry->value);

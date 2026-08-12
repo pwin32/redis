@@ -10,6 +10,9 @@
 #include "mt19937-64.h"
 #include "server.h"
 #include "rdb.h"
+#ifdef _WIN32
+#include "Win32_Interop/Win32_ANSI.h"
+#endif
 
 #include <stdarg.h>
 #include <sys/time.h>

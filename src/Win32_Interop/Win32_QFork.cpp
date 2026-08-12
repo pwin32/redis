@@ -2043,6 +2043,18 @@ BOOL QForkParentInit() {
         RedisEventLog().LogError("QForkParentInit: an exception occurred. " + string(ex.what()));
         serverLog(LL_WARNING, "QForkParentInit: other exception caught.\n");
     }
+    if (g_pQForkControl != NULL) {
+        if (g_pQForkControl->operationComplete != NULL)
+            CloseHandle(g_pQForkControl->operationComplete);
+        if (g_pQForkControl->operationFailed != NULL)
+            CloseHandle(g_pQForkControl->operationFailed);
+        UnmapViewOfFile(g_pQForkControl);
+        g_pQForkControl = NULL;
+    }
+    if (g_hQForkControlFileMap != NULL) {
+        CloseHandle(g_hQForkControlFileMap);
+        g_hQForkControlFileMap = NULL;
+    }
     return FALSE;
 }
 
@@ -2384,30 +2396,72 @@ pid_t BeginForkOperation_Socket(int req, const void *rdbSaveInfo,
     return BeginForkOperation(otSocket, redisData, redisDataSize, dictHashSeed, modules);
 }
 
+static void MarkForkOperationFailed(const char *context) {
+    if (g_pQForkControl == NULL ||
+        g_pQForkControl->operationFailed == NULL ||
+        !SetEvent(g_pQForkControl->operationFailed)) {
+        serverLog(LL_WARNING, "%s: unable to signal QFork failure: %lu\n",
+                  context, (unsigned long)GetLastError());
+    }
+}
+
 OperationStatus GetForkOperationStatus() {
-    if (WaitForSingleObject(g_pQForkControl->operationComplete, 0) == WAIT_OBJECT_0) {
+    if (g_pQForkControl == NULL ||
+        g_pQForkControl->operationComplete == NULL ||
+        g_pQForkControl->operationFailed == NULL) {
+        serverLog(LL_WARNING,
+                  "GetForkOperationStatus: QFork control is not initialized\n");
+        return OperationStatus::osFAILED;
+    }
+    DWORD waitResult = WaitForSingleObject(
+        g_pQForkControl->operationComplete, 0);
+    if (waitResult == WAIT_OBJECT_0) {
         return OperationStatus::osCOMPLETE;
     }
+    if (waitResult == WAIT_FAILED) {
+        serverLog(LL_WARNING,
+                  "GetForkOperationStatus: completion wait failed: %lu\n",
+                  (unsigned long)GetLastError());
+        MarkForkOperationFailed("GetForkOperationStatus");
+        return OperationStatus::osFAILED;
+    }
 
-    if (WaitForSingleObject(g_pQForkControl->operationFailed, 0) == WAIT_OBJECT_0) {
+    waitResult = WaitForSingleObject(g_pQForkControl->operationFailed, 0);
+    if (waitResult == WAIT_OBJECT_0) {
+        return OperationStatus::osFAILED;
+    }
+    if (waitResult == WAIT_FAILED) {
+        serverLog(LL_WARNING,
+                  "GetForkOperationStatus: failure wait failed: %lu\n",
+                  (unsigned long)GetLastError());
         return OperationStatus::osFAILED;
     }
 
     if (g_hForkedProcess) {
         // Verify if the child process is still running
-        if (WaitForSingleObject(g_hForkedProcess, 0) == WAIT_OBJECT_0) {
+        waitResult = WaitForSingleObject(g_hForkedProcess, 0);
+        if (waitResult == WAIT_OBJECT_0) {
             // The child process is not running, close the handle and report the status
             // setting the operationFailed event
-            CloseHandle(g_hForkedProcess);
-            g_hForkedProcess = 0;
-            if (g_pQForkControl->operationFailed != NULL) {
-                SetEvent(g_pQForkControl->operationFailed);
+            if (!CloseHandle(g_hForkedProcess)) {
+                serverLog(LL_WARNING,
+                    "GetForkOperationStatus: child handle close failed: %lu\n",
+                    (unsigned long)GetLastError());
+                MarkForkOperationFailed("GetForkOperationStatus");
+                return OperationStatus::osFAILED;
             }
+            g_hForkedProcess = 0;
+            MarkForkOperationFailed("GetForkOperationStatus");
             return OperationStatus::osFAILED;
         }
-        else {
+        if (waitResult == WAIT_TIMEOUT) {
             return OperationStatus::osINPROGRESS;
         }
+        serverLog(LL_WARNING,
+            "GetForkOperationStatus: child process wait failed: %lu\n",
+            (unsigned long)GetLastError());
+        MarkForkOperationFailed("GetForkOperationStatus");
+        return OperationStatus::osFAILED;
     }
 
     return OperationStatus::osUNSTARTED;

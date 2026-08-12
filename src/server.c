@@ -3113,9 +3113,6 @@ void makeThreadKillable(void) {
 
 void initServer(void) {
     int j;
-#ifdef _WIN32
-    HMODULE lib;
-#endif
 
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
@@ -3134,11 +3131,6 @@ void initServer(void) {
     setLogVerbosityLevel(server.verbosity);
     setLogFile(server.logfile ? server.logfile : "");
 
-    /* MinGW headers do not consistently declare RtlGenRandom.  Resolve it
-     * once after the core config is initialized, matching the 6.2 bootstrap. */
-    lib = LoadLibraryW(L"advapi32.dll");
-    if (lib != NULL)
-        RtlGenRandom = (RtlGenRandomFunc)GetProcAddress(lib, "SystemFunction036");
 #else
     if (server.syslog_enabled) {
         openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,

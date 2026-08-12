@@ -56,6 +56,7 @@
 #include <libgen.h>
 #ifdef _WIN32
 #include <direct.h>
+#include "Win32_Interop/Win32_APIs.h"
 #include "Win32_Interop/Win32_Error.h"
 #include "Win32_Interop/Win32_Time.h"
 #endif
@@ -984,12 +985,13 @@ err:
     return 0;
 }
 
-/* Get random bytes, attempts to get an initial seed from /dev/urandom and
- * the uses a one way hash function in counter mode to generate a random
- * stream. However if /dev/urandom is not available, a weaker seed is used.
- *
- * This function is not thread safe, since the state is global. */
+/* Get random bytes. Windows uses the native system RNG directly; POSIX keeps
+ * Redis' existing stream generator and fallback behavior. */
 void getRandomBytes(unsigned char *p, size_t len) {
+#ifdef _WIN32
+    if (len != 0 && win32_secure_random_bytes(p, len) != 0) abort();
+    return;
+#else
     /* Global state. */
     static int seed_initialized = 0;
     static unsigned char seed[64]; /* 512 bit internal block size. */
@@ -1051,6 +1053,7 @@ void getRandomBytes(unsigned char *p, size_t len) {
         len -= copylen;
         p += copylen;
     }
+#endif
 }
 
 /* Generate the Redis "Run ID", a SHA1-sized random number that identifies a

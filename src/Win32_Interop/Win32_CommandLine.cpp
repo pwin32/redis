@@ -389,6 +389,7 @@ static RedisParameterMapper g_redisArgMap =
     { cServiceUninstall,                &fp0 },    // service-uninstall
     { cServiceStart,                    &fp0 },    // service-start
     { cServiceStop,                     &fp0 },    // service-stop
+    { cServicePipe,                     &fp1 },    // service-pipe [internal pipe name]
 
     // redis commands (ordered as they appear in config.c/loadServerConfigFromString())
     { "timeout",                        &fp1 },    // timeout [value]
@@ -536,6 +537,7 @@ static bool IsBootstrapCommandLineArgument(const string& argument) {
         argument == cServiceUninstall ||
         argument == cServiceStart ||
         argument == cServiceStop ||
+        argument == cServicePipe ||
         argument == cSyslogEnabled ||
         argument == cSyslogIdent ||
         argument == cLogfile ||
@@ -552,7 +554,8 @@ static bool IsStrictBootstrapCommandLineArgument(const string& argument) {
         argument == cServiceInstall ||
         argument == cServiceUninstall ||
         argument == cServiceStart ||
-        argument == cServiceStop;
+        argument == cServiceStop ||
+        argument == cServicePipe;
 }
 
 static bool IsServiceActionArgument(const string& argument) {
@@ -728,6 +731,9 @@ static bool IsBootstrapCommandLineArgumentAt(const string& argument,
     }
     if (IsServiceActionArgument(argument)) {
         return serviceInvocation && index == 1;
+    }
+    if (argument == cServicePipe) {
+        return serviceInvocation;
     }
 
     /* --service-name is a prefix modifier, not a Redis value. */

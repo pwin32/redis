@@ -23,6 +23,7 @@
 /* Credits Henry Rawas (henryr@schakra.com) */
 
 #include "Win32_Time.h"
+#include "Win32_APIs.h"
 #include <stdlib.h>
 #include <time.h>
 #include <windows.h>
@@ -63,7 +64,7 @@ void InitHighResRelativeTime() {
 }
 
 void InitHighResAbsoluteTime() {
-    FARPROC fp;
+    VOID(WINAPI *precise_time)(LPFILETIME) = NULL;
     HMODULE module;
 
     if (fnGetSystemTimePreciseAsFileTime != NULL)
@@ -72,12 +73,10 @@ void InitHighResAbsoluteTime() {
     /* Use GetSystemTimeAsFileTime as fallbcak where GetSystemTimePreciseAsFileTime is not available */
     fnGetSystemTimePreciseAsFileTime = GetSystemTimeAsFileTime;
     module = GetModuleHandleW(L"kernel32.dll");
-    if (module) {
-        fp = GetProcAddress(module, "GetSystemTimePreciseAsFileTime");
-        if (fp) {
-            fnGetSystemTimePreciseAsFileTime = (VOID(WINAPI*)(LPFILETIME)) fp;
-        }
-    }
+    if (module && win32_get_proc_address(module,
+            "GetSystemTimePreciseAsFileTime", &precise_time,
+            sizeof(precise_time)) == 0)
+        fnGetSystemTimePreciseAsFileTime = precise_time;
 
     assert(fnGetSystemTimePreciseAsFileTime != NULL);
 }
