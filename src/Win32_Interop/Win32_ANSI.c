@@ -30,8 +30,13 @@
 #endif
 
 #include <windows.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#define WIN32_ANSI_NO_STDIO_REDIRECT
 #include "Win32_ANSI.h"
 
 #define lenof(array) (sizeof(array)/sizeof(*(array)))
@@ -47,11 +52,15 @@ typedef struct {
 } GRM, *PGRM;	// Graphic Rendition Mode
 
 
+typedef struct {
+    unsigned int codepoint;
+    unsigned int minimum;
+    int remaining;
+} UTF8Decoder;
+
 #define is_digit(c) ('0' <= (c) && (c) <= '9')
 
-// ========== Global variables and constants
-
-HANDLE	  hConOut;		// handle to CONOUT$
+// ========== Parser contexts and constants
 
 #define ESC	'\x1B'          // ESCape character
 #define BEL	'\x07'
@@ -59,15 +68,6 @@ HANDLE	  hConOut;		// handle to CONOUT$
 #define SI	'\x0F'          // Shift In
 
 #define MAX_ARG 16		// max number of args in an escape sequence
-int   state;			// automata state
-TCHAR prefix;			// escape sequence prefix ( '[', ']' or '(' );
-TCHAR prefix2;			// secondary prefix ( '?' or '>' );
-TCHAR suffix;			// escape sequence suffix
-int   es_argc;			// escape sequence args count
-int   es_argv[MAX_ARG]; 	// escape sequence args
-TCHAR Pt_arg[MAX_PATH * 2];	// text parameter for Operating System Command
-int   Pt_len;
-BOOL  shifted;
 
 
 // DEC Special Graphics Character Set from
@@ -158,17 +158,88 @@ const BYTE attr2ansi[8] =		// map console attribute to ANSI number
     7					// white
 };
 
-GRM grm;
-
-// saved cursor position
-COORD SavePos;
-
-// ========== Print Buffer functions
-
 #define BUFFER_SIZE 2048
 
-int   nCharInBuffer;
-WCHAR ChBuffer[BUFFER_SIZE];
+typedef struct {
+    HANDLE hConOut;
+    int state;
+    TCHAR prefix;
+    TCHAR prefix2;
+    TCHAR suffix;
+    int es_argc;
+    int es_argv[MAX_ARG];
+    TCHAR Pt_arg[MAX_PATH * 2];
+    int Pt_len;
+    BOOL shifted;
+    GRM grm;
+    COORD SavePos;
+    int nCharInBuffer;
+    WCHAR ChBuffer[BUFFER_SIZE];
+    UTF8Decoder text_decoder;
+    UTF8Decoder title_decoder;
+    BOOL title_escape_pending;
+    BOOL write_failed;
+    DWORD write_error;
+} ANSI_CONTEXT;
+
+static INIT_ONCE ansi_once = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION ansi_lock;
+static ANSI_CONTEXT ansi_contexts[3];
+static ANSI_CONTEXT *ansi_context;
+
+static BOOL CALLBACK ANSIInitialize(PINIT_ONCE once, PVOID parameter,
+                                    PVOID *context) {
+    int i;
+    (void)once;
+    (void)parameter;
+    (void)context;
+    InitializeCriticalSection(&ansi_lock);
+    for (i = 0; i < (int)lenof(ansi_contexts); i++) {
+        ansi_contexts[i].hConOut = INVALID_HANDLE_VALUE;
+        ansi_contexts[i].state = 1;
+    }
+    return TRUE;
+}
+
+static ANSI_CONTEXT *ANSIContextForHandle(HANDLE handle) {
+    HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
+    ANSI_CONTEXT *context;
+
+    if (handle == stdout_handle)
+        context = &ansi_contexts[0];
+    else if (handle == stderr_handle)
+        context = &ansi_contexts[1];
+    else
+        context = &ansi_contexts[2];
+
+    if (context->hConOut != handle) {
+        memset(context, 0, sizeof(*context));
+        context->hConOut = handle;
+        context->state = 1;
+    }
+    return context;
+}
+
+#define hConOut (ansi_context->hConOut)
+#define state (ansi_context->state)
+#define prefix (ansi_context->prefix)
+#define prefix2 (ansi_context->prefix2)
+#define suffix (ansi_context->suffix)
+#define es_argc (ansi_context->es_argc)
+#define es_argv (ansi_context->es_argv)
+#define Pt_arg (ansi_context->Pt_arg)
+#define Pt_len (ansi_context->Pt_len)
+#define shifted (ansi_context->shifted)
+#define grm (ansi_context->grm)
+#define SavePos (ansi_context->SavePos)
+#define nCharInBuffer (ansi_context->nCharInBuffer)
+#define ChBuffer (ansi_context->ChBuffer)
+#define text_decoder (ansi_context->text_decoder)
+#define title_decoder (ansi_context->title_decoder)
+#define title_escape_pending (ansi_context->title_escape_pending)
+
+// ========== Print Buffer functions
 
 //-----------------------------------------------------------------------------
 //   FlushBuffer()
@@ -177,8 +248,21 @@ WCHAR ChBuffer[BUFFER_SIZE];
 
 void FlushBuffer(void) {
     DWORD nWritten;
+    DWORD offset = 0;
     if (nCharInBuffer <= 0) return;
-    WriteConsoleW(hConOut, ChBuffer, nCharInBuffer, &nWritten, NULL);
+    while (offset < (DWORD)nCharInBuffer) {
+        nWritten = 0;
+        if (!WriteConsoleW(hConOut, ChBuffer + offset,
+                           (DWORD)nCharInBuffer - offset, &nWritten, NULL) ||
+            nWritten == 0) {
+            ansi_context->write_failed = TRUE;
+            ansi_context->write_error = GetLastError();
+            if (ansi_context->write_error == ERROR_SUCCESS)
+                ansi_context->write_error = ERROR_WRITE_FAULT;
+            break;
+        }
+        offset += nWritten;
+    }
     nCharInBuffer = 0;
 }
 
@@ -204,16 +288,6 @@ static void PushBufferCodepoint(unsigned int codepoint) {
         PushBuffer((WCHAR)(0xdc00 + (codepoint & 0x3ff)));
     }
 }
-
-typedef struct {
-    unsigned int codepoint;
-    unsigned int minimum;
-    int remaining;
-} UTF8Decoder;
-
-static UTF8Decoder text_decoder;
-static UTF8Decoder title_decoder;
-static BOOL title_escape_pending;
 
 static void utf8DecoderReset(UTF8Decoder *decoder) {
     decoder->codepoint = 0;
@@ -743,21 +817,27 @@ void InterpretEscSeq(void) {
 //-----------------------------------------------------------------------------
 BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite, LPDWORD lpNumberOfBytesWritten) {
     DWORD   i;
+    DWORD error = ERROR_SUCCESS;
     LPCSTR s;
+    BOOL success;
 
-    if (hDev != hConOut)	// reinit if device has changed
-    {
-        if (hConOut != NULL) {
-            utf8DecoderEmitReplacement(&text_decoder, PushBufferCodepoint);
-            FlushBuffer();
-        }
-        hConOut = hDev;
-        state = 1;
-        shifted = FALSE;
-        utf8DecoderReset(&text_decoder);
-        utf8DecoderReset(&title_decoder);
-        title_escape_pending = FALSE;
+    if (hDev == NULL || hDev == INVALID_HANDLE_VALUE ||
+        (lpBuffer == NULL && nNumberOfBytesToWrite != 0)) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        if (lpNumberOfBytesWritten != NULL) *lpNumberOfBytesWritten = 0;
+        return FALSE;
     }
+
+    if (!InitOnceExecuteOnce(&ansi_once, ANSIInitialize, NULL, NULL)) {
+        if (lpNumberOfBytesWritten != NULL) *lpNumberOfBytesWritten = 0;
+        return FALSE;
+    }
+
+    EnterCriticalSection(&ansi_lock);
+    ansi_context = ANSIContextForHandle(hDev);
+    ansi_context->write_failed = FALSE;
+    ansi_context->write_error = ERROR_SUCCESS;
+
     for (i = nNumberOfBytesToWrite, s = (LPCSTR)lpBuffer; i > 0; i--, s++) {
         if (state == 1) {
             if (*s == ESC) {
@@ -806,7 +886,11 @@ BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytes
             }
         } else if (state == 4) {
             if (is_digit(*s)) {
-                es_argv[es_argc] = 10 * es_argv[es_argc] + (*s - '0');
+                int digit = *s - '0';
+                if (es_argv[es_argc] > (SHRT_MAX - digit) / 10)
+                    es_argv[es_argc] = SHRT_MAX;
+                else
+                    es_argv[es_argc] = 10 * es_argv[es_argc] + digit;
             } else if (*s == ';') {
                 if (es_argc < MAX_ARG - 1) es_argc++;
                 es_argv[es_argc] = 0;
@@ -851,31 +935,91 @@ BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytes
     FlushBuffer();
     if (lpNumberOfBytesWritten != NULL)
         *lpNumberOfBytesWritten = nNumberOfBytesToWrite - i;
-    return (i == 0);
+    success = (i == 0 && !ansi_context->write_failed);
+    if (!success)
+        error = ansi_context->write_error != ERROR_SUCCESS ?
+                ansi_context->write_error : ERROR_WRITE_FAULT;
+    ansi_context = NULL;
+    LeaveCriticalSection(&ansi_lock);
+    if (!success) SetLastError(error);
+    return success;
 }
 
-void ANSI_printf(const char *format, ...) {
+int ANSI_vfprintf(FILE *stream, const char *format, va_list args) {
+    HANDLE output;
+    DWORD mode;
+    DWORD bytesWritten;
+    va_list copy;
+    char *buffer;
+    int required;
+    int formatted;
+
+    if (stream == stdout)
+        output = GetStdHandle(STD_OUTPUT_HANDLE);
+    else if (stream == stderr)
+        output = GetStdHandle(STD_ERROR_HANDLE);
+    else
+        return vfprintf(stream, format, args);
+
+    if (output == INVALID_HANDLE_VALUE || output == NULL ||
+        !GetConsoleMode(output, &mode))
+        return vfprintf(stream, format, args);
+
+    va_copy(copy, args);
+    required = vsnprintf(NULL, 0, format, copy);
+    va_end(copy);
+    if (required < 0) return required;
+
+    buffer = (char *)malloc((size_t)required + 1);
+    if (buffer == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+    va_copy(copy, args);
+    formatted = vsnprintf(buffer, (size_t)required + 1, format, copy);
+    va_end(copy);
+    if (formatted != required) {
+        free(buffer);
+        if (formatted >= 0) errno = EIO;
+        return -1;
+    }
+
+    if (fflush(stream) != 0 ||
+        !ParseAndPrintANSIString(output, buffer, (DWORD)required,
+                                 &bytesWritten) ||
+        bytesWritten != (DWORD)required) {
+        free(buffer);
+        errno = EIO;
+        return -1;
+    }
+    free(buffer);
+    return required;
+}
+
+int ANSI_fprintf(FILE *stream, const char *format, ...) {
     va_list args;
-    int retVal;
-#define cBufLen 2000
-    char buffer[cBufLen];
-    memset(buffer, 0, cBufLen);
+    int result;
 
     va_start(args, format);
-    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD mode;
-    if (output == INVALID_HANDLE_VALUE || output == NULL ||
-        !GetConsoleMode(output, &mode)) {
-        vfprintf(stdout, format, args);
-        va_end(args);
-        return;
-    }
-
-    retVal = vsprintf_s(buffer, cBufLen, format, args);
+    result = ANSI_vfprintf(stream, format, args);
     va_end(args);
+    return result;
+}
 
-    if (retVal > 0) {
-        DWORD bytesWritten = 0;
-        ParseAndPrintANSIString(output, buffer, (DWORD)strlen(buffer), &bytesWritten);
-    }
+int ANSI_vprintf(const char *format, va_list args) {
+    return ANSI_vfprintf(stdout, format, args);
+}
+
+int ANSI_printf(const char *format, ...) {
+    va_list args;
+    int result;
+
+    va_start(args, format);
+    result = ANSI_vfprintf(stdout, format, args);
+    va_end(args);
+    return result;
+}
+
+int ANSI_fputs(const char *string, FILE *stream) {
+    return ANSI_fprintf(stream, "%s", string);
 }

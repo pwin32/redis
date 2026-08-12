@@ -47,6 +47,7 @@ const string cServiceUninstall = "service-uninstall";
 const string cServiceStart = "service-start";
 const string cServiceStop = "service-stop";
 const string cServiceName = "service-name";
+const string cServicePipe = "service-pipe";
 const string cSyslogEnabled = "syslog-enabled";
 const string cSyslogIdent= "syslog-ident";
 const string cLogfile = "logfile";

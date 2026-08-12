@@ -25,6 +25,8 @@ int replace_rmdir(const char *path);
 int replace_stat64(const char *path, struct __stat64 *buffer);
 int replace_link(const char *src, const char *dest);
 int replace_rename(const char *src, const char *dest);
+int replace_random(void);
+int win32_secure_random_bytes(void *buffer, size_t length);
 int win32_llp64_interop_test(void);
 }
 
@@ -62,6 +64,69 @@ static void check(bool condition, const char *message) {
         std::fprintf(stderr, "FAIL: %s\n", message);
         failures++;
     }
+}
+
+struct secure_random_context {
+    unsigned char bytes[64];
+    int result;
+};
+
+static void *fill_secure_random(void *argument) {
+    secure_random_context *context =
+        static_cast<secure_random_context *>(argument);
+    context->result = win32_secure_random_bytes(context->bytes,
+                                                sizeof(context->bytes));
+    return NULL;
+}
+
+static void test_secure_random() {
+    secure_random_context contexts[4] = {};
+    pthread_t threads[4] = {};
+
+    check(win32_secure_random_bytes(NULL, 0) == 0,
+          "zero-length secure random requests should succeed");
+    for (size_t index = 0; index < 4; index++) {
+        check(pthread_create(&threads[index], NULL, fill_secure_random,
+                             &contexts[index]) == 0,
+              "concurrent secure random thread should start");
+    }
+    for (size_t index = 0; index < 4; index++) {
+        if (threads[index] != 0)
+            check(pthread_join(threads[index], NULL) == 0,
+                  "concurrent secure random thread should join");
+        bool all_zero = true;
+        for (size_t byte = 0; byte < sizeof(contexts[index].bytes); byte++) {
+            if (contexts[index].bytes[byte] != 0) all_zero = false;
+        }
+        check(contexts[index].result == 0 && !all_zero,
+              "secure random output should succeed and contain entropy");
+        if (index != 0) {
+            check(std::memcmp(contexts[0].bytes, contexts[index].bytes,
+                              sizeof(contexts[0].bytes)) != 0,
+                  "independent secure random outputs should differ");
+        }
+    }
+
+    for (int index = 0; index < 32; index++) {
+        int value = replace_random();
+        check(value >= 0 && value <= INT_MAX,
+              "replace_random should return a nonnegative 31-bit value");
+    }
+}
+
+static void test_dns_ascii_policy() {
+    struct addrinfo hints = {};
+    struct addrinfo *result = reinterpret_cast<struct addrinfo *>(1);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    check(getaddrinfo("host-\xc3\xa9", "6379", &hints, &result) ==
+              EAI_NONAME && result == NULL,
+          "non-ASCII DNS nodes should be rejected before Winsock");
+    result = reinterpret_cast<struct addrinfo *>(1);
+    check(getaddrinfo("localhost", "port-\xc3\xa9", &hints, &result) ==
+              EAI_SERVICE && result == NULL,
+          "non-ASCII DNS services should be rejected before Winsock");
 }
 
 static void test_error_translation() {
@@ -170,6 +235,28 @@ static void test_utf8_filesystem() {
           "GetFullPathNameW result should round-trip as UTF-8");
 
     {
+        std::string reserved_path = root + "/NUL.txt";
+        wchar_t *wide_reserved =
+            win32_utf8_path_to_wide(reserved_path.c_str());
+        check(wide_reserved != NULL &&
+                  std::wcsncmp(wide_reserved, L"\\\\?\\", 4) == 0,
+              "reserved DOS path components should use verbatim wide paths");
+        free(wide_reserved);
+
+        char *before_reserved_cwd = win32_get_current_directory_utf8();
+        errno = 0;
+        check(win32_set_current_directory_utf8(reserved_path.c_str()) == -1 &&
+                  errno == ENAMETOOLONG,
+              "working directories should reject verbatim-only components");
+        char *after_reserved_cwd = win32_get_current_directory_utf8();
+        check(before_reserved_cwd != NULL && after_reserved_cwd != NULL &&
+                  std::strcmp(before_reserved_cwd, after_reserved_cwd) == 0,
+              "rejected verbatim working directory should leave CWD unchanged");
+        free(before_reserved_cwd);
+        free(after_reserved_cwd);
+    }
+
+    {
         win32_utf8_dir *dir = win32_opendir_utf8(root.c_str());
         check(dir != NULL, "UTF-8 directory enumeration should open");
         if (dir != NULL) {
@@ -263,6 +350,19 @@ static void test_utf8_filesystem() {
         }
         check(replace_unlink(deep_file.c_str()) == 0,
               "extended-length UTF-8 file should be removable");
+
+        char *before_long_cwd = win32_get_current_directory_utf8();
+        errno = 0;
+        check(before_long_cwd != NULL &&
+                  win32_set_current_directory_utf8(deep.c_str()) == -1 &&
+                  errno == ENAMETOOLONG,
+              "process working directory should reject paths at MAX_PATH");
+        char *after_long_cwd = win32_get_current_directory_utf8();
+        check(before_long_cwd != NULL && after_long_cwd != NULL &&
+                  std::strcmp(before_long_cwd, after_long_cwd) == 0,
+              "rejected long working directory should leave CWD unchanged");
+        free(before_long_cwd);
+        free(after_long_cwd);
     }
 
     {
@@ -315,6 +415,12 @@ static void test_utf8_filesystem() {
         SetEnvironmentVariableW(env_name, NULL);
         check(win32_getenv_utf8_cached("REDIS_INTEROP_UTF8") == NULL,
               "cached wide getenv should observe variable removal");
+
+        errno = 0;
+        SetLastError(ERROR_SUCCESS);
+        check(win32_getenv_utf8_cached(NULL) == NULL && errno == EINVAL &&
+                  GetLastError() == ERROR_INVALID_PARAMETER,
+              "cached wide getenv should reject a null variable name");
     }
 
     saved_cwd = win32_get_current_directory_utf8();
@@ -636,12 +742,28 @@ cleanup:
 static void test_eventloop_pipe() {
     int pipefds[2] = {-1, -1};
 
+    struct pollfd ignored = {};
+    ignored.fd = (SOCKET)-1;
+    ignored.events = POLLIN;
+    ignored.revents = POLLNVAL;
+    check(poll(&ignored, 1, 0) == 0 && ignored.revents == 0,
+          "poll should ignore negative synthetic descriptors");
+
+    struct pollfd invalid = {};
+    invalid.fd = (SOCKET)INT_MAX;
+    invalid.events = POLLIN;
+    check(poll(&invalid, 1, 1000) == 1 &&
+              invalid.revents == POLLNVAL,
+          "poll should report invalid synthetic descriptors without waiting");
+
     check(FDAPI_pipe_for_eventloop(pipefds) == 0,
           "event-loop pipe creation should succeed");
     if (pipefds[0] == -1 || pipefds[1] == -1) return;
 
-    check(FDAPI_GetSocketStatePtr(pipefds[0]) != NULL &&
-              FDAPI_GetSocketStatePtr(pipefds[1]) != NULL,
+    void *read_state = NULL;
+    void *write_state = NULL;
+    check(FDAPI_GetSocketState(pipefds[0], &read_state) &&
+              FDAPI_GetSocketState(pipefds[1], &write_state),
           "event-loop pipe endpoints should be socket descriptors");
 
     errno = 0;
@@ -733,8 +855,9 @@ static void test_eventloop_pipe() {
           "event-loop pipe reader should close cleanly");
     if (result == 0) pipefds[0] = -1;
 
-    check(FDAPI_GetSocketStatePtr(read_fd) == NULL &&
-              FDAPI_GetSocketStatePtr(write_fd) == NULL,
+    read_state = write_state = NULL;
+    check(!FDAPI_GetSocketState(read_fd, &read_state) &&
+              !FDAPI_GetSocketState(write_fd, &write_state),
           "closed event-loop pipe descriptors should leave no socket mapping");
 
     FD_ZERO(&readfds);
@@ -882,6 +1005,8 @@ int main(int argc, char **argv) {
     }
 
     emulate_modern_windows = std::strcmp(argv[1], "--modern") == 0;
+    test_secure_random();
+    test_dns_ascii_policy();
     test_error_translation();
     test_utf8_filesystem();
     test_pthread_join_result();

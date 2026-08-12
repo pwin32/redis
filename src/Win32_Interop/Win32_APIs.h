@@ -66,14 +66,15 @@ int win32_usleep(PORT_LONGLONG usec);
 
 #ifndef __RTL_GENRANDOM
 #define __RTL_GENRANDOM 1
-typedef BOOLEAN(_stdcall* RtlGenRandomFunc)(void * RandomBuffer, ULONG RandomBufferLength);
+typedef BOOLEAN(WINAPI *RtlGenRandomFunc)(void *RandomBuffer,
+                                          ULONG RandomBufferLength);
 #endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern RtlGenRandomFunc RtlGenRandom;
+int win32_secure_random_bytes(void *buffer, size_t length);
 
 #define random()    replace_random()
 #define rand()      replace_random()
