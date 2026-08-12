@@ -53,7 +53,9 @@ extern int rdbCheckMode;
 void rdbCheckError(const char *fmt, ...);
 void rdbCheckSetError(const char *fmt, ...);
 
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+void rdbReportError(int corruption_error, int linenum, char *reason, ...) __attribute__ ((format (gnu_printf, 3, 4)));
+#elif defined(__GNUC__)
 void rdbReportError(int corruption_error, int linenum, char *reason, ...) __attribute__ ((format (printf, 3, 4)));
 #endif
 void rdbReportError(int corruption_error, int linenum, char *reason, ...) {

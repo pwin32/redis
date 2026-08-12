@@ -234,7 +234,10 @@ hisds hi_sdscpylen(hisds s, const char *t, size_t len);
 hisds hi_sdscpy(hisds s, const char *t);
 
 hisds hi_sdscatvprintf(hisds s, const char *fmt, va_list ap);
-#ifdef __GNUC__
+#if defined(__GNUC__) && defined(__MINGW32__)
+hisds hi_sdscatprintf(hisds s, const char *fmt, ...)
+    __attribute__((format(gnu_printf, 2, 3)));
+#elif defined(__GNUC__)
 hisds hi_sdscatprintf(hisds s, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 #else
