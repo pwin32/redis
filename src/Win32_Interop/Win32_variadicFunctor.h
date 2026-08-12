@@ -22,6 +22,7 @@
 #pragma once
 
 #include <Windows.h>
+#include <cstring>
 #include <string>
 #include <map>
 using namespace std;
@@ -36,7 +37,7 @@ private:
 	void operator=(DLLMap const&); // Don't implement to guarantee singleton semantics
 
 public:
-	LPVOID getProcAddress(string dll, string functionName);
+	FARPROC getProcAddress(const string& dll, const string& functionName);
 	virtual ~DLLMap();
 };
 
@@ -46,7 +47,9 @@ class dllfunctor_stdcall {
 public:
 	dllfunctor_stdcall(string dll, string function)
 	{
-		_f = (R(__stdcall *)(T...))DLLMap::getInstance().getProcAddress(dll, function.c_str());
+		FARPROC raw = DLLMap::getInstance().getProcAddress(dll, function);
+		static_assert(sizeof(_f) == sizeof(raw), "Windows function pointer size mismatch");
+		std::memcpy(&_f, &raw, sizeof(_f));
 	}
 	R operator()(T... args) { return _f(args...); }
 

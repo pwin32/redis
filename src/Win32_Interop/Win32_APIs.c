@@ -24,8 +24,104 @@
 #include "Win32_Error.h"
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 
-RtlGenRandomFunc RtlGenRandom;
+static INIT_ONCE secure_random_once = INIT_ONCE_STATIC_INIT;
+static RtlGenRandomFunc secure_random_function;
+static DWORD secure_random_error = ERROR_SUCCESS;
+
+int win32_get_proc_address(HMODULE module, const char *name,
+                           void *function, size_t function_size) {
+    const unsigned char *cursor;
+    FARPROC raw_function;
+    DWORD error;
+
+    if (module == NULL || name == NULL || name[0] == '\0' || function == NULL ||
+        function_size != sizeof(raw_function)) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+    for (cursor = (const unsigned char *)name; *cursor != '\0'; cursor++) {
+        if (*cursor > 0x7f) {
+            SetLastError(ERROR_INVALID_NAME);
+            return -1;
+        }
+    }
+
+    raw_function = GetProcAddress(module, name);
+    if (raw_function == NULL) {
+        error = GetLastError();
+        if (error == ERROR_SUCCESS) error = ERROR_PROC_NOT_FOUND;
+        SetLastError(error);
+        return -1;
+    }
+
+    memcpy(function, &raw_function, sizeof(raw_function));
+    return 0;
+}
+
+static BOOL CALLBACK initialize_secure_random(PINIT_ONCE once, PVOID parameter,
+                                              PVOID *context) {
+    HMODULE module;
+    RtlGenRandomFunc function = NULL;
+
+    (void)once;
+    (void)parameter;
+    (void)context;
+
+    module = LoadLibraryW(L"advapi32.dll");
+    if (module == NULL) {
+        secure_random_error = GetLastError();
+        return TRUE;
+    }
+    if (win32_get_proc_address(module, "SystemFunction036", &function,
+                               sizeof(function)) != 0) {
+        secure_random_error = GetLastError();
+        FreeLibrary(module);
+        return TRUE;
+    }
+
+    secure_random_function = function;
+    return TRUE;
+}
+
+int win32_secure_random_bytes(void *buffer, size_t length) {
+    unsigned char *cursor = (unsigned char *)buffer;
+
+    if (length == 0) return 0;
+    if (buffer == NULL) {
+        errno = EINVAL;
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+
+    if (!InitOnceExecuteOnce(&secure_random_once, initialize_secure_random,
+                             NULL, NULL)) {
+        secure_random_error = GetLastError();
+    }
+    if (secure_random_function == NULL) {
+        DWORD error = secure_random_error == ERROR_SUCCESS ?
+                      ERROR_GEN_FAILURE : secure_random_error;
+        SetLastError(error);
+        errno = win32_errno_from_system_error((int)error);
+        return -1;
+    }
+
+    while (length != 0) {
+        ULONG chunk = length > (size_t)ULONG_MAX ? ULONG_MAX :
+                      (ULONG)length;
+        if (!secure_random_function(cursor, chunk)) {
+            DWORD error = GetLastError();
+            if (error == ERROR_SUCCESS) error = ERROR_GEN_FAILURE;
+            SetLastError(error);
+            errno = win32_errno_from_system_error((int)error);
+            return -1;
+        }
+        cursor += chunk;
+        length -= chunk;
+    }
+    return 0;
+}
 
 static void win32_sleep_milliseconds(PORT_ULONGLONG milliseconds) {
     const DWORD max_finite_sleep = MAXDWORD - 1;
@@ -62,13 +158,7 @@ int win32_usleep(PORT_LONGLONG usec) {
 /* Replace MS C rtl rand which is 15bit with 32 bit */
 int replace_random() {
     unsigned int x = 0;
-    if (RtlGenRandom == NULL) {
-        // Load proc if not loaded
-        HMODULE lib = LoadLibraryW(L"advapi32.dll");
-        RtlGenRandom = (RtlGenRandomFunc) GetProcAddress(lib, "SystemFunction036");
-        if (RtlGenRandom == NULL) return 1;
-    }
-    RtlGenRandom(&x, sizeof(unsigned int));
+    if (win32_secure_random_bytes(&x, sizeof(x)) != 0) abort();
     return (int) (x >> 1);
 }
 
@@ -239,7 +329,7 @@ int replace_unlink(const char *path) {
 }
 
 int replace_mkdir(const char *path) {
-    wchar_t *wide_path = win32_utf8_path_to_wide(path);
+    wchar_t *wide_path = win32_utf8_directory_path_to_wide(path);
     int result;
     int saved_errno;
     if (wide_path == NULL) return -1;
@@ -251,7 +341,7 @@ int replace_mkdir(const char *path) {
 }
 
 int replace_rmdir(const char *path) {
-    wchar_t *wide_path = win32_utf8_path_to_wide(path);
+    wchar_t *wide_path = win32_utf8_directory_path_to_wide(path);
     int result;
     int saved_errno;
     if (wide_path == NULL) return -1;

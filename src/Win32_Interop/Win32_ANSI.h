@@ -25,16 +25,35 @@
 #define WIN32_INTEROPA_ANSI_H
 
 #include <Windows.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
     BOOL ParseAndPrintANSIString(HANDLE hDev, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite, LPDWORD lpNumberOfBytesWritten);
-    void ANSI_printf(const char *format, ...);
+#if defined(__GNUC__) || defined(__clang__)
+#define WIN32_ANSI_PRINTF_ATTR(format_index, first_arg) \
+    __attribute__((format(gnu_printf, format_index, first_arg)))
+#else
+#define WIN32_ANSI_PRINTF_ATTR(format_index, first_arg)
+#endif
+
+    int ANSI_printf(const char *format, ...) WIN32_ANSI_PRINTF_ATTR(1, 2);
+    int ANSI_vprintf(const char *format, va_list args);
+    int ANSI_fprintf(FILE *stream, const char *format, ...) WIN32_ANSI_PRINTF_ATTR(2, 3);
+    int ANSI_vfprintf(FILE *stream, const char *format, va_list args);
+    int ANSI_fputs(const char *string, FILE *stream);
 
     // include this file after stdio.h in order to redirect printf to the one that supports ANSI escape sequences
-#define printf ANSI_printf
+#ifndef WIN32_ANSI_NO_STDIO_REDIRECT
+#define printf(...) ANSI_printf(__VA_ARGS__)
+#define vprintf(...) ANSI_vprintf(__VA_ARGS__)
+#define fprintf(...) ANSI_fprintf(__VA_ARGS__)
+#define vfprintf(...) ANSI_vfprintf(__VA_ARGS__)
+#define fputs(...) ANSI_fputs(__VA_ARGS__)
+#endif
 
 #ifdef __cplusplus
 }

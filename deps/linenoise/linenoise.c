@@ -106,6 +106,8 @@
 #ifdef _WIN32
 #include "../../src/Win32_Interop/Win32_Portability.h"
 #include "../../src/Win32_Interop/win32fixes.h"
+#include "../../src/Win32_Interop/Win32_APIs.h"
+#include "../../src/Win32_Interop/Win32_Error.h"
 #define UNUSED(V) ((void) V)
 #include "../../src/Win32_Interop/win32_ANSI.h"
 #else
@@ -235,9 +237,11 @@ static inline void resetSearchResult(void) {
     #define STDIN_FILENO (_fileno(stdin))
 #endif
 
-HANDLE hOut;
-HANDLE hIn;
-DWORD consolemode;
+static HANDLE hOut = INVALID_HANDLE_VALUE;
+static HANDLE hIn = INVALID_HANDLE_VALUE;
+static DWORD original_console_mode;
+static int fake_tty_mode_active;
+static int fake_tty_original_mode;
 
 static int win32Utf8Encode(unsigned int codepoint, char *bytes, size_t capacity) {
     if (codepoint <= 0x7f && capacity >= 1) {
@@ -267,6 +271,10 @@ static int win32Utf8Encode(unsigned int codepoint, char *bytes, size_t capacity)
 
 static int win32read(char *bytes, size_t capacity, int *key_action) {
     static WCHAR high_surrogate;
+    static KEY_EVENT_RECORD repeated_event;
+    static WORD repeats_remaining;
+    static KEY_EVENT_RECORD replay_event;
+    static BOOL replay_valid;
     DWORD count;
     INPUT_RECORD record;
 
@@ -276,12 +284,39 @@ static int win32read(char *bytes, size_t capacity, int *key_action) {
         unsigned int codepoint;
 
         *key_action = WIN32_KEY_NONE;
-        if (!ReadConsoleInputW(hIn, &record, 1, &count)) return 0;
-        if (!count) return 0;
-        if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown)
-            continue;
+        if (replay_valid) {
+            event = replay_event;
+            replay_valid = FALSE;
+        } else if (repeats_remaining != 0) {
+            event = repeated_event;
+            repeats_remaining--;
+        } else {
+            if (!ReadConsoleInputW(hIn, &record, 1, &count)) {
+                errno = win32_errno_from_system_error((int)GetLastError());
+                if (errno == 0) errno = EIO;
+                return -1;
+            }
+            if (!count) {
+                errno = EIO;
+                return -1;
+            }
+            if (record.EventType != KEY_EVENT ||
+                !record.Event.KeyEvent.bKeyDown)
+                continue;
+            event = repeated_event = record.Event.KeyEvent;
+            repeats_remaining = event.wRepeatCount > 1 ?
+                                event.wRepeatCount - 1 : 0;
+        }
 
-        event = record.Event.KeyEvent;
+        codepoint = event.uChar.UnicodeChar;
+        if (high_surrogate &&
+            !(codepoint >= 0xdc00 && codepoint <= 0xdfff)) {
+            replay_event = event;
+            replay_valid = TRUE;
+            high_surrogate = 0;
+            return win32Utf8Encode(0xfffd, bytes, capacity);
+        }
+
         altgr = (event.dwControlKeyState & LEFT_CTRL_PRESSED) != 0 &&
                 (event.dwControlKeyState & RIGHT_ALT_PRESSED) != 0;
 
@@ -327,9 +362,14 @@ static int win32read(char *bytes, size_t capacity, int *key_action) {
         default: break;
         }
 
-        codepoint = event.uChar.UnicodeChar;
         if (!codepoint) continue;
         if (codepoint >= 0xd800 && codepoint <= 0xdbff) {
+            if (high_surrogate) {
+                replay_event = event;
+                replay_valid = TRUE;
+                high_surrogate = 0;
+                return win32Utf8Encode(0xfffd, bytes, capacity);
+            }
             high_surrogate = (WCHAR)codepoint;
             continue;
         }
@@ -544,8 +584,6 @@ static int enableRawMode(int fd) {
     if (tcsetattr(fd,TCSANOW,&raw) < 0) goto fatal;
     rawmode = 1;
 #else
-    UNUSED(fd);
-
     /* The Redis CLI integration tests drive linenoise through a pipe. Keep
      * native console handling for real interactive sessions, but let the
      * explicitly requested fake-TTY mode use ordinary file descriptor I/O. */
@@ -553,32 +591,35 @@ static int enableRawMode(int fd) {
         /* Preserve carriage returns as ENTER. In CRT text mode a CRLF pair
          * becomes a bare LF, which linenoise intentionally ignores while it
          * is emulating raw terminal input. */
-        if (setmode(fd, _O_BINARY) == -1) goto fatal;
+        fake_tty_original_mode = _setmode(fd, _O_BINARY);
+        if (fake_tty_original_mode == -1) goto fatal;
+        fake_tty_mode_active = 1;
+        rawmode = 1;
+        if (!atexit_registered) {
+            atexit(linenoiseAtExit);
+            atexit_registered = 1;
+        }
         return 0;
     }
 
+    hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn == NULL || hIn == INVALID_HANDLE_VALUE ||
+        !GetConsoleMode(hIn, &original_console_mode))
+        goto fatal;
+    {
+        DWORD raw_console_mode = original_console_mode;
+        raw_console_mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT |
+                              ENABLE_PROCESSED_INPUT |
+                              ENABLE_QUICK_EDIT_MODE);
+#ifdef ENABLE_VIRTUAL_TERMINAL_INPUT
+        raw_console_mode &= ~ENABLE_VIRTUAL_TERMINAL_INPUT;
+#endif
+        raw_console_mode |= ENABLE_EXTENDED_FLAGS;
+        if (!SetConsoleMode(hIn, raw_console_mode)) goto fatal;
+    }
+
     if (!atexit_registered) {
-        /* Init windows console handles only once */
-        hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (hOut==INVALID_HANDLE_VALUE) goto fatal;
-
-        if (!GetConsoleMode(hOut, &consolemode)) {
-            CloseHandle(hOut);
-            errno = ENOTTY;
-            return -1;
-        };
-
-        hIn = GetStdHandle(STD_INPUT_HANDLE);
-        if (hIn == INVALID_HANDLE_VALUE) {
-            CloseHandle(hOut);
-            errno = ENOTTY;
-            return -1;
-        }
-
-        GetConsoleMode(hIn, &consolemode);
-        SetConsoleMode(hIn, ENABLE_PROCESSED_INPUT);
-
-        /* Cleanup them at exit */
         atexit(linenoiseAtExit);
         atexit_registered = 1;
     }
@@ -594,7 +635,13 @@ fatal:
 
 static void disableRawMode(int fd) {
 #ifdef _WIN32
-    UNUSED(fd);
+    if (!rawmode) return;
+    if (fake_tty_mode_active) {
+        _setmode(fd, fake_tty_original_mode);
+        fake_tty_mode_active = 0;
+    } else if (hIn != NULL && hIn != INVALID_HANDLE_VALUE) {
+        SetConsoleMode(hIn, original_console_mode);
+    }
     rawmode = 0;
 #else
     /* Don't even check the return value as it's too late. */
@@ -636,8 +683,10 @@ static int getColumns(int ifd, int ofd) {
 
     if (getenv("FAKETTY_WITH_PROMPT") != NULL) return 80;
 
-    if (!GetConsoleScreenBufferInfo(hOut, &b)) return 80;
-    return b.srWindow.Right - b.srWindow.Left;
+    if (hOut == NULL || hOut == INVALID_HANDLE_VALUE ||
+        !GetConsoleScreenBufferInfo(hOut, &b))
+        return 80;
+    return b.srWindow.Right - b.srWindow.Left + 1;
 #else
     if (getenv("FAKETTY_WITH_PROMPT") != NULL) {
         goto failed;
@@ -1803,18 +1852,38 @@ int linenoiseHistorySetMaxLen(int len) {
 /* Save the history in the specified file. On success 0 is returned
  * otherwise -1 is returned. */
 int linenoiseHistorySave(const char *filename) {
+#ifndef _WIN32
     mode_t old_umask = umask(S_IXUSR|S_IRWXG|S_IRWXO);
+#endif
     FILE *fp;
     int j;
+    int result = 0;
 
+#ifdef _WIN32
+    fp = replace_fopen(filename,"w");
+#else
     fp = fopen(filename,"w");
     umask(old_umask);
+#endif
     if (fp == NULL) return -1;
-    chmod(filename,S_IRUSR|S_IWUSR);
-    for (j = 0; j < history_len; j++)
-        if (!history_sensitive[j]) fprintf(fp,"%s\n",history[j]);
-    fclose(fp);
-    return 0;
+#ifdef _WIN32
+    if (replace_chmod(filename,S_IRUSR|S_IWUSR) != 0) {
+#else
+    if (chmod(filename,S_IRUSR|S_IWUSR) != 0) {
+#endif
+        int saved_errno = errno;
+        fclose(fp);
+        errno = saved_errno;
+        return -1;
+    }
+    for (j = 0; j < history_len; j++) {
+        if (!history_sensitive[j] && fprintf(fp,"%s\n",history[j]) < 0) {
+            result = -1;
+            break;
+        }
+    }
+    if (fclose(fp) != 0) result = -1;
+    return result;
 }
 
 /* Load the history from the specified file. If the file does not exist
@@ -1823,8 +1892,13 @@ int linenoiseHistorySave(const char *filename) {
  * If the file exists and the operation succeeded 0 is returned, otherwise
  * on error -1 is returned. */
 int linenoiseHistoryLoad(const char *filename) {
+#ifdef _WIN32
+    FILE *fp = replace_fopen(filename,"r");
+#else
     FILE *fp = fopen(filename,"r");
+#endif
     char buf[LINENOISE_MAX_LINE];
+    int result = 0;
 
     if (fp == NULL) return -1;
 
@@ -1836,8 +1910,9 @@ int linenoiseHistoryLoad(const char *filename) {
         if (p) *p = '\0';
         linenoiseHistoryAdd(buf, 0);
     }
-    fclose(fp);
-    return 0;
+    if (ferror(fp)) result = -1;
+    if (fclose(fp) != 0) result = -1;
+    return result;
 }
 
 /* This function updates the search index based on the direction of the search.
