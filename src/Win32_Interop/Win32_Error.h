@@ -51,6 +51,9 @@ char *win32_wide_to_utf8(const wchar_t *value);
 wchar_t *win32_utf8_path_to_wide(const char *path);
 wchar_t *win32_utf8_directory_path_to_wide(const char *path);
 char *win32_get_full_path_utf8(const char *path);
+/* Compare arbitrary UTF-8 text using Windows ordinal case folding. */
+int win32_utf8_strings_equal_ignore_case(const char *first, const char *second);
+int win32_utf8_contains_ignore_case(const char *value, const char *needle);
 wchar_t *win32_get_module_filename_wide(void);
 char *win32_get_module_filename_utf8(void);
 char *win32_get_module_filename_for_handle_utf8(void *module);
