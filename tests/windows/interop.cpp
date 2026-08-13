@@ -162,6 +162,21 @@ static void test_dns_ascii_policy() {
           "non-ASCII DNS services should be rejected before Winsock");
 }
 
+static void test_windows_path_comparison() {
+    check(win32_utf8_strings_equal_ignore_case("Redis-PATH", "redis-path"),
+          "Windows UTF-8 text should support Unicode ordinal case folding");
+    check(win32_utf8_contains_ignore_case("C:\\Redis-SENTINEL.EXE",
+                                          "redis-sentinel"),
+          "Windows executable aliases should be found case-insensitively");
+    check(win32_utf8_paths_equal(
+              "C:/Redis/\xc3\x84of/Data.AOF",
+              "c:\\redis\\\xc3\xa4of\\data.aof"),
+          "Windows UTF-8 paths should compare with Unicode ordinal case folding");
+    check(!win32_utf8_paths_equal("C:/Redis/data.aof",
+                                  "C:/Redis/other.aof"),
+          "different Windows UTF-8 paths should not compare equal");
+}
+
 static void test_error_translation() {
     sigset_t signals;
     sigset_t old_signals = 0;
@@ -445,6 +460,9 @@ static void test_utf8_filesystem() {
         cached = win32_getenv_utf8_cached("REDIS_INTEROP_UTF8");
         check(cached != NULL && std::strcmp(cached, "updated") == 0,
               "cached wide getenv should refresh without leaking lookups");
+        cached = win32_getenv_utf8_cached("redis_interop_utf8");
+        check(cached != NULL && std::strcmp(cached, "updated") == 0,
+              "cached wide getenv should follow Windows case-insensitive names");
         SetEnvironmentVariableW(env_name, NULL);
         check(win32_getenv_utf8_cached("REDIS_INTEROP_UTF8") == NULL,
               "cached wide getenv should observe variable removal");
@@ -1041,6 +1059,7 @@ int main(int argc, char **argv) {
     test_secure_random();
     test_proc_address_policy();
     test_dns_ascii_policy();
+    test_windows_path_comparison();
     test_error_translation();
     test_utf8_filesystem();
     test_pthread_join_result();

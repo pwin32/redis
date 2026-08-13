@@ -917,19 +917,10 @@ void aofOpenIfNeededOnServerStart(void) {
     }
 }
 
-/* Compare already-absolute paths using the platform's lexical rules. */
+/* Compare path or file-name spellings using the platform's lexical rules. */
 static int aofPathsEqual(const char *first, const char *second) {
 #ifdef _WIN32
-    while (*first && *second) {
-        unsigned char a = (unsigned char)*first++;
-        unsigned char b = (unsigned char)*second++;
-        if (a == '\\') a = '/';
-        if (b == '\\') b = '/';
-        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
-        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
-        if (a != b) return 0;
-    }
-    return *first == *second;
+    return win32_utf8_paths_equal(first, second);
 #else
     return strcmp(first, second) == 0;
 #endif
@@ -946,7 +937,7 @@ static int preloadFileIsCurrentAofManifest(void) {
 
     char *preload_path = server.preload_file + 4;
     char *extension = getFileExtension(preload_path);
-    if (extension == NULL || strcmp(extension, "manifest") != 0) {
+    if (extension == NULL || !aofPathsEqual(extension, "manifest")) {
         return 0;
     }
 
@@ -967,7 +958,7 @@ static int preloadFileIsCurrentAofManifest(void) {
 static aofManifest *aofManifestFromPreloadFile(char *preload_path) {
     char *extension = getFileExtension(preload_path);
     serverAssert(extension != NULL);
-    if (!strcmp(extension, "manifest")) {
+    if (aofPathsEqual(extension, "manifest")) {
         return aofLoadManifestFromFile(preload_path);
     }
 
@@ -1032,7 +1023,8 @@ cleanup:
 
 /* Return whether name is referenced by the manifest's BASE or INCR entries. */
 static int aofManifestReferencesFile(aofManifest *am, const char *name) {
-    if (am->base_aof_info && !strcmp(am->base_aof_info->file_name, name))
+    if (am->base_aof_info &&
+        aofPathsEqual(am->base_aof_info->file_name, name))
         return 1;
 
     listIter li;
@@ -1040,7 +1032,7 @@ static int aofManifestReferencesFile(aofManifest *am, const char *name) {
     listRewind(am->incr_aof_list, &li);
     while ((ln = listNext(&li)) != NULL) {
         aofInfo *ai = listNodeValue(ln);
-        if (!strcmp(ai->file_name, name))
+        if (aofPathsEqual(ai->file_name, name))
             return 1;
     }
     return 0;
@@ -1089,7 +1081,7 @@ static void aofRemoveFilesOutsideManifest(aofManifest *am) {
     const char *name;
     while ((name = redisAofReadDir(dir)) != NULL) {
         if (!strcmp(name, ".") || !strcmp(name, "..") ||
-            !strcmp(name, manifest_name) ||
+            aofPathsEqual(name, manifest_name) ||
             aofManifestReferencesFile(am, name))
         {
             continue;
@@ -2025,7 +2017,7 @@ int loadSingleAppendOnlyFile(char *filename) {
     } else {
         /* RDB format. Pass loading the RDB functions. */
         rio rdb;
-        int old_style = !strcmp(filename, server.aof_filename);
+        int old_style = aofPathsEqual(filename, server.aof_filename);
         if (old_style)
             serverLog(LL_NOTICE, "Reading RDB preamble from AOF file...");
         else 
@@ -2277,7 +2269,7 @@ void upgradeAofIfNeeded(aofManifest *am) {
         if (!dirExists(server.aof_dirname) ||
             (am->base_aof_info == NULL && listLength(am->incr_aof_list) == 0) ||
             (am->base_aof_info != NULL && listLength(am->incr_aof_list) == 0 &&
-             !strcmp(am->base_aof_info->file_name, server.aof_filename) && !aofFileExist(server.aof_filename)))
+             aofPathsEqual(am->base_aof_info->file_name, server.aof_filename) && !aofFileExist(server.aof_filename)))
         {
             aofUpgradePrepare(am);
         }
