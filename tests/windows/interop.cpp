@@ -162,6 +162,14 @@ static void test_dns_ascii_policy() {
           "non-ASCII DNS services should be rejected before Winsock");
 }
 
+static void test_windows_identity_policy() {
+    check(win32_utf8_strings_equal_ignore_case("Redis-PATH", "redis-path"),
+          "Windows UTF-8 text should support ordinal case folding");
+    check(win32_utf8_contains_ignore_case("C:\\Redis-SENTINEL.EXE",
+                                          "redis-sentinel"),
+          "Windows executable aliases should be found case-insensitively");
+}
+
 static void test_error_translation() {
     sigset_t signals;
     sigset_t old_signals = 0;
@@ -1041,6 +1049,7 @@ int main(int argc, char **argv) {
     test_secure_random();
     test_proc_address_policy();
     test_dns_ascii_policy();
+    test_windows_identity_policy();
     test_error_translation();
     test_utf8_filesystem();
     test_pthread_join_result();
