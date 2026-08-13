@@ -78,6 +78,15 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath);
 void aofManifestFreeAndUpdate(aofManifest *am);
 void aof_background_fsync_and_close(int fd);
 
+/* Compare a logical AOF filename using the host filesystem's lexical rules. */
+static int aofFileNamesEqual(const char *first, const char *second) {
+#ifdef _WIN32
+    return win32_utf8_strings_equal_ignore_case(first, second);
+#else
+    return strcmp(first, second) == 0;
+#endif
+}
+
 /* When we call 'startAppendOnly', we will create a temp INCR AOF, and rename
  * it to the real INCR AOF name when the AOFRW is done, so if want to know the
  * accurate start offset of the INCR AOF, we need to record it when we create
@@ -1682,7 +1691,7 @@ int loadSingleAppendOnlyFile(char *filename) {
     } else {
         /* RDB format. Pass loading the RDB functions. */
         rio rdb;
-        int old_style = !strcmp(filename, server.aof_filename);
+        int old_style = aofFileNamesEqual(filename, server.aof_filename);
         if (old_style)
             serverLog(LL_NOTICE, "Reading RDB preamble from AOF file...");
         else 
@@ -1928,7 +1937,7 @@ int loadAppendOnlyFiles(aofManifest *am) {
         if (!dirExists(server.aof_dirname) ||
             (am->base_aof_info == NULL && listLength(am->incr_aof_list) == 0) ||
             (am->base_aof_info != NULL && listLength(am->incr_aof_list) == 0 &&
-             !strcmp(am->base_aof_info->file_name, server.aof_filename) && !aofFileExist(server.aof_filename)))
+             aofFileNamesEqual(am->base_aof_info->file_name, server.aof_filename) && !aofFileExist(server.aof_filename)))
         {
             aofUpgradePrepare(am);
         }
