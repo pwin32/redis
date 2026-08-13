@@ -6108,12 +6108,20 @@ void sendChildInfo(childInfoType info_type, size_t keys, char *pname) {
 
 void memtest(size_t megabytes, int passes);
 
+static int executableNameContains(const char *exec_name, const char *component) {
+#ifdef _WIN32
+    return win32_utf8_contains_ignore_case(exec_name, component);
+#else
+    return strstr(exec_name, component) != NULL;
+#endif
+}
+
 /* Returns 1 if there is --sentinel among the arguments or if
  * argv[0] contains "redis-sentinel". */
 int checkForSentinelMode(int argc, char **argv) {
     int j;
 
-    if (strstr(argv[0],"redis-sentinel") != NULL) return 1;
+    if (executableNameContains(argv[0],"redis-sentinel")) return 1;
     for (j = 1; j < argc; j++)
         if (!strcmp(argv[j],"--sentinel")) return 1;
     return 0;
@@ -6453,9 +6461,9 @@ int main(int argc, char **argv) {
     /* Check if we need to start in redis-check-rdb/aof mode. We just execute
      * the program main. However the program is part of the Redis executable
      * so that we can easily execute an RDB check on loading errors. */
-    if (strstr(argv[0],"redis-check-rdb") != NULL)
+    if (executableNameContains(argv[0],"redis-check-rdb"))
         redis_check_rdb_main(argc,argv,NULL);
-    else if (strstr(argv[0],"redis-check-aof") != NULL)
+    else if (executableNameContains(argv[0],"redis-check-aof"))
         redis_check_aof_main(argc,argv);
 
     if (argc >= 2) {

@@ -23,6 +23,7 @@
 #include <Windows.h>
 #include <shellapi.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -434,6 +435,58 @@ char *win32_get_full_path_utf8(const char *path) {
     return utf8;
 }
 
+int win32_utf8_strings_equal_ignore_case(const char *first, const char *second) {
+    wchar_t *wide_first = win32_utf8_to_wide(first);
+    wchar_t *wide_second;
+    int result;
+
+    if (wide_first == NULL) return 0;
+    wide_second = win32_utf8_to_wide(second);
+    if (wide_second == NULL) {
+        free(wide_first);
+        return 0;
+    }
+    result = CompareStringOrdinal(wide_first, -1, wide_second, -1, TRUE) ==
+             CSTR_EQUAL;
+    free(wide_second);
+    free(wide_first);
+    return result;
+}
+
+int win32_utf8_contains_ignore_case(const char *value, const char *needle) {
+    wchar_t *wide_value = win32_utf8_to_wide(value);
+    wchar_t *wide_needle;
+    size_t value_length;
+    size_t needle_length;
+    size_t offset;
+    int result = 0;
+
+    if (wide_value == NULL) return 0;
+    wide_needle = win32_utf8_to_wide(needle);
+    if (wide_needle == NULL) {
+        free(wide_value);
+        return 0;
+    }
+    value_length = wcslen(wide_value);
+    needle_length = wcslen(wide_needle);
+    if (needle_length == 0) {
+        result = 1;
+    } else if (needle_length <= value_length && needle_length <= INT_MAX) {
+        for (offset = 0; offset <= value_length - needle_length; offset++) {
+            if (CompareStringOrdinal(wide_value + offset, (int)needle_length,
+                                     wide_needle, (int)needle_length, TRUE) ==
+                CSTR_EQUAL)
+            {
+                result = 1;
+                break;
+            }
+        }
+    }
+    free(wide_needle);
+    free(wide_value);
+    return result;
+}
+
 static wchar_t *win32_get_module_filename_for_handle_wide(HMODULE module) {
     DWORD size = 256;
 
@@ -695,7 +748,7 @@ char *win32_getenv_utf8_cached(const char *name) {
     }
     value = win32_getenv_utf8(name);
     for (entry = win32_utf8_env_cache; entry != NULL; entry = entry->next) {
-        if (strcmp(entry->name, name) == 0) {
+        if (win32_utf8_strings_equal_ignore_case(entry->name, name)) {
             free(entry->value);
             entry->value = value;
             return entry->value;
