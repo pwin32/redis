@@ -1,7 +1,8 @@
 #!/bin/sh
 GIT_SHA1=$(git rev-parse --verify --short=8 HEAD 2>/dev/null || echo 00000000)
 GIT_DIRTY=0
-git diff-index --quiet HEAD -- 2>/dev/null || GIT_DIRTY=1
+git diff --quiet --no-ext-diff -- 2>/dev/null || GIT_DIRTY=1
+git diff --cached --quiet --no-ext-diff -- 2>/dev/null || GIT_DIRTY=1
 BUILD_ID=$(uname -n)"-"$(date +%s)
 if [ -n "$SOURCE_DATE_EPOCH" ]; then
   BUILD_ID=$(date -u -d "@$SOURCE_DATE_EPOCH" +%s 2>/dev/null || date -u -r "$SOURCE_DATE_EPOCH" +%s 2>/dev/null || date -u +%s)
