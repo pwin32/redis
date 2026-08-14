@@ -407,7 +407,7 @@ TEST_MODULES := \
 	$(BUILD)/tests/modules/timer.so \
 	$(BUILD)/tests/modules/zset.so
 
-.PHONY: all clean distclean deps eventlog hiredis-test interop-test test-modules
+.PHONY: all clean distclean deps eventlog hiredis-test interop-test test-modules FORCE_RELEASE_HEADER
 
 all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL)
 
@@ -421,8 +421,10 @@ interop-test: $(BUILD)/interop-test.exe
 
 test-modules: $(TEST_MODULES)
 
-src/release.h:
+src/release.h: FORCE_RELEASE_HEADER
 	cd src && ./mkreleasehdr.sh
+
+FORCE_RELEASE_HEADER:
 
 $(JEMALLOC_SRC)/configure: $(JEMALLOC_SRC)/configure.ac
 	cd $(JEMALLOC_SRC) && autoconf
