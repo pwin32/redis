@@ -507,7 +507,10 @@ src/release.h: FORCE
 # those values actually changed.
 FORCE:
 
-$(JEMALLOC_SRC)/configure: $(JEMALLOC_SRC)/configure.ac
+# Use the checked-in upstream configure script. Rebuilding it merely because a
+# checkout changed mtimes dirties the source tree and makes release provenance
+# depend on the locally installed autoconf version. Regenerate only if absent.
+$(JEMALLOC_SRC)/configure:
 	cd $(JEMALLOC_SRC) && autoconf
 
 $(JEMALLOC_BUILD)/Makefile: $(JEMALLOC_SRC)/configure Makefile.mingw

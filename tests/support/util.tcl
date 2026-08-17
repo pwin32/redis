@@ -696,7 +696,7 @@ proc get_child_pid {idx} {
     if {$::tcl_platform(platform) eq "windows"} {
         # Persistence children are QFork instances on Windows.  Use the
         # repository-owned verifier so the selected PID must be a direct child
-        # with the exact redis-server executable and --qfork command line.
+        # with the exact redis-server executable; command-line text is mutable.
         return [get_qfork_child_pid $idx]
     }
 

@@ -182,12 +182,6 @@ static HANDLE open_process_for_query(DWORD process_id) {
                        process_id);
 }
 
-static HANDLE open_process_for_command_line(DWORD process_id) {
-    return OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-                       FALSE,
-                       process_id);
-}
-
 static HANDLE open_process_for_control(DWORD process_id) {
     return OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
                            PROCESS_SUSPEND_RESUME,
@@ -532,62 +526,10 @@ static int control_process(DWORD process_id,
     return status == 0 ? 0 : 1;
 }
 
-static int process_command_line_has_qfork(HANDLE process) {
-    typedef NTSTATUS (NTAPI *NtQueryInformationProcessFunction)(
-        HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
-    NtQueryInformationProcessFunction query_information = NULL;
-    PROCESS_BASIC_INFORMATION basic;
-    PEB peb;
-    RTL_USER_PROCESS_PARAMETERS parameters;
-    wchar_t *text = NULL;
-    ULONG return_length = 0;
-    SIZE_T bytes_read = 0;
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    FARPROC raw_function = ntdll == NULL ? NULL :
-        GetProcAddress(ntdll, "NtQueryInformationProcess");
-    int found = 0;
-
-    if (raw_function != NULL)
-        memcpy(&query_information, &raw_function, sizeof(query_information));
-    if (query_information == NULL ||
-        query_information(process, ProcessBasicInformation, &basic,
-                          sizeof(basic), &return_length) != 0 ||
-        basic.PebBaseAddress == NULL ||
-        !ReadProcessMemory(process, basic.PebBaseAddress, &peb,
-                           sizeof(peb), &bytes_read) ||
-        peb.ProcessParameters == NULL ||
-        !ReadProcessMemory(process, peb.ProcessParameters, &parameters,
-                           sizeof(parameters), &bytes_read) ||
-        parameters.CommandLine.Buffer == NULL ||
-        parameters.CommandLine.Length == 0) {
-        return 0;
-    }
-
-    text = (wchar_t *)malloc((size_t)parameters.CommandLine.Length +
-                             sizeof(wchar_t));
-    if (text == NULL ||
-        !ReadProcessMemory(process, parameters.CommandLine.Buffer, text,
-                           parameters.CommandLine.Length, &bytes_read)) {
-        free(text);
-        return 0;
-    }
-    text[parameters.CommandLine.Length / sizeof(wchar_t)] = L'\0';
-
-    for (size_t index = 0; text[index] != L'\0'; index++) {
-        if (_wcsnicmp(text + index, L"--qfork", 7) == 0 &&
-            (index == 0 || iswspace(text[index - 1])) &&
-            (text[index + 7] == L'\0' || iswspace(text[index + 7]))) {
-            found = 1;
-            break;
-        }
-    }
-    free(text);
-    return found;
-}
-
 static int find_qfork_child(DWORD parent_id,
                             const wchar_t *expected_image,
-                            DWORD *child_id) {
+                            DWORD *child_id,
+                            int *matches_out) {
     HANDLE snapshot;
     PROCESSENTRY32W entry;
     DWORD match = 0;
@@ -602,11 +544,13 @@ static int find_qfork_child(DWORD parent_id,
         do {
             HANDLE process;
             if ((DWORD)entry.th32ParentProcessID != parent_id) continue;
-            process = open_process_for_command_line(entry.th32ProcessID);
+            process = open_process_for_query(entry.th32ProcessID);
             if (process == NULL) continue;
+            /* QFork children are direct redis-server children. Process-title
+             * rewriting makes command-line text unstable, and the remote PEB
+             * layout is not a supported ownership boundary. */
             if (process_handle_is_alive(process) &&
-                process_image_matches(process, expected_image) &&
-                process_command_line_has_qfork(process)) {
+                process_image_matches(process, expected_image)) {
                 match = entry.th32ProcessID;
                 matches++;
             }
@@ -615,6 +559,7 @@ static int find_qfork_child(DWORD parent_id,
     }
     CloseHandle(snapshot);
 
+    *matches_out = matches;
     if (matches != 1) return 1;
     *child_id = match;
     return 0;
@@ -623,6 +568,8 @@ static int find_qfork_child(DWORD parent_id,
 static int query_command_find_qfork_child(int argc, wchar_t **argv) {
     DWORD parent_id;
     DWORD child_id;
+    int matches = 0;
+    int attempt;
 
     if (argc != 4 || !parse_process_id(argv[2], &parent_id)) {
         fprintf(stderr,
@@ -630,7 +577,14 @@ static int query_command_find_qfork_child(int argc, wchar_t **argv) {
                 "expected-executable\n");
         return 2;
     }
-    if (find_qfork_child(parent_id, argv[3], &child_id)) return 1;
+    /* Child publication is asynchronous. Retry only a no-match result so a
+     * duplicate exact-image child remains a fail-closed ownership error. */
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (!find_qfork_child(parent_id, argv[3], &child_id, &matches)) break;
+        if (matches != 0) return 1;
+        Sleep(20);
+    }
+    if (matches != 1) return 1;
     if (printf("%lu\n", (unsigned long)child_id) < 0 ||
         fflush(stdout) != 0) {
         return 1;
