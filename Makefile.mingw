@@ -444,7 +444,10 @@ src/release.h: FORCE
 # those values actually changed.
 FORCE:
 
-$(JEMALLOC_SRC)/configure: $(JEMALLOC_SRC)/configure.ac
+# The generated configure script is checked in. Depending on configure.ac's
+# checkout timestamp makes ordinary builds rewrite tracked source with the
+# host autoconf version, so only regenerate it when it is actually absent.
+$(JEMALLOC_SRC)/configure:
 	cd $(JEMALLOC_SRC) && autoconf
 
 $(JEMALLOC_BUILD)/Makefile: $(JEMALLOC_SRC)/configure Makefile.mingw
