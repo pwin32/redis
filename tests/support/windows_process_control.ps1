@@ -1,48 +1,86 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("FindQForkChild", "Suspend", "Resume")]
+    [ValidateSet("FindQForkChild", "CheckIdentity", "Suspend", "Resume")]
     [string]$Action,
 
     [Parameter(Mandatory = $true)]
     [int]$TargetProcessId,
 
     [Parameter(Mandatory = $true)]
-    [string]$ExpectedExecutable
+    [string]$ExpectedExecutable,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ExpectedArgument = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 if ($Action -eq "FindQForkChild") {
     $expected = [System.IO.Path]::GetFullPath($ExpectedExecutable)
-    $children = @(
-        Get-CimInstance Win32_Process -Filter "ParentProcessId = $TargetProcessId"
-    )
-    $matches = @(
-        $children | Where-Object {
-            $_.ExecutablePath -and
-            $_.CommandLine -and
-            [String]::Equals(
-                [System.IO.Path]::GetFullPath($_.ExecutablePath),
-                $expected,
-                [StringComparison]::OrdinalIgnoreCase) -and
-            $_.CommandLine -match '(?i)(?:^|\s)--qfork(?:\s|$)'
-        }
-    )
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    $children = @()
+    $matches = @()
 
-    if ($matches.Count -ne 1) {
-        $details = @(
-            $children | ForEach-Object {
-                "PID=$($_.ProcessId) ExecutablePath=$($_.ExecutablePath) CommandLine=$($_.CommandLine)"
+    do {
+        $children = @(
+            Get-CimInstance Win32_Process -Filter "ParentProcessId = $TargetProcessId"
+        )
+        $matches = @(
+            $children | Where-Object {
+                $_.ExecutablePath -and
+                [String]::Equals(
+                    [System.IO.Path]::GetFullPath($_.ExecutablePath),
+                    $expected,
+                    [StringComparison]::OrdinalIgnoreCase)
             }
-        ) -join [Environment]::NewLine
-        if (-not $details) {
-            $details = "<none>"
+        )
+
+        if ($matches.Count -eq 1) {
+            Write-Output ([int]$matches[0].ProcessId)
+            return
         }
-        throw "Expected exactly one QFork child of process $TargetProcessId, found $($matches.Count). Direct children: $details"
+
+        # More than one exact-image direct child is ambiguous and must never
+        # be resolved by inspecting the mutable command-line text.
+        if ($matches.Count -gt 1) {
+            break
+        }
+
+        Start-Sleep -Milliseconds 25
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $details = @(
+        $children | ForEach-Object {
+            "PID=$($_.ProcessId) ExecutablePath=$($_.ExecutablePath) CommandLine=$($_.CommandLine)"
+        }
+    ) -join [Environment]::NewLine
+    if (-not $details) {
+        $details = "<none>"
+    }
+    throw "Expected exactly one QFork child of process $TargetProcessId, found $($matches.Count). Direct children: $details"
+}
+
+if ($Action -eq "CheckIdentity") {
+    $processes = @(
+        Get-CimInstance Win32_Process -Filter "ProcessId = $TargetProcessId"
+    )
+    if ($processes.Count -ne 1 -or -not $processes[0].ExecutablePath) {
+        exit 1
     }
 
-    Write-Output ([int]$matches[0].ProcessId)
-    return
+    $process = $processes[0]
+    $expected = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+    $actual = [System.IO.Path]::GetFullPath($process.ExecutablePath)
+    if (-not [String]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+        exit 1
+    }
+
+    if ($ExpectedArgument -ne "" -and
+        ($null -eq $process.CommandLine -or
+         $process.CommandLine.IndexOf($ExpectedArgument, [StringComparison]::OrdinalIgnoreCase) -lt 0)) {
+        exit 1
+    }
+    exit 0
 }
 
 Add-Type -TypeDefinition @"

@@ -534,7 +534,7 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 #ifdef _WIN32
     nread = read(c->context->fd,buf,sizeof(buf));
     if (nread == -1) {
-        if ((errno == ENOENT) || (errno == WSAEWOULDBLOCK)) {
+        if ((errno == ENOENT) || (errno == EAGAIN)) {
             errno = EAGAIN;
             WSIOCP_QueueNextRead((int) c->context->fd);
             return;
@@ -708,7 +708,7 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                                        c,
                                        NULL,
                                        writeHandlerDone);
-        if (result == SOCKET_ERROR && errno != WSA_IO_PENDING) {
+        if (result == SOCKET_ERROR && errno != EINPROGRESS) {
             if (errno != EPIPE)
                 fprintf(stderr, "Writing to socket: %s\n", wsa_strerror(errno));
             freeClient(c);

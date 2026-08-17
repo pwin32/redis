@@ -191,7 +191,10 @@ proc reconnect {args} {
     set client [redis $host $port 0 $::tls]
     if {[dict exists $srv "client"]} {
         set old [dict get $srv "client"]
-        $old close
+        # Windows shutdown may have already closed the retained test client
+        # after keeping its SHUTDOWN request alive until the server exited.
+        # Treat an already-destroyed Tcl handle as closed.
+        catch {$old close}
     }
     dict set srv "client" $client
 

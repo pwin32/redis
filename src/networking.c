@@ -1320,7 +1320,7 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                 serverLog(LL_WARNING,
                     "Accepting client connection: %s", server.neterr);
 #ifdef _WIN32
-                if (WSIOCP_QueueAccept(fd) == -1) {
+                if (WSIOCP_EnsureAcceptQueued(fd) == -1) {
                     serverLog(LL_WARNING,
                         "acceptTcpHandler: failed to queue another accept.");
                 }
@@ -1350,7 +1350,7 @@ void acceptTLSHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                 serverLog(LL_WARNING,
                     "Accepting client connection: %s", server.neterr);
 #ifdef _WIN32
-                if (WSIOCP_QueueAccept(fd) == -1) {
+                if (WSIOCP_EnsureAcceptQueued(fd) == -1) {
                     serverLog(LL_WARNING,
                         "acceptTLSHandler: failed to queue another accept.");
                 }
@@ -2910,6 +2910,14 @@ NULL
             if (c == client) {
                 close_this_client = 1;
             } else {
+#ifdef _WIN32
+                /* CLIENT KILL is an explicit abort, not a graceful drain.
+                 * Winsock closesocket() may otherwise keep a connection with
+                 * queued output alive for an arbitrary period, which leaves
+                 * a diskless-loading replica blocked until repl-timeout. */
+                if (client->conn)
+                    FDAPI_shutdown(client->conn->fd, SD_BOTH);
+#endif
                 freeClient(client);
             }
             killed++;

@@ -31,6 +31,7 @@
 #include <errno.h>
 
 static HANDLE iocph;
+static volatile LONG acceptRearmPending;
 
 #define SUCCEEDED_WITH_IOCP(result) \
     ((result) || (FDAPI_WSAGetLastError() == WSA_IO_PENDING))
@@ -106,6 +107,24 @@ static BOOL WSIOCP_HasOutstandingState(const iocpSockState *socketState) {
             (READ_QUEUED | CONNECT_PENDING | ACCEPT_PENDING)) != 0;
 }
 
+static void WSIOCP_ClearAcceptRearmNeeded(iocpSockState *socketState) {
+    if (socketState->masks & ACCEPT_REARM_NEEDED) {
+        socketState->masks &= ~ACCEPT_REARM_NEEDED;
+        InterlockedDecrement(&acceptRearmPending);
+    }
+}
+
+static void WSIOCP_MarkAcceptRearmNeeded(iocpSockState *socketState) {
+    if ((socketState->masks & ACCEPT_REARM_NEEDED) == 0) {
+        socketState->masks |= ACCEPT_REARM_NEEDED;
+        InterlockedIncrement(&acceptRearmPending);
+    }
+}
+
+BOOL WSIOCP_AcceptRearmPending(void) {
+    return InterlockedCompareExchange(&acceptRearmPending, 0, 0) != 0;
+}
+
 /* Finalize a descriptor whose underlying Winsock socket has already been
  * closed once its last overlapped completion has been consumed. */
 BOOL WSIOCP_TryFinalizeClosedState(iocpSockState *socketState) {
@@ -128,6 +147,7 @@ BOOL WSIOCP_TryFinalizeClosedState(iocpSockState *socketState) {
  * Returns TRUE if closed, FALSE if pending. */
 BOOL WSIOCP_CloseSocketState(iocpSockState* socketState) {
     if (socketState == NULL) return TRUE;
+    WSIOCP_ClearAcceptRearmNeeded(socketState);
     socketState->masks &= ~(SOCKET_ATTACHED | AE_WRITABLE | AE_READABLE);
     WSIOCP_DisposeCompletedAccepts(socketState);
     if (!WSIOCP_HasOutstandingState(socketState)) {
@@ -239,6 +259,7 @@ int WSIOCP_QueueAccept(int listenfd) {
                             &bytes, &areq->ov);
     if (SUCCEEDED_WITH_IOCP(result)){
         sockstate->masks |= ACCEPT_PENDING;
+        WSIOCP_ClearAcceptRearmNeeded(sockstate);
     } else {
         int saved_errno = errno;
         sockstate->accept_pending = NULL;
@@ -252,6 +273,23 @@ int WSIOCP_QueueAccept(int listenfd) {
     }
 
     return 0;
+}
+
+/* Queue the listener's next one-shot AcceptEx operation unless one is already
+ * pending. A transient failure is retained for the event loop to retry. */
+int WSIOCP_EnsureAcceptQueued(int listenfd) {
+    iocpSockState *sockstate = WSIOCP_GetExistingSocketState(listenfd);
+
+    if (sockstate == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (sockstate->masks & CLOSE_PENDING) return 0;
+    if (sockstate->accept_pending != NULL) return 0;
+
+    if (WSIOCP_QueueAccept(listenfd) == 0) return 0;
+    WSIOCP_MarkAcceptRearmNeeded(sockstate);
+    return -1;
 }
 
 /* Listen using extension function to get faster accepts */
@@ -308,10 +346,8 @@ int WSIOCP_Accept(int fd, struct sockaddr *sa, socklen_t *len) {
     result = FDAPI_UpdateAcceptContext(acceptfd, fd);
     if (result == SOCKET_ERROR) {
         int saved_errno = errno;
-        close(acceptfd);
-        FreeMemoryNoCOW(areq->buf);
-        FreeMemoryNoCOW(areq);
-        WSIOCP_QueueAccept(fd);
+        WSIOCP_DisposeAcceptRequest(areq);
+        WSIOCP_EnsureAcceptQueued(fd);
         errno = saved_errno;
         return SOCKET_ERROR;
     }
@@ -324,10 +360,8 @@ int WSIOCP_Accept(int fd, struct sockaddr *sa, socklen_t *len) {
                                     &plocalsa, &locallen,
                                     &premotesa, &remotelen)) {
         int saved_errno = errno;
-        close(acceptfd);
-        FreeMemoryNoCOW(areq->buf);
-        FreeMemoryNoCOW(areq);
-        WSIOCP_QueueAccept(fd);
+        WSIOCP_DisposeAcceptRequest(areq);
+        WSIOCP_EnsureAcceptQueued(fd);
         errno = saved_errno;
         return SOCKET_ERROR;
     }
@@ -345,10 +379,8 @@ int WSIOCP_Accept(int fd, struct sockaddr *sa, socklen_t *len) {
 
     if (WSIOCP_SocketAttach(acceptfd, NULL) != 0) {
         int saved_errno = errno;
-        close(acceptfd);
-        FreeMemoryNoCOW(areq->buf);
-        FreeMemoryNoCOW(areq);
-        WSIOCP_QueueAccept(fd);
+        WSIOCP_DisposeAcceptRequest(areq);
+        WSIOCP_EnsureAcceptQueued(fd);
         errno = saved_errno;
         return SOCKET_ERROR;
     }
@@ -356,10 +388,9 @@ int WSIOCP_Accept(int fd, struct sockaddr *sa, socklen_t *len) {
     FreeMemoryNoCOW(areq->buf);
     FreeMemoryNoCOW(areq);
 
-    // Queue another accept
-    if (WSIOCP_QueueAccept(fd) == -1) {
-        return SOCKET_ERROR;
-    }
+    /* Hand the completed socket to the caller even if the listener's next
+     * AcceptEx cannot be queued immediately. The event loop owns retries. */
+    WSIOCP_EnsureAcceptQueued(fd);
 
     return acceptfd;
 }
@@ -669,7 +700,10 @@ int WSIOCP_SocketConnectBind(int fd, const SOCKADDR_STORAGE *socketAddrStorage, 
 }
 
 void WSIOCP_Init(HANDLE iocp) {
-    if (iocph == NULL) iocph = iocp;
+    if (iocph == NULL) {
+        iocph = iocp;
+        InterlockedExchange(&acceptRearmPending, 0);
+    }
     FDAPI_SetCloseSocketState(WSIOCP_CloseSocketStateRFD);
 }
 

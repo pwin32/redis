@@ -713,7 +713,7 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     if (server.masterhost == NULL && server.loading) return;
 #else
     if (server.masterhost == NULL && server.loading) {
-        WSIOCP_QueueAccept(fd);
+        WSIOCP_EnsureAcceptQueued(fd);
         return;
     }
 #endif
@@ -727,7 +727,7 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                 serverLog(LL_VERBOSE,
                     "Error accepting cluster node: %s", server.neterr);
 #ifdef _WIN32
-            if (WSIOCP_QueueAccept(fd) == -1) {
+            if (WSIOCP_EnsureAcceptQueued(fd) == -1) {
                 serverLog(LL_WARNING,
                     "acceptTcpHandler: failed to queue another accept.");
             }

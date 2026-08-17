@@ -67,6 +67,7 @@ typedef struct iocpSockState {
 #define LISTEN_SOCK         0x001000
 #define CONNECT_PENDING     0x002000
 #define CLOSE_PENDING       0x004000
+#define ACCEPT_REARM_NEEDED 0x008000
 
 void           WSIOCP_Init(HANDLE iocp);
 void           WSIOCP_Cleanup(HANDLE iocp);
@@ -79,6 +80,7 @@ BOOL           WSIOCP_CloseSocketState(iocpSockState* pSocketState);
 BOOL           WSIOCP_CloseSocketStateRFD(int rfd);
 BOOL           WSIOCP_TryFinalizeClosedState(iocpSockState *socketState);
 void           WSIOCP_DisposeAcceptRequest(aacceptreq *request);
+BOOL           WSIOCP_AcceptRearmPending(void);
 
 
 void* CallocMemoryNoCOW(size_t size);

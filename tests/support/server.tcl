@@ -96,7 +96,12 @@ proc kill_server config {
 
     # kill server and wait for the process to be totally exited
     send_data_packet $::test_server_fd server-killing $pid
-    kill_proc $config
+    set shutdown_client {}
+    if {$::tcl_platform(platform) eq "windows"} {
+        set shutdown_client [kill_proc $config]
+    } else {
+        kill_proc $config
+    }
     # Node might have been stopped in the test
     if {$::tcl_platform(platform) != "windows"} {
         catch {exec kill -SIGCONT $pid}
@@ -117,6 +122,9 @@ proc kill_server config {
         }
         after 10
     }
+    if {$shutdown_client ne {}} {
+        catch {$shutdown_client close}
+    }
 
     # Check valgrind errors if needed
     if {$::valgrind} {
@@ -129,13 +137,14 @@ proc kill_server config {
 
 proc windows_is_alive config {
     set pid [dict get $config pid]
-    set mfilter {PID eq }
-    append mfilter $pid
-    if { [string first $pid [exec tasklist.exe -FI ${mfilter}]] != -1 } {
-        return 1
-    } else {
-        return 0
-    }
+    set script [file normalize tests/support/windows_process_control.ps1]
+    set executable [file normalize $::redis_server_path]
+    set config_marker [file tail [file normalize [dict get $config config_file]]]
+    return [expr {![catch {
+        exec powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+            -File $script -Action CheckIdentity -TargetProcessId $pid \
+            -ExpectedExecutable $executable -ExpectedArgument $config_marker
+    }]}]
 }
 
 proc windows_kill_proc config {
@@ -144,26 +153,47 @@ proc windows_kill_proc config {
     set shutdown_sent 0
 
     # POSIX kill_server sends SIGTERM, which runs Redis' normal shutdown path
-    # (including module hooks and a final RDB save when configured). Attempt
-    # the equivalent command on Windows without waiting for a reply; the
-    # generic kill_server timeout below still falls back to taskkill /F.
-    catch {
-        set shutdown_client [redis [dict get $config host] \
-                                   [dict get $config port] 1 $::tls]
-        set server_config [dict get $config config]
-        if {[dict exists $server_config requirepass]} {
-            $shutdown_client auth [dict get $server_config requirepass]
+    # (including module hooks and a final RDB save when configured). Prefer
+    # the test's existing connection because it also preserves authentication
+    # established before a runtime CONFIG SET requirepass or ACL change.
+    if {[dict exists $config client]} {
+        set shutdown_client [dict get $config client]
+        if {![catch {
+            $shutdown_client deferred 1
+            $shutdown_client shutdown
+        }]} {
+            set shutdown_sent 1
+        } else {
+            catch {$shutdown_client close}
+            set shutdown_client {}
         }
-        $shutdown_client shutdown
-        set shutdown_sent 1
-    }
-    if {$shutdown_client ne {}} {
-        catch {$shutdown_client close}
     }
 
+    # If the retained connection is unavailable, try a fresh connection with
+    # the password from the startup configuration. Keep the successful socket
+    # open until Redis exits so Winsock cannot turn close into an abortive RST
+    # before Redis consumes the no-reply SHUTDOWN command.
     if {!$shutdown_sent} {
-        catch {exec taskkill.exe /F /T /PID $pid}
+        catch {
+            set shutdown_client [redis [dict get $config host] \
+                                       [dict get $config port] 1 $::tls]
+            set server_config [dict get $config config]
+            if {[dict exists $server_config requirepass]} {
+                $shutdown_client auth [dict get $server_config requirepass]
+                $shutdown_client read
+            }
+            $shutdown_client shutdown
+            set shutdown_sent 1
+        }
     }
+    if {!$shutdown_sent} {
+        if {$shutdown_client ne {}} {
+            catch {$shutdown_client close}
+        }
+        catch {exec taskkill.exe /F /T /PID $pid}
+        return {}
+    }
+    return $shutdown_client
 }
 
 proc windows_kill_proc2 pid {

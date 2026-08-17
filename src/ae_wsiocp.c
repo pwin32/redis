@@ -46,6 +46,7 @@ sGetQueuedCompletionStatusEx pGetQueuedCompletionStatusEx;
 typedef struct aeApiState {
     HANDLE iocp;
     int setsize;
+    ULONGLONG next_accept_rearm_ms;
     OVERLAPPED_ENTRY entries[MAX_COMPLETE_PER_POLL];
 } aeApiState;
 
@@ -181,6 +182,32 @@ static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int mask) {
     if (mask & AE_WRITABLE) sockstate->masks &= ~AE_WRITABLE;
 }
 
+/* AcceptEx readiness is one-shot. Retry transient listener rearm failures at
+ * a bounded cadence so one resource-pressure event cannot disable a port. */
+static void aeApiRetryAccepts(aeEventLoop *eventLoop) {
+    aeApiState *state = (aeApiState *)eventLoop->apidata;
+    ULONGLONG now;
+
+    if (!WSIOCP_AcceptRearmPending()) {
+        state->next_accept_rearm_ms = 0;
+        return;
+    }
+
+    now = GetTickCount64();
+    if (state->next_accept_rearm_ms != 0 &&
+        now < state->next_accept_rearm_ms) return;
+    state->next_accept_rearm_ms = now + 100;
+
+    for (int fd = 0; fd <= eventLoop->maxfd; fd++) {
+        iocpSockState *sockstate = WSIOCP_GetExistingSocketState(fd);
+        if (sockstate == NULL ||
+            (sockstate->masks & ACCEPT_REARM_NEEDED) == 0 ||
+            (sockstate->masks & CLOSE_PENDING) != 0)
+            continue;
+        WSIOCP_QueueAccept(fd);
+    }
+}
+
 /* Return array of sockets that are ready for read or write
  * depending on the mask for each socket */
 static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
@@ -191,6 +218,8 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     ULONG numComplete = 0;
     BOOL rc;
     int mswait = (tvp == NULL) ? 100 : (tvp->tv_sec * 1000) + (tvp->tv_usec / 1000);
+
+    aeApiRetryAccepts(eventLoop);
 
     if (pGetQueuedCompletionStatusEx != NULL) {
         // First get an array of completion notifications

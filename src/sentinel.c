@@ -340,7 +340,7 @@ static void redisAeWriteEvent(aeEventLoop *el, int fd, void *privdata, int mask)
                                    e,
                                    NULL,
                                    writeHandlerDone);
-        if (result == SOCKET_ERROR && errno != WSA_IO_PENDING) {
+        if (result == SOCKET_ERROR && errno != EINPROGRESS) {
             if (errno != EPIPE) {
                 serverLog(LL_VERBOSE, "Writing to socket %s (%d)\n", wsa_strerror(errno), errno);
             }
