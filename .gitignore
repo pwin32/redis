@@ -64,3 +64,6 @@ redis-full.conf
 # Local-only machine configuration, private archives, and public-split tooling.
 # Nothing under this directory is part of a source or release tree.
 .local/
+
+# Local Codex credentials and workspace state.
+.codex/

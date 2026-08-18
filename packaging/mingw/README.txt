@@ -71,4 +71,4 @@ Redis service removes that registration and can affect message rendering for
 other side-by-side Redis services until one is installed again.
 
 For source code and issue tracking, visit:
-https://github.com/tporadowski/redis
+https://github.com/pwin32/redis
