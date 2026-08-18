@@ -1,0 +1,235 @@
+Redis for Windows - https://github.com/tporadowski/redis
+========================================================
+
+This file provides information about Windows-specific changes to Redis.
+For release notes related to original Redis project - please see 00-RELEASENOTES.
+
+--------------------------------------------------------
+
+2026-08-18: Redis 8.8.1 Windows core revision 2
+
+Revision 2 is the current Redis 8.8.1 Windows x64 MinGW core package. It
+supersedes revision 1 for new deployments while keeping
+`v8.8.1-windows.1` and `Redis-x64-8.8.1-mingw-r1.zip` immutable.
+
+The portable archive is identified by `v8.8.1-windows.2` and
+`Redis-x64-8.8.1-mingw-r2.zip`. It remains intentionally core-only: bundled
+Redis Search, JSON, TimeSeries, probabilistic, and Vector Sets modules from
+the full upstream Redis 8 distribution are not built or included.
+
+This revision completes the Windows-specific hardening pass for Unicode
+conversion boundaries, ASCII/punycode DNS resolver inputs, case-insensitive
+Windows identity comparisons, same-volume atomic replacement limits, QFork
+package provenance, repository-owned test cleanup, and hiredis Windows
+resolver assertions. Read WINDOWS-8.8-CHANGES.md for the exact behavior
+contract and unsupported-platform boundaries.
+
+The internal qualification covered source identity, package contents,
+PE/import/resource inspection, persistence and restart checks, QFork soak,
+and the isolated service/Event Log gate. Internal source identifiers,
+artifact checksums, and hosting operations are not part of the tracked public
+record. Any public package must be rebuilt and verified by CI from its selected
+source revision. Visual Studio/MSI, NuGet, Chocolatey, bundled Redis modules,
+TLS, Unix-domain sockets, and benchmark claims remain outside this portable
+core package.
+
+--------------------------------------------------------
+
+2026-07-29: Redis 8.8.1 Windows core revision 1
+
+This release ports the exact upstream Redis 8.8.1 core to Windows x64 using
+the repository MinGW64 toolchain. It preserves the Windows IOCP networking,
+QFork persistence, customized jemalloc, native service/Event Log integration,
+and the enforced single client-I/O-thread boundary.
+
+The portable archive is identified by `v8.8.1-windows.1` and
+`Redis-x64-8.8.1-mingw-r1.zip`. It is intentionally core-only: the bundled
+Redis Search, JSON, TimeSeries, probabilistic, and Vector Sets modules from the
+full upstream Redis 8 distribution are not built or included. Read
+WINDOWS-8.8-CHANGES.md before deployment or upgrade.
+
+Redis 8 uses the upstream RSALv2, SSPLv1, or AGPLv3 tri-license payload in
+LICENSE.txt. The archive also preserves REDISCONTRIBUTIONS.txt,
+WINDOWS-NOTICES.txt, THIRD-PARTY-NOTICES.txt, and the companion GCC/MinGW
+runtime license texts. THIRD-PARTY-NOTICES.txt includes the Redis 8 additions
+used by the core MinGW binary, including fast_float, TRE, and xxHash.
+
+The package is qualified only when its source commit, BUILDINFO.txt, annotated
+Windows revision tag, checksum, manifest, extracted binaries, runtime
+persistence/restart checks, QFork soak, isolated service/Event Log test, and
+PE/import/resource audit all agree. Visual Studio/MSI, NuGet, Chocolatey,
+bundled Redis modules, TLS, and Unix-domain sockets are outside this portable
+core package.
+
+--------------------------------------------------------
+
+2026-07-24: Redis 7.4.10 Windows revision 1
+
+The Redis 7.4 Windows line now targets the exact upstream Redis Community
+Edition 7.4.10 security release. It includes the upstream fix that rejects a
+crafted stream RDB/RESTORE payload in which two consumers share one pending
+entry NACK, preventing the resulting use-after-free.
+
+The canonical Windows line is `mingw-7.4`; its first qualified package is
+identified by `v7.4.10-windows.1` and
+`Redis-x64-7.4.10-mingw-r1.zip`. Read WINDOWS-7.4-CHANGES.md for the
+authoritative Windows-versus-Linux behavior, security, upgrade, QFork,
+networking, module, service, Event Log, and deployment constraints.
+
+Redis 7.4 uses the upstream RSALv2/SSPLv1 dual-license payload. The portable
+archive preserves LICENSE.txt, REDISCONTRIBUTIONS.txt, WINDOWS-NOTICES.txt,
+THIRD-PARTY-NOTICES.txt, and the complete GCC/MinGW runtime companion license
+texts. The former LGPL dlfcn-win32 implementation is not linked into this
+release; Windows module loading uses the fork's native BSD-licensed
+LoadLibrary/GetProcAddress adapter, and CLI/benchmark do not link that adapter.
+
+This revision is qualified only by the clean MinGW build, full source,
+Cluster, Sentinel and Module API suites, fresh package/extraction checks,
+long QFork persistence and replication soak, benchmark protocol, isolated
+service/Event Log restart test, and final PE/import/resource/license audit
+recorded for the tagged source commit. The Visual Studio/MSI, NuGet and
+Chocolatey publication paths remain quarantined historical material and are
+not Redis 7.4 release artifacts.
+
+--------------------------------------------------------
+
+2026-07-23: Redis 7.2.14 Windows maintenance revision 1
+
+The canonical mingw-7.2 line is based on the upstream Redis 7.2.14 behavior
+baseline and carries the Windows IOCP, FDAPI, QFork, service, Event Log,
+console, MinGW64 integration, and applicable upstream security fixes. The
+immutable v7.2.14 tag identifies the original promotion archive. Revision 1
+is identified by v7.2.14-windows.1 and is distributed as
+Redis-x64-7.2.14-mingw-r1.zip after the required clean-build,
+focused/full-suite, package, fresh-extraction, soak, and exact
+service-restart gates pass.
+
+WINDOWS-7.2-CHANGES.md is the authoritative Windows-versus-Linux behavior and
+upgrade guide. In particular, review its QFork/pagefile, fixed-VA/ASLR,
+single-I/O-thread, TCP-only/no-TLS, multi-part AOF, disk-backed replication,
+native PE-module, synchronous Lua-debugging, Event Log, and service-ACL notes.
+
+The MinGW package configuration targets the bundled jemalloc 5.3.0 tree and is
+configured to avoid external MinGW runtime DLL dependencies. Review the test
+and release evidence before deployment. Visual Studio/MSI, clean-machine,
+antivirus, and unrelated external deployment checks are outside this local
+MinGW validation scope.
+
+Windows console mode writes to stdout when `logfile` is empty or the literal
+`stdout`, and to the named file otherwise; `syslog-enabled yes` additionally
+enables Windows Application Event Log output. Windows service mode enables
+Application Event Log output automatically while retaining the configured
+logfile sink. The packaged service example therefore writes both
+`server_log.txt` and the Application Event Log. Use a distinct
+`--service-name` for side-by-side installations because named services share
+the Event Log source registration.
+
+--------------------------------------------------------
+
+2026-07-17: Redis 6.2.22 release identity for Windows
+
+The completed Windows port now reports Redis 6.2.22 through INFO, executable
+version output, module APIs, RDB metadata, Windows resources, and portable
+package naming. The MinGW archive is Redis-x64-6.2.22-mingw.zip.
+
+--------------------------------------------------------
+
+2026-07-15: Redis 6.2.22 behavior integration for Windows
+
+This integration line ports the Redis 6.2.22 core to the existing Windows
+IOCP, QFork, service, Event Log, console, and MinGW64 layers. It adds the Redis
+6.2 command set, ACLs, RESP3, client tracking, expanded replication, Cluster,
+Sentinel, CLI, benchmark, and native module APIs described in
+WINDOWS-6.2-CHANGES.md.
+
+The standard portable package is x64, has no OpenSSL/TLS support, and requires
+no external MinGW runtime DLLs. Read WINDOWS-6.2-CHANGES.md before upgrading or
+enabling Redis 6-only commands.
+
+--------------------------------------------------------
+
+The entries below are historical Windows lines and do not describe the Redis
+7.2.14 MinGW package.
+
+2020-11-08: Redis 5.0.10 for Windows
+https://github.com/tporadowski/redis/releases/tag/v5.0.10
+
+Bugfix/maintenance release of Redis for Windows, updated to be in sync with
+redis/5.0.10 (https://github.com/redis/redis/releases/tag/5.0.10)
+
+NOTE: active memory defragmentation feature ("activedefrag" option) is turned OFF.
+
+--------------------------------------------------------
+
+2020-05-02: Redis 5.0.9 for Windows
+https://github.com/tporadowski/redis/releases/tag/v5.0.9
+
+First release of Redis 5.x for Windows, updated to be in sync with antirez/5.0.9.
+
+--------------------------------------------------------
+
+2020-01-26: Redis 4.0.14.2 for Windows
+https://github.com/tporadowski/redis/releases/tag/v4.0.14.2
+
+This is a hotfix release of 4.0.14 branch that fixes #50 related to running in
+Sentinel mode.
+
+--------------------------------------------------------
+
+2020-01-15: Redis 4.0.14.1 for Windows
+https://github.com/tporadowski/redis/releases/tag/v4.0.14.1
+
+This is a hotfix release of 4.0.14 branch that fixes 2 Windows-specific issues:
+
+  * #46 - added support for older Windows versions (prior Windows 8 and Windows Server 2012)
+  * #47 - fixed problem with parsing command-line arguments.
+
+--------------------------------------------------------
+
+2019-08-29: Redis 4.0.14 for Windows
+https://github.com/tporadowski/redis/releases/tag/v4.0.14
+
+Redis 4.0.14 for Windows is a merge of Windows-specific changes from latest (unsupported) 3.2.100 release from MSOpenTech and original Redis 4.0.14.
+
+--------------------------------------------------------
+
+2018-10-01: Redis for Windows 4.0.2.3 (alpha)
+
+This 4.0.2.3 release is still an alpha version, but contains enhancements and fixes for:
+
+  * #14: decrease logging verbosity of some cluster-related messages
+  * #23: ZRANK/ZREVRANK bugfix (win-port only)
+  * failed unit tests (bdcf80e).
+
+--------------------------------------------------------
+
+2018-03-26: Redis for Windows 4.0.2.2 (alpha)
+https://github.com/tporadowski/redis/releases/tag/v4.0.2.2-alpha
+
+This 4.0.2.2 release is still an alpha version, but contains a fix to issue #12
+(crash when rewriting AOF file - this issue was specific to Windows port only).
+
+--------------------------------------------------------
+
+2018-03-17: Redis for Windows 4.0.2.1 (alpha)
+https://github.com/tporadowski/redis/releases/tag/v4.0.2.1-alpha
+
+This 4.0.2.1 release is still an alpha version, but contains a fix to issue #11,
+which was related to sending back larger amounts of data to Redis clients
+(this issue was specific to Windows port only).
+
+--------------------------------------------------------
+
+2017-11-22: Redis 4.0.2 for Windows (alpha)
+https://github.com/tporadowski/redis/releases/tag/v4.0.2-alpha
+
+Alpha version of Redis 4.0.2 for Windows.
+
+Redis 4.0.2 for Windows is a merge of Windows-specific changes from latest (unsupported) 3.2.100 release
+from MSOpenTech and Redis 4.0.2 and this alpha release consists of:
+
+  * all Redis 4.0.2 features except modules,
+  * all executables of Redis (redis-server, redis-cli, redis-benchmark, redis-check-aof, redis-check-rdb).
+
+Main difference to official Redis 4.0.2 (except no support for modules at the moment) is old version
+of jemalloc-win dependency, which is planned to be updated to the same version in beta release.
