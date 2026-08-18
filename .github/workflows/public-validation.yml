@@ -47,7 +47,22 @@ jobs:
             mingw-w64-x86_64-zstd
       - name: Build MinGW64 core and interop targets
         run: |
-          ./build-mingw.sh -j2
+          set +e
+          ./build-mingw.sh -j2 > build-mingw-ci.log 2>&1
+          build_status=$?
+          cat build-mingw-ci.log
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            {
+              echo '### MinGW build output (tail)'
+              echo '```text'
+              tail -400 build-mingw-ci.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          rm -f build-mingw-ci.log
+          if [[ "$build_status" -ne 0 ]]; then
+            exit "$build_status"
+          fi
           make -f Makefile.mingw interop-test
       - name: Run focused Redis tests
         run: >-
