@@ -62,10 +62,9 @@ report_matches \
     "${port_paths[@]}"
 
 report_matches \
-    "concrete WSL path in public-facing documentation" \
+    "concrete WSL drive path in tracked content" \
     '/mnt/[[:alpha:]]/[[:alnum:]_.@%+,:;=-]+' \
-    AGENTS.md README.md WINDOWS-MINGW-README.md WINDOWS-PORTING-HISTORY.md \
-    'WINDOWS-*-CHANGES.md' WINDOWS-8.10-SOURCE-AUDIT.md
+    . ':!scripts/check-public-hygiene.sh'
 
 report_matches \
     "user-home path in public-facing content" \
@@ -74,7 +73,7 @@ report_matches \
 
 report_matches \
     "internal hosting or Git endpoint in Windows-port guidance" \
-    '(private forge|git@[[:alnum:]_.-]+:|ssh://[[:alnum:]_.@-]+)' \
+    '(Gitea|git@[[:alnum:]_.-]+:|ssh://[[:alnum:]_.@-]+)' \
     AGENTS.md README.md WINDOWS-MINGW-README.md WINDOWS-PORTING-HISTORY.md \
     'WINDOWS-*-CHANGES.md' WINDOWS-8.10-SOURCE-AUDIT.md \
     build-mingw.sh package-mingw.sh runtest-mingw.sh runtest-moduleapi \
