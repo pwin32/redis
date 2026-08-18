@@ -38,7 +38,9 @@ if ! git_cmd rev-parse --git-dir >/dev/null 2>&1 && [ -f "$WORK_TREE/.git" ]; th
 fi
 
 GIT_SHA1=$(git_cmd rev-parse --verify --short=8 HEAD 2>/dev/null || echo 00000000)
-GIT_DIRTY=$(git_cmd diff --no-ext-diff -- "$WORK_TREE/src" "$WORK_TREE/deps" 2>/dev/null | wc -l)
+GIT_DIRTY=0
+git_cmd diff --quiet --no-ext-diff -- "$WORK_TREE/src" "$WORK_TREE/deps" 2>/dev/null || GIT_DIRTY=1
+git_cmd diff --cached --quiet --no-ext-diff -- "$WORK_TREE/src" "$WORK_TREE/deps" 2>/dev/null || GIT_DIRTY=1
 BUILD_ID=`uname -n`"-"`date +%s`
 if [ -n "$SOURCE_DATE_EPOCH" ]; then
   BUILD_ID=$(date -u -d "@$SOURCE_DATE_EPOCH" +%s 2>/dev/null || date -u -r "$SOURCE_DATE_EPOCH" +%s 2>/dev/null || date -u +%s)

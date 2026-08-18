@@ -402,6 +402,7 @@ HIREDIS_TEST_OBJS := \
 	$(BUILD)/hiredis-test/src/adlist.o \
 	$(BUILD)/hiredis-test/src/ae.o \
 	$(BUILD)/hiredis-test/src/monotonic.o \
+	$(BUILD)/hiredis-test/src/redisassert.o \
 	$(BUILD)/hiredis-test/src/zmalloc.o \
 	$(addprefix $(BUILD)/hiredis-test/,$(TOOL_WIN32_INTEROP_C_SOURCES:.c=.o)) \
 	$(addprefix $(BUILD)/hiredis-test/,$(TOOL_WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
@@ -517,7 +518,10 @@ src/release.h: FORCE
 # those values actually changed.
 FORCE:
 
-$(JEMALLOC_SRC)/configure: $(JEMALLOC_SRC)/configure.ac
+# Use the checked-in upstream configure script. Rebuilding it merely because a
+# checkout changed mtimes dirties the source tree and makes release provenance
+# depend on the locally installed autoconf version. Regenerate only if absent.
+$(JEMALLOC_SRC)/configure:
 	cd $(JEMALLOC_SRC) && autoconf
 
 $(JEMALLOC_BUILD)/Makefile: $(JEMALLOC_SRC)/configure Makefile.mingw
