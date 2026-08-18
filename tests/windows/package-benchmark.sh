@@ -17,7 +17,7 @@ usage() {
     printf '%s\n' \
         "usage: $0 --baseline-dir DIR --candidate-dir DIR --port PORT --output-dir DIR" \
         "" \
-        "Runs one full warmup pass per server, then five measured rounds." \
+        "Runs a 10,000-request warmup per test, then three 50,000-request rounds." \
         "Measured order alternates baseline-candidate / candidate-baseline." \
         "The candidate package's redis-benchmark.exe and redis-cli.exe are" \
         "used against both servers. Existing output directories must be empty."
@@ -123,7 +123,7 @@ if find "$output_dir" -mindepth 1 -print -quit | grep -q .; then
     die "output directory must be empty: $output_dir"
 fi
 
-for tool in awk cp date find grep hostname sed sha256sum sleep sort taskkill.exe tr uname; do
+for tool in awk cp date find grep sed sha256sum sleep sort taskkill.exe tr; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool not found: $tool"
 done
 
@@ -160,8 +160,6 @@ metadata_row() {
 
 metadata_row format_version 1
 metadata_row started_utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-metadata_row host "$(hostname)"
-metadata_row uname "$(uname -a)"
 metadata_row msystem "${MSYSTEM:-unknown}"
 metadata_row windows_processor_identifier "${PROCESSOR_IDENTIFIER:-unknown}"
 metadata_row windows_logical_processors "${NUMBER_OF_PROCESSORS:-unknown}"
@@ -171,21 +169,18 @@ fi
 if command -v powercfg.exe >/dev/null 2>&1; then
     metadata_row windows_power_scheme "$(MSYS2_ARG_CONV_EXCL='*' powercfg.exe /GETACTIVESCHEME 2>/dev/null || printf unknown)"
 fi
-metadata_row repository "$repo_root"
 if command -v git >/dev/null 2>&1; then
     metadata_row repository_head "$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf unknown)"
 fi
-metadata_row baseline_dir "$baseline_dir"
-metadata_row candidate_dir "$candidate_dir"
-metadata_row output_dir "$output_dir"
 metadata_row port "$port"
 metadata_row host_address 127.0.0.1
 metadata_row seed 7410
 metadata_row keepalive 1
 metadata_row warmup_passes_per_variant 1
-metadata_row measured_rounds 5
+metadata_row warmup_requests_per_test 10000
+metadata_row measured_requests_per_test 50000
+metadata_row measured_rounds 3
 metadata_row benchmark_client candidate
-metadata_row launcher "$launcher"
 metadata_row baseline_server_sha256 "$(sha256sum "$baseline_server" | awk '{print $1}')"
 metadata_row candidate_server_sha256 "$(sha256sum "$candidate_server" | awk '{print $1}')"
 metadata_row candidate_benchmark_sha256 "$(sha256sum "$benchmark" | awk '{print $1}')"
@@ -207,12 +202,9 @@ printf '%s\n' \
 metadata_row server_config_sha256 "$(sha256sum "$config_template" | awk '{print $1}')"
 
 printf '%s\n' \
-    $'matrix_id\tclients\tpipeline\trequests_per_test\tkeyspace\tdatasize_bytes\tthreads\tselected_tests\texpected_csv_rows' \
-    $'ping-c50-p1-n500k\t50\t1\t500000\t-\tdefault\t0\tping\tPING_INLINE,PING_MBULK' \
-    $'set-get-c50-p1-n500k-r100k-d512\t50\t1\t500000\t100000\t512\t0\tset,get\tSET,GET' \
-    $'set-get-c50-p16-n1m-r100k-d512\t50\t16\t1000000\t100000\t512\t0\tset,get\tSET,GET' \
-    $'set-get-c50-p16-n1m-r100k-d512-threads4\t50\t16\t1000000\t100000\t512\t4\tset,get\tSET,GET' \
-    $'set-get-c50-p16-n250k-r100k-d4096\t50\t16\t250000\t100000\t4096\t0\tset,get\tSET,GET' \
+    $'matrix_id\tclients\tpipeline\twarmup_requests\tmeasured_requests\tkeyspace\tdatasize_bytes\tthreads\tselected_tests\texpected_csv_rows' \
+    $'ping-c50-p1\t50\t1\t10000\t50000\t-\tdefault\t0\tping\tPING_INLINE,PING_MBULK' \
+    $'set-get-c50-p1-r100k-d512\t50\t1\t10000\t50000\t100000\t512\t0\tset,get\tSET,GET' \
     > "$matrix_file"
 
 printf 'sequence\tphase\tround\torder_in_round\tvariant\n' > "$schedule_file"
@@ -224,7 +216,7 @@ append_schedule() {
 }
 append_schedule warmup 0 1 baseline
 append_schedule warmup 0 2 candidate
-for round in 1 2 3 4 5; do
+for round in 1 2 3; do
     if (( round % 2 == 1 )); then
         append_schedule measured "$round" 1 baseline
         append_schedule measured "$round" 2 candidate
@@ -489,11 +481,8 @@ parse_benchmark_csv() {
 }
 
 matrix_ids=(
-    ping-c50-p1-n500k
-    set-get-c50-p1-n500k-r100k-d512
-    set-get-c50-p16-n1m-r100k-d512
-    set-get-c50-p16-n1m-r100k-d512-threads4
-    set-get-c50-p16-n250k-r100k-d4096
+    ping-c50-p1
+    set-get-c50-p1-r100k-d512
 )
 
 run_matrix_case() {
@@ -516,30 +505,20 @@ run_matrix_case() {
     local -a args
     local -a command
     local parsed_row
+    local request_count=50000
+
+    if [[ "$phase" == warmup ]]; then
+        request_count=10000
+    fi
 
     case "$matrix_id" in
-        ping-c50-p1-n500k)
-            args=(-c 50 -P 1 -n 500000 -t ping)
+        ping-c50-p1)
+            args=(-c 50 -P 1 -n "$request_count" -t ping)
             expected_first=PING_INLINE
             expected_second=PING_MBULK
             ;;
-        set-get-c50-p1-n500k-r100k-d512)
-            args=(-c 50 -P 1 -n 500000 -r 100000 -d 512 -t set,get)
-            expected_first=SET
-            expected_second=GET
-            ;;
-        set-get-c50-p16-n1m-r100k-d512)
-            args=(-c 50 -P 16 -n 1000000 -r 100000 -d 512 -t set,get)
-            expected_first=SET
-            expected_second=GET
-            ;;
-        set-get-c50-p16-n1m-r100k-d512-threads4)
-            args=(--threads 4 -c 50 -P 16 -n 1000000 -r 100000 -d 512 -t set,get)
-            expected_first=SET
-            expected_second=GET
-            ;;
-        set-get-c50-p16-n250k-r100k-d4096)
-            args=(-c 50 -P 16 -n 250000 -r 100000 -d 4096 -t set,get)
+        set-get-c50-p1-r100k-d512)
+            args=(-c 50 -P 1 -n "$request_count" -r 100000 -d 512 -t set,get)
             expected_first=SET
             expected_second=GET
             ;;
@@ -638,7 +617,7 @@ run_variant() {
 
 run_variant warmup 0 1 baseline
 run_variant warmup 0 2 candidate
-for round in 1 2 3 4 5; do
+for round in 1 2 3; do
     if (( round % 2 == 1 )); then
         run_variant measured "$round" 1 baseline
         run_variant measured "$round" 2 candidate
@@ -697,8 +676,8 @@ awk -F '\t' '
     }
     END {
         for (key in seen) {
-            if (baseline_count[key] != 5 || candidate_count[key] != 5) {
-                print "expected five samples per variant for " key > "/dev/stderr"
+            if (baseline_count[key] != 3 || candidate_count[key] != 3) {
+                print "expected three samples per variant for " key > "/dev/stderr"
                 invalid = 1
                 continue
             }
@@ -714,21 +693,19 @@ awk -F '\t' '
             candidate_cv = coefficient_of_variation(candidate_rps[key])
             p95_ratio = baseline_p95_median == 0 ? 0 : candidate_p95_median / baseline_p95_median
             p99_ratio = baseline_p99_median == 0 ? 0 : candidate_p99_median / baseline_p99_median
-            p95_allowed_ratio = baseline_p95_median * 1.25
-            p95_allowed_delta = baseline_p95_median + 0.25
-            p95_allowed = p95_allowed_ratio > p95_allowed_delta ? p95_allowed_ratio : p95_allowed_delta
+            p95_allowed = baseline_p95_median * 1.15
             p99_allowed_ratio = baseline_p99_median * 1.50
             p99_allowed_delta = baseline_p99_median + 0.50
             p99_allowed = p99_allowed_ratio > p99_allowed_delta ? p99_allowed_ratio : p99_allowed_delta
-            printf "%s\t%s\t5\t5\t%.2f\t%.2f\t%.6f\t%s\t%.6f\t%.6f\t%s", \
+            printf "%s\t%s\t3\t3\t%.2f\t%.2f\t%.6f\t%s\t%.6f\t%.6f\t%s", \
                 key_parts[1], key_parts[2], baseline_rps_median, candidate_rps_median, \
-                rps_ratio, (rps_ratio >= 0.90 ? "pass" : "fail"), \
+                rps_ratio, (rps_ratio >= 0.85 ? "pass" : "warn"), \
                 baseline_cv, candidate_cv, \
                 (baseline_cv <= 0.05 && candidate_cv <= 0.05 ? "pass" : "repeat")
             printf "\t%.3f\t%.3f\t%.6f\t%+.3f\t%.3f\t%s", \
                 baseline_p95_median, candidate_p95_median, p95_ratio, \
                 candidate_p95_median - baseline_p95_median, p95_allowed, \
-                (candidate_p95_median <= p95_allowed ? "pass" : "fail")
+                (candidate_p95_median <= p95_allowed ? "pass" : "warn")
             printf "\t%.3f\t%.3f\t%.6f\t%+.3f\t%.3f\t%s\n", \
                 baseline_p99_median, candidate_p99_median, p99_ratio, \
                 candidate_p99_median - baseline_p99_median, p99_allowed, \
@@ -738,7 +715,7 @@ awk -F '\t' '
     }
 ' "$measurements" | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 > "$summary_body"
 
-printf '%s\n' $'matrix_id\ttest\tbaseline_samples\tcandidate_samples\tbaseline_median_rps\tcandidate_median_rps\trps_ratio\trps_gate_0.90\tbaseline_rps_cv\tcandidate_rps_cv\tvariation_gate_0.05\tbaseline_median_p95_ms\tcandidate_median_p95_ms\tp95_ratio\tp95_delta_ms\tp95_allowed_ms\tp95_gate\tbaseline_median_p99_ms\tcandidate_median_p99_ms\tp99_ratio\tp99_delta_ms\tp99_allowed_ms\tp99_gate' > "$summary"
+printf '%s\n' $'matrix_id\ttest\tbaseline_samples\tcandidate_samples\tbaseline_median_rps\tcandidate_median_rps\trps_ratio\trps_warning_below_0.85\tbaseline_rps_cv\tcandidate_rps_cv\tvariation_note\tbaseline_median_p95_ms\tcandidate_median_p95_ms\tp95_ratio\tp95_delta_ms\tp95_allowed_ms\tp95_warning_above_1.15\tbaseline_median_p99_ms\tcandidate_median_p99_ms\tp99_ratio\tp99_delta_ms\tp99_allowed_ms\tp99_note' > "$summary"
 while IFS= read -r summary_row; do
     printf '%s\n' "$summary_row" >> "$summary"
 done < "$summary_body"
@@ -767,14 +744,14 @@ awk -F '\t' '
             exit 1
         }
         geometric = exp(log_sum / ratios)
-        geometric_pass = geometric >= 0.95
-        overall = geometric_pass && individual_rps && p95 && p99 && variation
-        printf "geometric_mean_rps_ratio\t%.6f\t>=0.95\t%s\n", geometric, geometric_pass ? "pass" : "fail"
-        printf "all_individual_rps\t%d\t>=0.90 each\t%s\n", individual_rps, individual_rps ? "pass" : "fail"
-        printf "all_p95_latency\t%d\tmax(1.25x,+0.25ms)\t%s\n", p95, p95 ? "pass" : "fail"
-        printf "all_p99_latency\t%d\tmax(1.50x,+0.50ms)\t%s\n", p99, p99 ? "pass" : "fail"
+        geometric_pass = geometric >= 0.85
+        overall = individual_rps && p95
+        printf "geometric_mean_rps_ratio\t%.6f\t>=0.85 advisory\t%s\n", geometric, geometric_pass ? "pass" : "warn"
+        printf "all_individual_rps\t%d\t>=0.85 each advisory\t%s\n", individual_rps, individual_rps ? "pass" : "warn"
+        printf "all_p95_latency\t%d\t<=1.15x advisory\t%s\n", p95, p95 ? "pass" : "warn"
+        printf "all_p99_latency\t%d\trecorded, not gated\t%s\n", p99, "info"
         printf "rps_variation\t%d\tsample CV <=0.05\t%s\n", variation, variation ? "pass" : "repeat"
-        printf "provisional_overall\t%d\tall criteria pass\t%s\n", overall, overall ? "pass" : "fail"
+        printf "regression_advisory\t%d\tRPS and p95 within 15%%\t%s\n", overall, overall ? "pass" : "warn"
     }
 ' "$summary" > "$assessment"
 

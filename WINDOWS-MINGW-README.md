@@ -49,11 +49,22 @@ bundled Redis modules outside the release boundary.
 
 ## CI and releases
 
-The public-safe validation workflow checks tracked-content hygiene and runs a
-MinGW build plus focused Windows tests. It does not publish artifacts, create
-tags, or push changes. Public packages and release tags are created only by a
-later, explicitly enabled CI release workflow after the full Windows
-qualification matrix passes.
+Pull requests run public-source hygiene checks, a MinGW build, focused Redis
+tests, and Windows interop smoke coverage. Pushes to canonical `mingw-*`
+branches run the complete Windows qualification, including the source suites,
+service integration, extracted-package audits, packaged replication, a
+30-minute QFork persistence soak, and a short benchmark.
+
+Public releases are dispatched manually from the default branch with an exact
+canonical-branch commit and expected tag. CI verifies that every maintained
+line's current tip has passed full qualification, rebuilds and retests the
+selected source, emits test evidence, an SPDX SBOM, and GitHub artifact
+attestations, then creates the immutable tag and release. No release package or
+tag is created locally.
+
+See [RELEASE-POLICY.md](RELEASE-POLICY.md) for the maintained-line order,
+review policy, benchmark contract, and the small set of GitHub administrator
+settings that cannot be represented in source.
 
 ## Troubleshooting
 
