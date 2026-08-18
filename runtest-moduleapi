@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Run the Redis 7.4.9 Module API test inventory.
+#
+# When called from runtest-mingw.sh this script is already running inside the
+# MSYS2 MinGW64 login shell.  Direct invocation from WSL re-execs through the
+# same shell so Tcl sees tcl_platform(platform)=windows and native executable
+# paths are used.
+
+set -euo pipefail
+
+source "$(cd "$(dirname "$0")" && pwd)/scripts/mingw-bootstrap.sh"
+mingw_bootstrap "$@"
+set -- "${MINGW_BOOTSTRAP_ARGS[@]}"
+
+repo_root="$(cd "$(dirname "$0")" && pwd)"
+cd "$repo_root"
+
+TCLSH=/mingw64/bin/tclsh
+BUILD_DIR="$repo_root/build/mingw64"
+
+if [[ ! -x "$TCLSH" ]]; then
+    echo "error: MinGW Tcl not found at $TCLSH" >&2
+    echo "install it with pacman -S mingw-w64-x86_64-tcl" >&2
+    exit 1
+fi
+
+# This is the Redis 7.4.9 Module API inventory: 41 Tcl units backed by
+# 40 module binaries.  Keep the order from the upstream runner; several units
+# share module state and rely on this ordering.
+module_units=(
+    unit/moduleapi/commandfilter
+    unit/moduleapi/basics
+    unit/moduleapi/fork
+    unit/moduleapi/testrdb
+    unit/moduleapi/infotest
+    unit/moduleapi/moduleconfigs
+    unit/moduleapi/infra
+    unit/moduleapi/propagate
+    unit/moduleapi/hooks
+    unit/moduleapi/misc
+    unit/moduleapi/blockonkeys
+    unit/moduleapi/blockonbackground
+    unit/moduleapi/scan
+    unit/moduleapi/datatype
+    unit/moduleapi/auth
+    unit/moduleapi/keyspace_events
+    unit/moduleapi/blockedclient
+    unit/moduleapi/getkeys
+    unit/moduleapi/test_lazyfree
+    unit/moduleapi/defrag
+    unit/moduleapi/keyspecs
+    unit/moduleapi/hash
+    unit/moduleapi/zset
+    unit/moduleapi/list
+    unit/moduleapi/stream
+    unit/moduleapi/mallocsize
+    unit/moduleapi/datatype2
+    unit/moduleapi/cluster
+    unit/moduleapi/aclcheck
+    unit/moduleapi/subcommands
+    unit/moduleapi/reply
+    unit/moduleapi/cmdintrospection
+    unit/moduleapi/eventloop
+    unit/moduleapi/timer
+    unit/moduleapi/publish
+    unit/moduleapi/usercall
+    unit/moduleapi/postnotifications
+    unit/moduleapi/async_rm_call
+    unit/moduleapi/moduleauth
+    unit/moduleapi/rdbloadsave
+    unit/moduleapi/crash
+)
+
+module_binaries=(
+    aclcheck auth basics blockedclient blockonbackground blockonkeys
+    cmdintrospection commandfilter datatype datatype2 defragtest eventloop fork
+    getchannels getkeys hash hooks infotest keyspace_events keyspecs list
+    mallocsize misc moduleauthtwo moduleconfigs moduleconfigstwo postnotifications
+    propagate publish rdbloadsave reply scan stream subcommands test_lazyfree
+    testrdb timer usercall zset crash
+)
+
+if (( ${#module_units[@]} != 41 )); then
+    echo "error: internal Module API inventory has ${#module_units[@]} units; expected 41" >&2
+    exit 1
+fi
+if (( ${#module_binaries[@]} != 40 )); then
+    echo "error: internal Module API binary inventory has ${#module_binaries[@]} modules; expected 40" >&2
+    exit 1
+fi
+
+make -f Makefile.mingw test-modules test-launcher
+
+for exe in redis-server.exe redis-cli.exe redis-benchmark.exe redis-check-aof.exe redis-check-rdb.exe redis-test-launcher.exe; do
+    if [[ ! -x "$BUILD_DIR/$exe" ]]; then
+        echo "error: missing $BUILD_DIR/$exe" >&2
+        echo "run ./build-mingw.sh first" >&2
+        exit 1
+    fi
+done
+
+export REDIS_SERVER="$BUILD_DIR/redis-server.exe"
+export REDIS_CLI="$BUILD_DIR/redis-cli.exe"
+export REDIS_BENCHMARK="$BUILD_DIR/redis-benchmark.exe"
+export REDIS_CHECK_AOF="$BUILD_DIR/redis-check-aof.exe"
+export REDIS_CHECK_RDB="$BUILD_DIR/redis-check-rdb.exe"
+export REDIS_TEST_MODULE_DIR="$BUILD_DIR/tests/modules"
+export REDIS_TEST_LAUNCHER="$BUILD_DIR/redis-test-launcher.exe"
+
+for module in "${module_binaries[@]}"; do
+    if [[ ! -f "$REDIS_TEST_MODULE_DIR/$module.so" ]]; then
+        echo "error: missing MinGW Module API binary $REDIS_TEST_MODULE_DIR/$module.so" >&2
+        exit 1
+    fi
+done
+
+args=()
+for unit in "${module_units[@]}"; do
+    args+=(--single "$unit")
+done
+
+exec "$TCLSH" tests/test_helper.tcl "${args[@]}" "$@"
