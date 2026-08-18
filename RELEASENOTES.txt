@@ -1,0 +1,141 @@
+Redis for Windows - https://github.com/tporadowski/redis
+========================================================
+
+This file provides information about Windows-specific changes to Redis.
+For release notes related to original Redis project - please see 00-RELEASENOTES.
+
+--------------------------------------------------------
+
+2026-08-14: Redis 6.2.23 Windows core revision 1
+
+This revision packages the completed Windows portability hardening on the
+canonical `mingw-6.2` line. Redis-owned text remains UTF-8 and Windows text
+boundaries use strict UTF-16 `W` APIs. Hostnames and resolver service labels
+remain the Windows resolver's ASCII/punycode byte contract. Windows
+environment and executable-role identity follow Unicode ordinal
+case-insensitive rules, and LLP64, handle, service, loader, console, and error
+domain corrections are included.
+
+The portable archive is identified by `v6.2.23-windows.1` and
+`Redis-x64-6.2.23-mingw-r1.zip`. BUILDINFO records the exact clean source and
+toolchain. The package has no TLS or Unix-domain sockets, enforces one client
+I/O thread, ships no prebuilt third-party modules, and does not include the
+legacy Visual Studio/MSI publication path.
+
+--------------------------------------------------------
+
+2026-07-24: Redis 6.2.23 security maintenance update for Windows
+
+This update aligns the Windows port with upstream Redis 6.2.23. Crafted stream
+RESTORE payloads that assign one pending entry to multiple consumers are now
+rejected, preventing a use-after-free that may result in remote code execution.
+The original maintenance candidate used the transitional archive name
+Redis-x64-6.2.23-mingw.zip. The qualified Windows revision is published under
+the distinct revision-1 identity above.
+
+--------------------------------------------------------
+
+2026-07-17: Redis 6.2.22 release identity for Windows
+
+The completed Windows port now reports Redis 6.2.22 through INFO, executable
+version output, module APIs, RDB metadata, Windows resources, and portable
+package naming. The MinGW archive is Redis-x64-6.2.22-mingw.zip.
+
+--------------------------------------------------------
+
+2026-07-15: Redis 6.2.22 behavior integration for Windows
+
+This integration line ports the Redis 6.2.22 core to the existing Windows
+IOCP, QFork, service, Event Log, console, and MinGW64 layers. It adds the Redis
+6.2 command set, ACLs, RESP3, client tracking, expanded replication, Cluster,
+Sentinel, CLI, benchmark, and native module APIs described in
+WINDOWS-6.2-CHANGES.md.
+
+The standard portable package is x64, has no OpenSSL/TLS support, and requires
+no external MinGW runtime DLLs. Read WINDOWS-6.2-CHANGES.md before upgrading or
+enabling Redis 6-only commands.
+
+--------------------------------------------------------
+
+2020-11-08: Redis 5.0.10 for Windows
+https://github.com/tporadowski/redis/releases/tag/v5.0.10
+
+Bugfix/maintenance release of Redis for Windows, updated to be in sync with
+redis/5.0.10 (https://github.com/redis/redis/releases/tag/5.0.10)
+
+NOTE: active memory defragmentation feature ("activedefrag" option) is turned OFF.
+
+--------------------------------------------------------
+
+2020-05-02: Redis 5.0.9 for Windows
+https://github.com/tporadowski/redis/releases/tag/v5.0.9
+
+First release of Redis 5.x for Windows, updated to be in sync with antirez/5.0.9.
+
+--------------------------------------------------------
+
+2020-01-26: Redis 4.0.14.2 for Windows
+https://github.com/tporadowski/redis/releases/tag/v4.0.14.2
+
+This is a hotfix release of 4.0.14 branch that fixes #50 related to running in
+Sentinel mode.
+
+--------------------------------------------------------
+
+2020-01-15: Redis 4.0.14.1 for Windows
+https://github.com/tporadowski/redis/releases/tag/v4.0.14.1
+
+This is a hotfix release of 4.0.14 branch that fixes 2 Windows-specific issues:
+
+  * #46 - added support for older Windows versions (prior Windows 8 and Windows Server 2012)
+  * #47 - fixed problem with parsing command-line arguments.
+
+--------------------------------------------------------
+
+2019-08-29: Redis 4.0.14 for Windows
+https://github.com/tporadowski/redis/releases/tag/v4.0.14
+
+Redis 4.0.14 for Windows is a merge of Windows-specific changes from latest (unsupported) 3.2.100 release from MSOpenTech and original Redis 4.0.14.
+
+--------------------------------------------------------
+
+2018-10-01: Redis for Windows 4.0.2.3 (alpha)
+
+This 4.0.2.3 release is still an alpha version, but contains enhancements and fixes for:
+
+  * #14: decrease logging verbosity of some cluster-related messages
+  * #23: ZRANK/ZREVRANK bugfix (win-port only)
+  * failed unit tests (bdcf80e).
+
+--------------------------------------------------------
+
+2018-03-26: Redis for Windows 4.0.2.2 (alpha)
+https://github.com/tporadowski/redis/releases/tag/v4.0.2.2-alpha
+
+This 4.0.2.2 release is still an alpha version, but contains a fix to issue #12
+(crash when rewriting AOF file - this issue was specific to Windows port only).
+
+--------------------------------------------------------
+
+2018-03-17: Redis for Windows 4.0.2.1 (alpha)
+https://github.com/tporadowski/redis/releases/tag/v4.0.2.1-alpha
+
+This 4.0.2.1 release is still an alpha version, but contains a fix to issue #11,
+which was related to sending back larger amounts of data to Redis clients
+(this issue was specific to Windows port only).
+
+--------------------------------------------------------
+
+2017-11-22: Redis 4.0.2 for Windows (alpha)
+https://github.com/tporadowski/redis/releases/tag/v4.0.2-alpha
+
+Alpha version of Redis 4.0.2 for Windows.
+
+Redis 4.0.2 for Windows is a merge of Windows-specific changes from latest (unsupported) 3.2.100 release
+from MSOpenTech and Redis 4.0.2 and this alpha release consists of:
+
+  * all Redis 4.0.2 features except modules,
+  * all executables of Redis (redis-server, redis-cli, redis-benchmark, redis-check-aof, redis-check-rdb).
+
+Main difference to official Redis 4.0.2 (except no support for modules at the moment) is old version
+of jemalloc-win dependency, which is planned to be updated to the same version in beta release.

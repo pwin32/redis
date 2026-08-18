@@ -1,0 +1,57 @@
+name: Public Windows validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run public-source hygiene checks
+        run: ./scripts/check-public-hygiene.sh --history
+
+  mingw-smoke:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up MSYS2 MinGW64
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-tcl
+            mingw-w64-x86_64-zstd
+      - name: Build MinGW64 core and interop targets
+        run: |
+          ./build-mingw.sh -j2
+          make -f Makefile.mingw interop-test
+      - name: Run focused Redis tests
+        run: >-
+          ./runtest-mingw.sh --clients 1 --quiet --timeout 300
+          --single unit/type/string --single unit/printver
+      - name: Run Windows interop test
+        run: ./build/mingw64/interop-test.exe
