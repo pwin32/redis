@@ -1,57 +1,52 @@
-# Redis 7.4.10 behavior and upgrade guide for Windows
+# Redis 7.4.11 behavior and upgrade guide for Windows
 
 ## Scope and release identity
 
 This is the authoritative behavior and upgrade guide for the unofficial Redis
-Community Edition 7.4.10 Windows x64 MinGW port. The source baseline is the
-exact upstream Redis `7.4.10` tag, commit
-`f103d127b9747965e28f20615ef790332661fc68`, with the applicable upstream
-security fix, integrated with this fork's IOCP networking, FDAPI descriptors,
+Community Edition 7.4.11 Windows x64 MinGW port. The source baseline is the
+exact upstream Redis `7.4.11` tag, commit
+`aaf0ce63b3239f4b51f86ca1da8711b055721993`, with the applicable upstream
+security fixes, integrated with this fork's IOCP networking, FDAPI descriptors,
 QFork persistence, Windows service, Event Log, console, and MinGW64 layers.
-The source tree and produced binaries report `7.4.10`.
+The source tree and produced binaries report `7.4.11`.
 
 The Windows release identity is:
 
 - canonical maintenance branch: `mingw-7.4`;
-- annotated Windows release tag: `v7.4.10-windows.1`;
-- portable archive: `Redis-x64-7.4.10-mingw-r1.zip`; and
-- adjacent checksum: `Redis-x64-7.4.10-mingw-r1.zip.sha256`.
+- no public release tag: the 7.4 line is qualification-only under the current
+  publication policy;
+- CI qualification archive identity: `Redis-x64-7.4.11-mingw-r1.zip`; and
+- CI checksum: `Redis-x64-7.4.11-mingw-r1.zip.sha256`.
 
-Those names identify the first Windows packaging revision of the 7.4.10
-baseline. They do not authorize an artifact by themselves. The tag must be
-created only after all release gates in this guide pass against a clean source
-commit and a never-before-used package extraction. The annotated tag, archive,
-checksum, package contents, and tested source commit must agree exactly. Do not
-move a published tag or silently replace an archive; a changed Windows package
-requires a new Windows revision.
+These names identify the first CI qualification revision of the 7.4.11
+baseline. They do not authorize publication: the release workflow intentionally
+rejects `mingw-7.4` because this line is outside the current Windows publication
+policy. Keep its full qualification evidence for regression and security
+tracking; do not create or push a 7.4 release tag or package.
 
 Except for the differences documented here, command, RESP, ACL, Lua, Function,
 replication, Cluster, Sentinel, persistence, and Module API behavior follows
-upstream Redis 7.4.10. `00-RELEASENOTES` is the source for upstream release and
+upstream Redis 7.4.11. `00-RELEASENOTES` is the source for upstream release and
 command-level changes. This guide supersedes `WINDOWS-7.4-PORTING.md` for an
 approved release; the porting ledger remains useful for implementation history.
 
-### Redis 7.4.10 security-fix provenance
+### Redis 7.4.11 security-fix provenance
 
-Redis 7.4.10 is an upstream `SECURITY` release. It rejects a crafted stream RDB
-or `RESTORE` payload in which two consumers claim the same pending-entry NACK.
-Accepting that invalid structure could leave one consumer with a dangling
-pointer after the shared object was freed, creating a use-after-free that may
-lead to remote code execution. The 7.4.10 loader now treats a second consumer
-assignment as corrupt data, aborts the load with a bad-data error, and keeps the
-server usable.
+Redis 7.4.11 is an upstream `SECURITY` release. It fixes pending-TLS and
+blocked-client use-after-free paths, ACL key-resolution and wrong-arity
+out-of-bounds checks, and validates RDB `SLOT_INFO` ranges to reject crafted
+corrupt payloads before memory corruption. These fixes are part of the exact
+7.4.11 source baseline and apply to the Windows port without changing Redis
+command semantics.
 
-This fix is part of the exact 7.4.10 source baseline and is applicable to the
-Windows port without changing its Redis-level semantics. Release qualification
-must nevertheless run the crafted stream `RESTORE` regression with the MinGW
-server and confirm both rejection and a successful subsequent `PING`. Redis
-7.4.10 also contains the security fixes from earlier 7.4 maintenance releases;
-do not substitute a 7.4.9 or earlier binary while retaining 7.4.10 package
-metadata.
+Qualification must run the complete source suites and the relevant corrupt-RDB,
+ACL, blocked-client, TLS, and persistence regressions with the MinGW server,
+then confirm a successful authenticated `PING`. Do not substitute a 7.4.10 or
+earlier binary while retaining 7.4.11 metadata.
 
 ## Licensing and notices
 
-Redis 7.4 changed the upstream license model. Upstream Redis 7.4.10 is offered
+Redis 7.4 changed the upstream license model. Upstream Redis 7.4.11 is offered
 under the user's choice of the Redis Source Available License 2.0 (`RSALv2`) or
 the Server Side Public License v1 (`SSPLv1`) as set out in `LICENSE.txt`.
 `REDISCONTRIBUTIONS.txt` records the continued BSD-3-Clause treatment of the
@@ -78,7 +73,7 @@ guide, not legal advice.
 
 ## Linux/POSIX and Windows behavior differences
 
-| Area | Original Redis 7.4.10 on Linux/POSIX | This Windows port |
+| Area | Original Redis 7.4.11 on Linux/POSIX | This Windows port |
 | --- | --- | --- |
 | Event loop | A POSIX backend such as `epoll` or `kqueue` | IOCP with synthetic FDAPI descriptors and one-shot readiness rearming |
 | Network transports | TCP, optional Unix sockets, and optional TLS builds | TCP over IPv4/IPv6 only in the standard package; Unix sockets and TLS modes are rejected |
@@ -230,7 +225,7 @@ affect crash durability or cause an operation to fail after its bounded retry.
 The packaged `redis.windows.conf` and `redis.windows-service.conf` are Windows
 compatibility templates, not complete replacements for reviewing upstream
 `redis.conf`. Before release, every active template directive must be checked
-against Redis 7.4.10. A deployment should compare its configuration with the
+against Redis 7.4.11. A deployment should compare its configuration with the
 upstream-aligned file and then apply these intentional Windows choices:
 
 | Setting | Windows package contract | Notes |
@@ -346,7 +341,7 @@ partial persistence file.
 
 ## Redis 7.2 to 7.4 upgrade boundaries
 
-Redis 7.4.10 can load a 7.2.14 RDB11 dataset, so the supported direction is to
+Redis 7.4.11 can load a 7.2.14 RDB11 dataset, so the supported direction is to
 back up the complete 7.2 deployment and start 7.4 against a copy. The reverse
 direction is not symmetric:
 
@@ -377,15 +372,15 @@ direction is not symmetric:
 - Keep the complete multi-part AOF directory together. New commands in AOF or
   replication streams cannot be replayed by an older server even though the
   directory layout already existed in 7.2.
-- Rebuild and retest every native module against the 7.4.10
+- Rebuild and retest every native module against the 7.4.11
   `src/redismodule.h`. Never carry a Linux `.so` or assume that a 7.2 Windows
   DLL is ABI- and behavior-safe merely because it loads.
-- Review every active configuration directive against the 7.4.10 examples.
+- Review every active configuration directive against the 7.4.11 examples.
   Do not copy TLS, Unix-socket, client-I/O-thread, Linux supervision, or POSIX
   path assumptions into the Windows deployment.
 
 A conservative standalone upgrade stops writes, takes an offline-consistent
-backup, verifies the backup with the 7.2 checkers, starts 7.4.10 on a copy,
+backup, verifies the backup with the 7.2 checkers, starts 7.4.11 on a copy,
 tests the application and persistence cycle, and retains the untouched 7.2
 backup for rollback to a separate environment. Replication, Sentinel, and
 Cluster upgrades require the normal upstream version-ordering and failover
@@ -432,7 +427,7 @@ pipe primitives for module event-loop integration. A private CRT pipe does not
 participate in the process-wide FDAPI mapping. Modules must handle nonblocking
 partial reads/writes and follow descriptor ownership rules.
 
-Parent-process Module API behavior otherwise follows upstream 7.4.10,
+Parent-process Module API behavior otherwise follows upstream 7.4.11,
 including the 7.4 additions. Release qualification requires the full Module API
 suite, real Windows PE fixtures, load/unload and persistence callbacks, module
 defragmentation, RDB/AOF reload, crash isolation, and a QFork cycle.
@@ -461,10 +456,10 @@ action is the first argument and `--service-name` must precede the Redis
 configuration and overrides:
 
 ```bat
-redis-server.exe --service-install --service-name Redis7410 redis.windows-service.conf
-redis-server.exe --service-start --service-name Redis7410
-redis-server.exe --service-stop --service-name Redis7410
-redis-server.exe --service-uninstall --service-name Redis7410
+redis-server.exe --service-install --service-name Redis7411 redis.windows-service.conf
+redis-server.exe --service-start --service-name Redis7411
+redis-server.exe --service-stop --service-name Redis7411
+redis-server.exe --service-uninstall --service-name Redis7411
 ```
 
 Installation creates an automatic-start service using
@@ -503,12 +498,12 @@ license/notice payload listed above. Runtime executables must not require an
 external MSYS2 or MinGW installation. The legacy Visual Studio/MSI projects are
 best-effort and are not substitutes for validating the MinGW package.
 
-Before creating `v7.4.10-windows.1`, all of the following are required against
+Before accepting the CI-only `mingw-7.4` qualification, all of the following are required against
 the exact candidate commit:
 
 1. Perform a clean `./build-mingw.sh -j2` build and verify server, CLI,
    benchmark, checker, Sentinel alias, and Event Log resources identify the
-   intended 7.4.10 source.
+   intended 7.4.11 source.
 2. Run the full root, dedicated Cluster, dedicated Sentinel, and full Module
    API suites with the repository-owned MinGW wrappers.
 3. Run focused hash-field-expiration/RDB12, crafted corrupt-stream `RESTORE`,
@@ -517,7 +512,7 @@ the exact candidate commit:
 4. Run long RDB save/reload, AOF rewrite/restart, disk-backed and diskless full
    synchronization, QFork allocation, failpoint, and repeated restart soaks
    under representative memory and Windows commit pressure.
-5. Build `Redis-x64-7.4.10-mingw-r1.zip`, verify its SHA-256 file and manifest,
+5. Build `Redis-x64-7.4.11-mingw-r1.zip` in CI, verify its SHA-256 file and manifest,
    and audit PE architecture, imports, fixed-address/ASLR flags, resources,
    license files, absence of build/debug artifacts, and absence of external
    MinGW runtime dependencies.
@@ -546,7 +541,7 @@ Before deploying the accepted archive:
    security, absolute paths, directory ACLs, service identity, Event Log
    registration, Windows commit/pagefile capacity, antivirus/EDR exclusions,
    backup software, and port-close timing.
-4. Compare every active configuration directive with Redis 7.4.10; remove TLS,
+4. Compare every active configuration directive with Redis 7.4.11; remove TLS,
    Unix-socket, client-I/O-thread, Linux daemon/supervision, wildcard include,
    and unsupported syslog settings.
 5. Exercise representative application commands, hash-field expiration,

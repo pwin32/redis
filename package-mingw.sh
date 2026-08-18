@@ -35,7 +35,6 @@ required_manifest_files=(
     packaging/licenses/GCC-RUNTIME-README.txt
     packaging/licenses/GPL-3.0.txt
     packaging/licenses/MINGW-W64-RUNTIME.txt
-    packaging/licenses/ZSTD-LICENSE.txt
     RELEASENOTES.txt
     00-RELEASENOTES
 )
@@ -88,15 +87,7 @@ if [[ "$gcc_package" != mingw-w64-x86_64-gcc\ * ]]; then
     exit 1
 fi
 
-zstd_package="$(
-    "$msys_bash" -l -c \
-        'export MSYSTEM=MINGW64; source /etc/profile >/dev/null 2>&1; pacman -Q mingw-w64-x86_64-zstd'
-)"
-zstd_package="${zstd_package//$'\r'/}"
-if [[ "$zstd_package" != mingw-w64-x86_64-zstd\ * ]]; then
-    echo "error: unable to resolve the MinGW64 Zstandard package: $zstd_package" >&2
-    exit 1
-fi
+zstd_package='not used by this Redis line'
 
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "error: package source worktree must be clean" >&2
@@ -173,7 +164,6 @@ install -m 0644 packaging/licenses/GCC-RUNTIME-LIBRARY-EXCEPTION.txt "$stage_dir
 install -m 0644 packaging/licenses/GCC-RUNTIME-README.txt "$stage_dir/GCC-RUNTIME-README.txt"
 install -m 0644 packaging/licenses/GPL-3.0.txt "$stage_dir/GPL-3.0.txt"
 install -m 0644 packaging/licenses/MINGW-W64-RUNTIME.txt "$stage_dir/MINGW-W64-RUNTIME.txt"
-install -m 0644 packaging/licenses/ZSTD-LICENSE.txt "$stage_dir/ZSTD-LICENSE.txt"
 install -m 0644 RELEASENOTES.txt "$stage_dir/RELEASENOTES.txt"
 install -m 0644 00-RELEASENOTES "$stage_dir/00-RELEASENOTES"
 install -m 0644 "$windows_changes" "$stage_dir/$windows_changes"
@@ -188,8 +178,8 @@ install -m 0644 "$windows_changes" "$stage_dir/$windows_changes"
     printf 'Toolchain: GCC %s MSYS2/MinGW64\n' "$gcc_version"
     printf 'Toolchain package: %s\n' "$gcc_package"
     printf 'Allocator: jemalloc-5.3.0-redis\n'
-    printf 'Compression package: %s (statically linked)\n' "$zstd_package"
-    printf 'Replication compression: compiled in; keep disabled because Windows client I/O is restricted to one thread\n'
+    printf 'Compression package: %s\n' "$zstd_package"
+    printf 'Replication compression: unavailable on this Redis line\n'
 } >"$stage_dir/BUILDINFO.txt"
 
 strip \

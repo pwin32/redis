@@ -1,7 +1,7 @@
 Redis for Windows - MinGW64 portable package
 =============================================
 
-This is an unofficial Windows x64 Redis 7.4.10 revision 1 build. It is built
+This is an unofficial Windows x64 Redis 7.4.11 revision 1 qualification build. It is built
 with the MSYS2/MinGW64 toolchain and is configured not to require Visual Studio
 or external MinGW runtime DLLs on the target system.
 
@@ -23,11 +23,11 @@ Package contents:
 - 00-RELEASENOTES - upstream Redis release notes
 - WINDOWS-7.4-CHANGES.md - current Redis 7.4 Windows constraints and upgrade guide
 
-This package reports Redis 7.4.10 and is distributed as
-`Redis-x64-7.4.10-mingw-r1.zip`. The archive is produced from the canonical
-`mingw-7.4` line and is identified by the `v7.4.10-windows.1` tag; verify the
-adjacent SHA-256 file against that exact source revision. Read RELEASENOTES.txt
-before upgrading.
+This package reports Redis 7.4.11 and is produced only by the CI qualification
+workflow as `Redis-x64-7.4.11-mingw-r1.zip`. The 7.4 line is qualification-only
+under the current publication policy, so no public 7.4 tag or release is
+created. Verify the adjacent SHA-256 file, BUILDINFO, and selected source
+revision in CI. Read RELEASENOTES.txt before deployment.
 
 The included server configurations are Windows-oriented compatibility templates,
 not complete Redis 7.4 manuals. Their active directives have reviewed defaults,
@@ -57,10 +57,10 @@ authorized.
 From an elevated command prompt, use an isolated service name and keep the
 service action as the first argument:
 
-    redis-server.exe --service-install --service-name Redis7410 redis.windows-service.conf
-    redis-server.exe --service-start --service-name Redis7410
-    redis-server.exe --service-stop --service-name Redis7410
-    redis-server.exe --service-uninstall --service-name Redis7410
+    redis-server.exe --service-install --service-name Redis7411 redis.windows-service.conf
+    redis-server.exe --service-start --service-name Redis7411
+    redis-server.exe --service-stop --service-name Redis7411
+    redis-server.exe --service-uninstall --service-name Redis7411
 
 Installation does not start the service, and uninstallation does not stop it.
 The example service configuration writes `server_log.txt` and also uses the

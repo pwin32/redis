@@ -6,6 +6,20 @@ For release notes related to original Redis project - please see 00-RELEASENOTES
 
 --------------------------------------------------------
 
+2026-08-18: Redis 7.4.11 Windows qualification-only revision 1
+
+This candidate integrates the upstream Redis 7.4.11 security release, including
+pending-TLS and blocked-client lifetime fixes, ACL key/arity validation, and
+RDB slot-range checks. It carries the Windows IOCP, FDAPI, QFork, service,
+Event Log, and MinGW64 adaptations and is qualified only in GitHub Actions.
+
+The canonical line is `mingw-7.4`; its CI package identity is
+`Redis-x64-7.4.11-mingw-r1.zip`. The current publication policy intentionally
+excludes 7.4, so no public tag, package, or GitHub release is created for this
+line. Keep the qualification evidence for security and regression tracking.
+
+--------------------------------------------------------
+
 2026-07-24: Redis 7.4.10 Windows revision 1
 
 The Redis 7.4 Windows line now targets the exact upstream Redis Community
