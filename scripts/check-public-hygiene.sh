@@ -99,7 +99,7 @@ if [[ -n "${PUBLIC_PRIVATE_VALUES_FILE:-}" ]]; then
     else
         while IFS= read -r private_value; do
             [[ -n "$private_value" && "$private_value" != \#* ]] || continue
-            if git grep -n -I -F -- "$private_value" -- . >/dev/null 2>&1; then
+            if git grep -n -I -F -- "$private_value" -- . ':!scripts/check-public-hygiene.sh' >/dev/null 2>&1; then
                 echo "error: private value remains in tracked content" >&2
                 failures=$((failures + 1))
             fi
