@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Build the Redis 7.2.15 Windows MinGW64 maintenance package.
+
+set -euo pipefail
+
+source "$(cd "$(dirname "$0")" && pwd)/scripts/mingw-bootstrap.sh"
+mingw_bootstrap "$@"
+set -- "${MINGW_BOOTSTRAP_ARGS[@]}"
+
+repo_root="$(cd "$(dirname "$0")" && pwd)"
+cd "$repo_root"
+export REDIS_REPO_ROOT="$repo_root"
+mingw_resolve_bash
+msys_bash="$MINGW_RESOLVED_BASH"
+
+for tool in git install sed sha256sum strip touch zip; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "error: required packaging tool not found: $tool" >&2
+        exit 1
+    fi
+done
+
+version="$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)"
+if [[ -z "$version" ]]; then
+    echo "error: unable to read Redis version from src/version.h" >&2
+    exit 1
+fi
+if [[ "$version" != "7.2.15" ]]; then
+    echo "error: package-mingw.sh is restricted to Redis 7.2.15; found $version" >&2
+    exit 1
+fi
+
+windows_revision="${WINDOWS_PACKAGE_REVISION:-1}"
+if [[ "$windows_revision" != "1" ]]; then
+    echo "error: Redis 7.2.15 packaging requires WINDOWS_PACKAGE_REVISION=1" >&2
+    exit 1
+fi
+
+gcc_version="$(
+    "$msys_bash" -l -c \
+        'export MSYSTEM=MINGW64; source /etc/profile >/dev/null 2>&1; gcc -dumpfullversion'
+)"
+gcc_version="${gcc_version//$'\r'/}"
+if [[ "$gcc_version" != "16.1.0" ]]; then
+    echo "error: Redis 7.2.15 revision 1 requires GCC 16.1.0; found $gcc_version" >&2
+    exit 1
+fi
+
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+    echo "error: package source worktree must be clean" >&2
+    git status --short >&2
+    exit 1
+fi
+
+source_commit="$(git rev-parse HEAD)"
+source_tree="$(git rev-parse HEAD^{tree})"
+source_epoch="$(git show -s --format=%ct HEAD)"
+release_tag="v${version}-windows.${windows_revision}"
+expected_source_commit="${WINDOWS_PACKAGE_SOURCE_COMMIT:-${GITHUB_SHA:-}}"
+
+if [[ "${CI:-}" != "true" && "${CI:-}" != "1" ]]; then
+    echo "error: public release packages must be built by CI, not locally" >&2
+    exit 1
+fi
+if [[ "${PUBLIC_RELEASE_CI:-}" != "1" ]]; then
+    echo "error: CI release packaging requires PUBLIC_RELEASE_CI=1" >&2
+    exit 1
+fi
+if [[ ! "$expected_source_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "error: set WINDOWS_PACKAGE_SOURCE_COMMIT to the selected 40-character CI source commit" >&2
+    exit 1
+fi
+if [[ "$source_commit" != "$expected_source_commit" ]]; then
+    echo "error: source checkout does not match WINDOWS_PACKAGE_SOURCE_COMMIT" >&2
+    exit 1
+fi
+
+jobs=${JOBS:-2}
+# A release archive must never inherit objects or nested jemalloc dependency
+# files from another maintenance line or an earlier source checkout.
+./build-mingw.sh distclean
+./build-mingw.sh -j"$jobs"
+
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+    echo "error: release build modified the tracked source worktree" >&2
+    git status --short >&2
+    exit 1
+fi
+
+package_name="Redis-x64-${version}-mingw-r${windows_revision}"
+build_dir="$repo_root/build/mingw64"
+stage_dir="$build_dir/package/$package_name"
+release_dir="$build_dir/releases"
+archive="$release_dir/$package_name.zip"
+checksum="$archive.sha256"
+
+rm -rf "$stage_dir"
+mkdir -p "$stage_dir" "$release_dir"
+
+for executable in \
+    redis-benchmark.exe \
+    redis-cli.exe \
+    redis-server.exe
+do
+    install -m 0755 "$build_dir/$executable" "$stage_dir/$executable"
+done
+
+install -m 0644 "$build_dir/EventLog.dll" "$stage_dir/EventLog.dll"
+install -m 0644 packaging/mingw/README.txt "$stage_dir/README.txt"
+install -m 0644 msvs/setups/documentation/redis.windows.conf "$stage_dir/redis.windows.conf"
+install -m 0644 msvs/setups/documentation/redis.windows-service.conf "$stage_dir/redis.windows-service.conf"
+install -m 0644 packaging/mingw/sentinel.conf "$stage_dir/sentinel.conf"
+install -m 0644 COPYING "$stage_dir/license.txt"
+install -m 0644 RELEASENOTES.txt "$stage_dir/RELEASENOTES.txt"
+install -m 0644 00-RELEASENOTES "$stage_dir/00-RELEASENOTES"
+install -m 0644 WINDOWS-7.2-CHANGES.md "$stage_dir/WINDOWS-7.2-CHANGES.md"
+
+{
+    printf 'Redis version: %s\n' "$version"
+    printf 'Windows package revision: %s\n' "$windows_revision"
+    printf 'Package scope: Redis core; no prebuilt third-party modules included\n'
+    printf 'Source commit: %s\n' "$source_commit"
+    printf 'Source tree: %s\n' "$source_tree"
+    printf 'Release tag: %s\n' "$release_tag"
+    printf 'Toolchain: GCC %s MSYS2/MinGW64\n' "$gcc_version"
+    printf 'Allocator: jemalloc-5.3.0-redis Windows QFork tree\n'
+    printf 'TLS: not built\n'
+} >"$stage_dir/BUILDINFO.txt"
+
+strip \
+    "$stage_dir/redis-benchmark.exe" \
+    "$stage_dir/redis-cli.exe" \
+    "$stage_dir/redis-server.exe"
+
+# These programs select their role from argv[0]. Copy the already stripped
+# server so all aliases are byte-identical and packaging is deterministic.
+for alias in redis-check-aof.exe redis-check-rdb.exe redis-sentinel.exe; do
+    install -m 0755 "$stage_dir/redis-server.exe" "$stage_dir/$alias"
+done
+
+touch -d "@$source_epoch" "$stage_dir"/*
+
+rm -f "$archive" "$checksum"
+zip -X -9 -j -q "$archive" "$stage_dir"/*
+(
+    cd "$release_dir"
+    sha256sum "$package_name.zip" > "$package_name.zip.sha256"
+)
+
+echo "==> package:  $archive"
+echo "==> checksum: $checksum"
