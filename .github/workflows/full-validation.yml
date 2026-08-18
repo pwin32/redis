@@ -149,8 +149,18 @@ jobs:
 
       - name: Run Redis Sentinel test suite
         run: |
-          set -o pipefail
+          set +e
           ./runtest-mingw.sh --sentinel 2>&1 | tee build/qualification/sentinel-tests.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            excerpt="$(tail -n 160 build/qualification/sentinel-tests.log)"
+            excerpt="${excerpt//'%'/'%25'}"
+            excerpt="${excerpt//$'\r'/'%0D'}"
+            excerpt="${excerpt//$'\n'/'%0A'}"
+            printf '::error title=Redis Sentinel test suite failure::%s\n' "$excerpt"
+          fi
+          exit "$status"
 
       - name: Run Redis Module API test suite
         run: |
