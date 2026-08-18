@@ -118,7 +118,7 @@ if (( scan_history )); then
         failures=$((failures + 1))
     fi
 
-    history_paths="$(git log --all --format='%H%x09%B' | grep -E '(/mnt/[[:alpha:]]/|[[:alpha:]]:[\\/](Users|home|tmp)[\\/])' || true)"
+    history_paths="$(git log --all --format='%H%x09%B' | grep -E '(/mnt/[[:alpha:]]/|(^|[^[:alnum:]])[[:alpha:]]:[\\/](Users|home|tmp)[\\/])' || true)"
     if [[ -n "$history_paths" ]]; then
         echo "error: concrete local path remains in commit messages" >&2
         printf '%s\n' "$history_paths" >&2
