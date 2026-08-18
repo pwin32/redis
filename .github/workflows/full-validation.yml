@@ -129,8 +129,18 @@ jobs:
 
       - name: Run Redis root test suite
         run: |
-          set -o pipefail
+          set +e
           ./runtest-mingw.sh --clients 1 --quiet --timeout 600 2>&1 | tee build/qualification/root-tests.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            excerpt="$(tail -n 100 build/qualification/root-tests.log)"
+            excerpt="${excerpt//'%'/'%25'}"
+            excerpt="${excerpt//$'\r'/'%0D'}"
+            excerpt="${excerpt//$'\n'/'%0A'}"
+            printf '::error title=Redis root test suite failure::%s\n' "$excerpt"
+          fi
+          exit "$status"
 
       - name: Run Redis cluster test suite
         run: |
@@ -258,7 +268,7 @@ jobs:
 
       - name: Upload release assets from successful qualification
         if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: windows-qualification-${{ inputs.source_sha || github.sha }}
           path: build/mingw64/release-assets
@@ -267,7 +277,7 @@ jobs:
 
       - name: Upload qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: windows-qualification-diagnostics-${{ inputs.source_sha || github.sha }}
           path: build/qualification
