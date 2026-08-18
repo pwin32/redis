@@ -1,0 +1,168 @@
+name: Publish Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: Canonical branch to publish (7.4 is intentionally excluded)
+        required: true
+        type: choice
+        options:
+          - mingw-8.10
+          - mingw-8.8
+          - mingw-7.2
+          - mingw-6.2
+      source_sha:
+        description: Exact 40-character tip SHA to qualify and release
+        required: true
+        type: string
+      windows_revision:
+        description: Positive Windows package revision (new upstream release starts at 1)
+        required: true
+        default: '1'
+        type: string
+      confirm_tag:
+        description: Type the exact expected vX.Y.Z-windows.N tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: publish-windows-release-${{ inputs.source_branch }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Verify release policy and maintained-line barrier
+    runs-on: ubuntu-latest
+    outputs:
+      source_branch: ${{ steps.policy.outputs.source_branch }}
+      source_sha: ${{ steps.policy.outputs.source_sha }}
+      version: ${{ steps.policy.outputs.version }}
+      revision: ${{ steps.policy.outputs.revision }}
+      tag: ${{ steps.policy.outputs.tag }}
+      gate_json: ${{ steps.policy.outputs.gate_json }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check exact source, version, tag, and all maintained-line tips
+        id: policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='${{ inputs.source_branch }}'
+          source_sha='${{ inputs.source_sha }}'
+          revision='${{ inputs.windows_revision }}'
+          confirm_tag='${{ inputs.confirm_tag }}'
+          case "$branch" in
+            mingw-8.10) expected_version=8.10.1 ;;
+            mingw-8.8) expected_version=8.8.2 ;;
+            mingw-7.2) expected_version=7.2.16 ;;
+            mingw-6.2) expected_version=6.2.24 ;;
+            *) echo '7.4 and non-canonical branches are not release eligible' >&2; exit 1 ;;
+          esac
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_sha must be exactly 40 lowercase hex characters' >&2; exit 1; }
+          [[ "$revision" =~ ^[1-9][0-9]*$ ]] || { echo 'windows_revision must be a positive integer' >&2; exit 1; }
+          branch_tip="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
+          [[ "$branch_tip" == "$source_sha" ]] || { echo "source_sha is not current tip of $branch" >&2; exit 1; }
+          version="$(gh api "/repos/${GITHUB_REPOSITORY}/contents/src/version.h?ref=${source_sha}" --jq '.content' | tr -d '\n' | base64 -d | sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p')"
+          [[ "$version" == "$expected_version" ]] || { echo "expected $expected_version at $source_sha, found $version" >&2; exit 1; }
+          tag="v${version}-windows.${revision}"
+          [[ "$confirm_tag" == "$tag" ]] || { echo "confirm_tag must equal $tag" >&2; exit 1; }
+
+          lines=(mingw-8.10 mingw-8.8 mingw-7.4 mingw-7.2 mingw-6.2)
+          gate='[]'
+          for line in "${lines[@]}"; do
+            tip="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/${line}" --jq '.object.sha')"
+            runs="$(gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/actions/workflows/full-validation.yml/runs?branch=${line}&event=push&per_page=100")"
+            qualified="$(jq -r --arg tip "$tip" '[.[].workflow_runs[]? | select(.head_sha == $tip and .conclusion == "success")] | sort_by(.run_number) | last // empty | [.id, .head_sha] | @tsv' <<<"$runs")"
+            [[ -n "$qualified" ]] || { echo "no successful Full Windows qualification for current tip $line ($tip)" >&2; exit 1; }
+            run_id="${qualified%%$'\t'*}"
+            record="$(jq -cn --arg branch "$line" --arg sha "$tip" --arg run "$run_id" '{branch:$branch,source_sha:$sha,run_id:($run|tonumber),workflow:"Full Windows qualification"}')"
+            gate="$(jq -c --argjson record "$record" '. + [$record]' <<<"$gate")"
+          done
+          printf 'source_branch=%s\n' "$branch" >> "$GITHUB_OUTPUT"
+          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'gate_json=%s\n' "$(jq -c --arg policy 'all five maintained-line tips passed Full Windows qualification' '{policy:$policy,lines:.}' <<<"$gate")" >> "$GITHUB_OUTPUT"
+
+  qualify:
+    name: Requalify exact release source on Windows
+    needs: preflight
+    uses: ./.github/workflows/full-validation.yml
+    with:
+      source_sha: ${{ needs.preflight.outputs.source_sha }}
+      source_branch: ${{ needs.preflight.outputs.source_branch }}
+      package_revision: ${{ needs.preflight.outputs.revision }}
+      qualification_gate: ${{ needs.preflight.outputs.gate_json }}
+
+  attest:
+    name: Attest release package and SBOM
+    needs: [preflight, qualify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download qualified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.qualify.outputs.artifact_name }}
+          path: release-assets
+      - name: Create SLSA build provenance attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: release-assets/*.zip
+      - name: Create SPDX SBOM attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: release-assets/*.zip
+          sbom-path: release-assets/sbom.spdx.json
+
+  publish:
+    name: Create immutable GitHub release
+    needs: [preflight, qualify, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download qualified and attested release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.qualify.outputs.artifact_name }}
+          path: release-assets
+      - name: Verify assets and publish without moving an existing tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ needs.preflight.outputs.tag }}'
+          source_sha='${{ needs.preflight.outputs.source_sha }}'
+          version='${{ needs.preflight.outputs.version }}'
+          archive="$(find release-assets -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          [[ -n "$archive" ]]
+          (cd release-assets && sha256sum -c SHA256SUMS.txt)
+          jq -e --arg tag "$tag" --arg sha "$source_sha" '.release.tag == $tag and .source.commit == $sha' release-assets/release-evidence.json >/dev/null
+          if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/tmp/tag.json 2>/dev/null; then
+            tag_target="$(jq -r '.object.sha' /tmp/tag.json)"
+            [[ "$tag_target" == "$source_sha" ]] || { echo "existing tag $tag points to $tag_target, refusing to move it" >&2; exit 1; }
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              gh release create "$tag" --verify-tag --title "Redis $version for Windows" --notes-file release-assets/TEST-REPORT.md
+            fi
+          else
+            gh release create "$tag" --target "$source_sha" --title "Redis $version for Windows" --notes-file release-assets/TEST-REPORT.md
+          fi
+          gh release upload "$tag" release-assets/* --clobber
+          gh release edit "$tag" --draft=false --prerelease=false
+          final_target="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+          [[ "$final_target" == "$source_sha" ]] || { echo "release tag target changed unexpectedly" >&2; exit 1; }
+          printf 'PUBLISHED_RELEASE_OK tag=%s source=%s\n' "$tag" "$source_sha"
