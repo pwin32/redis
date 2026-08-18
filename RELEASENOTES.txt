@@ -6,6 +6,22 @@ For release notes related to original Redis project - please see 00-RELEASENOTES
 
 --------------------------------------------------------
 
+2026-08-18: Redis 8.10.1 Windows core revision 1 qualification
+
+This candidate imports the complete upstream Redis 8.10.1 ancestry and replays
+the 8.10.1 delta onto the Windows port. It includes the upstream TLS
+certificate common-name embedded-NUL fix, blocked-client and pending-TLS
+use-after-free fixes, RDB slot metadata validation, and Vector Sets hardening.
+
+Publication is CI-only. The selected source commit must pass public hygiene,
+the complete Windows source test suites, interop and service coverage, package
+extraction and PE/import/license audits, packaged replication, a 30-minute
+QFork persistence soak, and the recorded short benchmark. CI emits provenance
+and SPDX SBOM attestations before it creates `v8.10.1-windows.1` and uploads the
+release assets. Bundled Redis modules remain outside the package boundary.
+
+--------------------------------------------------------
+
 2026-08-13: Redis 8.10.0 Windows core revision 2 qualification
 
 This revision packages the completed Windows portability hardening on the

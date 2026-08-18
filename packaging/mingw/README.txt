@@ -1,7 +1,7 @@
 Redis for Windows - MinGW64 portable package
 =============================================
 
-This is an unofficial Windows x64 Redis 8.10.0 revision 2 core build. It is built
+This is an unofficial Windows x64 Redis 8.10.1 revision 1 core build. It is built
 with the MSYS2/MinGW64 toolchain and is configured not to require Visual Studio
 or external MinGW runtime DLLs on the target system.
 
@@ -36,8 +36,8 @@ Package contents:
 - BUILDINFO.txt - exact source commit, tree, toolchain, and package scope
 - WINDOWS-8.10-CHANGES.md - current Redis 8.10 Windows constraints and upgrade guide
 
-This package reports Redis 8.10.0. A future public CI release is expected to
-use `Redis-x64-8.10.0-mingw-r2.zip` and a matching revision tag, but no tag or
+This package reports Redis 8.10.1. A public CI release uses
+`Redis-x64-8.10.1-mingw-r1.zip` and the matching revision tag; no tag or
 archive is created locally during the pre-publish phase. Verify the adjacent
 SHA-256 file, BUILDINFO, and selected source revision before deployment. Read
 RELEASENOTES.txt before upgrading.

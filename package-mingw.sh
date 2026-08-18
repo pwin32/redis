@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Redis 8.10.0 Windows core MinGW64 revision 2 package.
+# Build a Redis Windows core MinGW64 package in an explicitly authorized CI run.
 
 set -euo pipefail
 
@@ -38,7 +38,6 @@ required_manifest_files=(
     packaging/licenses/ZSTD-LICENSE.txt
     RELEASENOTES.txt
     00-RELEASENOTES
-    WINDOWS-8.10-CHANGES.md
 )
 for manifest_file in "${required_manifest_files[@]}"; do
     if [[ ! -f "$manifest_file" ]]; then
@@ -52,14 +51,20 @@ if [[ -z "$version" ]]; then
     echo "error: unable to read Redis version from src/version.h" >&2
     exit 1
 fi
-if [[ "$version" != "8.10.0" ]]; then
-    echo "error: package-mingw.sh is restricted to Redis 8.10.0; found $version" >&2
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "error: invalid Redis release version in src/version.h: $version" >&2
+    exit 1
+fi
+release_line="${version%.*}"
+windows_changes="WINDOWS-${release_line}-CHANGES.md"
+if [[ ! -f "$windows_changes" ]]; then
+    echo "error: release-line guide not found: $windows_changes" >&2
     exit 1
 fi
 
-windows_revision="${WINDOWS_PACKAGE_REVISION:-2}"
-if [[ "$windows_revision" != "2" ]]; then
-    echo "error: Redis 8.10.0 packaging requires WINDOWS_PACKAGE_REVISION=2" >&2
+windows_revision="${WINDOWS_PACKAGE_REVISION:-1}"
+if [[ ! "$windows_revision" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: WINDOWS_PACKAGE_REVISION must be a positive integer" >&2
     exit 1
 fi
 
@@ -68,8 +73,18 @@ gcc_version="$(
         'export MSYSTEM=MINGW64; source /etc/profile >/dev/null 2>&1; gcc -dumpfullversion'
 )"
 gcc_version="${gcc_version//$'\r'/}"
-if [[ "$gcc_version" != "16.1.0" ]]; then
-    echo "error: Redis 8.10.0 revision 2 requires GCC 16.1.0; found $gcc_version" >&2
+if [[ ! "$gcc_version" =~ ^[0-9]+([.][0-9]+)+$ ]]; then
+    echo "error: unable to resolve the MinGW64 GCC version: $gcc_version" >&2
+    exit 1
+fi
+
+gcc_package="$(
+    "$msys_bash" -l -c \
+        'export MSYSTEM=MINGW64; source /etc/profile >/dev/null 2>&1; pacman -Q mingw-w64-x86_64-gcc'
+)"
+gcc_package="${gcc_package//$'\r'/}"
+if [[ "$gcc_package" != mingw-w64-x86_64-gcc\ * ]]; then
+    echo "error: unable to resolve the MinGW64 GCC package: $gcc_package" >&2
     exit 1
 fi
 
@@ -78,8 +93,8 @@ zstd_package="$(
         'export MSYSTEM=MINGW64; source /etc/profile >/dev/null 2>&1; pacman -Q mingw-w64-x86_64-zstd'
 )"
 zstd_package="${zstd_package//$'\r'/}"
-if [[ "$zstd_package" != "mingw-w64-x86_64-zstd 1.5.7-2" ]]; then
-    echo "error: Redis 8.10.0 revision 2 requires mingw-w64-x86_64-zstd 1.5.7-2; found $zstd_package" >&2
+if [[ "$zstd_package" != mingw-w64-x86_64-zstd\ * ]]; then
+    echo "error: unable to resolve the MinGW64 Zstandard package: $zstd_package" >&2
     exit 1
 fi
 
@@ -161,7 +176,7 @@ install -m 0644 packaging/licenses/MINGW-W64-RUNTIME.txt "$stage_dir/MINGW-W64-R
 install -m 0644 packaging/licenses/ZSTD-LICENSE.txt "$stage_dir/ZSTD-LICENSE.txt"
 install -m 0644 RELEASENOTES.txt "$stage_dir/RELEASENOTES.txt"
 install -m 0644 00-RELEASENOTES "$stage_dir/00-RELEASENOTES"
-install -m 0644 WINDOWS-8.10-CHANGES.md "$stage_dir/WINDOWS-8.10-CHANGES.md"
+install -m 0644 "$windows_changes" "$stage_dir/$windows_changes"
 
 {
     printf 'Redis version: %s\n' "$version"
@@ -171,8 +186,9 @@ install -m 0644 WINDOWS-8.10-CHANGES.md "$stage_dir/WINDOWS-8.10-CHANGES.md"
     printf 'Source tree: %s\n' "$source_tree"
     printf 'Release tag: %s\n' "$release_tag"
     printf 'Toolchain: GCC %s MSYS2/MinGW64\n' "$gcc_version"
+    printf 'Toolchain package: %s\n' "$gcc_package"
     printf 'Allocator: jemalloc-5.3.0-redis\n'
-    printf 'Compression library: Zstandard 1.5.7 (MSYS2 mingw-w64-x86_64-zstd 1.5.7-2, statically linked)\n'
+    printf 'Compression package: %s (statically linked)\n' "$zstd_package"
     printf 'Replication compression: compiled in; keep disabled because Windows client I/O is restricted to one thread\n'
 } >"$stage_dir/BUILDINFO.txt"
 
@@ -187,12 +203,27 @@ for alias in redis-check-aof.exe redis-check-rdb.exe redis-sentinel.exe; do
     install -m 0755 "$stage_dir/redis-server.exe" "$stage_dir/$alias"
 done
 
+(
+    cd "$stage_dir"
+    {
+        printf 'SHA256  SIZE  FILE\n'
+        for package_file in *; do
+            [[ "$package_file" != "PACKAGE-MANIFEST.txt" ]] || continue
+            package_sha="$(sha256sum "$package_file" | sed 's/[[:space:]].*$//')"
+            package_size="$(wc -c < "$package_file" | tr -d '[:space:]')"
+            printf '%s  %s  %s\n' "$package_sha" "$package_size" "$package_file"
+        done
+    } > PACKAGE-MANIFEST.txt
+)
+
 # Normalize staged timestamps to the source commit for reproducible ZIP
 # metadata when the same source and toolchain are used.
 touch -d "@$source_epoch" "$stage_dir"/*
 
-rm -f "$archive" "$checksum"
+manifest="$release_dir/$package_name.manifest.txt"
+rm -f "$archive" "$checksum" "$manifest"
 zip -X -9 -j -q "$archive" "$stage_dir"/*
+install -m 0644 "$stage_dir/PACKAGE-MANIFEST.txt" "$manifest"
 (
     cd "$release_dir"
     sha256sum "$package_name.zip" > "$package_name.zip.sha256"
@@ -200,3 +231,4 @@ zip -X -9 -j -q "$archive" "$stage_dir"/*
 
 echo "==> package:  $archive"
 echo "==> checksum: $checksum"
+echo "==> manifest: $manifest"

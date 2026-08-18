@@ -1,28 +1,26 @@
-# Redis 8.10.0 core behavior and upgrade guide for Windows
+# Redis 8.10.1 core behavior and upgrade guide for Windows
 
 ## Scope and prospective release identity
 
-This guide describes the unofficial Redis 8.10.0 Windows x64 MinGW port. The
-Redis core baseline is the exact upstream Redis 8.10.0 tag at commit
-`5279a8d44818a5ca51e9abb91a9b8ce481d3c88b`, integrated with this fork's IOCP
+This guide describes the unofficial Redis 8.10.1 Windows x64 MinGW port. The
+Redis core baseline is the exact upstream Redis 8.10.1 tag at commit
+`3399357e7c17b668289386b8a15a3037bc4527b1`, integrated with this fork's IOCP
 networking, FDAPI descriptors, QFork persistence, Windows service, Event Log,
 console, and MinGW64 layers.
 
 If CI later promotes this source, the expected package naming is:
 
 - canonical branch: `mingw-8.10`;
-- source-integration tag: `v8.10.0`;
-- package revision tag: `v8.10.0-windows.2`;
-- portable archive: `Redis-x64-8.10.0-mingw-r2.zip`; and
-- adjacent checksum: `Redis-x64-8.10.0-mingw-r2.zip.sha256`.
+- package revision tag: `v8.10.1-windows.1`;
+- portable archive: `Redis-x64-8.10.1-mingw-r1.zip`; and
+- adjacent checksum: `Redis-x64-8.10.1-mingw-r1.zip.sha256`.
 
 No public tag or archive is created during this pre-publish phase. A future CI
 release must write `BUILDINFO.txt` with the exact source commit and tree, then
 verify that the tag, archive, checksum, contents, and tested extraction agree.
-A changed Windows package requires a new revision. The prospective revision 2
-includes the completed Windows portability hardening, including explicit
-UTF-8/wide boundaries and case-insensitive Windows environment,
-executable-alias, and AOF/manifest identity handling.
+A changed Windows package requires a new revision. Revision 1 combines the
+completed Windows portability hardening with the upstream 8.10.1 security and
+correctness fixes. The imported upstream ancestry is retained in Git history.
 
 ### Post-release source maintenance
 
@@ -40,7 +38,7 @@ package qualification matrix.
 
 ## Core-only distribution
 
-This archive is Redis 8.10.0 core only. It does not build or ship the bundled
+This archive is Redis 8.10.1 core only. It does not build or ship the bundled
 Redis Search, JSON, TimeSeries, probabilistic, or Vector Sets modules included
 with the full upstream Redis 8 distribution. Those components have independent
 build systems, worker-thread behavior, persistence paths, dependencies, and
@@ -76,9 +74,10 @@ Binary redistribution must preserve:
 - this guide, the Windows release notes, and BUILDINFO; and
 - access to the exact corresponding source revision.
 
-The MinGW server statically links Zstandard 1.5.7 from MSYS2 package
-`mingw-w64-x86_64-zstd 1.5.7-2`. The executable does not import a Zstandard
-DLL, but its BSD license remains part of the binary redistribution payload.
+The MinGW server statically links Zstandard from the MSYS2 MinGW64 package
+resolved by the release workflow. `BUILDINFO.txt` records the exact package
+version. The executable does not import a Zstandard DLL, but its BSD license
+remains part of the binary redistribution payload.
 The existing fast_float, TRE, xxHash, hiredis, jemalloc, Lua, HdrHistogram,
 fpconv, linenoise, CRC, hash, and toolchain notices are reproduced in
 `THIRD-PARTY-NOTICES.txt`. This guide records engineering scope and is not
