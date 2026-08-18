@@ -54,4 +54,6 @@ jobs:
           ./runtest-mingw.sh --clients 1 --quiet --timeout 300
           --single unit/type/string --single unit/printver
       - name: Run Windows interop test
-        run: ./build/mingw64/interop-test.exe
+        run: |
+          ./build/mingw64/interop-test.exe --legacy
+          ./build/mingw64/interop-test.exe --modern

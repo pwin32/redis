@@ -35,7 +35,9 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <regex.h>
+#endif
 #include <libgen.h>
 
 #define AOF_CHECK_OK 0
