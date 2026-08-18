@@ -13,8 +13,8 @@ git_cmd() {
 }
 
 # A linked worktree created from WSL stores a WSL absolute path in its .git
-# file (for example /mnt/<drive>/...). MSYS Git cannot resolve that spelling, even
-# though the same drive is available as /e/.... Fall back to the translated
+# file (for example a /mnt/<drive>/... spelling). MSYS Git cannot resolve that
+# spelling, even though the same drive is available as /<drive>/.... Fall back to the translated
 # gitdir while keeping the linked worktree itself as GIT_WORK_TREE.
 if ! git_cmd rev-parse --git-dir >/dev/null 2>&1 && [ -f "$WORK_TREE/.git" ]; then
   RELEASE_GIT_DIR=$(sed -n 's/^gitdir:[[:space:]]*//p' "$WORK_TREE/.git" | head -n 1 | tr -d '\r')
