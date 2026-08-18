@@ -1,38 +1,38 @@
-# Redis 8.8.1 core behavior and upgrade guide for Windows
+# Redis 8.8.2 core behavior and upgrade guide for Windows
 
 ## Scope and release identity
 
-This guide describes the unofficial Redis 8.8.1 Windows x64 MinGW port. The
-Redis core baseline is the exact upstream Redis 8.8.1 tag at commit
-`77b6c308396c9700672390a210143a8496fb4b10`, integrated incrementally through
-Redis 8.0.6, 8.2.8, 8.4.5, 8.6.5, and 8.8.1 with this fork's IOCP networking,
+This guide describes the unofficial Redis 8.8.2 Windows x64 MinGW port. The
+Redis core baseline is the exact upstream Redis 8.8.2 tag at commit
+`c5031f43a7eaa0d96311746acf759ee6d6acb053`, integrated incrementally through
+Redis 8.0.6, 8.2.8, 8.4.5, 8.6.5, 8.8.1, and 8.8.2 with this fork's IOCP networking,
 FDAPI descriptors, QFork persistence, Windows service, Event Log, console, and
 MinGW64 layers.
 
 The Windows package identity is:
 
 - canonical branch: `mingw-8.8`;
-- source-integration tag: `v8.8.1`;
-- package revision tag: `v8.8.1-windows.2`;
-- portable archive: `Redis-x64-8.8.1-mingw-r2.zip`; and
-- adjacent checksum: `Redis-x64-8.8.1-mingw-r2.zip.sha256`.
+- upstream release tag: `8.8.2`;
+- package revision tag: `v8.8.2-windows.1`;
+- portable archive: `Redis-x64-8.8.2-mingw-r1.zip`; and
+- adjacent checksum: `Redis-x64-8.8.2-mingw-r1.zip.sha256`.
 
-Revision 1 remains immutable as tag `v8.8.1-windows.1` and archive
-`Redis-x64-8.8.1-mingw-r1.zip`; the Windows hardening completed after that
-release is published only as revision 2.
+The preceding 8.8.1 packages remain immutable as tags
+`v8.8.1-windows.1` and `v8.8.1-windows.2`; a new upstream release starts a
+new package revision at 1.
 
 `BUILDINFO.txt` inside the ZIP records the exact 40-character source commit
 and tree used for the binaries. The package revision tag, BUILDINFO, archive,
 checksum, and tested extraction must agree. Never move a published tag or
 silently replace an archive; a changed Windows package requires a new revision.
 
-## Revision 2 hardening state
+## Upstream delta and Windows qualification state
 
-Revision 2 is the published Windows 8.8.1 release line. It supersedes revision
-1 for new Windows deployments and keeps revision 1 immutable for
-reproducibility.
+The 8.8.2 line carries the prior 8.8.1 Windows hardening and the upstream
+8.8.2 maintenance fixes. The public package is not considered released until
+the exact source tip passes the CI-only qualification workflow.
 
-The r2 hardening pass reviewed and, where needed, fixed or explicitly bounded:
+The inherited Windows hardening reviewed and, where needed, fixed or explicitly bounded:
 
 - UTF-8-to-UTF-16 Windows API boundaries for filesystem, environment, console,
   service, Event Log, and command-line handling;
@@ -53,15 +53,20 @@ The r2 hardening pass reviewed and, where needed, fixed or explicitly bounded:
 - hiredis Windows resolver assertions so non-ASCII DNS names/services fail
   predictably instead of being treated as UTF-8 hostnames.
 
-The release source validation completed on Windows/MinGW64 with GCC 16.1.0
-using the Redis 8.8.1 core-only build:
+The upstream 8.8.2 delta additionally covers ACL key resolution for SORT,
+GEORADIUS, and XREAD variants; TLS certificate common-name extraction with
+embedded NULs; blocked-client and pending-TLS lifetime safety; RDB slotinfo
+range validation; and Vector Sets persistence/search hardening.
 
-- clean `BUILD_BUNDLED_MODULES=no SKIP_VEC_SETS=yes ./build-mingw.sh -j2`;
+The required public qualification runs on Windows/MinGW64 and records the
+resolved hosted MSYS2 toolchain rather than claiming a fixed compiler version.
+It includes:
+
+- clean core-only package build from the exact source tip;
 - `interop-test.exe --legacy` and `interop-test.exe --modern`;
 - `hiredis-test.exe -h 127.0.0.1 -p 6493 --skip-throughput --skip-inherit-fd`,
   passing 107 checks with 2 platform skips;
-- `./runtest-mingw.sh --clients 1 --quiet --timeout 600`, passing all 155
-  root units and integration tests;
+- `./runtest-mingw.sh --clients 1 --quiet --timeout 600`;
 - `./runtest-mingw.sh --cluster`, ending `GOOD! No errors.`;
 - `./runtest-mingw.sh --sentinel`, ending `GOOD! No errors.`;
 - `./runtest-mingw.sh --moduleapi --clients 1 --quiet --timeout 300`, passing
@@ -69,16 +74,14 @@ using the Redis 8.8.1 core-only build:
 - `./runtest-mingw-service.sh`, passing the isolated elevated
   `RedisPortTest` Windows service start/restart/Event Log/cleanup gate.
 
-The internal qualification record covered ZIP CRC, flat-manifest,
-case-insensitive duplicate-name, alias-identity, fresh-extraction, PE32+,
-service, and QFork persistence checks. Those internal source identifiers,
-artifact checksums, and hosting operations are deliberately omitted here.
-The public branch may advance after the internal qualification; a future
-public artifact must be rebuilt and verified by CI from its own source tag.
+The workflow also performs ZIP checksum, manifest, license, PE/import, fresh
+extraction, packaged replication, a 30-minute QFork persistence soak, a short
+benchmark, sanitized test evidence, and provenance/SBOM attestations. No local
+build, tag, archive, or release operation is part of this process.
 
 ## Core-only distribution
 
-This archive is Redis 8.8.1 core only. It does not build or ship the bundled
+This archive is Redis 8.8.2 core only. It does not build or ship the bundled
 Redis Search, JSON, TimeSeries, probabilistic, or Vector Sets modules included
 with the full upstream Redis 8 distribution. Those components add independent
 build systems, worker-thread behavior, persistence paths, dependencies, and
