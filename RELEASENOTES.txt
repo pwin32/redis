@@ -1,4 +1,4 @@
-Redis for Windows - https://github.com/tporadowski/redis
+Redis for Windows - https://github.com/pwin32/redis
 ========================================================
 
 This file provides information about Windows-specific changes to Redis.

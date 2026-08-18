@@ -38,4 +38,4 @@ Quick start from a command prompt:
     redis-cli.exe PING
 
 For source code and issue tracking, visit:
-https://github.com/tporadowski/redis
+https://github.com/pwin32/redis

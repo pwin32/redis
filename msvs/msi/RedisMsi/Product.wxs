@@ -42,7 +42,7 @@
 
         <!--Properties-->
         <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
-        <Property Id="ARPURLINFOABOUT" Value="https://github.com/tporadowski/redis" />
+        <Property Id="ARPURLINFOABOUT" Value="https://github.com/pwin32/redis" />
         <Property Id="PORT" Value="6379" />
         <Property Id="ADD_FIREWALL_RULE" Value="1" />
         <Property Id="FIREWALL_SERVICE_STOPPED" Value="0" />
