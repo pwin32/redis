@@ -1,7 +1,6 @@
 name: Public Windows validation
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
 

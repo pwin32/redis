@@ -1,0 +1,273 @@
+name: Full Windows qualification
+
+on:
+  push:
+    branches:
+      - mingw-8.10
+      - mingw-8.8
+      - mingw-7.4
+      - mingw-7.2
+      - mingw-6.2
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character source commit to qualify
+        required: false
+        type: string
+      source_branch:
+        description: Canonical branch containing source_sha
+        required: false
+        type: string
+      package_revision:
+        description: Windows package revision to record
+        required: false
+        default: '1'
+        type: string
+  workflow_call:
+    inputs:
+      source_sha:
+        required: false
+        type: string
+      source_branch:
+        required: false
+        type: string
+      package_revision:
+        required: false
+        default: '1'
+        type: string
+      qualification_gate:
+        required: false
+        type: string
+    outputs:
+      artifact_name:
+        description: Qualification artifact containing release assets
+        value: ${{ jobs.qualify.outputs.artifact_name }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-windows-qualification-${{ github.workflow }}-${{ inputs.source_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Windows MinGW64 qualification
+    runs-on: windows-latest
+    timeout-minutes: 240
+    outputs:
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      SOURCE_BRANCH: ${{ inputs.source_branch || github.ref_name }}
+      WINDOWS_PACKAGE_REVISION: ${{ inputs.package_revision || '1' }}
+      QUALIFICATION_GATE: ${{ inputs.qualification_gate || '' }}
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up MSYS2 MinGW64
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            make
+            unzip
+            jq
+            diffutils
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-tcl
+
+      - name: Resolve release identity and qualification artifact name
+        id: meta
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WINDOWS_PACKAGE_REVISION" =~ ^[1-9][0-9]*$ ]]
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'release_tag=v%s-windows.%s\n' "$version" "$WINDOWS_PACKAGE_REVISION" >> "$GITHUB_OUTPUT"
+          printf 'artifact_name=windows-qualification-%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          mkdir -p build/qualification build/mingw64/release-assets
+          if [[ -n "$QUALIFICATION_GATE" ]]; then
+            printf '%s\n' "$QUALIFICATION_GATE" | jq -e . > build/qualification/maintained-lines.json
+          else
+            printf '%s\n' '{"policy":"canonical branch qualification"}' > build/qualification/maintained-lines.json
+          fi
+
+      - name: Record resolved MSYS2 toolchain
+        run: |
+          set -euo pipefail
+          {
+            printf 'MSYSTEM=%s\n' "${MSYSTEM:-unknown}"
+            printf 'GCC_FULL_VERSION=%s\n' "$(gcc -dumpfullversion)"
+            pacman -Q mingw-w64-x86_64-gcc
+            pacman -Q mingw-w64-x86_64-tcl
+            uname -a
+          } > build/qualification/toolchain.txt
+
+      - name: Run public-source hygiene over full history
+        run: ./scripts/check-public-hygiene.sh --history
+
+      - name: Build MinGW64 core, interop, and launcher targets
+        run: |
+          set -o pipefail
+          ./build-mingw.sh -j2 2>&1 | tee build/qualification/build.log
+          make -f Makefile.mingw interop-test test-launcher 2>&1 | tee -a build/qualification/build.log
+
+      - name: Run Redis root test suite
+        run: |
+          set -o pipefail
+          ./runtest-mingw.sh --clients 1 --quiet --timeout 600 2>&1 | tee build/qualification/root-tests.log
+
+      - name: Run Redis cluster test suite
+        run: |
+          set -o pipefail
+          ./runtest-mingw.sh --cluster 2>&1 | tee build/qualification/cluster-tests.log
+
+      - name: Run Redis Sentinel test suite
+        run: |
+          set -o pipefail
+          ./runtest-mingw.sh --sentinel 2>&1 | tee build/qualification/sentinel-tests.log
+
+      - name: Run Redis Module API test suite
+        run: |
+          set -o pipefail
+          ./runtest-mingw.sh --moduleapi --clients 1 --quiet --timeout 300 2>&1 | tee build/qualification/moduleapi-tests.log
+
+      - name: Run Windows interop tests
+        run: |
+          set -o pipefail
+          {
+            ./build/mingw64/interop-test.exe --legacy
+            ./build/mingw64/interop-test.exe --modern
+          } 2>&1 | tee build/qualification/interop-tests.log
+
+      - name: Run elevated Windows service and Event Log test
+        run: |
+          set -o pipefail
+          ./runtest-mingw-service.sh 2>&1 | tee build/qualification/service-tests.log
+
+      - name: Build the CI-only release package
+        env:
+          CI: 'true'
+          PUBLIC_RELEASE_CI: '1'
+          WINDOWS_PACKAGE_SOURCE_COMMIT: ${{ inputs.source_sha || github.sha }}
+        run: |
+          set -o pipefail
+          JOBS=2 ./package-mingw.sh 2>&1 | tee build/qualification/package-build.log
+
+      - name: Audit package archive, licenses, PE images, and imports
+        id: package
+        run: |
+          set -euo pipefail
+          archive="$(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          [[ -n "$archive" ]]
+          mkdir -p build/qualification/package-audit
+          ./tests/windows/package-audit.sh "$archive" build/qualification/package-audit "$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)" "$WINDOWS_PACKAGE_REVISION" 2>&1 | tee build/qualification/package-audit.log
+          package_dir="build/qualification/package-audit/package"
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+          printf 'package_dir=%s\n' "$package_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Verify packaged master and replica synchronization
+        run: |
+          set -euo pipefail
+          pwsh -NoLogo -NoProfile -File tests/windows/package-replication.ps1 \
+            -PackageDir "$(cygpath -w '${{ steps.package.outputs.package_dir }}')" \
+            -MasterPort 6391 -ReplicaPort 6392 \
+            -OutputDir "$(cygpath -w build/qualification/package-replication)" \
+            -ExpectedVersion "$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)" \
+            2>&1 | tee build/qualification/package-replication.log
+
+      - name: Run packaged QFork persistence and restart soak
+        run: |
+          set -o pipefail
+          REDIS_PACKAGE_SOAK_KEEP=1 \
+            tests/windows/package-soak.sh build/qualification/package-audit/package 6393 1800 16 \
+            2>&1 | tee build/qualification/package-soak.log
+
+      - name: Prepare same-line benchmark baseline
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)"
+          line="${version%.*}"
+          mkdir -p build/qualification/benchmark-baseline
+          baseline_tag=""
+          if command -v gh >/dev/null 2>&1; then
+            baseline_tag="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq ".[] | select(.draft == false and .prerelease == false) | .tag_name" | grep -E "^v${line}\\.[0-9]+-windows\\.[0-9]+$" | head -n 1 || true)"
+          fi
+          candidate_dir="$(pwd -P)/build/qualification/package-audit/package"
+          if [[ -n "$baseline_tag" ]]; then
+            gh release download "$baseline_tag" --pattern 'Redis-x64-*.zip' --dir build/qualification/benchmark-baseline
+            baseline_archive="$(find build/qualification/benchmark-baseline -maxdepth 1 -type f -name '*.zip' -print -quit)"
+            [[ -n "$baseline_archive" ]]
+            mkdir -p build/qualification/benchmark-baseline/extracted
+            unzip -q "$baseline_archive" -d build/qualification/benchmark-baseline/extracted
+            baseline_dir="$(pwd -P)/build/qualification/benchmark-baseline/extracted"
+          else
+            cp -a "$candidate_dir" build/qualification/benchmark-baseline/extracted
+            baseline_dir="$(pwd -P)/build/qualification/benchmark-baseline/extracted"
+            baseline_tag='none (first same-line release)'
+          fi
+          printf 'baseline_dir=%s\n' "$baseline_dir" >> "$GITHUB_OUTPUT"
+          printf 'baseline_tag=%s\n' "$baseline_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Run short packaged benchmark
+        env:
+          BASELINE_DIR: ${{ steps.baseline.outputs.baseline_dir }}
+          BASELINE_TAG: ${{ steps.baseline.outputs.baseline_tag }}
+        run: |
+          set -o pipefail
+          tests/windows/package-benchmark.sh \
+            --baseline-dir "$BASELINE_DIR" \
+            --candidate-dir build/qualification/package-audit/package \
+            --port 6394 \
+            --output-dir build/qualification/benchmark \
+            2>&1 | tee build/qualification/package-benchmark.log
+          printf '%s\n' "$BASELINE_TAG" > build/qualification/benchmark/baseline-reference.txt
+
+      - name: Generate sanitized release evidence, SBOM, and test report
+        run: |
+          set -euo pipefail
+          archive="$(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          ./scripts/generate-release-evidence.sh \
+            "$archive" \
+            build/qualification/package-audit/package \
+            build/qualification/benchmark \
+            build/mingw64/release-assets \
+            "$SOURCE_BRANCH" \
+            "$WINDOWS_PACKAGE_REVISION" \
+            "$(cat build/qualification/benchmark/baseline-reference.txt)" \
+            build/qualification/maintained-lines.json \
+            build/qualification/toolchain.txt
+
+      - name: Upload release assets from successful qualification
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-qualification-${{ inputs.source_sha || github.sha }}
+          path: build/mingw64/release-assets
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-qualification-diagnostics-${{ inputs.source_sha || github.sha }}
+          path: build/qualification
+          if-no-files-found: warn
+          retention-days: 14

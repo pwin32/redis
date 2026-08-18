@@ -6,6 +6,22 @@ For release notes related to original Redis project - please see 00-RELEASENOTES
 
 --------------------------------------------------------
 
+2026-08-19: Redis 6.2.24 Windows core revision 1 qualification
+
+This candidate imports the complete upstream Redis 6.2.24 ancestry and replays
+the maintenance delta onto the Windows port. It includes the upstream SORT ACL
+key-resolution fix, TLS pending-client use-after-free fix, and test stability
+updates used to qualify the maintenance release.
+
+Publication is CI-only. The selected source commit must pass public hygiene,
+the complete Windows source test suites, interop and service coverage, package
+extraction and PE/import audits, packaged replication, a 30-minute QFork
+persistence soak, and the recorded short benchmark. CI emits provenance and
+SPDX SBOM attestations before it creates `v6.2.24-windows.1` and uploads the
+release assets.
+
+--------------------------------------------------------
+
 2026-08-14: Redis 6.2.23 Windows core revision 1
 
 This revision packages the completed Windows portability hardening on the
