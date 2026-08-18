@@ -83,7 +83,6 @@ REDISCONTRIBUTIONS.txt
 RELEASENOTES.txt
 THIRD-PARTY-NOTICES.txt
 WINDOWS-NOTICES.txt
-ZSTD-LICENSE.txt
 $changes_doc
 redis-benchmark.exe
 redis-check-aof.exe
@@ -96,6 +95,10 @@ redis.windows.conf
 sentinel.conf
 EOF
 LC_ALL=C sort -o "$expected_files" "$expected_files"
+if [[ -f "$package_dir/ZSTD-LICENSE.txt" ]]; then
+    printf '%s\n' ZSTD-LICENSE.txt >> "$expected_files"
+    LC_ALL=C sort -o "$expected_files" "$expected_files"
+fi
 find "$package_dir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' |
     LC_ALL=C sort > "$actual_files"
 if ! comm -3 "$expected_files" "$actual_files" > "$output_dir/file-set-diff.txt"; then
@@ -110,11 +113,14 @@ for required_text in \
     LICENSE.txt REDISCONTRIBUTIONS.txt WINDOWS-NOTICES.txt \
     THIRD-PARTY-NOTICES.txt CC0-1.0.txt GPL-3.0.txt \
     GCC-RUNTIME-LIBRARY-EXCEPTION.txt GCC-RUNTIME-README.txt \
-    MINGW-W64-RUNTIME.txt ZSTD-LICENSE.txt README.txt \
+    MINGW-W64-RUNTIME.txt README.txt \
     RELEASENOTES.txt 00-RELEASENOTES "$changes_doc" BUILDINFO.txt
 do
     [[ -s "$package_dir/$required_text" ]] || die "required package text is empty: $required_text"
 done
+if [[ -f "$package_dir/ZSTD-LICENSE.txt" ]]; then
+    [[ -s "$package_dir/ZSTD-LICENSE.txt" ]] || die 'ZSTD-LICENSE.txt is empty'
+fi
 
 grep -Fx "Redis version: $expected_version" "$package_dir/BUILDINFO.txt" >/dev/null ||
     die "BUILDINFO Redis version mismatch"

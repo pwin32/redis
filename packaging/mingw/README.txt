@@ -10,10 +10,9 @@ bundled Redis Search, JSON, TimeSeries, probabilistic, or Vector Sets modules
 that are part of the full upstream Redis 8 distribution. Do not describe this
 archive as the complete upstream Redis 8 binary distribution.
 
-Redis 8.8 replication-compression code and Zstandard are compiled into the
-server, but `repl-compression` must remain 0 in this Windows package. Upstream
-uses client I/O threads for compressed replication, while this IOCP port
-deliberately enforces `io-threads 1` and `io-threads-do-reads no`.
+This Redis 8.8 core line does not include the newer replication-compression
+implementation. The Windows port deliberately enforces `io-threads 1` and
+`io-threads-do-reads no`.
 
 Package contents:
 
@@ -29,8 +28,6 @@ Package contents:
 - CC0-1.0.txt, GPL-3.0.txt, GCC-RUNTIME-LIBRARY-EXCEPTION.txt,
   GCC-RUNTIME-README.txt, and MINGW-W64-RUNTIME.txt - complete companion
   license texts for statically linked code
-- ZSTD-LICENSE.txt - Zstandard license for the statically linked compression
-  library
 - RELEASENOTES.txt - Windows port release notes and validation scope
 - 00-RELEASENOTES - upstream Redis release notes
 - BUILDINFO.txt - exact source commit, tree, toolchain, and package scope
