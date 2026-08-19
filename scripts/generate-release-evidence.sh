@@ -175,6 +175,7 @@ jq -n \
             versionInfo:$version,
             downloadLocation:"NOASSERTION",
             filesAnalyzed:true,
+            checksums:[{algorithm:"SHA256",checksumValue:$archive_sha}],
             licenseConcluded:"NOASSERTION",
             licenseDeclared:"NOASSERTION",
             copyrightText:"NOASSERTION"
@@ -210,7 +211,7 @@ jq -n \
         package:{archive:$archive,sha256:$archive_sha256,scope:"Redis core only"},
         qualification:{workflow_url:$workflow_url,completed_utc:$completed_utc,all_required_tests:"passed",maintained_lines:$maintained_lines[0]},
         benchmark:{baseline_reference:$baseline,regression_advisory:$benchmark_status,blocking:false},
-        attestations:{build_provenance:true,sbom:true}
+        attestations:{required_before_publication:{build_provenance:true,sbom:true},created_by:"Publish Windows release workflow"}
     }' > "$output_dir/release-evidence.json"
 
 printf 'RELEASE_EVIDENCE_OK tag=%s archive_sha256=%s\n' "$release_tag" "$archive_sha"
