@@ -152,10 +152,12 @@ jobs:
       - name: Run Redis Sentinel test suite
         run: |
           set +e
-          ./runtest-mingw.sh --sentinel 2>&1 | tee build/qualification/sentinel-tests.log
+          ./runtest-mingw.sh --sentinel --dont-clean 2>&1 | tee build/qualification/sentinel-tests.log
           status=${PIPESTATUS[0]}
           set -e
           if (( status != 0 )); then
+            mkdir -p build/qualification/sentinel-instances
+            cp -a tests/sentinel/tmp/. build/qualification/sentinel-instances/ 2>/dev/null || true
             excerpt="$(tail -n 160 build/qualification/sentinel-tests.log)"
             excerpt="${excerpt//'%'/'%25'}"
             excerpt="${excerpt//$'\r'/'%0D'}"
