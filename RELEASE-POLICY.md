@@ -35,25 +35,29 @@ after the first public release.
 
 ## Package and evidence contract
 
-Packages are built only in GitHub Actions. Each release carries the ZIP, SHA256
-checksum, package manifest, `BUILDINFO.txt`, `TEST-REPORT.md`,
-`release-evidence.json`, `benchmark.csv`, and `sbom.spdx.json`. The benchmark
-uses loopback, persistence disabled, one benchmark thread, 50 clients,
-pipeline 1, a discarded 10,000-request warmup, and three 50,000-request
-measurements for PING, SET, and GET. A throughput decrease or p95 increase
-above 15% is an advisory warning; it does not silently turn into a release
-blocker.
+Packages are built only in GitHub Actions. Each release carries the ZIP,
+`SHA256SUMS.txt`, `BUILDINFO.txt`, `package-manifest.txt`, `toolchain.txt`,
+`TEST-REPORT.md`, `release-evidence.json`, `benchmark.csv`, and
+`sbom.spdx.json`. The benchmark uses loopback, persistence disabled, one
+benchmark thread, 50 clients, pipeline 1, a discarded 10,000-request warmup,
+and three 50,000-request measurements for PING, SET, and GET. A throughput
+decrease or p95 increase above 15% is an advisory warning; it does not silently
+turn into a release blocker.
 
 The release workflow creates GitHub artifact attestations for both SLSA build
 provenance and the SPDX SBOM. It creates the remote
 `vX.Y.Z-windows.N` tag only after those attestations and all qualification
-gates succeed. Retries may upload missing release assets but never move or
-delete an existing tag.
+gates succeed. Publication creates all assets in a single release operation
+and refuses to modify an existing release or move an existing tag. Repository
+administrators must also enable GitHub's release immutability setting before
+the first public release so later UI or API operations cannot alter the tag or
+assets.
 
 ## Credentials and settings
 
 The workflows use the run-scoped `GITHUB_TOKEN` with job-level permissions.
 They do not require a personal access token. A personal token pasted into a
 chat, log, or issue must be revoked and replaced through a secure channel.
-Repository rulesets, required-review settings, and Actions approval policies
-are administrative settings and are not encoded as secrets in this repository.
+Repository rulesets, required-review settings, Actions approval policies, and
+release immutability are administrative settings and are not encoded as
+secrets in this repository.
