@@ -67,6 +67,7 @@ workflow_url="https://github.com/${repository}/actions/runs/${workflow_run_id}"
 
 install -m 0644 "$archive" "$output_dir/$package_name"
 install -m 0644 "$archive.sha256" "$output_dir/SHA256SUMS.txt"
+install -m 0644 "$buildinfo" "$output_dir/BUILDINFO.txt"
 install -m 0644 "$extracted_dir/PACKAGE-MANIFEST.txt" "$output_dir/package-manifest.txt"
 install -m 0644 "$toolchain_file" "$output_dir/toolchain.txt"
 
