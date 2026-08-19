@@ -60,7 +60,8 @@ canonical-branch commit and expected tag. CI verifies that every maintained
 line's current tip has passed full qualification, rebuilds and retests the
 selected source, emits test evidence, an SPDX SBOM, and GitHub artifact
 attestations, then creates the immutable tag and release. No release package or
-tag is created locally.
+tag is created locally. GitHub's repository-level release immutability setting
+must be enabled before the first public release.
 
 See [RELEASE-POLICY.md](RELEASE-POLICY.md) for the maintained-line order,
 review policy, benchmark contract, and the small set of GitHub administrator
