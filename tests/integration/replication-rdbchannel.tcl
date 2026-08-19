@@ -541,17 +541,23 @@ start_server {tags {"repl external:skip"}} {
             }
 
             test "Test master aborts rdb delivery if all replicas are dropped" {
+                # Capture the log cursor before changing replica2's role.  The
+                # preceding test may still be draining a queued transfer, so
+                # an aggregate rdb_bgsave_in_progress/connected_slaves check
+                # is not a reliable idle barrier on Windows.
+                set loglines [count_log_lines -2]
                 $replica2 replicaof no one
-
-                # Start replication
                 $replica2 replicaof $master_host $master_port
 
+                # Anchor on this test's own transfer rather than the aggregate
+                # state, which can represent a transfer queued by the prior
+                # test when the full suite is under load.
+                wait_for_log_messages -2 {"*Starting BGSAVE for SYNC with target: replicas sockets (rdb-channel)*"} $loglines 1000 50
                 wait_for_condition 50 1000 {
                     [s -2 rdb_bgsave_in_progress] == 1
                 } else {
                     fail "Sync did not start"
                 }
-                set loglines [count_log_lines -2]
 
                 # kill replica
                 catch {$replica2 shutdown nosave}
