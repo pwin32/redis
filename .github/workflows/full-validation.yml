@@ -115,7 +115,9 @@ jobs:
             pacman -Q mingw-w64-x86_64-gcc
             pacman -Q mingw-w64-x86_64-zstd
             pacman -Q mingw-w64-x86_64-tcl
-            uname -a
+            printf 'KERNEL_NAME=%s\n' "$(uname -s)"
+            printf 'KERNEL_RELEASE=%s\n' "$(uname -r)"
+            printf 'MACHINE=%s\n' "$(uname -m)"
           } > build/qualification/toolchain.txt
 
       - name: Run public-source hygiene over full history
