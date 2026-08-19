@@ -164,6 +164,11 @@ jobs:
             excerpt="${excerpt//$'\n'/'%0A'}"
             printf '::error title=Redis Sentinel test suite failure::%s\n' "$excerpt"
           fi
+          # The suite was run with --dont-clean so failed-run instance logs can
+          # be copied above.  Remove only generated Sentinel temp entries
+          # before packaging, whose source-tree cleanliness gate is strict.
+          find tests/sentinel/tmp -mindepth 1 -maxdepth 1 ! -name .gitignore \
+            -exec rm -rf -- {} +
           exit "$status"
 
       - name: Run Redis Module API test suite
