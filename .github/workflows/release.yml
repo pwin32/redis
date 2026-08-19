@@ -184,6 +184,18 @@ jobs:
           for asset in "${required_assets[@]}"; do
             [[ -s "release-assets/$asset" ]] || { echo "missing or empty release asset: $asset" >&2; exit 1; }
           done
+          [[ -s "$archive" ]] || { echo 'release ZIP is empty' >&2; exit 1; }
+          expected_assets=("$archive")
+          for asset in "${required_assets[@]}"; do
+            expected_assets+=("release-assets/$asset")
+          done
+          mapfile -d '' -t assets < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
+          if ! diff -u \
+              <(printf '%s\n' "${expected_assets[@]}" | sort) \
+              <(printf '%s\n' "${assets[@]}" | sort); then
+            echo 'release-assets contains missing or unexpected files' >&2
+            exit 1
+          fi
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
           jq -e --arg tag "$tag" --arg sha "$source_sha" '.release.tag == $tag and .source.commit == $sha' release-assets/release-evidence.json >/dev/null
           jq -e '.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT"' release-assets/sbom.spdx.json >/dev/null
@@ -220,7 +232,6 @@ jobs:
             echo "release $tag already exists; refusing to modify an existing release" >&2
             exit 1
           fi
-          mapfile -d '' -t assets < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
           if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/tmp/tag.json 2>/dev/null; then
             tag_target="$(jq -r '.object.sha' /tmp/tag.json)"
             [[ "$tag_target" == "$source_sha" ]] || { echo "existing tag $tag points to $tag_target, refusing to move it" >&2; exit 1; }
