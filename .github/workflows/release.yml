@@ -51,12 +51,17 @@ jobs:
       - name: Check exact source, version, tag, and all maintained-line tips
         id: policy
         shell: bash
+        env:
+          INPUT_SOURCE_BRANCH: ${{ inputs.source_branch }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+          INPUT_WINDOWS_REVISION: ${{ inputs.windows_revision }}
+          INPUT_CONFIRM_TAG: ${{ inputs.confirm_tag }}
         run: |
           set -euo pipefail
-          branch='${{ inputs.source_branch }}'
-          source_sha='${{ inputs.source_sha }}'
-          revision='${{ inputs.windows_revision }}'
-          confirm_tag='${{ inputs.confirm_tag }}'
+          branch="$INPUT_SOURCE_BRANCH"
+          source_sha="$INPUT_SOURCE_SHA"
+          revision="$INPUT_WINDOWS_REVISION"
+          confirm_tag="$INPUT_CONFIRM_TAG"
           case "$branch" in
             mingw-8.10) expected_version=8.10.1 ;;
             mingw-8.8) expected_version=8.8.2 ;;
@@ -143,11 +148,15 @@ jobs:
           path: release-assets
       - name: Verify assets and publish without moving an existing tag
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          tag='${{ needs.preflight.outputs.tag }}'
-          source_sha='${{ needs.preflight.outputs.source_sha }}'
-          version='${{ needs.preflight.outputs.version }}'
+          tag="$RELEASE_TAG"
+          source_sha="$RELEASE_SOURCE_SHA"
+          version="$RELEASE_VERSION"
           archive="$(find release-assets -maxdepth 1 -type f -name '*.zip' -print -quit)"
           [[ -n "$archive" ]]
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
