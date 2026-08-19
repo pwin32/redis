@@ -123,7 +123,7 @@ config_aof="$scratch_dir/soak-aof.conf"
 config_rdb="$scratch_dir/soak-rdb.conf"
 redis_log="$scratch_dir/redis.log"
 rdb_file="$scratch_dir/soak.rdb"
-aof_manifest="$scratch_dir/appendonlydir/soak.aof.manifest"
+aof_file="$scratch_dir/soak.aof"
 
 server_pid=""
 writer_pid=""
@@ -289,11 +289,9 @@ dbfilename "soak.rdb"
 save ""
 appendonly $appendonly
 appendfilename "soak.aof"
-appenddirname "appendonlydir"
 appendfsync everysec
 auto-aof-rewrite-percentage 0
 aof-use-rdb-preamble yes
-enable-debug-command local
 logfile "redis.log"
 EOF
 }
@@ -610,16 +608,16 @@ check_persistence_files() {
     local aof_output="$scratch_dir/redis-check-aof.log"
 
     assert_nonempty_file "$rdb_file"
-    assert_nonempty_file "$aof_manifest"
+    assert_nonempty_file "$aof_file"
     if ! "$check_rdb" "$rdb_file" >"$rdb_output" 2>&1; then
         show_log_tail "$rdb_output"
         die "packaged redis-check-rdb rejected $rdb_file"
     fi
-    if ! "$check_aof" "$aof_manifest" >"$aof_output" 2>&1; then
+    if ! "$check_aof" "$aof_file" >"$aof_output" 2>&1; then
         show_log_tail "$aof_output"
-        die "packaged redis-check-aof rejected $aof_manifest"
+        die "packaged redis-check-aof rejected $aof_file"
     fi
-    log "packaged RDB and multi-part AOF checkers passed"
+    log "packaged RDB and single-file AOF checkers passed"
 }
 
 verify_restart() {

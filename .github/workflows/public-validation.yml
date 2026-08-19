@@ -44,7 +44,6 @@ jobs:
             autoconf
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-tcl
-            mingw-w64-x86_64-zstd
       - name: Build MinGW64 core and interop targets
         run: |
           ./build-mingw.sh -j2

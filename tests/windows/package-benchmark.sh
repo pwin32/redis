@@ -174,7 +174,7 @@ if command -v git >/dev/null 2>&1; then
 fi
 metadata_row port "$port"
 metadata_row host_address 127.0.0.1
-metadata_row seed 7410
+metadata_row seed "redis-benchmark default (Redis 6.2 has no --seed option)"
 metadata_row keepalive 1
 metadata_row warmup_passes_per_variant 1
 metadata_row warmup_requests_per_test 10000
@@ -533,7 +533,7 @@ run_matrix_case() {
     parsed="$run_dir/benchmarks/$case_index-$matrix_id.parsed.tsv"
     reset_log="$run_dir/benchmarks/$case_index-$matrix_id.reset.log"
     raw_relative=${stdout#"$output_dir/"}
-    command=("$benchmark" -h 127.0.0.1 -p "$port" --seed 7410 -k 1 --csv "${args[@]}")
+    command=("$benchmark" -h 127.0.0.1 -p "$port" -k 1 --csv "${args[@]}")
 
     record_command "$run_dir/benchmarks/$case_index-$matrix_id.flush.command.txt" \
         "$cli" --raw -h 127.0.0.1 -p "$port" FLUSHALL SYNC
