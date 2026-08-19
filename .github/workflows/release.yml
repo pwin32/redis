@@ -77,6 +77,17 @@ jobs:
           [[ "$version" == "$expected_version" ]] || { echo "expected $expected_version at $source_sha, found $version" >&2; exit 1; }
           tag="v${version}-windows.${revision}"
           [[ "$confirm_tag" == "$tag" ]] || { echo "confirm_tag must equal $tag" >&2; exit 1; }
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists; refusing to requalify it" >&2
+            exit 1
+          fi
+          if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/tmp/preflight-tag.json 2>/dev/null; then
+            tag_target="$(jq -r '.object.sha' /tmp/preflight-tag.json)"
+            [[ "$tag_target" == "$source_sha" ]] || {
+              echo "existing tag $tag points to $tag_target, not $source_sha" >&2
+              exit 1
+            }
+          fi
 
           lines=(mingw-8.10 mingw-8.8 mingw-7.4 mingw-7.2 mingw-6.2)
           gate='[]'
