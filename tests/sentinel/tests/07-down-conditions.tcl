@@ -56,16 +56,23 @@ test "SDOWN is triggered by misconfigured instance repling with errors" {
     ensure_master_up
     set orig_dir [lindex [R 0 config get dir] 1]
     set orig_save [lindex [R 0 config get save] 1]
-    # Set dir to / and filename to "tmp" to make sure it will fail.
-    R 0 config set dir /
-    R 0 config set dbfilename tmp
+    set orig_dbfilename [lindex [R 0 config get dbfilename] 1]
+
+    # Use a directory as the final RDB filename so the save fails at the
+    # atomic rename step.  Relying on / being unwritable is not deterministic
+    # on Windows CI runners (or on privileged Unix runners).
+    set bad_dbfilename sentinel-rdb-error-dir
+    set bad_dbpath [file join $orig_dir $bad_dbfilename]
+    catch {file delete -force $bad_dbpath}
+    file mkdir $bad_dbpath
+    R 0 config set dbfilename $bad_dbfilename
     R 0 config set save "1000000 1000000"
     R 0 bgsave
     ensure_master_down
     R 0 config set save $orig_save
-    R 0 config set dir $orig_dir
-    R 0 config set dbfilename dump.rdb
+    R 0 config set dbfilename $orig_dbfilename
     R 0 bgsave
+    catch {file delete -force $bad_dbpath}
     ensure_master_up
 }
 
