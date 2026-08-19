@@ -61,3 +61,22 @@ chat, log, or issue must be revoked and replaced through a secure channel.
 Repository rulesets, required-review settings, Actions approval policies, and
 release immutability are administrative settings and are not encoded as
 secrets in this repository.
+
+Before the first public release, a repository administrator must:
+
+- enable immutable releases;
+- allow the pinned GitHub-owned actions and `msys2/setup-msys2` used by these
+  workflows;
+- protect every canonical `mingw-*` branch against deletion and, after the
+  first public release, force pushes;
+- require pull requests, one approving review, resolved conversations, and the
+  `public-hygiene` and `mingw-smoke` PR checks;
+- keep both squash merging and merge commits available: ordinary maintenance
+  is squash-merged, while upstream imports use merge commits to preserve
+  Redis and tporadowski ancestry; and
+- leave Dependabot auto-merge disabled. Dependabot is a throttled proposal and
+  security-notification channel, not evidence that a change is qualified.
+
+The release workflow itself rechecks the successful full-qualification run and
+current tip of all five maintained lines immediately before it creates a tag.
+It refuses to overwrite an existing release or move an existing tag.
