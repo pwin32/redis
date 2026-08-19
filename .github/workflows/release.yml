@@ -157,21 +157,46 @@ jobs:
           tag="$RELEASE_TAG"
           source_sha="$RELEASE_SOURCE_SHA"
           version="$RELEASE_VERSION"
-          archive="$(find release-assets -maxdepth 1 -type f -name '*.zip' -print -quit)"
-          [[ -n "$archive" ]]
+          mapfile -d '' -t archives < <(find release-assets -maxdepth 1 -type f -name '*.zip' -print0)
+          (( ${#archives[@]} == 1 )) || { echo 'expected exactly one release ZIP' >&2; exit 1; }
+          archive="${archives[0]}"
+          required_assets=(
+            BUILDINFO.txt
+            SHA256SUMS.txt
+            TEST-REPORT.md
+            benchmark.csv
+            package-manifest.txt
+            release-evidence.json
+            sbom.spdx.json
+            toolchain.txt
+          )
+          for asset in "${required_assets[@]}"; do
+            [[ -s "release-assets/$asset" ]] || { echo "missing or empty release asset: $asset" >&2; exit 1; }
+          done
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
           jq -e --arg tag "$tag" --arg sha "$source_sha" '.release.tag == $tag and .source.commit == $sha' release-assets/release-evidence.json >/dev/null
+          jq -e '.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT"' release-assets/sbom.spdx.json >/dev/null
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists; refusing to modify an existing release" >&2
+            exit 1
+          fi
+          mapfile -d '' -t assets < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
           if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/tmp/tag.json 2>/dev/null; then
             tag_target="$(jq -r '.object.sha' /tmp/tag.json)"
             [[ "$tag_target" == "$source_sha" ]] || { echo "existing tag $tag points to $tag_target, refusing to move it" >&2; exit 1; }
-            if ! gh release view "$tag" >/dev/null 2>&1; then
-              gh release create "$tag" --verify-tag --title "Redis $version for Windows" --notes-file release-assets/TEST-REPORT.md
-            fi
+            gh release create "$tag" "${assets[@]}" --verify-tag \
+              --title "Redis $version for Windows" \
+              --notes-file release-assets/TEST-REPORT.md
           else
-            gh release create "$tag" --target "$source_sha" --title "Redis $version for Windows" --notes-file release-assets/TEST-REPORT.md
+            gh release create "$tag" "${assets[@]}" --target "$source_sha" \
+              --title "Redis $version for Windows" \
+              --notes-file release-assets/TEST-REPORT.md
           fi
-          gh release upload "$tag" release-assets/* --clobber
-          gh release edit "$tag" --draft=false --prerelease=false
           final_target="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
           [[ "$final_target" == "$source_sha" ]] || { echo "release tag target changed unexpectedly" >&2; exit 1; }
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+            --jq '[.draft, .prerelease, .immutable] | @tsv' > /tmp/release-state.tsv
+          IFS=$'\t' read -r draft prerelease immutable < /tmp/release-state.tsv
+          [[ "$draft" == false && "$prerelease" == false ]] || { echo 'release was not published normally' >&2; exit 1; }
+          printf 'RELEASE_IMMUTABLE=%s\n' "$immutable"
           printf 'PUBLISHED_RELEASE_OK tag=%s source=%s\n' "$tag" "$source_sha"
