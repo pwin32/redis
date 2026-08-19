@@ -176,6 +176,35 @@ jobs:
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
           jq -e --arg tag "$tag" --arg sha "$source_sha" '.release.tag == $tag and .source.commit == $sha' release-assets/release-evidence.json >/dev/null
           jq -e '.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT"' release-assets/sbom.spdx.json >/dev/null
+          mapfile -t barrier_lines < <(
+            jq -r '.qualification.maintained_lines.lines[] | [.branch, .source_sha, (.run_id | tostring)] | @tsv' \
+              release-assets/release-evidence.json
+          )
+          (( ${#barrier_lines[@]} == 5 )) || { echo 'maintained-line barrier does not contain five lines' >&2; exit 1; }
+          declare -A seen_lines=()
+          for record in "${barrier_lines[@]}"; do
+            IFS=$'\t' read -r line qualified_sha run_id <<< "$record"
+            [[ "$qualified_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid qualified SHA for $line" >&2; exit 1; }
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || { echo "invalid qualification run ID for $line" >&2; exit 1; }
+            case "$line" in
+              mingw-8.10|mingw-8.8|mingw-7.4|mingw-7.2|mingw-6.2) ;;
+              *) echo "unexpected maintained line in release evidence: $line" >&2; exit 1 ;;
+            esac
+            [[ -z "${seen_lines[$line]:-}" ]] || { echo "duplicate maintained line: $line" >&2; exit 1; }
+            seen_lines[$line]=1
+            current_tip="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/${line}" --jq '.object.sha')"
+            [[ "$current_tip" == "$qualified_sha" ]] || {
+              echo "$line moved from qualified tip $qualified_sha to $current_tip; refusing to publish" >&2
+              exit 1
+            }
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+              --jq '{head_sha,event,conclusion}' | \
+              jq -e --arg sha "$qualified_sha" \
+                '.head_sha == $sha and .event == "push" and .conclusion == "success"' >/dev/null || {
+                  echo "recorded qualification run $run_id is no longer a successful push run for $line" >&2
+                  exit 1
+                }
+          done
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "release $tag already exists; refusing to modify an existing release" >&2
             exit 1
