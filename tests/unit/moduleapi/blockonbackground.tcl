@@ -20,7 +20,9 @@ start_server {tags {"modules external:skip"}} {
         r config resetstat
         r config set latency-tracking yes
         r config set latency-tracking-info-percentiles "50.0"
-        r block.debug 200 10000
+        # Keep the measured interval clear of the slowlog threshold. An exact
+        # timer boundary can round just below 200 ms on Windows.
+        r block.debug 300 10000
         if {!$::no_latency} {
             assert_equal [r slowlog len] 1
         }
@@ -69,7 +71,8 @@ start_server {tags {"modules external:skip"}} {
             assert_equal [r slowlog len] 0
         }
         r config resetstat
-        r block.double_debug 100
+        # Two 150 ms intervals leave the same margin above the 200 ms threshold.
+        r block.double_debug 150
         if {!$::no_latency} {
             assert_equal [r slowlog len] 1
         }
