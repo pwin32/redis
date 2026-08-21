@@ -32,17 +32,24 @@ proc normalize_cluster_slots {slots_config} {
 # Check if cluster configuration is consistent.
 proc cluster_config_consistent {} {
     for {set j 0} {$j < [llength $::servers]} {incr j} {
-        if {$j == 0} {
-            set base_cfg [R $j cluster slots]
-            set base_secret [R $j debug internal_secret]
-            set normalized_base_cfg [normalize_cluster_slots $base_cfg]
-        } else {
-            set cfg [R $j cluster slots]
-            set secret [R $j debug internal_secret]
-            set normalized_cfg [normalize_cluster_slots $cfg]
-            if {$normalized_cfg != $normalized_base_cfg || $secret != $base_secret} {
-                return 0
+        # A node can briefly reject CLUSTER queries while it is rejoining.
+        # Treat that transient state as inconsistent and keep polling instead
+        # of aborting the caller's convergence wait.
+        if {[catch {
+            if {$j == 0} {
+                set base_cfg [R $j cluster slots]
+                set base_secret [R $j debug internal_secret]
+                set normalized_base_cfg [normalize_cluster_slots $base_cfg]
+            } else {
+                set cfg [R $j cluster slots]
+                set secret [R $j debug internal_secret]
+                set normalized_cfg [normalize_cluster_slots $cfg]
+                if {$normalized_cfg != $normalized_base_cfg || $secret != $base_secret} {
+                    return 0
+                }
             }
+        }]} {
+            return 0
         }
     }
 
@@ -52,7 +59,8 @@ proc cluster_config_consistent {} {
 # Check if cluster size is consistent.
 proc cluster_size_consistent {cluster_size} {
     for {set j 0} {$j < $cluster_size} {incr j} {
-        if {[CI $j cluster_known_nodes] ne $cluster_size} {
+        if {[catch {set known_nodes [CI $j cluster_known_nodes]}] ||
+            $known_nodes ne $cluster_size} {
             return 0
         }
     }
@@ -60,8 +68,8 @@ proc cluster_size_consistent {cluster_size} {
 }
 
 # Wait for cluster configuration to propagate and be consistent across nodes.
-proc wait_for_cluster_propagation {} {
-    wait_for_condition 50 100 {
+proc wait_for_cluster_propagation {{maxtries 50} {delay 100}} {
+    wait_for_condition $maxtries $delay {
         [cluster_config_consistent] eq 1
     } else {
         fail "cluster config did not reach a consistent state"
@@ -101,8 +109,8 @@ proc wait_for_asm_done {} {
 }
 
 # Wait for cluster size to be consistent across nodes.
-proc wait_for_cluster_size {cluster_size} {
-    wait_for_condition 1000 50 {
+proc wait_for_cluster_size {cluster_size {maxtries 1000} {delay 50}} {
+    wait_for_condition $maxtries $delay {
         [cluster_size_consistent $cluster_size] eq 1
     } else {
         fail "cluster size did not reach a consistent size $cluster_size"
@@ -110,10 +118,11 @@ proc wait_for_cluster_size {cluster_size} {
 }
 
 # Check that cluster nodes agree about "state", or raise an error.
-proc wait_for_cluster_state {state} {
+proc wait_for_cluster_state {state {maxtries 100} {delay 50}} {
     for {set j 0} {$j < [llength $::servers]} {incr j} {
-        wait_for_condition 100 50 {
-            [CI $j cluster_state] eq $state
+        wait_for_condition $maxtries $delay {
+            ![catch {set cluster_state [CI $j cluster_state]}] &&
+            $cluster_state eq $state
         } else {
             fail "Cluster node $j cluster_state:[CI $j cluster_state]"
         }
