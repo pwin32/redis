@@ -1206,9 +1206,15 @@ start_cluster 3 3 {tags {external:skip cluster} overrides {cluster-node-timeout 
             fail "ASM task did not finish"
         }
 
-        # make sure #0 is completely back to the cluster
-        wait_for_cluster_propagation
-        wait_for_cluster_state "ok"
+        # Make sure #0 is completely back to the cluster before the next test.
+        # FORGET deliberately imposes a 60-second blacklist delay; under a busy
+        # Windows runner the task can report completed before every node has
+        # learned the same topology. Wait on the actual rejoin prerequisites
+        # rather than relying on the normal five-second propagation window.
+        set cluster_size [expr {$::cluster_master_nodes + $::cluster_replica_nodes}]
+        wait_for_cluster_size $cluster_size 1800 100
+        wait_for_cluster_propagation 1800 100
+        wait_for_cluster_state "ok" 1200 100
     }
 
     test "CLIENT PAUSE can cancel slot migration task" {
