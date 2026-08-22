@@ -25,6 +25,22 @@ test "Cluster nodes are reachable" {
     }
 }
 
+test "Cluster replicas are synchronized before reset" {
+    if {$::tcl_platform(platform) eq "windows"} {
+        # Restarting a node can start a QFork-backed full synchronization on
+        # its master. Wait for every replica before resetting any node.
+        foreach_redis_id id {
+            if {[RI $id role] eq {slave}} {
+                wait_for_condition 1000 50 {
+                    [RI $id master_link_status] eq {up}
+                } else {
+                    fail "Replica #$id did not finish synchronizing"
+                }
+            }
+        }
+    }
+}
+
 test "Cluster nodes hard reset" {
     foreach_redis_id id {
         if {$::valgrind} {
