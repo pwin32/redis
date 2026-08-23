@@ -41,6 +41,7 @@ static int verbosity = LL_WARNING;
 static HANDLE hLogFile = INVALID_HANDLE_VALUE;
 static int isStdout = 0;
 static char* logFilename = NULL;
+static int eventLogErrorReported = 0;
 
 void setLogVerbosityLevel(int level)
 {
@@ -129,6 +130,28 @@ void serverLogRaw(int level, const char *msg) {
     level &= 0xff; /* clear flags */
     if (level < verbosity) return;
 
+    /* Event Log delivery is independent of the optional file/console sink.
+     * In service mode the native logger can be enabled before Redis has
+     * opened its configured logfile, and a failed/unavailable file sink must
+     * not suppress the service's diagnostic Event Log record. */
+    if (IsEventLogEnabled() == 1) {
+        int eventLogError = WriteEventLog(msg);
+        if (eventLogError != ERROR_SUCCESS && !eventLogErrorReported &&
+            hLogFile != INVALID_HANDLE_VALUE) {
+            char diagnostic[256];
+            int diagnosticLength = snprintf(
+                diagnostic, sizeof(diagnostic),
+                "[event-log] failed to write Redis Application event: %d\n",
+                eventLogError);
+            if (diagnosticLength > 0 &&
+                (size_t)diagnosticLength < sizeof(diagnostic)) {
+                WriteFile(hLogFile, diagnostic, (DWORD)diagnosticLength,
+                          &dwBytesWritten, NULL);
+            }
+            eventLogErrorReported = 1;
+        }
+    }
+
     if (hLogFile == INVALID_HANDLE_VALUE) return;
 
     if (rawmode) {
@@ -191,9 +214,6 @@ write_message:
     FlushFileBuffers(hLogFile);
 #endif
 
-    if (IsEventLogEnabled() == 1) {
-        WriteEventLog(msg);
-    }
 }
 
 static void serverLogV(int level, const char *fmt, va_list ap) {

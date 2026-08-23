@@ -82,7 +82,6 @@ void RedisEventLog::UninstallEventLogSource() {
 void RedisEventLog::InstallEventLogSource(string appPath) {
     static const wchar_t eventLogPath[] = L"SYSTEM\\CurrentControlSet\\Services\\EventLog\\";
     static const wchar_t eventLogName[] = L"redis";
-    static const wchar_t redisServer[] = L"redis-server";
     static const wchar_t application[] = L"Application";
     static const wchar_t typesSupported[] = L"TypesSupported";
     static const wchar_t eventMessageFile[] = L"EventMessageFile";
@@ -100,43 +99,20 @@ void RedisEventLog::InstallEventLogSource(string appPath) {
         win32_free(wideAppPath);
         throw std::system_error(status, system_category(), "RegOpenKeyW failed");
     }
-    SmartRegistryHandle redis1;
-    if (ERROR_SUCCESS != RegOpenKeyW(eventLogKey, eventLogName, redis1)) {
-        status = RegCreateKeyW(eventLogKey, eventLogName, redis1);
-        if (ERROR_SUCCESS != status) {
-            win32_free(wideAppPath);
-            throw std::system_error(status, system_category(), "RegCreateKeyW failed");
-        }
-    }
-    SmartRegistryHandle redisserver;
-    if (ERROR_SUCCESS != RegOpenKeyW(redis1, redisServer, redisserver)) {
-        status = RegCreateKeyW(redis1, redisServer, redisserver);
-        if (ERROR_SUCCESS != status) {
-            win32_free(wideAppPath);
-            throw std::system_error(status, system_category(), "RegCreateKeyW failed");
-        }
-    }
     DWORD value = EVENTLOG_ERROR_TYPE | EVENTLOG_WARNING_TYPE |
                   EVENTLOG_INFORMATION_TYPE;
-    status = RegSetValueExW(redisserver, typesSupported, 0, REG_DWORD,
-                            (const BYTE*) &value, sizeof(DWORD));
-    if (ERROR_SUCCESS != status) {
-        win32_free(wideAppPath);
-        throw std::system_error(status, system_category(), "RegSetValueExW failed");
-    }
     size_t appPathBytesSize = (wcslen(wideAppPath) + 1) * sizeof(wchar_t);
     if (appPathBytesSize > MAXDWORD) {
         win32_free(wideAppPath);
         throw std::length_error("Event log message path is too long");
     }
     DWORD appPathBytes = (DWORD)appPathBytesSize;
-    status = RegSetValueExW(redisserver, eventMessageFile, 0, REG_SZ,
-                            (const BYTE*)wideAppPath, appPathBytes);
-    if (ERROR_SUCCESS != status) {
-        win32_free(wideAppPath);
-        throw std::system_error(status, system_category(), "RegSetValueExW failed");
-    }
 
+    /* Register redis as an Application source.  Do not also create a
+     * top-level EventLog\\redis key: RegisterEventSourceW receives only a
+     * source name, so a same-named custom log makes its destination
+     * ambiguous and can divert records away from Application.  The legacy
+     * custom-log keys are still removed by UninstallEventLogSource(). */
     SmartRegistryHandle applicationKey;
     status = RegOpenKeyW(eventLogKey, application, applicationKey);
     if (ERROR_SUCCESS != status) {
@@ -166,7 +142,7 @@ void RedisEventLog::InstallEventLogSource(string appPath) {
     win32_free(wideAppPath);
 }
 
-void RedisEventLog::LogMessage(LPCSTR msg, const WORD type) {
+int RedisEventLog::LogMessage(LPCSTR msg, const WORD type) {
     DWORD eventID;
     switch (type) {
         case EVENTLOG_ERROR_TYPE:
@@ -186,23 +162,29 @@ void RedisEventLog::LogMessage(LPCSTR msg, const WORD type) {
 
     wchar_t *wideMessage = win32_utf8_to_wide(msg);
     if (wideMessage == NULL) {
+        DWORD error = GetLastError();
         std::cerr << "Failed to convert event log message from UTF-8\n";
-        return;
+        return error == ERROR_SUCCESS ? ERROR_NO_UNICODE_TRANSLATION :
+                                        (int)error;
     }
     HANDLE hEventLog = RegisterEventSourceW(0, L"redis");
+    int result = ERROR_SUCCESS;
 
     if (0 == hEventLog) {
-        std::cerr << "Failed open source '" << this->eventLogName << "': " << GetLastError() << endl;
+        result = (int)GetLastError();
+        std::cerr << "Failed open source '" << this->eventLogName << "': " << result << endl;
     } else {
         LPCWSTR messages[] = {wideMessage};
         if (FALSE == ReportEventW(hEventLog, type, 0, eventID, 0, 1, 0,
                                   messages, 0)) {
-            std::cerr << "Failed to write message: " << GetLastError() << endl;
+            result = (int)GetLastError();
+            std::cerr << "Failed to write message: " << result << endl;
         }
 
         DeregisterEventSource(hEventLog);
     }
     win32_free(wideMessage);
+    return result;
 }
 
 void RedisEventLog::LogError(string msg) {
@@ -248,14 +230,14 @@ extern "C" void setSyslogIdent(char* identity) {
     catch (...) {}
 }
 
-extern "C" void WriteEventLog(const char* msg) {
+extern "C" int WriteEventLog(const char* msg) {
     try {
         stringstream ss;
         ss << "syslog-ident = " << RedisEventLog().GetEventLogIdentity() << endl;
         ss << msg;
-        RedisEventLog().LogMessage(ss.str().c_str(), EVENTLOG_INFORMATION_TYPE);
+        return RedisEventLog().LogMessage(ss.str().c_str(), EVENTLOG_INFORMATION_TYPE);
     }
-    catch (...) {}
+    catch (...) { return ERROR_GEN_FAILURE; }
 }
 
 extern "C" int IsEventLogEnabled() {
