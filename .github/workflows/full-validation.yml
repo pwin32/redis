@@ -73,6 +73,31 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Preserve repository bytes for MSYS2 Git
+        shell: pwsh
+        run: |
+          git config --local core.autocrlf false
+          git config --local core.eol lf
+          git config --local core.filemode false
+          git checkout-index --force --all
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Git checkout-index failed while restoring repository bytes.'
+          }
+          $dirty = @(git status --porcelain --untracked-files=normal)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Git status failed while checking the restored checkout.'
+          }
+          if ($dirty.Count -ne 0) {
+            $dirty | Write-Error
+            throw 'The exact source checkout is not clean after byte restoration.'
+          }
+
+      - name: Resolve hosted GitHub CLI
+        shell: pwsh
+        run: |
+          $gh = (Get-Command gh.exe -ErrorAction Stop).Source
+          "GH_CLI=$gh" >> $env:GITHUB_ENV
+
       - name: Set up MSYS2 MinGW64
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
         with:
@@ -212,14 +237,15 @@ jobs:
           printf 'package_dir=%s\n' "$package_dir" >> "$GITHUB_OUTPUT"
 
       - name: Verify packaged master and replica synchronization
+        shell: pwsh
         run: |
-          set -euo pipefail
-          pwsh -NoLogo -NoProfile -File tests/windows/package-replication.ps1 \
-            -PackageDir "$(cygpath -w '${{ steps.package.outputs.package_dir }}')" \
-            -MasterPort 6391 -ReplicaPort 6392 \
-            -OutputDir "$(cygpath -w build/qualification/package-replication)" \
-            -ExpectedVersion "$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)" \
-            2>&1 | tee build/qualification/package-replication.log
+          $ErrorActionPreference = 'Stop'
+          & ./tests/windows/package-replication.ps1 `
+            -PackageDir '${{ steps.package.outputs.package_dir }}' `
+            -MasterPort 6391 -ReplicaPort 6392 `
+            -OutputDir 'build/qualification/package-replication' `
+            -ExpectedVersion '${{ steps.meta.outputs.version }}' `
+            2>&1 | Tee-Object -FilePath build/qualification/package-replication.log
 
       - name: Run packaged QFork persistence and restart soak
         run: |
@@ -237,13 +263,22 @@ jobs:
           version="$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)"
           line="${version%.*}"
           mkdir -p build/qualification/benchmark-baseline
-          baseline_tag=""
-          if command -v gh >/dev/null 2>&1; then
-            baseline_tag="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq ".[] | select(.draft == false and .prerelease == false) | .tag_name" | grep -E "^v${line}\\.[0-9]+-windows\\.[0-9]+$" | head -n 1 || true)"
-          fi
+          [[ -n "${GH_CLI:-}" ]] || { echo 'hosted GitHub CLI path is unavailable' >&2; exit 1; }
+          gh_cli="$(cygpath -u "$GH_CLI")"
+          [[ -x "$gh_cli" ]] || { echo 'hosted GitHub CLI is not executable from MSYS2' >&2; exit 1; }
+          releases="$("$gh_cli" api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/releases?per_page=100")"
+          baseline_tag="$(jq -r --arg prefix "v${line}." '
+            [.[].[]?
+              | select(.draft == false and .prerelease == false)
+              | select(.tag_name | startswith($prefix))
+              | select(.tag_name | test("^v[0-9]+[.][0-9]+[.][0-9]+-windows[.][1-9][0-9]*$"))]
+            | sort_by(.published_at // .created_at)
+            | last
+            | .tag_name // empty
+          ' <<<"$releases")"
           candidate_dir="$(pwd -P)/build/qualification/package-audit/package"
           if [[ -n "$baseline_tag" ]]; then
-            gh release download "$baseline_tag" --pattern 'Redis-x64-*.zip' --dir build/qualification/benchmark-baseline
+            "$gh_cli" release download "$baseline_tag" --pattern 'Redis-x64-*.zip' --dir build/qualification/benchmark-baseline
             baseline_archive="$(find build/qualification/benchmark-baseline -maxdepth 1 -type f -name '*.zip' -print -quit)"
             [[ -n "$baseline_archive" ]]
             mkdir -p build/qualification/benchmark-baseline/extracted
