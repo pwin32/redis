@@ -4,3 +4,7 @@
 # Otherwise the file gets modified and gets the same timestamp as the .json
 # files. So the Makefile doesn't attempt to rebuild it before compiling.
 src/commands.c merge=binary
+
+# Keep repository metadata and other hidden text files byte-stable when the
+# Windows Git checkout is consumed by MSYS2 Git.
+**/.* text=auto eol=lf

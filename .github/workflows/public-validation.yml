@@ -39,13 +39,9 @@ jobs:
           git config --local core.autocrlf false
           git config --local core.eol lf
           git config --local core.filemode false
-          git restore --source=HEAD --worktree --ignore-unmerged -- .
+          git reset --hard HEAD
           if ($LASTEXITCODE -ne 0) {
-            throw 'Git restore failed while restoring the exact source checkout.'
-          }
-          git checkout-index --force --all --ignore-skip-worktree-bits
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Git checkout-index failed while restoring repository bytes.'
+            throw 'Git reset failed while restoring the exact source checkout.'
           }
           $dirty = @(git status --porcelain --untracked-files=normal)
           if ($LASTEXITCODE -ne 0) {
