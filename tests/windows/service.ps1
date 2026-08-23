@@ -107,9 +107,9 @@ function Get-MatchingRedisServiceProcesses(
 ) {
     $escapedName = [regex]::Escape($Name)
     $serviceNamePattern =
-        '(?i)(?:^|\s)--service-name(?:\s+|=)(?:"{0}"|{0})(?=\s|$)' -f
+        '(?i)(?:^|\s)"?--service-name"?(?:\s+|=)"?{0}"?(?=\s|$)' -f
             $escapedName
-    $serviceRunPattern = '(?i)(?:^|\s)--service-run(?=\s|$)'
+    $serviceRunPattern = '(?i)(?:^|\s)"?--service-run"?(?=\s|$)'
 
     Get-CimInstance Win32_Process -Filter "Name = 'redis-server.exe'" |
         Where-Object {
@@ -216,6 +216,27 @@ function Stop-RedisServiceInstance(
     Wait-ForPortClosed $RedisPort
 }
 
+function Get-TaggedRedisApplicationEvent(
+    [datetime]$Since,
+    [string]$Name
+) {
+    # Some hosted Windows images reject a FilterHashtable that combines
+    # ProviderName and StartTime (Get-WinEvent reports "The parameter is
+    # incorrect"). Query the bounded recent Application log instead and apply
+    # the provider/time/message predicates in PowerShell. This keeps the
+    # assertion strict while avoiding an image-specific provider filter.
+    try {
+        return Get-WinEvent -LogName "Application" -MaxEvents 256 -ErrorAction Stop |
+            Where-Object {
+                $_.ProviderName -ieq "redis" -and
+                $_.TimeCreated -ge $Since -and
+                $_.Message -match [regex]::Escape($Name)
+            } | Select-Object -First 1
+    } catch {
+        return $null
+    }
+}
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -257,12 +278,32 @@ if (Test-Path $dataDir) {
 }
 
 $binaryPath = (
-    '"{0}" --service-run --service-name {1} --persistence-available no --port {2} --bind 127.0.0.1 --dir "{3}" --logfile "{4}" --syslog-enabled yes --syslog-ident {1}' -f
+    '"{0}" --service-run --service-name {1} --persistence-available no --port {2} --bind 127.0.0.1 --dir "{3}" --logfile "{4}" --loglevel verbose --syslog-enabled yes --syslog-ident {1}' -f
         $server, $ServiceName, $Port, $dataDir, $logFile
 )
+$serviceInstallArguments = @(
+    "--service-install",
+    "--service-name", $ServiceName,
+    "--persistence-available", "no",
+    "--port", "$Port",
+    "--bind", "127.0.0.1",
+    "--dir", $dataDir,
+    "--logfile", $logFile,
+    "--loglevel", "verbose",
+    "--syslog-enabled", "yes",
+    "--syslog-ident", $ServiceName)
+$eventLogSourcePath =
+    "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\redis"
+$legacyEventLogPath =
+    "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\redis"
+$eventLogSourceWasPresent = Test-Path $eventLogSourcePath
+$legacyEventLogWasPresent = Test-Path $legacyEventLogPath
 $service = $null
 $serviceCreated = $false
+$serviceCreationAttempted = $false
+$serviceInstalledByRedis = $false
 $dataDirCreated = $false
+$testSucceeded = $false
 
 try {
     New-Item -ItemType Directory -Path $dataDir | Out-Null
@@ -280,17 +321,35 @@ try {
     $acl.SetAccessRule($rule)
     Set-Acl -Path $dataDir -AclObject $acl
 
-    $serviceParameters = @{
-        Name = $ServiceName
-        DisplayName = $ServiceName
-        BinaryPathName = $binaryPath
-        StartupType = "Manual"
+    $serviceCreationAttempted = $true
+    if ($eventLogSourceWasPresent -or $legacyEventLogWasPresent) {
+        # Preserve an existing Redis installation's shared Event Log source.
+        # The manual SCM path avoids modifying either current or legacy shared
+        # Event Log registration when either is already present.
+        $serviceParameters = @{
+            Name = $ServiceName
+            DisplayName = $ServiceName
+            BinaryPathName = $binaryPath
+            StartupType = "Manual"
+        }
+        New-Service @serviceParameters | Out-Null
+        & sc.exe config $ServiceName "obj=" "NT AUTHORITY\NetworkService" | Out-Null
+        Assert-LastExitCode "Configuring the service account"
+    } else {
+        # Redis registers its Application Event Log source as part of the
+        # supported service-install command. Use that path on clean CI hosts,
+        # then remove only the source created by this test during cleanup.
+        $serviceInstalledByRedis = $true
+        & $server @serviceInstallArguments | Out-Null
+        Assert-LastExitCode "Installing the Redis test service"
     }
-    New-Service @serviceParameters | Out-Null
     $serviceCreated = $true
-    & sc.exe config $ServiceName "obj=" "NT AUTHORITY\NetworkService" | Out-Null
-    Assert-LastExitCode "Configuring the service account"
     $service = Get-Service -Name $ServiceName
+
+    if (-not $legacyEventLogWasPresent -and
+        (Test-Path $legacyEventLogPath)) {
+        throw "Redis service install created an ambiguous legacy custom Event Log"
+    }
 
     $eventStart = Get-Date
     $firstProcess = Start-RedisServiceInstance $server $cli $service $ServiceName $Port
@@ -300,18 +359,38 @@ try {
     $eventDeadline = [DateTime]::UtcNow.AddSeconds(15)
     $event = $null
     do {
-        $event = Get-WinEvent -FilterHashtable @{
-            LogName = "Application"
-            ProviderName = "redis"
-            StartTime = $eventStart
-        } -ErrorAction SilentlyContinue | Where-Object {
-            $_.Message -match [regex]::Escape($ServiceName)
-        } | Select-Object -First 1
+        $event = Get-TaggedRedisApplicationEvent $eventStart $ServiceName
         if (-not $event) {
             Start-Sleep -Milliseconds 250
         }
     } while (-not $event -and [DateTime]::UtcNow -lt $eventDeadline)
     if (-not $event) {
+        Write-Host "No tagged Application event found; recent Application records follow."
+        try {
+            Get-WinEvent -LogName "Application" -MaxEvents 64 -ErrorAction Stop |
+                Select-Object TimeCreated, ProviderName, Id, LevelDisplayName, Message |
+                Format-List | Out-String | Write-Host
+        } catch {
+            Write-Host "Unable to inspect recent Application records: $($_.Exception.Message)"
+        }
+        try {
+            $source = Get-ItemProperty $eventLogSourcePath -ErrorAction Stop
+            Write-Host (
+                "Event source redis: EventMessageFile={0}; TypesSupported={1}" -f
+                    $source.EventMessageFile, $source.TypesSupported)
+        } catch {
+            Write-Host "Unable to inspect redis Application Event Log source: $($_.Exception.Message)"
+        }
+        if (Test-Path $legacyEventLogPath) {
+            Write-Host "Legacy custom redis Event Log registration is present."
+            try {
+                Get-WinEvent -LogName "redis" -MaxEvents 32 -ErrorAction Stop |
+                    Select-Object TimeCreated, ProviderName, Id, LevelDisplayName, Message |
+                    Format-List | Out-String | Write-Host
+            } catch {
+                Write-Host "Unable to inspect legacy redis Event Log: $($_.Exception.Message)"
+            }
+        }
         throw "The Redis service did not emit a tagged Application event"
     }
 
@@ -325,6 +404,7 @@ try {
     Assert-RedisRound $cli $Port "service-test-second" "mingw-second"
     Stop-RedisServiceInstance $server $service $ServiceName $Port $secondProcessId
 
+    $testSucceeded = $true
     Write-Host (
         "ALL SERVICE TESTS PASSED first_pid={0} second_pid={1}" -f
             $firstProcessId, $secondProcessId)
@@ -332,7 +412,7 @@ try {
     $cleanupErrors = @()
     $current = $null
 
-    if ($serviceCreated) {
+    if ($serviceCreationAttempted) {
         $cleanupProcessId = 0
         try {
             $current = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -370,11 +450,16 @@ try {
         }
 
         try {
-            $registered = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-            if ($registered) {
-                $registered.Dispose()
-                & sc.exe delete $ServiceName | Out-Null
-                Assert-LastExitCode "Deleting the test service"
+            if ($serviceInstalledByRedis) {
+                & $server --service-uninstall --service-name $ServiceName | Out-Null
+                Assert-LastExitCode "Uninstalling the Redis test service"
+            } else {
+                $registered = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+                if ($registered) {
+                    $registered.Dispose()
+                    & sc.exe delete $ServiceName | Out-Null
+                    Assert-LastExitCode "Deleting the test service"
+                }
             }
         } catch {
             $cleanupErrors += "Deleting service: $($_.Exception.Message)"
@@ -416,13 +501,17 @@ try {
     }
 
     if ($dataDirCreated) {
-        try {
-            Remove-Item -Path $dataDir -Recurse -Force -ErrorAction Stop
-        } catch {
-            $cleanupErrors += "Removing service test directory: $($_.Exception.Message)"
-        }
-        if (Test-Path $dataDir) {
-            $cleanupErrors += "Service test directory still exists: $dataDir"
+        if ($testSucceeded) {
+            try {
+                Remove-Item -Path $dataDir -Recurse -Force -ErrorAction Stop
+            } catch {
+                $cleanupErrors += "Removing service test directory: $($_.Exception.Message)"
+            }
+            if (Test-Path $dataDir) {
+                $cleanupErrors += "Service test directory still exists: $dataDir"
+            }
+        } else {
+            Write-Host "Preserving failed service test directory for CI diagnostics: $dataDir"
         }
     }
 
