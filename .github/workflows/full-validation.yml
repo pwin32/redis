@@ -79,7 +79,11 @@ jobs:
           git config --local core.autocrlf false
           git config --local core.eol lf
           git config --local core.filemode false
-          git checkout-index --force --all
+          git restore --source=HEAD --worktree --ignore-unmerged -- .
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Git restore failed while restoring the exact source checkout.'
+          }
+          git checkout-index --force --all --ignore-skip-worktree-bits
           if ($LASTEXITCODE -ne 0) {
             throw 'Git checkout-index failed while restoring repository bytes.'
           }
