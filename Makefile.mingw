@@ -99,6 +99,21 @@ TEST_MODULE_LDLIBS := -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
 TEST_LAUNCHER_CFLAGS := $(OPT) $(WARNINGS) -std=gnu99
 TEST_LAUNCHER_LDFLAGS := -municode -mwindows
 
+# Some C++ translation units include the standard library before
+# Win32_FDAPI.h.  Newer MinGW CRT headers then expose the legacy access/read/
+# write/open names before FDAPI can temporarily rename them, which makes the
+# FDAPI function-pointer declarations collide with the CRT functions.  Keep
+# the system-name remapping scoped to those units rather than adding it to all
+# C++ flags (where it would rewrite unrelated standard-library code).
+FDAPI_CXX_EXTRA :=
+FDAPI_CXX_EXTRA_TARGETS := \
+	$(BUILD)/server/src/Win32_Interop/Win32_CommandLine.o \
+	$(BUILD)/cli/src/Win32_Interop/Win32_CommandLine.o \
+	$(BUILD)/benchmark/src/Win32_Interop/Win32_CommandLine.o \
+	$(BUILD)/hiredis-test/src/Win32_Interop/Win32_CommandLine.o \
+	$(BUILD)/interop-test/tests/windows/interop.o
+$(FDAPI_CXX_EXTRA_TARGETS): FDAPI_CXX_EXTRA := $(FDAPI_SYSTEM_REDEFS)
+
 LDFLAGS_COMMON := \
 	-no-pthread \
 	-static-libgcc \
@@ -524,7 +539,7 @@ $(BUILD)/server/%.o: %.c src/release.h $(REDIS_HEADERS) $(JEMALLOC_LIB)
 
 $(BUILD)/server/%.o: %.cpp $(REDIS_HEADERS) $(JEMALLOC_LIB)
 	mkdir -p $(dir $@)
-	$(CXX) $(SERVER_CXXFLAGS) -c $< -o $@
+	$(CXX) $(SERVER_CXXFLAGS) $(FDAPI_CXX_EXTRA) -c $< -o $@
 
 $(BUILD)/hiredis/%.o: %.c $(HIREDIS_HEADERS)
 	mkdir -p $(dir $@)
@@ -548,7 +563,7 @@ $(BUILD)/cli/%.o: %.c src/release.h $(REDIS_HEADERS)
 
 $(BUILD)/cli/%.o: %.cpp $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
-	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
+	$(CXX) $(TOOL_CXXFLAGS) $(FDAPI_CXX_EXTRA) -c $< -o $@
 
 $(BUILD)/benchmark/%.o: %.c src/release.h $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
@@ -556,7 +571,7 @@ $(BUILD)/benchmark/%.o: %.c src/release.h $(REDIS_HEADERS)
 
 $(BUILD)/benchmark/%.o: %.cpp $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
-	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
+	$(CXX) $(TOOL_CXXFLAGS) $(FDAPI_CXX_EXTRA) -c $< -o $@
 
 $(BUILD)/hiredis-test/%.o: %.c src/release.h $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
@@ -564,7 +579,7 @@ $(BUILD)/hiredis-test/%.o: %.c src/release.h $(REDIS_HEADERS)
 
 $(BUILD)/hiredis-test/%.o: %.cpp $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
-	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
+	$(CXX) $(TOOL_CXXFLAGS) $(FDAPI_CXX_EXTRA) -c $< -o $@
 
 $(BUILD)/interop-test/%.o: %.c src/release.h $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
@@ -572,7 +587,7 @@ $(BUILD)/interop-test/%.o: %.c src/release.h $(REDIS_HEADERS)
 
 $(BUILD)/interop-test/%.o: %.cpp $(REDIS_HEADERS)
 	mkdir -p $(dir $@)
-	$(CXX) $(TOOL_CXXFLAGS) -c $< -o $@
+	$(CXX) $(TOOL_CXXFLAGS) $(FDAPI_CXX_EXTRA) -c $< -o $@
 
 clean:
 	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/hdr_histogram $(BUILD)/fpconv $(BUILD)/cli $(BUILD)/benchmark
