@@ -82,6 +82,7 @@ jobs:
             git
             make
             unzip
+            zip
             jq
             diffutils
             mingw-w64-x86_64-gcc
