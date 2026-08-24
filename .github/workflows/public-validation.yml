@@ -62,6 +62,21 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-tcl
             mingw-w64-x86_64-zstd
+
+      - name: Normalize source bytes for MSYS2 Git
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          git config --local core.autocrlf false
+          git config --local core.eol lf
+          git config --local core.filemode false
+          git reset --hard HEAD
+          dirty="$(git status --porcelain --untracked-files=normal)"
+          if [[ -n "$dirty" ]]; then
+            printf '%s\n' "$dirty" >&2
+            echo 'The MSYS2 Git checkout is not clean after byte normalization.' >&2
+            exit 1
+          fi
       - name: Build MinGW64 core and interop targets
         run: |
           ./build-mingw.sh -j2
