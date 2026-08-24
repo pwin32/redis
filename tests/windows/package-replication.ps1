@@ -80,7 +80,7 @@ $replica = $null
 function Invoke-RedisCli([int]$Port, [string[]]$Arguments) {
     $outputText = & $cli -h 127.0.0.1 -p $Port --raw @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "redis-cli failed on port $Port: $outputText"
+        throw "redis-cli failed on port ${Port}: $outputText"
     }
     return (($outputText | Out-String).Trim())
 }
