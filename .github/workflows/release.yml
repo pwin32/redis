@@ -177,6 +177,7 @@ jobs:
             TEST-REPORT.md
             benchmark.csv
             package-manifest.txt
+            package-binary-identity.tsv
             release-evidence.json
             sbom.spdx.json
             toolchain.txt
@@ -197,8 +198,60 @@ jobs:
             exit 1
           fi
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
-          jq -e --arg tag "$tag" --arg sha "$source_sha" '.release.tag == $tag and .source.commit == $sha' release-assets/release-evidence.json >/dev/null
+          jq -e --arg tag "$tag" --arg sha "$source_sha" '.release.tag == $tag and .source.commit == $sha and .qualification.release_binary_identity == "passed"' release-assets/release-evidence.json >/dev/null
           jq -e '.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT"' release-assets/sbom.spdx.json >/dev/null
+          command -v unzip >/dev/null 2>&1 || { echo 'unzip is required to verify release binary identity' >&2; exit 1; }
+          identity_header=$'build_file\tpackage_file\tsha256\tsize'
+          [[ "$(sed -n '1p' release-assets/package-binary-identity.tsv)" == "$identity_header" ]] || {
+            echo 'invalid package binary identity header' >&2
+            exit 1
+          }
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          unzip -q "$archive" -d "$verify_dir"
+          expected_identity_pairs=(
+            $'redis-server.exe\tredis-server.exe'
+            $'redis-server.exe\tredis-sentinel.exe'
+            $'redis-check-aof.exe\tredis-check-aof.exe'
+            $'redis-check-rdb.exe\tredis-check-rdb.exe'
+            $'redis-cli.exe\tredis-cli.exe'
+            $'redis-benchmark.exe\tredis-benchmark.exe'
+            $'EventLog.dll\tEventLog.dll'
+          )
+          actual_identity_pairs=()
+          identity_count=0
+          while IFS=$'\t' read -r build_name package_name file_sha file_size; do
+            [[ -n "$build_name" && -n "$package_name" ]] || { echo 'invalid empty identity record' >&2; exit 1; }
+            [[ "$build_name" != */* && "$build_name" != *'\\'* && "$build_name" != .* ]] || {
+              echo "unsafe build identity path: $build_name" >&2
+              exit 1
+            }
+            [[ "$package_name" != */* && "$package_name" != *'\\'* && "$package_name" != .* ]] || {
+              echo "unsafe package identity path: $package_name" >&2
+              exit 1
+            }
+            [[ "$file_sha" =~ ^[0-9a-f]{64}$ && "$file_size" =~ ^[0-9]+$ ]] || {
+              echo "invalid package identity digest or size for $package_name" >&2
+              exit 1
+            }
+            packaged_file="$verify_dir/$package_name"
+            [[ -f "$packaged_file" ]] || { echo "identity file is absent from ZIP: $package_name" >&2; exit 1; }
+            actual_sha="$(sha256sum "$packaged_file" | sed 's/[[:space:]].*$//')"
+            actual_size="$(wc -c < "$packaged_file" | tr -d '[:space:]')"
+            [[ "$actual_sha" == "$file_sha" && "$actual_size" == "$file_size" ]] || {
+              echo "release ZIP does not match binary identity record: $package_name" >&2
+              exit 1
+            }
+            actual_identity_pairs+=("$build_name"$'\t'"$package_name")
+            identity_count=$((identity_count + 1))
+          done < <(sed '1d' release-assets/package-binary-identity.tsv)
+          (( identity_count == 7 )) || { echo "expected seven package identity records, found $identity_count" >&2; exit 1; }
+          if ! diff -u \
+              <(printf '%s\n' "${expected_identity_pairs[@]}") \
+              <(printf '%s\n' "${actual_identity_pairs[@]}"); then
+            echo 'package binary identity contains missing, duplicate, reordered, or unexpected mappings' >&2
+            exit 1
+          fi
           mapfile -t barrier_lines < <(
             jq -r '.qualification.maintained_lines.lines[] | [.branch, .source_sha, (.run_id | tostring)] | @tsv' \
               release-assets/release-evidence.json
