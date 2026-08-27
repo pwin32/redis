@@ -14,4 +14,20 @@ else
     exit 127
 fi
 
-exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$script_path" "$@"
+if [[ -n "${REDIS_TEST_BINARY_DIR:-}" ]]; then
+    build_dir=$REDIS_TEST_BINARY_DIR
+    if [[ "$build_dir" != /* ]]; then
+        build_dir="$repo_root/$build_dir"
+    fi
+    build_dir="$(cd "$build_dir" && pwd -P)"
+    if command -v cygpath >/dev/null 2>&1; then
+        build_path="$(cygpath -aw "$build_dir")"
+    else
+        build_path="$(wslpath -w "$build_dir")"
+    fi
+    MSYS2_ARG_CONV_EXCL='*' exec powershell.exe -NoProfile -ExecutionPolicy Bypass \
+        -File "$script_path" -BuildDir "$build_path" "$@"
+fi
+
+MSYS2_ARG_CONV_EXCL='*' exec powershell.exe -NoProfile -ExecutionPolicy Bypass \
+    -File "$script_path" "$@"

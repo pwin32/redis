@@ -47,7 +47,7 @@ if find "$output_dir" -mindepth 1 -print -quit | grep -q .; then
     die "output directory must be empty: $output_dir"
 fi
 
-for tool in awk comm find grep objdump sed sha256sum sort tr unzip wc; do
+for tool in awk comm find grep objdump sed sha256sum sort tr uniq unzip wc; do
     command -v "$tool" >/dev/null 2>&1 || die "required audit tool not found: $tool"
 done
 
@@ -59,6 +59,20 @@ checksum="$archive.sha256"
 ) > "$output_dir/checksum-verification.txt"
 
 unzip -t "$archive" > "$output_dir/zip-test.txt"
+zip_entries="$output_dir/zip-entries.txt"
+unzip -Z1 "$archive" > "$zip_entries"
+while IFS= read -r entry; do
+    [[ -n "$entry" ]] || die "package ZIP contains an empty entry name"
+    [[ "$entry" != */* && "$entry" != *'\\'* && "$entry" != .* ]] ||
+        die "package ZIP contains an unsafe or non-flat entry: $entry"
+    [[ "$entry" != *$'\r'* && "$entry" != *$'\t'* ]] ||
+        die "package ZIP contains a control character in an entry name"
+done < "$zip_entries"
+LC_ALL=C sort "$zip_entries" | uniq -d > "$output_dir/duplicate-zip-entries.txt"
+if [[ -s "$output_dir/duplicate-zip-entries.txt" ]]; then
+    sed -n '1,120p' "$output_dir/duplicate-zip-entries.txt" >&2
+    die "package ZIP contains duplicate entry names"
+fi
 package_dir="$output_dir/package"
 mkdir -p "$package_dir"
 unzip -q "$archive" -d "$package_dir"
@@ -135,16 +149,48 @@ for alias in redis-check-aof.exe redis-check-rdb.exe redis-sentinel.exe; do
 done
 
 imports_report="$output_dir/pe-imports.txt"
+layout_report="$output_dir/pe-layout.txt"
 : > "$imports_report"
+: > "$layout_report"
 for pe_file in "$package_dir"/*.exe "$package_dir"/EventLog.dll; do
     pe_name="$(basename "$pe_file")"
     objdump -f "$pe_file" | grep -F 'file format pei-x86-64' >/dev/null ||
         die "$pe_name is not a 64-bit PE image"
     {
+        printf '== %s: private headers ==\n' "$pe_name"
+        objdump -p "$pe_file"
+        printf '== %s: sections ==\n' "$pe_name"
+        objdump -h "$pe_file"
+    } >> "$layout_report"
+    if objdump -h "$pe_file" |
+            grep -Eiq '[[:space:]][.](z?debug[^[:space:]]*|gnu_debuglink)[[:space:]]'; then
+        die "$pe_name contains a debug section after release stripping"
+    fi
+    case "$pe_name" in
+        *.exe)
+            dll_characteristics="$({ objdump -p "$pe_file" || true; } |
+                sed -n 's/^[[:space:]]*DllCharacteristics[[:space:]]*\([0-9A-Fa-f][0-9A-Fa-f]*\).*/\1/p' |
+                sed -n '1p')"
+            [[ "$dll_characteristics" =~ ^[0-9A-Fa-f]+$ ]] ||
+                die "$pe_name has no readable PE DllCharacteristics field"
+            dll_flags=$((16#$dll_characteristics))
+            (( (dll_flags & 0x0100) != 0 )) ||
+                die "$pe_name does not retain NX compatibility"
+            (( (dll_flags & 0x0040) == 0 )) ||
+                die "$pe_name unexpectedly enables dynamic-base ASLR incompatible with QFork"
+            (( (dll_flags & 0x0020) == 0 )) ||
+                die "$pe_name unexpectedly enables high-entropy ASLR incompatible with QFork"
+            printf '%s\tDllCharacteristics=0x%08x\tNX_COMPAT=1\tDYNAMIC_BASE=0\tHIGH_ENTROPY_VA=0\n' \
+                "$pe_name" "$dll_flags" >> "$layout_report"
+            ;;
+    esac
+    {
         printf '== %s ==\n' "$pe_name"
         objdump -p "$pe_file" | sed -n '/The Import Tables/,/The Function Table/p'
     } >> "$imports_report"
 done
+objdump -h "$package_dir/EventLog.dll" | grep -Eq '[[:space:]][.]rsrc[[:space:]]' ||
+    die "EventLog.dll does not contain a PE resource section"
 if grep -Eiq 'DLL Name: (libgcc_s|libstdc\+\+|libwinpthread|libzstd|msys-|cygwin)' "$imports_report"; then
     grep -Ei 'DLL Name: (libgcc_s|libstdc\+\+|libwinpthread|libzstd|msys-|cygwin)' "$imports_report" >&2
     die "package imports a forbidden non-system runtime DLL"

@@ -122,6 +122,35 @@ jobs=${JOBS:-2}
 ./build-mingw.sh distclean
 ./build-mingw.sh -j"$jobs"
 
+for executable in \
+    redis-benchmark.exe \
+    redis-cli.exe \
+    redis-server.exe \
+    redis-check-aof.exe \
+    redis-check-rdb.exe
+do
+    if [[ ! -x "$build_dir/$executable" ]]; then
+        echo "error: required MinGW64 build output not found: $build_dir/$executable" >&2
+        exit 1
+    fi
+done
+if [[ ! -f "$build_dir/EventLog.dll" ]]; then
+    echo "error: required MinGW64 build output not found: $build_dir/EventLog.dll" >&2
+    exit 1
+fi
+
+# Strip the candidate in its test location before any qualification suite runs.
+# The ZIP below is staged from these exact bytes, and CI points the source-tree
+# suites at the extracted ZIP. Recreate the argv[0]-selected checker aliases
+# after stripping the server.
+strip \
+    "$build_dir/redis-benchmark.exe" \
+    "$build_dir/redis-cli.exe" \
+    "$build_dir/redis-server.exe" \
+    "$build_dir/EventLog.dll"
+cp -f "$build_dir/redis-server.exe" "$build_dir/redis-check-aof.exe"
+cp -f "$build_dir/redis-server.exe" "$build_dir/redis-check-rdb.exe"
+
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "error: release build modified the tracked source worktree" >&2
     git status --short >&2
@@ -162,11 +191,6 @@ install -m 0644 "$windows_changes" "$stage_dir/$windows_changes"
     printf 'Allocator: jemalloc-5.3.0-redis Windows QFork tree\n'
     printf 'TLS: not built\n'
 } >"$stage_dir/BUILDINFO.txt"
-
-strip \
-    "$stage_dir/redis-benchmark.exe" \
-    "$stage_dir/redis-cli.exe" \
-    "$stage_dir/redis-server.exe"
 
 # These programs select their mode from argv[0]. Copy the already stripped
 # server so all aliases are byte-identical and packaging is deterministic.

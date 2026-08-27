@@ -151,6 +151,10 @@ jobs:
           set -euo pipefail
           {
             printf 'MSYSTEM=%s\n' "${MSYSTEM:-unknown}"
+            printf 'RUNNER_OS=%s\n' "${RUNNER_OS:-unknown}"
+            printf 'RUNNER_ARCH=%s\n' "${RUNNER_ARCH:-unknown}"
+            printf 'RUNNER_IMAGE_OS=%s\n' "${ImageOS:-unknown}"
+            printf 'RUNNER_IMAGE_VERSION=%s\n' "${ImageVersion:-unknown}"
             printf 'GCC_FULL_VERSION=%s\n' "$(gcc -dumpfullversion)"
             pacman -Q mingw-w64-x86_64-gcc
             pacman -Q mingw-w64-x86_64-tcl
@@ -162,11 +166,59 @@ jobs:
       - name: Run public-source hygiene over full history
         run: ./scripts/check-public-hygiene.sh --history
 
-      - name: Build MinGW64 core, interop, and launcher targets
+      - name: Build and stage the single CI-only release candidate
+        env:
+          CI: 'true'
+          PUBLIC_RELEASE_CI: '1'
+          WINDOWS_PACKAGE_SOURCE_COMMIT: ${{ inputs.source_sha || github.sha }}
         run: |
           set -o pipefail
-          ./build-mingw.sh -j2 2>&1 | tee build/qualification/build.log
-          make -f Makefile.mingw interop-test test-launcher 2>&1 | tee -a build/qualification/build.log
+          JOBS=2 ./package-mingw.sh 2>&1 | tee build/qualification/package-build.log
+
+      - name: Audit package archive, licenses, PE images, and imports
+        id: package
+        run: |
+          set -euo pipefail
+          archive="$(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          [[ -n "$archive" ]]
+          mkdir -p build/qualification/package-audit
+          ./tests/windows/package-audit.sh "$archive" build/qualification/package-audit "$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)" "$WINDOWS_PACKAGE_REVISION" 2>&1 | tee build/qualification/package-audit.log
+          package_dir="build/qualification/package-audit/package"
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+          printf 'package_dir=%s\n' "$package_dir" >> "$GITHUB_OUTPUT"
+          printf 'REDIS_TEST_BINARY_DIR=%s\n' "$package_dir" >> "$GITHUB_ENV"
+          printf 'REDIS_TEST_LAUNCHER=%s\n' "$(pwd -P)/build/mingw64/redis-test-launcher.exe" >> "$GITHUB_ENV"
+          printf 'REDIS_TEST_MODULE_DIR=%s\n' "$(pwd -P)/build/mingw64/tests/modules" >> "$GITHUB_ENV"
+
+      - name: Validate workflow scripts before the long qualification suites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in @(
+              'tests/windows/package-replication.ps1',
+              'tests/windows/service.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $script), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }
+              throw "PowerShell syntax validation failed for $script."
+            }
+          }
+
+      - name: Verify release bytes before source-tree suites
+        run: |
+          set -euo pipefail
+          ./tests/windows/package-binary-identity.sh \
+            build/mingw64 \
+            build/qualification/package-audit/package \
+            build/qualification/package-binary-identity.before.tsv
+
+      - name: Build Windows interop test harness
+        run: |
+          set -o pipefail
+          make -f Makefile.mingw interop-test 2>&1 | tee build/qualification/interop-build.log
 
       - name: Run Redis root test suite
         run: |
@@ -226,27 +278,6 @@ jobs:
         run: |
           set -o pipefail
           ./runtest-mingw-service.sh 2>&1 | tee build/qualification/service-tests.log
-
-      - name: Build the CI-only release package
-        env:
-          CI: 'true'
-          PUBLIC_RELEASE_CI: '1'
-          WINDOWS_PACKAGE_SOURCE_COMMIT: ${{ inputs.source_sha || github.sha }}
-        run: |
-          set -o pipefail
-          JOBS=2 ./package-mingw.sh 2>&1 | tee build/qualification/package-build.log
-
-      - name: Audit package archive, licenses, PE images, and imports
-        id: package
-        run: |
-          set -euo pipefail
-          archive="$(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print -quit)"
-          [[ -n "$archive" ]]
-          mkdir -p build/qualification/package-audit
-          ./tests/windows/package-audit.sh "$archive" build/qualification/package-audit "$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' src/version.h)" "$WINDOWS_PACKAGE_REVISION" 2>&1 | tee build/qualification/package-audit.log
-          package_dir="build/qualification/package-audit/package"
-          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
-          printf 'package_dir=%s\n' "$package_dir" >> "$GITHUB_OUTPUT"
 
       - name: Verify packaged master and replica synchronization
         shell: pwsh
@@ -318,6 +349,32 @@ jobs:
             2>&1 | tee build/qualification/package-benchmark.log
           printf '%s\n' "$BASELINE_TAG" > build/qualification/benchmark/baseline-reference.txt
 
+      - name: Reverify the exact candidate after all qualification tests
+        run: |
+          set -euo pipefail
+          archive="$(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          [[ -n "$archive" ]]
+          (
+            cd "$(dirname "$archive")"
+            sha256sum -c "$(basename "$archive").sha256"
+          ) > build/qualification/package-checksum-after-tests.txt
+          ./tests/windows/package-binary-identity.sh \
+            build/mingw64 \
+            build/qualification/package-audit/package \
+            build/qualification/package-binary-identity.tsv
+          cmp -s \
+            build/qualification/package-binary-identity.before.tsv \
+            build/qualification/package-binary-identity.tsv || {
+              echo 'release binary identity changed during qualification' >&2
+              exit 1
+            }
+          dirty="$(git status --porcelain --untracked-files=no)"
+          if [[ -n "$dirty" ]]; then
+            printf '%s\n' "$dirty" >&2
+            echo 'qualification modified tracked source files' >&2
+            exit 1
+          fi
+
       - name: Generate sanitized release evidence, SBOM, and test report
         run: |
           set -euo pipefail
@@ -331,7 +388,8 @@ jobs:
             "$WINDOWS_PACKAGE_REVISION" \
             "$(cat build/qualification/benchmark/baseline-reference.txt)" \
             build/qualification/maintained-lines.json \
-            build/qualification/toolchain.txt
+            build/qualification/toolchain.txt \
+            build/qualification/package-binary-identity.tsv
 
       - name: Upload release assets from successful qualification
         if: success()
@@ -347,6 +405,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-qualification-diagnostics-${{ inputs.source_sha || github.sha }}
-          path: build/qualification
+          path: |
+            build/qualification
+            build/mingw64/package-soak-*
           if-no-files-found: warn
           retention-days: 14
