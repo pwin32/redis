@@ -113,20 +113,57 @@ function Stop-ExactRedis([System.Diagnostics.Process]$Process, [int]$Port) {
     }
 }
 
+function Get-ProcessImagePath([int]$ProcessId) {
+    try {
+        $record = Get-CimInstance Win32_Process -Filter (
+            "ProcessId = {0}" -f $ProcessId) -ErrorAction Stop
+        if ($record -and $record.ExecutablePath) {
+            return [string]$record.ExecutablePath
+        }
+    } catch {
+        # The process can exist before Windows exposes its image metadata.
+    }
+    try {
+        $record = Get-Process -Id $ProcessId -ErrorAction Stop
+        if ($record.Path) {
+            return [string]$record.Path
+        }
+    } catch {
+        # Retry while the process is still starting.
+    }
+    return $null
+}
+
+function Assert-PackagedProcess([System.Diagnostics.Process]$Process) {
+    $expectedPath = [System.IO.Path]::GetFullPath($server)
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        if ($Process.HasExited) {
+            throw "Packaged Redis PID $($Process.Id) exited before image ownership could be verified."
+        }
+        $actualPath = Get-ProcessImagePath $Process.Id
+        if ($actualPath) {
+            if (-not [string]::Equals(
+                    [System.IO.Path]::GetFullPath($actualPath),
+                    $expectedPath,
+                    [System.StringComparison]::OrdinalIgnoreCase)) {
+                try { $Process.Kill($true) } catch {}
+                throw "PID $($Process.Id) does not belong to the packaged server."
+            }
+            return
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Windows did not expose the image path for packaged Redis PID $($Process.Id)."
+}
+
 function Start-PackagedRedis([string]$Config, [string]$WorkingDir, [string]$Name) {
     $stdout = Join-Path $output "$Name.stdout.log"
     $stderr = Join-Path $output "$Name.stderr.log"
     $process = Start-Process -FilePath $server -ArgumentList @($Config) `
         -WorkingDirectory $WorkingDir -RedirectStandardOutput $stdout `
         -RedirectStandardError $stderr -PassThru
-    $actualPath = (Get-Process -Id $process.Id -FileVersionInfo).FileName
-    if (-not [string]::Equals(
-        [System.IO.Path]::GetFullPath($actualPath),
-        [System.IO.Path]::GetFullPath($server),
-        [System.StringComparison]::OrdinalIgnoreCase)) {
-        $process.Kill($true)
-        throw "PID $($process.Id) does not belong to the packaged server."
-    }
+    Assert-PackagedProcess $process
     return $process
 }
 
