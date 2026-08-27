@@ -17,6 +17,13 @@ cd "$repo_root"
 
 TCLSH=/mingw64/bin/tclsh
 BUILD_DIR="$repo_root/build/mingw64"
+binary_dir="${REDIS_TEST_BINARY_DIR:-$BUILD_DIR}"
+if [[ "$binary_dir" != /* ]]; then
+    binary_dir="$repo_root/$binary_dir"
+fi
+binary_dir="$(cd "$binary_dir" && pwd -P)"
+launcher="${REDIS_TEST_LAUNCHER:-$BUILD_DIR/redis-test-launcher.exe}"
+module_dir="${REDIS_TEST_MODULE_DIR:-$BUILD_DIR/tests/modules}"
 
 if [[ ! -x "$TCLSH" ]]; then
     echo "error: MinGW Tcl not found at $TCLSH" >&2
@@ -24,7 +31,7 @@ if [[ ! -x "$TCLSH" ]]; then
     exit 1
 fi
 
-# This is the Redis 8.10.0 Module API inventory: 47 Tcl units backed by
+# This is the Redis 8.10 Module API inventory: 47 Tcl units backed by
 # 45 module binaries.  Keep the order from the upstream runner; several units
 # share module state and rely on this ordering.
 module_units=(
@@ -98,32 +105,45 @@ fi
 
 make -f Makefile.mingw test-modules test-launcher
 
-for exe in redis-server.exe redis-cli.exe redis-benchmark.exe redis-check-aof.exe redis-check-rdb.exe redis-test-launcher.exe; do
-    if [[ ! -x "$BUILD_DIR/$exe" ]]; then
-        echo "error: missing $BUILD_DIR/$exe" >&2
+for exe in redis-server.exe redis-cli.exe redis-benchmark.exe redis-check-aof.exe redis-check-rdb.exe; do
+    if [[ ! -x "$binary_dir/$exe" ]]; then
+        echo "error: missing $binary_dir/$exe" >&2
         echo "run ./build-mingw.sh first" >&2
         exit 1
     fi
 done
+if [[ ! -x "$launcher" ]]; then
+    echo "error: missing Redis test launcher: $launcher" >&2
+    exit 1
+fi
 
-export REDIS_SERVER="$BUILD_DIR/redis-server.exe"
-export REDIS_CLI="$BUILD_DIR/redis-cli.exe"
-export REDIS_BENCHMARK="$BUILD_DIR/redis-benchmark.exe"
-export REDIS_CHECK_AOF="$BUILD_DIR/redis-check-aof.exe"
-export REDIS_CHECK_RDB="$BUILD_DIR/redis-check-rdb.exe"
-export REDIS_TEST_MODULE_DIR="$BUILD_DIR/tests/modules"
-export REDIS_TEST_LAUNCHER="$BUILD_DIR/redis-test-launcher.exe"
+export REDIS_SERVER="$binary_dir/redis-server.exe"
+export REDIS_CLI="$binary_dir/redis-cli.exe"
+export REDIS_BENCHMARK="$binary_dir/redis-benchmark.exe"
+export REDIS_CHECK_AOF="$binary_dir/redis-check-aof.exe"
+export REDIS_CHECK_RDB="$binary_dir/redis-check-rdb.exe"
+export REDIS_TEST_MODULE_DIR="$module_dir"
+export REDIS_TEST_LAUNCHER="$launcher"
 
 for module in "${module_binaries[@]}"; do
-    if [[ ! -f "$REDIS_TEST_MODULE_DIR/$module.so" ]]; then
+    if [[ ! -f "$module_dir/$module.so" ]]; then
         echo "error: missing MinGW Module API binary $REDIS_TEST_MODULE_DIR/$module.so" >&2
         exit 1
     fi
 done
 
-args=()
-for unit in "${module_units[@]}"; do
-    args+=(--single "$unit")
+explicit_module_units=0
+for argument in "$@"; do
+    if [[ "$argument" == "--single" ]]; then
+        explicit_module_units=1
+    fi
 done
+
+args=()
+if (( explicit_module_units == 0 )); then
+    for unit in "${module_units[@]}"; do
+        args+=(--single "$unit")
+    done
+fi
 
 exec "$TCLSH" tests/test_helper.tcl "${args[@]}" "$@"

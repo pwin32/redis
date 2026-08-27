@@ -32,7 +32,13 @@ case "${1:-}" in
 esac
 
 TCLSH=/mingw64/bin/tclsh
-BUILD_DIR="$repo_root/build/mingw64"
+build_dir="${REDIS_TEST_BINARY_DIR:-$repo_root/build/mingw64}"
+if [[ "$build_dir" != /* ]]; then
+    build_dir="$repo_root/$build_dir"
+fi
+build_dir="$(cd "$build_dir" && pwd -P)"
+launcher="${REDIS_TEST_LAUNCHER:-$repo_root/build/mingw64/redis-test-launcher.exe}"
+module_dir="${REDIS_TEST_MODULE_DIR:-$repo_root/build/mingw64/tests/modules}"
 
 if [[ ! -x "$TCLSH" ]]; then
     echo "error: MinGW Tcl not found at $TCLSH" >&2
@@ -40,21 +46,25 @@ if [[ ! -x "$TCLSH" ]]; then
     exit 1
 fi
 
-for exe in redis-server.exe redis-cli.exe redis-benchmark.exe redis-check-aof.exe redis-check-rdb.exe redis-test-launcher.exe; do
-    if [[ ! -x "$BUILD_DIR/$exe" ]]; then
-        echo "error: missing $BUILD_DIR/$exe" >&2
+for exe in redis-server.exe redis-cli.exe redis-benchmark.exe redis-check-aof.exe redis-check-rdb.exe; do
+    if [[ ! -x "$build_dir/$exe" ]]; then
+        echo "error: missing $build_dir/$exe" >&2
         echo "run ./build-mingw.sh first" >&2
         exit 1
     fi
 done
+if [[ ! -x "$launcher" ]]; then
+    echo "error: missing Redis test launcher: $launcher" >&2
+    exit 1
+fi
 
-export REDIS_SERVER="$BUILD_DIR/redis-server.exe"
-export REDIS_CLI="$BUILD_DIR/redis-cli.exe"
-export REDIS_BENCHMARK="$BUILD_DIR/redis-benchmark.exe"
-export REDIS_CHECK_AOF="$BUILD_DIR/redis-check-aof.exe"
-export REDIS_CHECK_RDB="$BUILD_DIR/redis-check-rdb.exe"
-export REDIS_TEST_LAUNCHER="$BUILD_DIR/redis-test-launcher.exe"
-export REDIS_TEST_MODULE_DIR="$BUILD_DIR/tests/modules"
+export REDIS_SERVER="$build_dir/redis-server.exe"
+export REDIS_CLI="$build_dir/redis-cli.exe"
+export REDIS_BENCHMARK="$build_dir/redis-benchmark.exe"
+export REDIS_CHECK_AOF="$build_dir/redis-check-aof.exe"
+export REDIS_CHECK_RDB="$build_dir/redis-check-rdb.exe"
+export REDIS_TEST_LAUNCHER="$launcher"
+export REDIS_TEST_MODULE_DIR="$module_dir"
 
 case "$suite" in
     root)
