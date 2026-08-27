@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Run the Redis 6.2 Module API test inventory against MinGW package binaries.
+
 set -euo pipefail
 
 source "$(cd "$(dirname "$0")" && pwd)/scripts/mingw-bootstrap.sh"
@@ -8,42 +10,105 @@ set -- "${MINGW_BOOTSTRAP_ARGS[@]}"
 repo_root="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_root"
 
-TCL_VERSIONS="8.5 8.6 8.7"
-TCLSH=""
-MAKE="${MAKE:-make}"
+TCLSH=/mingw64/bin/tclsh
+BUILD_DIR="$repo_root/build/mingw64"
+binary_dir="${REDIS_TEST_BINARY_DIR:-$BUILD_DIR}"
+if [[ "$binary_dir" != /* ]]; then
+    binary_dir="$repo_root/$binary_dir"
+fi
+binary_dir="$(cd "$binary_dir" && pwd -P)"
+launcher="${REDIS_TEST_LAUNCHER:-$BUILD_DIR/redis-test-launcher.exe}"
+module_dir="${REDIS_TEST_MODULE_DIR:-$BUILD_DIR/tests/modules}"
 
-for VERSION in $TCL_VERSIONS; do
-	TCL=`which tclsh$VERSION 2>/dev/null` && TCLSH=$TCL
-done
-
-if [[ -z "$TCLSH" ]]
-then
-    echo "You need tcl 8.5 or newer in order to run the Redis ModuleApi test"
+if [[ ! -x "$TCLSH" ]]; then
+    echo "error: MinGW Tcl not found at $TCLSH" >&2
+    echo "install it with pacman -S mingw-w64-x86_64-tcl" >&2
     exit 1
 fi
 
-"$MAKE" -C tests/modules && \
-"$TCLSH" tests/test_helper.tcl \
---single unit/moduleapi/commandfilter \
---single unit/moduleapi/basics \
---single unit/moduleapi/fork \
---single unit/moduleapi/testrdb \
---single unit/moduleapi/infotest \
---single unit/moduleapi/propagate \
---single unit/moduleapi/hooks \
---single unit/moduleapi/misc \
---single unit/moduleapi/blockonkeys \
---single unit/moduleapi/blockonbackground \
---single unit/moduleapi/scan \
---single unit/moduleapi/datatype \
---single unit/moduleapi/auth \
---single unit/moduleapi/keyspace_events \
---single unit/moduleapi/blockedclient \
---single unit/moduleapi/getkeys \
---single unit/moduleapi/test_lazyfree \
---single unit/moduleapi/defrag \
---single unit/moduleapi/hash \
---single unit/moduleapi/zset \
---single unit/moduleapi/stream \
---single unit/moduleapi/cluster \
-"${@}"
+# Preserve the Redis 6.2 inventory and ordering used by the MinGW runner.
+module_units=(
+    unit/moduleapi/commandfilter
+    unit/moduleapi/basics
+    unit/moduleapi/fork
+    unit/moduleapi/testrdb
+    unit/moduleapi/infotest
+    unit/moduleapi/propagate
+    unit/moduleapi/hooks
+    unit/moduleapi/misc
+    unit/moduleapi/blockonkeys
+    unit/moduleapi/blockonbackground
+    unit/moduleapi/scan
+    unit/moduleapi/datatype
+    unit/moduleapi/auth
+    unit/moduleapi/keyspace_events
+    unit/moduleapi/blockedclient
+    unit/moduleapi/getkeys
+    unit/moduleapi/test_lazyfree
+    unit/moduleapi/defrag
+    unit/moduleapi/hash
+    unit/moduleapi/zset
+    unit/moduleapi/stream
+    unit/moduleapi/timer
+    unit/moduleapi/cluster
+)
+
+module_binaries=(
+    auth basics blockedclient blockonbackground blockonkeys commandfilter
+    datatype defragtest fork getkeys hash hooks infotest keyspace_events misc
+    propagate scan stream test_lazyfree testrdb timer zset
+)
+
+if (( ${#module_units[@]} != 23 )); then
+    echo "error: internal Module API inventory has ${#module_units[@]} units; expected 23" >&2
+    exit 1
+fi
+if (( ${#module_binaries[@]} != 22 )); then
+    echo "error: internal Module API binary inventory has ${#module_binaries[@]} modules; expected 22" >&2
+    exit 1
+fi
+
+make -f Makefile.mingw test-modules test-launcher
+
+for exe in redis-server.exe redis-cli.exe redis-benchmark.exe redis-check-aof.exe redis-check-rdb.exe; do
+    if [[ ! -x "$binary_dir/$exe" ]]; then
+        echo "error: missing $binary_dir/$exe" >&2
+        echo "run ./build-mingw.sh first" >&2
+        exit 1
+    fi
+done
+if [[ ! -x "$launcher" ]]; then
+    echo "error: missing Redis test launcher: $launcher" >&2
+    exit 1
+fi
+
+export REDIS_SERVER="$binary_dir/redis-server.exe"
+export REDIS_CLI="$binary_dir/redis-cli.exe"
+export REDIS_BENCHMARK="$binary_dir/redis-benchmark.exe"
+export REDIS_CHECK_AOF="$binary_dir/redis-check-aof.exe"
+export REDIS_CHECK_RDB="$binary_dir/redis-check-rdb.exe"
+export REDIS_TEST_MODULE_DIR="$module_dir"
+export REDIS_TEST_LAUNCHER="$launcher"
+
+for module in "${module_binaries[@]}"; do
+    if [[ ! -f "$module_dir/$module.so" ]]; then
+        echo "error: missing MinGW Module API binary $module_dir/$module.so" >&2
+        exit 1
+    fi
+done
+
+explicit_module_units=0
+for argument in "$@"; do
+    if [[ "$argument" == "--single" ]]; then
+        explicit_module_units=1
+    fi
+done
+
+args=()
+if (( explicit_module_units == 0 )); then
+    for unit in "${module_units[@]}"; do
+        args+=(--single "$unit")
+    done
+fi
+
+exec "$TCLSH" tests/test_helper.tcl "${args[@]}" "$@"
