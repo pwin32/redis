@@ -35,14 +35,20 @@ after the first public release.
 
 ## Package and evidence contract
 
-Packages are built only in GitHub Actions. Each release carries the ZIP,
-`SHA256SUMS.txt`, `BUILDINFO.txt`, `package-manifest.txt`, `toolchain.txt`,
-`TEST-REPORT.md`, `release-evidence.json`, `benchmark.csv`, and
-`sbom.spdx.json`. The benchmark uses loopback, persistence disabled, one
-benchmark thread, 50 clients, pipeline 1, a discarded 10,000-request warmup,
-and three 50,000-request measurements for PING, SET, and GET. A throughput
-decrease or p95 increase above 15% is an advisory warning; it does not silently
-turn into a release blocker.
+Packages are built only in GitHub Actions. Qualification performs one clean
+MinGW64 build, strips the candidate before any source-tree suite runs, stages
+the ZIP from those exact bytes, and then points the source-tree suites at the
+extracted package. A final binary-identity and archive-checksum gate prevents
+publication if a tested or packaged byte changes. The release workflow uploads,
+attests, and publishes that same artifact without rebuilding it. Each release
+carries the ZIP, `SHA256SUMS.txt`, `BUILDINFO.txt`, `package-manifest.txt`,
+`package-binary-identity.tsv`, `toolchain.txt`, `TEST-REPORT.md`,
+`release-evidence.json`, `benchmark.csv`, and `sbom.spdx.json`. The benchmark
+uses loopback, persistence disabled, one benchmark thread, 50 clients,
+pipeline 1, a discarded 10,000-request warmup, and three 50,000-request
+measurements for PING, SET, and GET. A throughput decrease or p95 increase
+above 15% is an advisory warning; it does not silently turn into a release
+blocker.
 
 The release workflow creates GitHub artifact attestations for both SLSA build
 provenance and the SPDX SBOM. It creates the remote

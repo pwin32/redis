@@ -6,7 +6,7 @@ set -euo pipefail
 export LC_ALL=C
 
 usage() {
-    echo "usage: $0 ARCHIVE EXTRACTED_DIR BENCHMARK_DIR OUTPUT_DIR SOURCE_BRANCH WINDOWS_REVISION BASELINE_REFERENCE GATE_JSON TOOLCHAIN_FILE"
+    echo "usage: $0 ARCHIVE EXTRACTED_DIR BENCHMARK_DIR OUTPUT_DIR SOURCE_BRANCH WINDOWS_REVISION BASELINE_REFERENCE GATE_JSON TOOLCHAIN_FILE IDENTITY_FILE"
 }
 
 die() {
@@ -14,7 +14,7 @@ die() {
     exit 1
 }
 
-if (( $# != 9 )); then
+if (( $# != 10 )); then
     usage >&2
     exit 2
 fi
@@ -28,6 +28,7 @@ windows_revision=$6
 baseline_reference=$7
 gate_json=$8
 toolchain_file=$9
+identity_file=${10}
 
 for tool in awk date find grep jq sed sha256sum sort tr wc; do
     command -v "$tool" >/dev/null 2>&1 || die "required evidence tool not found: $tool"
@@ -38,6 +39,7 @@ done
 [[ -f "$benchmark_dir/assessment.tsv" ]] || die "benchmark assessment not found"
 [[ -f "$gate_json" ]] || die "qualification gate JSON not found: $gate_json"
 [[ -f "$toolchain_file" ]] || die "toolchain inventory not found: $toolchain_file"
+[[ -f "$identity_file" ]] || die "package binary identity report not found: $identity_file"
 [[ "$windows_revision" =~ ^[1-9][0-9]*$ ]] || die "invalid Windows revision"
 
 mkdir -p "$output_dir"
@@ -71,6 +73,7 @@ install -m 0644 "$archive.sha256" "$output_dir/SHA256SUMS.txt"
 install -m 0644 "$buildinfo" "$output_dir/BUILDINFO.txt"
 install -m 0644 "$extracted_dir/PACKAGE-MANIFEST.txt" "$output_dir/package-manifest.txt"
 install -m 0644 "$toolchain_file" "$output_dir/toolchain.txt"
+install -m 0644 "$identity_file" "$output_dir/package-binary-identity.tsv"
 
 awk -F '\t' '
     function csv(value) {
@@ -109,6 +112,7 @@ IFS= read -r -d '' report_template <<'EOF' || true
 | Windows legacy and modern interop tests | Passed |
 | Isolated Windows service and Event Log test | Passed |
 | ZIP checksum, extraction, manifest, licenses, PE and import audit | Passed |
+| Release binaries identical to the bytes used by source-tree suites | Passed |
 | Packaged master/replica full and incremental synchronization | Passed |
 | Packaged QFork RDB/AOF persistence and restart soak (30 minutes minimum) | Passed |
 | Short loopback package benchmark completed | Passed |
@@ -233,7 +237,7 @@ jq -n \
         release:{version:$version,windows_revision:($windows_revision|tonumber),tag:$tag,branch:$branch},
         source:{commit:$source_commit,tree:$source_tree},
         package:{archive:$archive,sha256:$archive_sha256,scope:"Redis core only"},
-        qualification:{workflow_url:$workflow_url,completed_utc:$completed_utc,all_required_tests:"passed",maintained_lines:$maintained_lines[0]},
+        qualification:{workflow_url:$workflow_url,completed_utc:$completed_utc,all_required_tests:"passed",release_binary_identity:"passed",maintained_lines:$maintained_lines[0]},
         benchmark:{baseline_reference:$baseline,regression_advisory:$benchmark_status,blocking:false},
         attestations:{required_before_publication:{build_provenance:true,sbom:true},created_by:"Publish Windows release workflow"}
     }' > "$output_dir/release-evidence.json"
