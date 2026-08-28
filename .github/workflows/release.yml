@@ -245,9 +245,13 @@ jobs:
           fi
           final_target="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
           [[ "$final_target" == "$source_sha" ]] || { echo "release tag target changed unexpectedly" >&2; exit 1; }
-          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
             --jq '[.draft, .prerelease, .immutable] | @tsv' > /tmp/release-state.tsv
           IFS=$'\t' read -r draft prerelease immutable < /tmp/release-state.tsv
-          [[ "$draft" == false && "$prerelease" == false ]] || { echo 'release was not published normally' >&2; exit 1; }
+          [[ "$draft" == false && "$prerelease" == false && "$immutable" == true ]] || {
+            echo "release was not published as an immutable normal release (draft=$draft prerelease=$prerelease immutable=$immutable)" >&2
+            exit 1
+          }
           printf 'RELEASE_IMMUTABLE=%s\n' "$immutable"
           printf 'PUBLISHED_RELEASE_OK tag=%s source=%s\n' "$tag" "$source_sha"
