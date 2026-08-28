@@ -29,7 +29,7 @@ baseline_reference=$7
 gate_json=$8
 toolchain_file=$9
 
-for tool in awk date find jq sed sha256sum sort tr wc; do
+for tool in awk date find grep jq sed sha256sum sort tr wc; do
     command -v "$tool" >/dev/null 2>&1 || die "required evidence tool not found: $tool"
 done
 [[ -f "$archive" ]] || die "archive not found: $archive"
@@ -55,6 +55,7 @@ buildinfo_revision="$(sed -n 's/^Windows package revision: //p' "$buildinfo")"
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || die "invalid BUILDINFO source commit"
 [[ "$source_tree" =~ ^[0-9a-f]{40}$ ]] || die "invalid BUILDINFO source tree"
 [[ "$buildinfo_revision" == "$windows_revision" ]] || die "BUILDINFO Windows revision mismatch"
+[[ -n "$source_branch" ]] || die "source branch is empty"
 
 release_tag="v${version}-windows.${windows_revision}"
 package_name="$(basename "$archive")"
@@ -87,15 +88,15 @@ awk -F '\t' '
 benchmark_status="$(awk -F '\t' '$1 == "regression_advisory" {print $4}' "$benchmark_dir/assessment.tsv")"
 [[ -n "$benchmark_status" ]] || benchmark_status=unknown
 
-cat > "$output_dir/TEST-REPORT.md" <<EOF
-# Redis $version Windows qualification
+IFS= read -r -d '' report_template <<'EOF' || true
+# Redis __VERSION__ Windows qualification
 
-- Release candidate: `$release_tag`
-- Canonical branch: `$source_branch`
-- Source commit: `$source_commit`
-- Source tree: `$source_tree`
-- Workflow run: $workflow_url (attempt $workflow_run_attempt)
-- Completed: $created_utc
+- Release candidate: `__RELEASE_TAG__`
+- Canonical branch: `__SOURCE_BRANCH__`
+- Source commit: `__SOURCE_COMMIT__`
+- Source tree: `__SOURCE_TREE__`
+- Workflow run: __WORKFLOW_URL__ (attempt __WORKFLOW_ATTEMPT__)
+- Completed: __CREATED_UTC__
 
 | Qualification gate | Result |
 | --- | --- |
@@ -117,9 +118,9 @@ cat > "$output_dir/TEST-REPORT.md" <<EOF
 The benchmark uses the packaged client and server on loopback with persistence
 disabled, one benchmark thread, 50 clients, pipeline 1, a discarded 10,000
 request warmup, and three 50,000 request rounds for PING, SET, and GET. The
-baseline reference is `$baseline_reference`. A throughput decrease or p95
+baseline reference is `__BASELINE_REFERENCE__`. A throughput decrease or p95
 latency increase greater than 15% is advisory and does not block publication.
-The advisory result for this run is `$benchmark_status`; exact medians are in
+The advisory result for this run is `__BENCHMARK_STATUS__`; exact medians are in
 `benchmark.csv`.
 
 ## Toolchain
@@ -128,6 +129,29 @@ The resolved MSYS2/MinGW64 package versions used by this workflow are recorded
 in `toolchain.txt` and in the archive's `BUILDINFO.txt`. This release does
 not claim bit-for-bit reproducibility across changing hosted-runner toolchains.
 EOF
+report="${report_template//__VERSION__/$version}"
+report="${report//__RELEASE_TAG__/$release_tag}"
+report="${report//__SOURCE_BRANCH__/$source_branch}"
+report="${report//__SOURCE_COMMIT__/$source_commit}"
+report="${report//__SOURCE_TREE__/$source_tree}"
+report="${report//__WORKFLOW_URL__/$workflow_url}"
+report="${report//__WORKFLOW_ATTEMPT__/$workflow_run_attempt}"
+report="${report//__CREATED_UTC__/$created_utc}"
+report="${report//__BASELINE_REFERENCE__/$baseline_reference}"
+report="${report//__BENCHMARK_STATUS__/$benchmark_status}"
+report_file="$output_dir/TEST-REPORT.md"
+printf '%s\n' "$report" > "$report_file"
+[[ "$report" != *__* ]] || die "release report contains an unresolved template placeholder"
+grep -Fq -- "- Release candidate: \`$release_tag\`" "$report_file" ||
+    die "release report is missing the release tag"
+grep -Fq -- "- Canonical branch: \`$source_branch\`" "$report_file" ||
+    die "release report is missing the canonical branch"
+grep -Fq -- "- Source commit: \`$source_commit\`" "$report_file" ||
+    die "release report is missing the source commit"
+grep -Fq -- "baseline reference is \`$baseline_reference\`." "$report_file" ||
+    die "release report is missing the benchmark baseline"
+grep -Fq -- "The advisory result for this run is \`$benchmark_status\`;" "$report_file" ||
+    die "release report is missing the benchmark assessment"
 
 files_json="$output_dir/.spdx-files.ndjson"
 relationships_json="$output_dir/.spdx-relationships.ndjson"
