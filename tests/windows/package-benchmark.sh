@@ -536,8 +536,8 @@ run_matrix_case() {
     command=("$benchmark" -h 127.0.0.1 -p "$port" --seed 7410 -k 1 --csv "${args[@]}")
 
     record_command "$run_dir/benchmarks/$case_index-$matrix_id.flush.command.txt" \
-        "$cli" --raw -h 127.0.0.1 -p "$port" FLUSHALL SYNC
-    if ! "$cli" --raw -h 127.0.0.1 -p "$port" FLUSHALL SYNC \
+        "$cli" --raw -h 127.0.0.1 -p "$port" FLUSHALL
+    if ! "$cli" --raw -h 127.0.0.1 -p "$port" FLUSHALL \
             > "$reset_log" 2>&1; then
         die "FLUSHALL SYNC failed before $variant $matrix_id; see $reset_log"
     fi
