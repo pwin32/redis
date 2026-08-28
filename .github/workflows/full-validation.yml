@@ -53,7 +53,7 @@ concurrency:
 jobs:
   qualify:
     name: Windows MinGW64 qualification
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 240
     outputs:
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
