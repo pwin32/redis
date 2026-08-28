@@ -58,7 +58,6 @@ function Convert-ToConfigPath([string]$Path) {
     'save ""'
     'appendonly no'
     'repl-diskless-sync no'
-    'repl-compression 0'
     "dir `"$(Convert-ToConfigPath $masterDir)`""
     'dbfilename master.rdb'
     'logfile ""'
@@ -70,7 +69,6 @@ function Convert-ToConfigPath([string]$Path) {
     'protected-mode yes'
     'save ""'
     'appendonly no'
-    'repl-compression 0'
     "dir `"$(Convert-ToConfigPath $replicaDir)`""
     'dbfilename replica.rdb'
     'logfile ""'
