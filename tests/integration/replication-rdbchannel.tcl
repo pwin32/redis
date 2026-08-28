@@ -252,7 +252,7 @@ start_server {tags {"repl external:skip debug_defrag:skip"}} {
                 # The Windows write-load helper has lower throughput. Keep the
                 # RDB child alive long enough to exercise a multi-megabyte
                 # concurrent replication buffer.
-                $master config set rdb-key-save-delay 2000
+                $master config set rdb-key-save-delay 4000
             } else {
                 $master config set rdb-key-save-delay 500 ;# 500us delay and 10k keys means at least 5 seconds replication
             }
