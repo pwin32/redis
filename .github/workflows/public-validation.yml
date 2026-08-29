@@ -70,6 +70,7 @@ jobs:
           set -euo pipefail
           git config --local core.autocrlf false
           git config --local core.eol lf
+          git config --local core.filemode false
           git reset --hard HEAD
           dirty="$(git status --porcelain --untracked-files=normal)"
           if [[ -n "$dirty" ]]; then
