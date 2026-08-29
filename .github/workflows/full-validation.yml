@@ -215,6 +215,9 @@ jobs:
             build/qualification/package-audit/package \
             build/qualification/package-binary-identity.before.tsv
 
+      - name: Validate packaged process-instance semantics
+        run: bash tests/windows/package-process-identity-test.sh
+
       - name: Build Windows interop test harness
         run: |
           set -o pipefail

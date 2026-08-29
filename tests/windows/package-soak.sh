@@ -100,6 +100,8 @@ check_rdb="$package_dir/redis-check-rdb.exe"
 check_aof="$package_dir/redis-check-aof.exe"
 buildinfo="$package_dir/BUILDINFO.txt"
 launcher="$repo_root/build/mingw64/redis-test-launcher.exe"
+# shellcheck source=package-process-identity.sh
+source "$repo_root/tests/windows/package-process-identity.sh"
 
 for executable in "$server" "$cli" "$benchmark" "$check_rdb" "$check_aof" "$launcher"; do
     if [[ ! -f "$executable" ]]; then
@@ -158,41 +160,6 @@ show_log_tail() {
         printf '%s\n' "--- $path (tail) ---" >&2
         tail -n 80 "$path" >&2 || true
     fi
-}
-
-pid_is_alive() {
-    "$launcher" --is-alive "$1" >/dev/null 2>&1
-}
-
-pid_is_owned() {
-    local pid=$1
-    local expected=$2
-    local token=${3:-}
-
-    if [[ -n "$token" ]]; then
-        "$launcher" --is-owned "$pid" --token "$token" "$expected" >/dev/null 2>&1
-    else
-        "$launcher" --is-owned "$pid" "$expected" >/dev/null 2>&1
-    fi
-}
-
-wait_for_pid_exit() {
-    local pid=$1
-    local expected=$2
-    local token=${3:-}
-    local timeout_seconds=${4:-10}
-    local deadline=$((SECONDS + timeout_seconds))
-
-    while pid_is_owned "$pid" "$expected" "$token"; do
-        if (( SECONDS >= deadline )); then
-            return 1
-        fi
-        sleep 0.1
-    done
-    if pid_is_alive "$pid"; then
-        return 2
-    fi
-    return 0
 }
 
 terminate_exact_pid() {
