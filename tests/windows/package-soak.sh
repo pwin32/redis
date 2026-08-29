@@ -23,6 +23,7 @@ Optional environment variables:
   REDIS_PACKAGE_SOAK_SEED_REQUESTS    seed SET requests (default: 100000)
   REDIS_PACKAGE_SOAK_WRITER_REQUESTS  SET requests per cycle (default: 100000)
   REDIS_PACKAGE_SOAK_KEEP             keep scratch data after success when 1
+  REDIS_PACKAGE_EXPECTED_VERSION      expected Redis version (default: src/version.h)
 EOF
 }
 
@@ -75,6 +76,14 @@ if [[ "$keep_success" != "0" && "$keep_success" != "1" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd -P)"
+expected_version="${REDIS_PACKAGE_EXPECTED_VERSION:-}"
+if [[ -z "$expected_version" ]]; then
+    expected_version="$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' "$repo_root/src/version.h")"
+fi
+if [[ -z "$expected_version" ]]; then
+    echo "error: unable to determine expected Redis package version" >&2
+    exit 1
+fi
 if [[ "$package_arg" != /* ]]; then
     package_arg="$repo_root/$package_arg"
 fi
@@ -89,6 +98,7 @@ cli="$package_dir/redis-cli.exe"
 benchmark="$package_dir/redis-benchmark.exe"
 check_rdb="$package_dir/redis-check-rdb.exe"
 check_aof="$package_dir/redis-check-aof.exe"
+buildinfo="$package_dir/BUILDINFO.txt"
 launcher="$repo_root/build/mingw64/redis-test-launcher.exe"
 
 for executable in "$server" "$cli" "$benchmark" "$check_rdb" "$check_aof" "$launcher"; do
@@ -97,6 +107,10 @@ for executable in "$server" "$cli" "$benchmark" "$check_rdb" "$check_aof" "$laun
         exit 1
     fi
 done
+if [[ ! -f "$buildinfo" ]]; then
+    echo "error: required package provenance file not found: $buildinfo" >&2
+    exit 1
+fi
 for tool in grep mktemp taskkill.exe; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "error: required MSYS2/Windows tool not found: $tool" >&2
@@ -645,11 +659,15 @@ start_server "$config_aof" initial
 redis_version="$(info_value server redis_version || true)"
 redis_git_sha1="$(info_value server redis_git_sha1 || true)"
 redis_git_dirty="$(info_value server redis_git_dirty || true)"
-if [[ "$redis_version" != "7.4.10" ]]; then
-    die "packaged server version mismatch: expected 7.4.10, found ${redis_version:-missing}"
+if [[ "$redis_version" != "$expected_version" ]]; then
+    die "packaged server version mismatch: expected $expected_version, found ${redis_version:-missing}"
 fi
 if [[ ! "$redis_git_sha1" =~ ^[0-9a-f]{8}$ || "$redis_git_dirty" != "0" ]]; then
     die "packaged server Git identity is not a clean release build: sha=${redis_git_sha1:-missing} dirty=${redis_git_dirty:-missing}"
+fi
+buildinfo_commit="$(sed -n 's/^Source commit: //p' "$buildinfo")"
+if [[ ! "$buildinfo_commit" =~ ^[0-9a-f]{40}$ || "${buildinfo_commit:0:8}" != "$redis_git_sha1" ]]; then
+    die "BUILDINFO/source identity mismatch: buildinfo=${buildinfo_commit:-missing} binary=$redis_git_sha1"
 fi
 run_seed_benchmark
 if [[ "$(redis_scalar SET soak:marker seed || true)" != "OK" ]]; then
