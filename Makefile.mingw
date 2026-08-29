@@ -95,6 +95,8 @@ HDR_HISTOGRAM_CFLAGS := $(BASE_CFLAGS) -std=gnu99 -DNO_QFORKIMPL
 TEST_MODULE_CFLAGS := $(OPT) $(WARNINGS) -std=gnu99 -Isrc
 TEST_MODULE_LDFLAGS := -shared -static-libgcc -Wl,--export-all-symbols
 TEST_MODULE_LDLIBS := -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
+TEST_LAUNCHER_CFLAGS := $(OPT) $(WARNINGS) -std=gnu99
+TEST_LAUNCHER_LDFLAGS := -municode -mwindows
 
 # Some C++ translation units include the standard library before
 # Win32_FDAPI.h.  Newer MinGW CRT headers then expose the legacy access/read/
@@ -422,9 +424,9 @@ TEST_MODULES := \
 	$(BUILD)/tests/modules/timer.so \
 	$(BUILD)/tests/modules/zset.so
 
-.PHONY: all clean distclean deps eventlog hiredis-test interop-test test-modules FORCE_RELEASE_HEADER
+.PHONY: all clean distclean deps eventlog hiredis-test interop-test test-launcher test-modules FORCE_RELEASE_HEADER
 
-all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL)
+all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/redis-test-launcher.exe
 
 deps: $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB)
 
@@ -433,6 +435,8 @@ eventlog: $(EVENTLOG_DLL)
 hiredis-test: $(BUILD)/hiredis-test.exe
 
 interop-test: $(BUILD)/interop-test.exe
+
+test-launcher: $(BUILD)/redis-test-launcher.exe
 
 test-modules: $(TEST_MODULES)
 
@@ -496,6 +500,10 @@ $(BUILD)/hiredis-test.exe: Makefile.mingw $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB)
 $(BUILD)/interop-test.exe: Makefile.mingw $(INTEROP_TEST_OBJS)
 	$(CXX) $(LDFLAGS_COMMON) -o $@ $(INTEROP_TEST_OBJS) $(LDLIBS_COMMON)
 
+$(BUILD)/redis-test-launcher.exe: Makefile.mingw tests/windows/test-launcher.c
+	mkdir -p $(dir $@)
+	$(CC) $(TEST_LAUNCHER_CFLAGS) $(TEST_LAUNCHER_LDFLAGS) $(LDFLAGS_COMMON) -o $@ tests/windows/test-launcher.c -lws2_32
+
 $(BUILD)/tests/modules/%.so: tests/modules/%.c src/redismodule.h src/Win32_Interop/win32_types_hiredis.h Makefile.mingw
 	mkdir -p $(dir $@)
 	$(CC) $(TEST_MODULE_CFLAGS) $(TEST_MODULE_LDFLAGS) -o $@ $< $(TEST_MODULE_LDLIBS)
@@ -556,7 +564,7 @@ clean:
 	rm -rf $(BUILD)/server $(BUILD)/hiredis $(BUILD)/lua $(BUILD)/hdr_histogram $(BUILD)/cli $(BUILD)/benchmark
 	rm -rf $(BUILD)/eventlog $(BUILD)/hiredis-test $(BUILD)/interop-test
 	rm -rf $(BUILD)/tests/modules
-	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe
+	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe $(BUILD)/redis-test-launcher.exe
 	rm -rf $(BUILD)/lib
 
 distclean: clean
