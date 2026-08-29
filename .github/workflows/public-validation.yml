@@ -22,6 +22,8 @@ jobs:
           persist-credentials: false
       - name: Run public-source hygiene checks
         run: ./scripts/check-public-hygiene.sh --history
+      - name: Validate packaged process-instance semantics
+        run: bash tests/windows/package-process-identity-test.sh
 
   mingw-smoke:
     runs-on: windows-latest
