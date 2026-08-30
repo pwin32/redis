@@ -628,6 +628,11 @@ proc the_end {} {
     foreach {time name} $::clients_time_history {
         puts "  $time seconds - $name"
     }
+    # The worker Tcl clients remain alive after their final "ready" message.
+    # On Windows/MSYS2 they can keep tests/tmp handles open, causing the
+    # recursive cleanup below to block after the success banner.  Terminate
+    # them before removing temporary trees, just as failure/exception paths do.
+    kill_clients
     if {[llength $::failed_tests]} {
         puts "\n[colorstr bold-red {!!! WARNING}] The following tests failed:\n"
         foreach failed $::failed_tests {
