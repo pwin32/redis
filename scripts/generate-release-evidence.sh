@@ -164,7 +164,12 @@ relationships_json="$output_dir/.spdx-relationships.ndjson"
 while IFS= read -r package_file; do
     file_name="$(basename "$package_file")"
     file_sha="$(sha256sum "$package_file" | sed 's/[[:space:]].*$//')"
-    file_id="SPDXRef-File-${file_sha:0:16}"
+    # File content is not a unique identifier: several Redis executables can
+    # intentionally be byte-identical. Include the deterministic package file
+    # name in the SPDX identifier so every file and relationship has a unique
+    # target while remaining stable across CI runs.
+    file_name_sha="$(printf '%s' "$file_name" | sha256sum | sed 's/[[:space:]].*$//')"
+    file_id="SPDXRef-File-${file_name_sha:0:16}-${file_sha:0:16}"
     case "$file_name" in
         *.exe|*.dll) file_type=BINARY ;;
         *) file_type=TEXT ;;
@@ -216,6 +221,14 @@ jq -n \
         }] + $contains)
     }' > "$output_dir/sbom.spdx.json"
 rm -f "$files_json" "$relationships_json"
+
+jq -e '
+    ([.SPDXID] + [.packages[]?.SPDXID] + [.files[]?.SPDXID]) as $ids |
+    ($ids | length == (unique | length)) and
+    ([.relationships[]?.spdxElementId, .relationships[]?.relatedSpdxElement]
+        | all(. as $id | ($ids | index($id) != null)))
+' "$output_dir/sbom.spdx.json" >/dev/null ||
+    die "generated SPDX SBOM has duplicate or dangling identifiers"
 
 jq -n \
     --arg schema_version "1" \
