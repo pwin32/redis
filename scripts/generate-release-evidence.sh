@@ -30,10 +30,11 @@ gate_json=$8
 toolchain_file=$9
 identity_file=${10}
 
-for tool in awk date find grep jq sed sha256sum sort tr wc; do
+for tool in awk date find git grep install jq sed sha1sum sha256sum sort tr wc; do
     command -v "$tool" >/dev/null 2>&1 || die "required evidence tool not found: $tool"
 done
 [[ -f "$archive" ]] || die "archive not found: $archive"
+[[ -f "$archive.sha256" ]] || die "archive checksum not found: $archive.sha256"
 [[ -d "$extracted_dir" ]] || die "extracted package not found: $extracted_dir"
 [[ -f "$benchmark_dir/summary.tsv" ]] || die "benchmark summary not found"
 [[ -f "$benchmark_dir/assessment.tsv" ]] || die "benchmark assessment not found"
@@ -41,6 +42,14 @@ done
 [[ -f "$toolchain_file" ]] || die "toolchain inventory not found: $toolchain_file"
 [[ -f "$identity_file" ]] || die "package binary identity report not found: $identity_file"
 [[ "$windows_revision" =~ ^[1-9][0-9]*$ ]] || die "invalid Windows revision"
+[[ -n "$baseline_reference" ]] || die "benchmark baseline reference is empty"
+jq -e 'type == "object" and (.policy | type == "string")' "$gate_json" >/dev/null ||
+    die "qualification gate JSON is invalid"
+
+(
+    cd "$(dirname "$archive")"
+    sha256sum -c "$(basename "$archive").sha256"
+) >/dev/null || die "archive checksum verification failed"
 
 mkdir -p "$output_dir"
 if find "$output_dir" -mindepth 1 -print -quit | grep -q .; then
@@ -53,6 +62,7 @@ version="$(sed -n 's/^Redis version: //p' "$buildinfo")"
 source_commit="$(sed -n 's/^Source commit: //p' "$buildinfo")"
 source_tree="$(sed -n 's/^Source tree: //p' "$buildinfo")"
 buildinfo_revision="$(sed -n 's/^Windows package revision: //p' "$buildinfo")"
+buildinfo_tag="$(sed -n 's/^Release tag: //p' "$buildinfo")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid BUILDINFO version"
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || die "invalid BUILDINFO source commit"
 [[ "$source_tree" =~ ^[0-9a-f]{40}$ ]] || die "invalid BUILDINFO source tree"
@@ -60,6 +70,9 @@ buildinfo_revision="$(sed -n 's/^Windows package revision: //p' "$buildinfo")"
 [[ -n "$source_branch" ]] || die "source branch is empty"
 
 release_tag="v${version}-windows.${windows_revision}"
+[[ "$buildinfo_tag" == "$release_tag" ]] || die "BUILDINFO release tag mismatch"
+[[ "$(git rev-parse HEAD)" == "$source_commit" ]] || die "BUILDINFO source commit does not match checkout"
+[[ "$(git rev-parse 'HEAD^{tree}')" == "$source_tree" ]] || die "BUILDINFO source tree does not match checkout"
 package_name="$(basename "$archive")"
 archive_sha="$(sha256sum "$archive" | sed 's/[[:space:]].*$//')"
 created_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -88,8 +101,32 @@ awk -F '\t' '
     }
 ' "$benchmark_dir/summary.tsv" > "$output_dir/benchmark.csv"
 
-benchmark_status="$(awk -F '\t' '$1 == "regression_advisory" {print $4}' "$benchmark_dir/assessment.tsv")"
-[[ -n "$benchmark_status" ]] || benchmark_status=unknown
+awk -F '\t' '
+    NR == 1 {
+        if ($1 != "matrix_id" || $2 != "test") invalid = 1
+        next
+    }
+    { rows++ }
+    END { if (invalid || rows == 0) exit 1 }
+' "$benchmark_dir/summary.tsv" || die "benchmark summary is malformed or empty"
+benchmark_status="$(awk -F '\t' '
+    NR == 1 {
+        if ($1 != "metric" || $2 != "value" || $3 != "criterion" || $4 != "pass") invalid = 1
+        next
+    }
+    $1 == "regression_advisory" {
+        matches++
+        status = $4
+    }
+    END {
+        if (invalid || matches != 1) exit 1
+        print status
+    }
+' "$benchmark_dir/assessment.tsv")" || die "benchmark assessment is malformed"
+case "$benchmark_status" in
+    pass|warn) ;;
+    *) die "invalid benchmark advisory status: $benchmark_status" ;;
+esac
 
 IFS= read -r -d '' report_template <<'EOF' || true
 # Redis __VERSION__ Windows qualification
@@ -159,10 +196,14 @@ grep -Fq -- "The advisory result for this run is \`$benchmark_status\`;" "$repor
 
 files_json="$output_dir/.spdx-files.ndjson"
 relationships_json="$output_dir/.spdx-relationships.ndjson"
+verification_sha1s="$output_dir/.spdx-file-sha1s"
 : > "$files_json"
 : > "$relationships_json"
+: > "$verification_sha1s"
+file_count=0
 while IFS= read -r package_file; do
     file_name="$(basename "$package_file")"
+    file_sha1="$(sha1sum "$package_file" | sed 's/[[:space:]].*$//')"
     file_sha="$(sha256sum "$package_file" | sed 's/[[:space:]].*$//')"
     # File content is not a unique identifier: several Redis executables can
     # intentionally be byte-identical. Include the deterministic package file
@@ -177,22 +218,29 @@ while IFS= read -r package_file; do
     jq -cn \
         --arg id "$file_id" \
         --arg name "./$file_name" \
+        --arg sha1 "$file_sha1" \
         --arg sha "$file_sha" \
         --arg type "$file_type" \
-        '{SPDXID:$id,fileName:$name,checksums:[{algorithm:"SHA256",checksumValue:$sha}],fileTypes:[$type],licenseConcluded:"NOASSERTION",copyrightText:"NOASSERTION"}' \
+        '{SPDXID:$id,fileName:$name,checksums:[{algorithm:"SHA1",checksumValue:$sha1},{algorithm:"SHA256",checksumValue:$sha}],fileTypes:[$type],licenseConcluded:"NOASSERTION",copyrightText:"NOASSERTION"}' \
         >> "$files_json"
     jq -cn \
         --arg id "$file_id" \
         '{spdxElementId:"SPDXRef-Package",relationshipType:"CONTAINS",relatedSpdxElement:$id}' \
         >> "$relationships_json"
+    printf '%s\n' "$file_sha1" >> "$verification_sha1s"
+    file_count=$((file_count + 1))
 done < <(find "$extracted_dir" -mindepth 1 -maxdepth 1 -type f | LC_ALL=C sort)
+(( file_count > 0 )) || die "extracted package contains no files"
+package_verification_code="$(LC_ALL=C sort "$verification_sha1s" | tr -d '\n' | sha1sum | sed 's/[[:space:]].*$//')"
 
 jq -n \
     --arg created "$created_utc" \
-    --arg namespace "https://github.com/${repository}/sbom/${source_commit}/${workflow_run_id}" \
+    --arg namespace "https://github.com/${repository}/sbom/${source_commit}/${workflow_run_id}/attempt-${workflow_run_attempt}" \
     --arg name "Redis-x64-${version}-mingw-r${windows_revision}" \
     --arg version "$version" \
+    --arg package_file_name "$package_name" \
     --arg archive_sha "$archive_sha" \
+    --arg package_verification_code "$package_verification_code" \
     --slurpfile files "$files_json" \
     --slurpfile contains "$relationships_json" \
     '{
@@ -206,8 +254,10 @@ jq -n \
             SPDXID:"SPDXRef-Package",
             name:$name,
             versionInfo:$version,
+            packageFileName:$package_file_name,
             downloadLocation:"NOASSERTION",
             filesAnalyzed:true,
+            packageVerificationCode:{packageVerificationCodeValue:$package_verification_code},
             checksums:[{algorithm:"SHA256",checksumValue:$archive_sha}],
             licenseConcluded:"NOASSERTION",
             licenseDeclared:"NOASSERTION",
@@ -220,11 +270,17 @@ jq -n \
             relatedSpdxElement:"SPDXRef-Package"
         }] + $contains)
     }' > "$output_dir/sbom.spdx.json"
-rm -f "$files_json" "$relationships_json"
+rm -f "$files_json" "$relationships_json" "$verification_sha1s"
 
-jq -e '
+jq -e --arg package_verification_code "$package_verification_code" '
     ([.SPDXID] + [.packages[]?.SPDXID] + [.files[]?.SPDXID]) as $ids |
     ($ids | length == (unique | length)) and
+    (.packages | length == 1) and
+    (.packages[0].filesAnalyzed == true) and
+    (.packages[0].packageVerificationCode.packageVerificationCodeValue == $package_verification_code) and
+    (all(.files[];
+        ([.checksums[] | select(.algorithm == "SHA1")] | length == 1) and
+        ([.checksums[] | select(.algorithm == "SHA256")] | length == 1))) and
     ([.relationships[]?.spdxElementId, .relationships[]?.relatedSpdxElement]
         | all(. as $id | ($ids | index($id) != null)))
 ' "$output_dir/sbom.spdx.json" >/dev/null ||
