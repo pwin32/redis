@@ -164,6 +164,20 @@ jobs:
           run-id: ${{ needs.preflight.outputs.qualification_run_id }}
           github-token: ${{ github.token }}
           path: release-assets
+      - name: Bind maintained-line barrier to reused evidence
+        env:
+          QUALIFICATION_GATE: ${{ needs.preflight.outputs.gate_json }}
+        run: |
+          set -euo pipefail
+          jq -e --argjson gate "$QUALIFICATION_GATE" '
+            ($gate.policy | type == "string") and
+            ($gate.lines | type == "array" and length == 5)
+          ' <<<"$QUALIFICATION_GATE" >/dev/null
+          tmp="$(mktemp)"
+          jq --argjson gate "$QUALIFICATION_GATE" \
+            '.qualification.maintained_lines = $gate' \
+            release-assets/release-evidence.json > "$tmp"
+          mv "$tmp" release-assets/release-evidence.json
       - name: Create SLSA build provenance attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
@@ -191,6 +205,20 @@ jobs:
           run-id: ${{ needs.preflight.outputs.qualification_run_id }}
           github-token: ${{ github.token }}
           path: release-assets
+      - name: Bind maintained-line barrier to reused evidence
+        env:
+          QUALIFICATION_GATE: ${{ needs.preflight.outputs.gate_json }}
+        run: |
+          set -euo pipefail
+          jq -e --argjson gate "$QUALIFICATION_GATE" '
+            ($gate.policy | type == "string") and
+            ($gate.lines | type == "array" and length == 5)
+          ' <<<"$QUALIFICATION_GATE" >/dev/null
+          tmp="$(mktemp)"
+          jq --argjson gate "$QUALIFICATION_GATE" \
+            '.qualification.maintained_lines = $gate' \
+            release-assets/release-evidence.json > "$tmp"
+          mv "$tmp" release-assets/release-evidence.json
       - name: Verify assets and publish without moving an existing tag
         shell: bash
         env:
