@@ -200,7 +200,18 @@ jobs:
           fi
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
           jq -e --arg tag "$tag" --arg sha "$source_sha" '.release.tag == $tag and .source.commit == $sha and .qualification.release_binary_identity == "passed"' release-assets/release-evidence.json >/dev/null
-          jq -e '.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT"' release-assets/sbom.spdx.json >/dev/null
+          jq -e '
+            (.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT") and
+            (
+              ([.SPDXID] + [.packages[]?.SPDXID] + [.files[]?.SPDXID]) as $ids
+              | ($ids | length == (unique | length))
+              and ([.relationships[]?.spdxElementId, .relationships[]?.relatedSpdxElement]
+                | all(. as $id | ($ids | index($id) != null)))
+            )
+          ' release-assets/sbom.spdx.json >/dev/null || {
+            echo 'invalid SPDX SBOM: duplicate or dangling identifiers' >&2
+            exit 1
+          }
           command -v unzip >/dev/null 2>&1 || { echo 'unzip is required to verify release binary identity' >&2; exit 1; }
           identity_header=$'build_file\tpackage_file\tsha256\tsize'
           [[ "$(sed -n '1p' release-assets/package-binary-identity.tsv)" == "$identity_header" ]] || {
