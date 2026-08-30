@@ -45,6 +45,8 @@ jobs:
       revision: ${{ steps.policy.outputs.revision }}
       tag: ${{ steps.policy.outputs.tag }}
       gate_json: ${{ steps.policy.outputs.gate_json }}
+      qualification_run_id: ${{ steps.policy.outputs.qualification_run_id }}
+      artifact_name: ${{ steps.policy.outputs.artifact_name }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -71,16 +73,33 @@ jobs:
           esac
           [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_sha must be exactly 40 lowercase hex characters' >&2; exit 1; }
           [[ "$revision" =~ ^[1-9][0-9]*$ ]] || { echo 'windows_revision must be a positive integer' >&2; exit 1; }
-          [[ "$GITHUB_REF_TYPE" == branch && "$GITHUB_REF_NAME" == "$branch" ]] || {
-            echo "run this workflow from the $branch branch, not ${GITHUB_REF_NAME:-an unknown ref}" >&2
-            exit 1
-          }
-          [[ "$GITHUB_SHA" == "$source_sha" ]] || {
-            echo "workflow source $GITHUB_SHA does not match requested release source $source_sha" >&2
+          [[ "$GITHUB_REF_TYPE" == branch ]] || {
+            echo "run this workflow from a branch, not ${GITHUB_REF_TYPE:-an unknown ref}" >&2
             exit 1
           }
           branch_tip="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
           [[ "$branch_tip" == "$source_sha" ]] || { echo "source_sha is not current tip of $branch" >&2; exit 1; }
+          if [[ "$GITHUB_REF_NAME" == "$branch" ]]; then
+            [[ "$GITHUB_SHA" == "$source_sha" ]] || {
+              echo "workflow source $GITHUB_SHA does not match requested release source $source_sha" >&2
+              exit 1
+            }
+          else
+            [[ "$GITHUB_REF_NAME" == release/control-* ]] || {
+              echo "workflow must run from $branch or a release/control-* ref" >&2
+              exit 1
+            }
+            comparison="$(gh api "/repos/${GITHUB_REPOSITORY}/compare/${source_sha}...${GITHUB_SHA}")"
+            [[ "$(jq -r '.status' <<<"$comparison")" == ahead ]] || {
+              echo 'release control ref must be a descendant of the exact release source' >&2
+              exit 1
+            }
+            mapfile -t control_files < <(jq -r '.files[]?.filename' <<<"$comparison")
+            (( ${#control_files[@]} == 1 && control_files[0] == '.github/workflows/release.yml' )) || {
+              echo 'release control ref may change only .github/workflows/release.yml' >&2
+              exit 1
+            }
+          fi
           version="$(gh api "/repos/${GITHUB_REPOSITORY}/contents/src/version.h?ref=${source_sha}" --jq '.content' | tr -d '\n' | base64 -d | sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p')"
           [[ "$version" == "$expected_version" ]] || { echo "expected $expected_version at $source_sha, found $version" >&2; exit 1; }
           tag="v${version}-windows.${revision}"
@@ -95,35 +114,41 @@ jobs:
           fi
           lines=(mingw-8.10 mingw-8.8 mingw-7.4 mingw-7.2 mingw-6.2)
           gate='[]'
+          qualification_run_id=''
           for line in "${lines[@]}"; do
             tip="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/${line}" --jq '.object.sha')"
             runs="$(gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/actions/workflows/full-validation.yml/runs?branch=${line}&event=push&per_page=100")"
             qualified="$(jq -r --arg tip "$tip" '[.[].workflow_runs[]? | select(.head_sha == $tip and .conclusion == "success")] | sort_by(.run_number) | last // empty | [.id, .head_sha] | @tsv' <<<"$runs")"
             [[ -n "$qualified" ]] || { echo "no successful Full Windows qualification for current tip $line ($tip)" >&2; exit 1; }
             run_id="${qualified%%$'\t'*}"
+            if [[ "$line" == "$branch" ]]; then
+              qualification_run_id="$run_id"
+            fi
             record="$(jq -cn --arg branch "$line" --arg sha "$tip" --arg run "$run_id" '{branch:$branch,source_sha:$sha,run_id:($run|tonumber),workflow:"Full Windows qualification"}')"
             gate="$(jq -c --argjson record "$record" '. + [$record]' <<<"$gate")"
           done
+          [[ "$qualification_run_id" =~ ^[1-9][0-9]*$ ]] || {
+            echo "could not identify the successful qualification run for $branch" >&2
+            exit 1
+          }
+          artifact_name="windows-qualification-${source_sha}"
+          artifacts="$(gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/actions/runs/${qualification_run_id}/artifacts?per_page=100")"
+          jq -e --arg name "$artifact_name" '[.[].artifacts[]? | select(.name == $name and .expired == false)] | length == 1' <<<"$artifacts" >/dev/null || {
+            echo "successful qualification run $qualification_run_id does not have an unexpired $artifact_name artifact" >&2
+            exit 1
+          }
           printf 'source_branch=%s\n' "$branch" >> "$GITHUB_OUTPUT"
           printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
           printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
           printf 'gate_json=%s\n' "$(jq -c --arg policy 'all five maintained-line tips passed Full Windows qualification' '{policy:$policy,lines:.}' <<<"$gate")" >> "$GITHUB_OUTPUT"
-
-  qualify:
-    name: Requalify exact release source on Windows
-    needs: preflight
-    uses: ./.github/workflows/full-validation.yml
-    with:
-      source_sha: ${{ needs.preflight.outputs.source_sha }}
-      source_branch: ${{ needs.preflight.outputs.source_branch }}
-      package_revision: ${{ needs.preflight.outputs.revision }}
-      qualification_gate: ${{ needs.preflight.outputs.gate_json }}
+          printf 'qualification_run_id=%s\n' "$qualification_run_id" >> "$GITHUB_OUTPUT"
+          printf 'artifact_name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
 
   attest:
-    name: Attest release package and SBOM
-    needs: [preflight, qualify]
+    name: Attest qualified release package and SBOM
+    needs: preflight
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -135,7 +160,9 @@ jobs:
       - name: Download qualified release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ needs.qualify.outputs.artifact_name }}
+          name: ${{ needs.preflight.outputs.artifact_name }}
+          run-id: ${{ needs.preflight.outputs.qualification_run_id }}
+          github-token: ${{ github.token }}
           path: release-assets
       - name: Create SLSA build provenance attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
@@ -149,7 +176,7 @@ jobs:
 
   publish:
     name: Create immutable GitHub release
-    needs: [preflight, qualify, attest]
+    needs: [preflight, attest]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -160,7 +187,9 @@ jobs:
       - name: Download qualified and attested release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ needs.qualify.outputs.artifact_name }}
+          name: ${{ needs.preflight.outputs.artifact_name }}
+          run-id: ${{ needs.preflight.outputs.qualification_run_id }}
+          github-token: ${{ github.token }}
           path: release-assets
       - name: Verify assets and publish without moving an existing tag
         shell: bash
