@@ -47,7 +47,7 @@ if find "$output_dir" -mindepth 1 -print -quit | grep -q .; then
     die "output directory must be empty: $output_dir"
 fi
 
-for tool in awk comm diff find grep objdump sed sha256sum sort tr uniq unzip wc; do
+for tool in awk comm diff find git grep objdump sed sha256sum sort tr uniq unzip wc; do
     command -v "$tool" >/dev/null 2>&1 || die "required audit tool not found: $tool"
 done
 
@@ -123,12 +123,23 @@ grep -Fx "Redis version: $expected_version" "$package_dir/BUILDINFO.txt" >/dev/n
     die "BUILDINFO Redis version mismatch"
 grep -Fx "Windows package revision: $windows_revision" "$package_dir/BUILDINFO.txt" >/dev/null ||
     die "BUILDINFO Windows revision mismatch"
+grep -Fx "Release tag: v${expected_version}-windows.${windows_revision}" \
+    "$package_dir/BUILDINFO.txt" >/dev/null || die "BUILDINFO release tag mismatch"
 grep -Fx "Package scope: Redis core; no prebuilt third-party modules included" \
     "$package_dir/BUILDINFO.txt" >/dev/null || die "BUILDINFO package scope mismatch"
 grep -Eq '^Source commit: [0-9a-f]{40}$' "$package_dir/BUILDINFO.txt" ||
     die "BUILDINFO source commit is missing or invalid"
 grep -Eq '^Source tree: [0-9a-f]{40}$' "$package_dir/BUILDINFO.txt" ||
     die "BUILDINFO source tree is missing or invalid"
+buildinfo_commit="$(sed -n 's/^Source commit: //p' "$package_dir/BUILDINFO.txt")"
+buildinfo_tree="$(sed -n 's/^Source tree: //p' "$package_dir/BUILDINFO.txt")"
+[[ "$buildinfo_commit" == "$(git -C "$repo_root" rev-parse HEAD)" ]] ||
+    die "BUILDINFO source commit does not match the audited checkout"
+[[ "$buildinfo_tree" == "$(git -C "$repo_root" rev-parse 'HEAD^{tree}')" ]] ||
+    die "BUILDINFO source tree does not match the audited checkout"
+if [[ -n "${SOURCE_SHA:-}" && "$buildinfo_commit" != "$SOURCE_SHA" ]]; then
+    die "BUILDINFO source commit does not match the requested qualification source"
+fi
 
 manifest="$package_dir/PACKAGE-MANIFEST.txt"
 [[ "$(sed -n '1p' "$manifest")" == "SHA256  SIZE  FILE" ]] || die "invalid package manifest header"
