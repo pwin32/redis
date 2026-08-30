@@ -358,15 +358,20 @@ jobs:
       - name: Reverify the exact candidate after all qualification tests
         run: |
           set -euo pipefail
-          archive="$(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print -quit)"
-          [[ -n "$archive" ]]
+          mapfile -d '' -t archives < <(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print0)
+          (( ${#archives[@]} == 1 )) || { echo 'expected exactly one release ZIP after qualification' >&2; exit 1; }
+          archive="${archives[0]}"
           (
             cd "$(dirname "$archive")"
             sha256sum -c "$(basename "$archive").sha256"
           ) > build/qualification/package-checksum-after-tests.txt
+          fresh_package=build/qualification/release-package
+          rm -rf "$fresh_package"
+          mkdir -p "$fresh_package"
+          unzip -q "$archive" -d "$fresh_package"
           ./tests/windows/package-binary-identity.sh \
             build/mingw64 \
-            build/qualification/package-audit/package \
+            "$fresh_package" \
             build/qualification/package-binary-identity.tsv
           cmp -s \
             build/qualification/package-binary-identity.before.tsv \
@@ -384,10 +389,12 @@ jobs:
       - name: Generate sanitized release evidence, SBOM, and test report
         run: |
           set -euo pipefail
-          archive="$(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          mapfile -d '' -t archives < <(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print0)
+          (( ${#archives[@]} == 1 )) || { echo 'expected exactly one release ZIP for evidence generation' >&2; exit 1; }
+          archive="${archives[0]}"
           ./scripts/generate-release-evidence.sh \
             "$archive" \
-            build/qualification/package-audit/package \
+            build/qualification/release-package \
             build/qualification/benchmark \
             build/mingw64/release-assets \
             "$SOURCE_BRANCH" \

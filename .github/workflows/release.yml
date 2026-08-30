@@ -93,7 +93,6 @@ jobs:
             echo "tag $tag already exists; the release workflow must create it after attestation" >&2
             exit 1
           fi
-
           lines=(mingw-8.10 mingw-8.8 mingw-7.4 mingw-7.2 mingw-6.2)
           gate='[]'
           for line in "${lines[@]}"; do
@@ -168,15 +167,21 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
           RELEASE_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          RELEASE_SOURCE_BRANCH: ${{ needs.preflight.outputs.source_branch }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          RELEASE_REVISION: ${{ needs.preflight.outputs.revision }}
         run: |
           set -euo pipefail
           tag="$RELEASE_TAG"
           source_sha="$RELEASE_SOURCE_SHA"
+          source_branch="$RELEASE_SOURCE_BRANCH"
           version="$RELEASE_VERSION"
+          revision="$RELEASE_REVISION"
           mapfile -d '' -t archives < <(find release-assets -maxdepth 1 -type f -name '*.zip' -print0)
           (( ${#archives[@]} == 1 )) || { echo 'expected exactly one release ZIP' >&2; exit 1; }
           archive="${archives[0]}"
+          archive_name="$(basename "$archive")"
+          archive_sha="$(sha256sum "$archive" | sed 's/[[:space:]].*$//')"
           required_assets=(
             BUILDINFO.txt
             SHA256SUMS.txt
@@ -204,12 +209,41 @@ jobs:
             exit 1
           fi
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
-          jq -e --arg tag "$tag" --arg sha "$source_sha" '.release.tag == $tag and .source.commit == $sha and .qualification.release_binary_identity == "passed"' release-assets/release-evidence.json >/dev/null
-          jq -e '
+          jq -e \
+            --arg tag "$tag" \
+            --arg sha "$source_sha" \
+            --arg branch "$source_branch" \
+            --arg version "$version" \
+            --argjson revision "$revision" \
+            --arg archive "$archive_name" \
+            --arg archive_sha "$archive_sha" '
+              .release.tag == $tag and
+              .release.branch == $branch and
+              .release.version == $version and
+              .release.windows_revision == $revision and
+              .source.commit == $sha and
+              .package.archive == $archive and
+              .package.sha256 == $archive_sha and
+              .qualification.all_required_tests == "passed" and
+              .qualification.release_binary_identity == "passed" and
+              .attestations.required_before_publication.build_provenance == true and
+              .attestations.required_before_publication.sbom == true
+            ' release-assets/release-evidence.json >/dev/null
+          jq -e --arg archive "$archive_name" --arg archive_sha "$archive_sha" '
             (.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT") and
+            (.packages | length == 1) and
+            (.packages[0].packageFileName == $archive) and
+            (.packages[0].filesAnalyzed == true) and
+            (any(.packages[0].checksums[]; .algorithm == "SHA256" and .checksumValue == $archive_sha)) and
+            (.packages[0].packageVerificationCode.packageVerificationCodeValue | test("^[0-9a-f]{40}$")) and
             (
               ([.SPDXID] + [.packages[]?.SPDXID] + [.files[]?.SPDXID]) as $ids
               | ($ids | length == (unique | length))
+              and ([.files[]?.fileName] | length == (unique | length))
+              and (all(.files[];
+                (.fileName | test("^\\./[^/\\\\]+$")) and
+                ([.checksums[] | select(.algorithm == "SHA1" and (.checksumValue | test("^[0-9a-f]{40}$")))] | length == 1) and
+                ([.checksums[] | select(.algorithm == "SHA256" and (.checksumValue | test("^[0-9a-f]{64}$")))] | length == 1)))
               and ([.relationships[]?.spdxElementId, .relationships[]?.relatedSpdxElement]
                 | all(. as $id | ($ids | index($id) != null)))
             )
@@ -226,6 +260,59 @@ jobs:
           verify_dir="$(mktemp -d)"
           trap 'rm -rf "$verify_dir"' EXIT
           unzip -q "$archive" -d "$verify_dir"
+          [[ ! -e "$verify_dir/.release-audit" ]]
+          mkdir "$verify_dir/.release-audit"
+          cmp -s release-assets/BUILDINFO.txt "$verify_dir/BUILDINFO.txt" || {
+            echo 'released BUILDINFO.txt differs from the copy inside the ZIP' >&2
+            exit 1
+          }
+          cmp -s release-assets/package-manifest.txt "$verify_dir/PACKAGE-MANIFEST.txt" || {
+            echo 'released package manifest differs from the copy inside the ZIP' >&2
+            exit 1
+          }
+          buildinfo_commit="$(sed -n 's/^Source commit: //p' release-assets/BUILDINFO.txt)"
+          buildinfo_tree="$(sed -n 's/^Source tree: //p' release-assets/BUILDINFO.txt)"
+          buildinfo_version="$(sed -n 's/^Redis version: //p' release-assets/BUILDINFO.txt)"
+          buildinfo_revision="$(sed -n 's/^Windows package revision: //p' release-assets/BUILDINFO.txt)"
+          buildinfo_tag="$(sed -n 's/^Release tag: //p' release-assets/BUILDINFO.txt)"
+          [[ "$buildinfo_commit" == "$source_sha" && "$buildinfo_version" == "$version" && \
+             "$buildinfo_revision" == "$revision" && "$buildinfo_tag" == "$tag" ]] || {
+            echo 'BUILDINFO release identity does not match the requested release' >&2
+            exit 1
+          }
+          remote_tree="$(gh api "/repos/${GITHUB_REPOSITORY}/git/commits/${source_sha}" --jq '.tree.sha')"
+          [[ "$buildinfo_tree" == "$remote_tree" ]] || {
+            echo 'BUILDINFO source tree does not match the release commit tree' >&2
+            exit 1
+          }
+          jq -e --arg tree "$buildinfo_tree" '.source.tree == $tree' \
+            release-assets/release-evidence.json >/dev/null || {
+              echo 'release evidence source tree does not match BUILDINFO' >&2
+              exit 1
+            }
+          actual_sbom_files="$verify_dir/.release-audit/actual-sbom-files.tsv"
+          expected_sbom_files="$verify_dir/.release-audit/expected-sbom-files.tsv"
+          while IFS= read -r -d '' package_file; do
+            package_file_name="$(basename "$package_file")"
+            package_file_sha1="$(sha1sum "$package_file" | sed 's/[[:space:]].*$//')"
+            package_file_sha256="$(sha256sum "$package_file" | sed 's/[[:space:]].*$//')"
+            printf '%s\t%s\t%s\n' "$package_file_name" "$package_file_sha1" "$package_file_sha256"
+          done < <(find "$verify_dir" -mindepth 1 -maxdepth 1 -type f -print0) | sort > "$actual_sbom_files"
+          jq -r '.files[] | [
+              (.fileName | sub("^\\./"; "")),
+              ([.checksums[] | select(.algorithm == "SHA1")][0].checksumValue),
+              ([.checksums[] | select(.algorithm == "SHA256")][0].checksumValue)
+            ] | @tsv' release-assets/sbom.spdx.json | sort > "$expected_sbom_files"
+          if ! diff -u "$expected_sbom_files" "$actual_sbom_files"; then
+            echo 'SPDX file inventory does not match the release ZIP' >&2
+            exit 1
+          fi
+          actual_verification_code="$(cut -f2 "$actual_sbom_files" | sort | tr -d '\n' | sha1sum | sed 's/[[:space:]].*$//')"
+          sbom_verification_code="$(jq -r '.packages[0].packageVerificationCode.packageVerificationCodeValue' release-assets/sbom.spdx.json)"
+          [[ "$actual_verification_code" == "$sbom_verification_code" ]] || {
+            echo 'SPDX package verification code does not match the release ZIP' >&2
+            exit 1
+          }
           expected_identity_pairs=(
             $'redis-server.exe\tredis-server.exe'
             $'redis-server.exe\tredis-sentinel.exe'
@@ -291,9 +378,10 @@ jobs:
               exit 1
             }
             gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
-              --jq '{head_sha,event,conclusion}' | \
-              jq -e --arg sha "$qualified_sha" \
-                '.head_sha == $sha and .event == "push" and .conclusion == "success"' >/dev/null || {
+              --jq '{head_sha,head_branch,event,conclusion,path}' | \
+              jq -e --arg sha "$qualified_sha" --arg branch "$line" \
+                '.head_sha == $sha and .head_branch == $branch and .event == "push" and
+                 .conclusion == "success" and .path == ".github/workflows/full-validation.yml"' >/dev/null || {
                   echo "recorded qualification run $run_id is no longer a successful push run for $line" >&2
                   exit 1
                 }
