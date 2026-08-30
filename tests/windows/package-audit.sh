@@ -47,7 +47,7 @@ if find "$output_dir" -mindepth 1 -print -quit | grep -q .; then
     die "output directory must be empty: $output_dir"
 fi
 
-for tool in awk comm find grep objdump sed sha256sum sort tr uniq unzip wc; do
+for tool in awk comm diff find grep objdump sed sha256sum sort tr uniq unzip wc; do
     command -v "$tool" >/dev/null 2>&1 || die "required audit tool not found: $tool"
 done
 
@@ -149,15 +149,34 @@ grep -Eq '^Source tree: [0-9a-f]{40}$' "$package_dir/BUILDINFO.txt" ||
 
 manifest="$package_dir/PACKAGE-MANIFEST.txt"
 [[ "$(sed -n '1p' "$manifest")" == "SHA256  SIZE  FILE" ]] || die "invalid package manifest header"
-while read -r manifest_sha manifest_size manifest_name; do
+manifest_files="$output_dir/manifest-files.txt"
+expected_manifest_files="$output_dir/expected-manifest-files.txt"
+: > "$manifest_files"
+while read -r manifest_sha manifest_size manifest_name manifest_extra; do
     [[ -n "${manifest_name:-}" ]] || continue
+    [[ -z "${manifest_extra:-}" ]] || die "manifest entry contains unexpected fields: $manifest_name"
+    [[ "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || die "manifest contains an invalid SHA256: $manifest_name"
+    [[ "$manifest_size" =~ ^[0-9]+$ ]] || die "manifest contains an invalid size: $manifest_name"
+    [[ "$manifest_name" != */* && "$manifest_name" != *'\'* && "$manifest_name" != .* ]] ||
+        die "manifest contains an unsafe file name: $manifest_name"
     [[ "$manifest_name" != "PACKAGE-MANIFEST.txt" ]] || die "manifest must not self-reference"
     [[ -f "$package_dir/$manifest_name" ]] || die "manifest entry is missing: $manifest_name"
     actual_sha="$(sha256sum "$package_dir/$manifest_name" | sed 's/[[:space:]].*$//')"
     actual_size="$(wc -c < "$package_dir/$manifest_name" | tr -d '[:space:]')"
     [[ "$actual_sha" == "$manifest_sha" ]] || die "manifest hash mismatch: $manifest_name"
     [[ "$actual_size" == "$manifest_size" ]] || die "manifest size mismatch: $manifest_name"
+    printf '%s\n' "$manifest_name" >> "$manifest_files"
 done < <(sed '1d' "$manifest")
+LC_ALL=C sort -o "$manifest_files" "$manifest_files"
+if [[ -n "$(uniq -d "$manifest_files")" ]]; then
+    uniq -d "$manifest_files" >&2
+    die "package manifest contains duplicate file entries"
+fi
+grep -Fvx 'PACKAGE-MANIFEST.txt' "$expected_files" > "$expected_manifest_files"
+if ! diff -u "$expected_manifest_files" "$manifest_files" > "$output_dir/manifest-file-set-diff.txt"; then
+    sed -n '1,120p' "$output_dir/manifest-file-set-diff.txt" >&2
+    die "package manifest does not cover the exact package file set"
+fi
 
 server_hash="$(sha256sum "$package_dir/redis-server.exe" | sed 's/[[:space:]].*$//')"
 for alias in redis-check-aof.exe redis-check-rdb.exe redis-sentinel.exe; do
