@@ -104,7 +104,7 @@ jobs:
           [[ "$version" == "$expected_version" ]] || { echo "expected $expected_version at $source_sha, found $version" >&2; exit 1; }
           tag="v${version}-windows.${revision}"
           [[ "$confirm_tag" == "$tag" ]] || { echo "confirm_tag must equal $tag" >&2; exit 1; }
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view --repo "$GITHUB_REPOSITORY" "$tag" >/dev/null 2>&1; then
             echo "release $tag already exists; refusing to requalify it" >&2
             exit 1
           fi
@@ -443,7 +443,7 @@ jobs:
                   exit 1
                 }
           done
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view --repo "$GITHUB_REPOSITORY" "$tag" >/dev/null 2>&1; then
             echo "release $tag already exists; refusing to modify an existing release" >&2
             exit 1
           fi
@@ -451,7 +451,7 @@ jobs:
             echo "tag $tag already exists; refusing to publish around a pre-existing tag" >&2
             exit 1
           fi
-          gh release create "$tag" "${assets[@]}" --target "$source_sha" \
+          gh release create --repo "$GITHUB_REPOSITORY" "$tag" "${assets[@]}" --target "$source_sha" \
             --title "Redis $version for Windows" \
             --notes-file release-assets/TEST-REPORT.md
           final_target="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
