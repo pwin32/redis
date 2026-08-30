@@ -71,6 +71,14 @@ jobs:
           esac
           [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_sha must be exactly 40 lowercase hex characters' >&2; exit 1; }
           [[ "$revision" =~ ^[1-9][0-9]*$ ]] || { echo 'windows_revision must be a positive integer' >&2; exit 1; }
+          [[ "$GITHUB_REF_TYPE" == branch && "$GITHUB_REF_NAME" == "$branch" ]] || {
+            echo "run this workflow from the $branch branch, not ${GITHUB_REF_NAME:-an unknown ref}" >&2
+            exit 1
+          }
+          [[ "$GITHUB_SHA" == "$source_sha" ]] || {
+            echo "workflow source $GITHUB_SHA does not match requested release source $source_sha" >&2
+            exit 1
+          }
           branch_tip="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
           [[ "$branch_tip" == "$source_sha" ]] || { echo "source_sha is not current tip of $branch" >&2; exit 1; }
           version="$(gh api "/repos/${GITHUB_REPOSITORY}/contents/src/version.h?ref=${source_sha}" --jq '.content' | tr -d '\n' | base64 -d | sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p')"

@@ -14,9 +14,11 @@ to configure in GitHub settings.
   test; package extraction, license, PE/import and resource checks; packaged
   replication; and a 30-minute QFork persistence soak.
 - A release dispatch takes an exact 40-character tip SHA. Before Windows
-  qualification is called for that SHA, the workflow verifies that every one
-  of the five maintained branch tips has a successful full-qualification run.
-  No release is published while one line is stale or failing.
+  qualification is called for that SHA, the workflow verifies that it was
+  dispatched from that same canonical branch and exact commit, then verifies
+  that every one of the five maintained branch tips has a successful
+  full-qualification run. No release is published while one line is stale or
+  failing.
 
 ## Release scope and order
 
