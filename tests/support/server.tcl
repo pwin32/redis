@@ -26,6 +26,7 @@ set ::redis_cli_path [redis_test_binary REDIS_CLI {src redis-cli}]
 set ::redis_benchmark_path [redis_test_binary REDIS_BENCHMARK {src redis-benchmark}]
 set ::redis_check_aof_path [redis_test_binary REDIS_CHECK_AOF {src redis-check-aof}]
 set ::redis_check_rdb_path [redis_test_binary REDIS_CHECK_RDB {src redis-check-rdb}]
+set ::redis_test_launcher_path [redis_test_binary REDIS_TEST_LAUNCHER {build mingw64 redis-test-launcher}]
 
 proc start_server_error {config_file error} {
     set err {}
@@ -137,18 +138,15 @@ proc kill_server config {
 
 proc windows_is_alive config {
     set pid [dict get $config pid]
-    set script [file normalize tests/support/windows_process_control.ps1]
-    set executable [file normalize $::redis_server_path]
-    set config_marker [file tail [file normalize [dict get $config config_file]]]
+    set executable [file nativename [file normalize $::redis_server_path]]
     return [expr {![catch {
-        exec powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-            -File $script -Action CheckIdentity -TargetProcessId $pid \
-            -ExpectedExecutable $executable -ExpectedArgument $config_marker
+        exec $::redis_test_launcher_path --is-owned $pid $executable
     }]}]
 }
 
 proc windows_kill_proc config {
     set pid [dict get $config pid]
+    if {![windows_is_alive $config]} { return }
     set shutdown_client {}
     set shutdown_sent 0
 
@@ -190,17 +188,36 @@ proc windows_kill_proc config {
         if {$shutdown_client ne {}} {
             catch {$shutdown_client close}
         }
-        catch {exec taskkill.exe /F /T /PID $pid}
+        catch {windows_kill_proc2 $pid}
         return {}
     }
     return $shutdown_client
 }
 
+proc windows_process_owned {pid} {
+    set allowed {}
+    foreach var {redis_server_path redis_cli_path redis_benchmark_path redis_check_aof_path redis_check_rdb_path redis_test_launcher_path} {
+        if {[info exists ::$var]} {
+            lappend allowed [file nativename [file normalize [set ::$var]]]
+        }
+    }
+    if {[info exists ::tcl_platform(platform)]} {
+        lappend allowed [file nativename [file normalize [info nameofexecutable]]]
+    }
+    return [expr {![catch {
+        exec $::redis_test_launcher_path --is-owned $pid {*}$allowed
+    }]}]
+}
+
 proc windows_kill_proc2 pid {
+    if {![windows_process_owned $pid]} { return }
     catch {exec taskkill.exe /F /T /PID $pid}
 }
 
 proc windows_kill_proc2_checked pid {
+    if {![windows_process_owned $pid]} {
+        error "Refusing to terminate unexpected Windows process PID $pid"
+    }
     exec taskkill.exe /F /T /PID $pid 2>@1
 }
 

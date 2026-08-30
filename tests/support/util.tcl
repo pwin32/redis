@@ -597,12 +597,15 @@ proc populate {num {prefix key:} {size 3} {idx 0}} {
 }
 
 proc get_child_pid {idx} {
-    set pid [srv $idx pid]
     if {$::tcl_platform(platform) eq "windows"} {
-        set script "Get-CimInstance Win32_Process -Filter 'ParentProcessId = $pid' | Select-Object -First 1 -ExpandProperty ProcessId"
-        set child_pid [string trim [exec powershell.exe -NoProfile -Command $script]]
-        return $child_pid
-    } elseif {[file exists "/usr/bin/pgrep"]} {
+        # Persistence children are QFork instances on Windows. Use the native
+        # verifier so the selected PID must be a direct child with the exact
+        # redis-server image rather than whichever WMI child appears first.
+        return [get_qfork_child_pid $idx]
+    }
+
+    set pid [srv $idx pid]
+    if {[file exists "/usr/bin/pgrep"]} {
         set fd [open "|pgrep -P $pid" "r"]
         set child_pid [string trim [lindex [split [read $fd] \n] 0]]
     } else {
@@ -616,8 +619,9 @@ proc get_child_pid {idx} {
 
 proc process_is_alive pid {
     if {$::tcl_platform(platform) eq "windows"} {
-        set script "if (Get-Process -Id $pid -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
-        return [expr {![catch {exec powershell.exe -NoProfile -Command $script}]}]
+        return [expr {![catch {
+            exec $::redis_test_launcher_path --is-alive $pid
+        }]}]
     } elseif {[catch {exec ps -p $pid -f} err]} {
         return 0
     } else {
@@ -642,11 +646,22 @@ proc get_qfork_child_pid {idx} {
 
 if {$::tcl_platform(platform) eq "windows"} {
     proc windows_control_process {action pid} {
-        set script [file normalize tests/support/windows_process_control.ps1]
-        set executable [file normalize $::redis_server_path]
-        exec powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-            -File $script -Action $action -TargetProcessId $pid \
-            -ExpectedExecutable $executable
+        set executable [file nativename [file normalize $::redis_server_path]]
+        switch -- $action {
+            FindQForkChild {
+                set command --find-qfork-child
+            }
+            Suspend {
+                set command --suspend
+            }
+            Resume {
+                set command --resume
+            }
+            default {
+                error "Unsupported Windows process control action: $action"
+            }
+        }
+        exec $::redis_test_launcher_path $command $pid $executable
     }
 
     proc pause_process pid {
