@@ -95,7 +95,7 @@ jobs:
               exit 1
             }
             mapfile -t control_files < <(jq -r '.files[]?.filename' <<<"$comparison")
-            (( ${#control_files[@]} == 1 && control_files[0] == '.github/workflows/release.yml' )) || {
+            [[ ${#control_files[@]} -eq 1 && "${control_files[0]}" == '.github/workflows/release.yml' ]] || {
               echo 'release control ref may change only .github/workflows/release.yml' >&2
               exit 1
             }
