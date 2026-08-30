@@ -157,6 +157,7 @@ jobs:
             printf 'RUNNER_IMAGE_OS=%s\n' "${ImageOS:-unknown}"
             printf 'RUNNER_IMAGE_VERSION=%s\n' "${ImageVersion:-unknown}"
             printf 'GCC_FULL_VERSION=%s\n' "$(gcc -dumpfullversion)"
+            pacman -Q autoconf
             pacman -Q mingw-w64-x86_64-gcc
             pacman -Q mingw-w64-x86_64-tcl
             printf 'KERNEL_NAME=%s\n' "$(uname -s)"
