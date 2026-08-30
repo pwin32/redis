@@ -90,11 +90,8 @@ jobs:
             exit 1
           fi
           if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/tmp/preflight-tag.json 2>/dev/null; then
-            tag_target="$(jq -r '.object.sha' /tmp/preflight-tag.json)"
-            [[ "$tag_target" == "$source_sha" ]] || {
-              echo "existing tag $tag points to $tag_target, not $source_sha" >&2
-              exit 1
-            }
+            echo "tag $tag already exists; the release workflow must create it after attestation" >&2
+            exit 1
           fi
 
           lines=(mingw-8.10 mingw-8.8 mingw-7.4 mingw-7.2 mingw-6.2)
@@ -306,16 +303,12 @@ jobs:
             exit 1
           fi
           if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/tmp/tag.json 2>/dev/null; then
-            tag_target="$(jq -r '.object.sha' /tmp/tag.json)"
-            [[ "$tag_target" == "$source_sha" ]] || { echo "existing tag $tag points to $tag_target, refusing to move it" >&2; exit 1; }
-            gh release create "$tag" "${assets[@]}" --verify-tag \
-              --title "Redis $version for Windows" \
-              --notes-file release-assets/TEST-REPORT.md
-          else
-            gh release create "$tag" "${assets[@]}" --target "$source_sha" \
-              --title "Redis $version for Windows" \
-              --notes-file release-assets/TEST-REPORT.md
+            echo "tag $tag already exists; refusing to publish around a pre-existing tag" >&2
+            exit 1
           fi
+          gh release create "$tag" "${assets[@]}" --target "$source_sha" \
+            --title "Redis $version for Windows" \
+            --notes-file release-assets/TEST-REPORT.md
           final_target="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
           [[ "$final_target" == "$source_sha" ]] || { echo "release tag target changed unexpectedly" >&2; exit 1; }
           gh api -H 'X-GitHub-Api-Version: 2026-03-10' \

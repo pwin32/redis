@@ -56,10 +56,10 @@ The release workflow creates GitHub artifact attestations for both SLSA build
 provenance and the SPDX SBOM. It creates the remote
 `vX.Y.Z-windows.N` tag only after those attestations and all qualification
 gates succeed. Publication creates all assets in a single release operation
-and refuses to modify an existing release or move an existing tag. Repository
-administrators must also enable GitHub's release immutability setting before
-the first public release so later UI or API operations cannot alter the tag or
-assets.
+and refuses to modify an existing release or use or move a pre-existing tag.
+Repository administrators must also enable GitHub's release immutability
+setting before the first public release so later UI or API operations cannot
+alter the tag or assets.
 
 ## Credentials and settings
 
@@ -87,4 +87,4 @@ Before the first public release, a repository administrator must:
 
 The release workflow itself rechecks the successful full-qualification run and
 current tip of all five maintained lines immediately before it creates a tag.
-It refuses to overwrite an existing release or move an existing tag.
+It refuses to overwrite an existing release or use or move an existing tag.
