@@ -106,6 +106,7 @@ jobs:
           install: >-
             git
             make
+            autoconf
             unzip
             zip
             jq
