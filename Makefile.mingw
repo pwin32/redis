@@ -289,6 +289,7 @@ WIN32_INTEROP_C_SOURCES := \
 	src/Win32_Interop/win32fixes.c \
 	src/Win32_Interop/Win32_ANSI.c \
 	src/Win32_Interop/Win32_APIs.c \
+	src/Win32_Interop/Win32_CpuAffinity.c \
 	src/Win32_Interop/Win32_Error.c \
 	src/Win32_Interop/Win32_PThread.c \
 	src/Win32_Interop/Win32_QFork_impl.c \
@@ -509,9 +510,9 @@ REDIS_CHECK_ALIASES := $(BUILD)/redis-check-aof.exe $(BUILD)/redis-check-rdb.exe
 TEST_MODULE_SOURCES := $(sort $(wildcard tests/modules/*.c))
 TEST_MODULES := $(patsubst tests/modules/%.c,$(BUILD)/tests/modules/%.so,$(TEST_MODULE_SOURCES))
 
-.PHONY: all clean distclean deps eventlog hiredis-test interop-test test-launcher test-modules FORCE
+.PHONY: all clean distclean deps eventlog hiredis-test interop-test affinity-test test-launcher test-modules FORCE
 
-all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/redis-test-launcher.exe $(TEST_MODULES)
+all: $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/redis-test-launcher.exe $(BUILD)/redis-affinity-test.exe $(TEST_MODULES)
 
 deps: $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB) $(JEMALLOC_LIB)
 
@@ -520,6 +521,8 @@ eventlog: $(EVENTLOG_DLL)
 hiredis-test: $(BUILD)/hiredis-test.exe
 
 interop-test: $(BUILD)/interop-test.exe
+
+affinity-test: $(BUILD)/redis-affinity-test.exe
 
 test-launcher: $(BUILD)/redis-test-launcher.exe
 
@@ -614,6 +617,10 @@ $(BUILD)/redis-test-launcher.exe: Makefile.mingw tests/windows/test-launcher.c
 	mkdir -p $(dir $@)
 	$(CC) $(TEST_LAUNCHER_CFLAGS) $(TEST_LAUNCHER_LDFLAGS) $(LDFLAGS_COMMON) -o $@ tests/windows/test-launcher.c -lws2_32
 
+$(BUILD)/redis-affinity-test.exe: Makefile.mingw tests/windows/cpuaffinity.c src/Win32_Interop/Win32_CpuAffinity.c src/Win32_Interop/Win32_CpuAffinity.h src/Win32_Interop/Win32_RedisLog.h
+	mkdir -p $(dir $@)
+	$(CC) $(TEST_LAUNCHER_CFLAGS) -Isrc $(LDFLAGS_COMMON) -o $@ tests/windows/cpuaffinity.c
+
 $(BUILD)/tests/modules/%.so: tests/modules/%.c src/redismodule.h src/Win32_Interop/win32_types_hiredis.h Makefile.mingw
 	mkdir -p $(dir $@)
 	$(CC) $(TEST_MODULE_CFLAGS) $(TEST_MODULE_LDFLAGS) -o $@ $< $(TEST_MODULE_LDLIBS)
@@ -687,6 +694,7 @@ clean:
 	rm -rf $(BUILD)/eventlog $(BUILD)/hiredis-test $(BUILD)/interop-test
 	rm -rf $(BUILD)/tests/modules
 	rm -f $(BUILD)/redis-server.exe $(BUILD)/redis-cli.exe $(BUILD)/redis-benchmark.exe $(REDIS_CHECK_ALIASES) $(EVENTLOG_DLL) $(BUILD)/hiredis-test.exe $(BUILD)/interop-test.exe $(BUILD)/redis-test-launcher.exe
+	rm -f $(BUILD)/redis-affinity-test.exe
 	rm -rf $(BUILD)/lib
 
 distclean: clean

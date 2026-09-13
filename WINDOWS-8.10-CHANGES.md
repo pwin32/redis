@@ -94,6 +94,7 @@ legal advice.
 | Background persistence | fork copy-on-write child | QFork starts a Windows child and restores the tracked heap at matching addresses |
 | Diskless replication | Streams a full synchronization directly to replicas | Supported through QFork; the Windows examples default to disk-backed synchronization |
 | Active defragmentation | Uses allocator hooks to relocate objects | Supported by the customized jemalloc allocator |
+| CPU affinity | CPU lists select processors for server and worker threads | Strict thread affinity within one Windows processor group per list |
 | Executable layout | Normal PIE/ASLR conventions | Dynamic-base and high-entropy ASLR are disabled for QFork address stability |
 | Service integration | daemon, systemd, or syslog conventions | Foreground console or Windows SCM service with Application Event Log support |
 | Native modules | ELF shared objects and POSIX fork assumptions | x64 PE DLLs; module-created fork children are unsupported |
@@ -139,6 +140,28 @@ components such as `C:/Redis/conf.d/*/redis.conf`. Matches are loaded in sorted
 order. An unmatched pattern is skipped; an explicit missing file or an
 unreadable match fails configuration loading. Included files must be readable
 by the intended console user or service account.
+
+## CPU affinity
+
+The immutable `server-cpulist`, `bio-cpulist`, `bgsave-cpulist`, and
+`aof-rewrite-cpulist` settings accept comma-separated CPU numbers, inclusive
+ranges, and stepped ranges, for example `0,2-6:2`. Their underscore aliases
+remain accepted. Unset or empty lists leave affinity unchanged.
+
+On Windows, a CPU number means `64 * processor-group + processor-index`.
+For example, CPU 65 is processor 1 in group 1, even if group 0 has fewer than
+64 active processors. Each list must select active processors within one
+group. Different lists may select different groups. Malformed lists, overflow,
+descending ranges, zero strides, inactive CPUs, and selections spanning groups
+fail startup before Redis creates its workers.
+
+`server-cpulist` applies to the main thread, `bio-cpulist` to each BIO worker,
+`bgsave-cpulist` to the QFork BGSAVE and diskless-save worker, and
+`aof-rewrite-cpulist` to the QFork AOF-rewrite worker. The port uses
+`SetThreadGroupAffinity` for strict thread affinity and resolves topology in
+each process. It does not impose these settings on unrelated internal threads.
+If Windows refuses an otherwise valid request, Redis logs the list and Windows
+error, retains the thread's existing affinity, and continues.
 
 ## Windows text, naming, and filesystem contract
 

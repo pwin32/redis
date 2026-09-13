@@ -87,6 +87,9 @@ jobs:
         run: >-
           ./runtest-mingw.sh --clients 1 --quiet --timeout 300
           --single unit/type/string --single unit/printver --single windows/config
+          --single windows/cpuaffinity
+      - name: Run Windows CPU affinity tests
+        run: ./build/mingw64/redis-affinity-test.exe
       - name: Run Windows interop test
         run: |
           ./build/mingw64/interop-test.exe --legacy

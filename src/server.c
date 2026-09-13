@@ -19,6 +19,7 @@
 #include "Win32_Interop/Win32_QFork.h"
 #include "Win32_Interop/Win32_Error.h"
 #include "Win32_Interop/Win32_Service.h"
+#include "Win32_Interop/Win32_CpuAffinity.h"
 #endif
 
 #include "server.h"
@@ -8127,7 +8128,9 @@ int redisSetProcTitle(char *title) {
 }
 
 void redisSetCpuAffinity(const char *cpulist) {
-#ifdef USE_SETCPUAFFINITY
+#ifdef _WIN32
+    win32SetCpuAffinity(cpulist);
+#elif defined(USE_SETCPUAFFINITY)
     setcpuaffinity(cpulist);
 #else
     UNUSED(cpulist);
@@ -8554,6 +8557,29 @@ int main(int argc, char **argv) {
         serverLog(LL_WARNING,
             "Fatal: TLS is not available in the standard Windows package.");
         exit(1);
+    }
+
+    /* Validate every worker's list before initServer() starts any of them.
+     * Application remains best-effort if Windows later refuses the request. */
+    const struct {
+        const char *name;
+        const char *list;
+    } cpu_lists[] = {
+        {"server-cpulist", server.server_cpulist},
+        {"bio-cpulist", server.bio_cpulist},
+        {"bgsave-cpulist", server.bgsave_cpulist},
+        {"aof-rewrite-cpulist", server.aof_rewrite_cpulist}
+    };
+    for (size_t i = 0; i < sizeof(cpu_lists) / sizeof(cpu_lists[0]); i++) {
+        const char *error;
+        DWORD windows_error;
+        if (win32ValidateCpuAffinity(cpu_lists[i].list, &error, &windows_error) != 0) {
+            serverLog(LL_WARNING,
+                "Fatal: invalid %s '%s': %s (Windows error %lu).",
+                cpu_lists[i].name, cpu_lists[i].list, error,
+                (unsigned long)windows_error);
+            exit(1);
+        }
     }
 #endif
 
