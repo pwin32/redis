@@ -8,6 +8,7 @@ BUILD ?= build/mingw64
 BUILD_BUNDLED_MODULES ?= no
 SKIP_VEC_SETS ?= yes
 BUILD_COMPRESSION ?= yes
+BUILD_TLS ?= yes
 
 ifneq ($(BUILD_BUNDLED_MODULES),no)
 $(error Bundled Redis modules are outside the initial Windows core-only port)
@@ -17,6 +18,11 @@ $(error Vector Sets are temporarily excluded from the Windows core-only bring-up
 endif
 ifneq ($(filter $(BUILD_COMPRESSION),yes no),$(BUILD_COMPRESSION))
 $(error BUILD_COMPRESSION must be either yes or no)
+endif
+ifeq ($(BUILD_TLS),yes)
+else ifeq ($(BUILD_TLS),no)
+else
+$(error BUILD_TLS must be either yes or no)
 endif
 
 JEMALLOC_SRC := deps/jemalloc
@@ -30,6 +36,18 @@ CXX := g++
 AR := ar
 RANLIB := ranlib
 WINDRES := windres
+
+ifeq ($(BUILD_TLS),yes)
+OPENSSL_SSL_LIB := $(shell $(CC) -print-file-name=libssl.a)
+OPENSSL_CRYPTO_LIB := $(shell $(CC) -print-file-name=libcrypto.a)
+ifeq ($(wildcard $(OPENSSL_SSL_LIB)),)
+$(error Static OpenSSL 3 libssl.a is required; install mingw-w64-x86_64-openssl or use BUILD_TLS=no)
+endif
+ifeq ($(wildcard $(OPENSSL_CRYPTO_LIB)),)
+$(error Static OpenSSL 3 libcrypto.a is required; install mingw-w64-x86_64-openssl or use BUILD_TLS=no)
+endif
+TLS_LDLIBS := $(OPENSSL_SSL_LIB) $(OPENSSL_CRYPTO_LIB) -lcrypt32
+endif
 
 EVENTLOG_RC := src/Win32_Interop/resources/EventLog.rc
 EVENTLOG_MESSAGE := src/Win32_Interop/resources/EventLog_MSG00409.bin
@@ -54,6 +72,10 @@ BASE_DEFS := \
 ifeq ($(BUILD_COMPRESSION),yes)
 BASE_DEFS += -DUSE_COMPRESSION=1
 ZSTD_LDLIBS := -Wl,-Bstatic -lzstd -Wl,-Bdynamic
+endif
+
+ifeq ($(BUILD_TLS),yes)
+BASE_DEFS += -DUSE_OPENSSL=1
 endif
 
 BASE_INCLUDES := \
@@ -170,7 +192,7 @@ LDLIBS_COMMON := \
 	-lwinspool
 
 REDIS_HEADERS := $(wildcard src/*.h src/Win32_Interop/*.h deps/geohash-int/*.h deps/hiredis/*.h deps/linenoise/*.h)
-HIREDIS_HEADERS := $(wildcard deps/hiredis/*.h)
+HIREDIS_HEADERS := $(wildcard deps/hiredis/*.h src/Win32_Interop/*.h)
 LUA_HEADERS := $(wildcard deps/lua/src/*.h)
 HDR_HISTOGRAM_HEADERS := $(wildcard deps/hdr_histogram/*.h)
 FPCONV_HEADERS := $(wildcard deps/fpconv/*.h)
@@ -352,6 +374,10 @@ HIREDIS_SOURCES := \
 	deps/hiredis/net.c \
 	deps/hiredis/read.c \
 	deps/hiredis/sds.c
+
+ifeq ($(BUILD_TLS),yes)
+HIREDIS_SOURCES += deps/hiredis/ssl.c
+endif
 
 HDR_HISTOGRAM_SOURCES := \
 	deps/hdr_histogram/hdr_histogram.c
@@ -548,6 +574,16 @@ src/release.h: FORCE
 # those values actually changed.
 FORCE:
 
+# Compare content on every invocation: changing TLS mode must also invalidate
+# archives so a previous ssl.o cannot survive a BUILD_TLS=no build.
+TLS_BUILD_STAMP := $(BUILD)/.tls-build
+$(TLS_BUILD_STAMP): FORCE
+	mkdir -p $(dir $@)
+	printf '%s\n' 'BUILD_TLS=$(BUILD_TLS)' '$(TLS_LDLIBS)' > $@.tmp
+	cmp -s $@.tmp $@ && rm -f $@.tmp || mv -f $@.tmp $@
+
+$(SERVER_OBJS) $(CLI_OBJS) $(BENCHMARK_OBJS) $(HIREDIS_OBJS) $(HIREDIS_TEST_OBJS) $(INTEROP_TEST_OBJS) $(HIREDIS_LIB): $(TLS_BUILD_STAMP)
+
 # Use the checked-in upstream configure script. Rebuilding it merely because a
 # checkout changed mtimes dirties the source tree and makes release provenance
 # depend on the locally installed autoconf version. Regenerate only if absent.
@@ -605,22 +641,22 @@ $(EVENTLOG_DLL): Makefile.mingw $(EVENTLOG_OBJ)
 	$(CC) -shared -nostdlib -Wl,--entry,0 -o $@ $(EVENTLOG_OBJ)
 
 $(BUILD)/redis-server.exe: Makefile.mingw $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB)
-	$(CXX) $(LDFLAGS_SERVER) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB) $(ZSTD_LDLIBS) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_SERVER) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB) $(ZSTD_LDLIBS) $(TLS_LDLIBS) $(LDLIBS_COMMON)
 
 $(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS)
-	$(CXX) $(LDFLAGS_TOOL) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_TOOL) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(TLS_LDLIBS) $(LDLIBS_COMMON)
 
 $(BUILD)/redis-benchmark.exe: Makefile.mingw $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB)
-	$(CXX) $(LDFLAGS_TOOL) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_TOOL) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(TLS_LDLIBS) $(LDLIBS_COMMON)
 
 $(REDIS_CHECK_ALIASES): $(BUILD)/redis-server.exe
 	cp -f $< $@
 
 $(BUILD)/hiredis-test.exe: Makefile.mingw $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB)
-	$(CXX) $(LDFLAGS_TOOL) -o $@ $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_TOOL) -o $@ $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB) $(TLS_LDLIBS) $(LDLIBS_COMMON)
 
 $(BUILD)/interop-test.exe: Makefile.mingw $(INTEROP_TEST_OBJS)
-	$(CXX) $(LDFLAGS_TOOL) -o $@ $(INTEROP_TEST_OBJS) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_TOOL) -o $@ $(INTEROP_TEST_OBJS) $(TLS_LDLIBS) $(LDLIBS_COMMON)
 
 $(AE_OBJS): $(AE_BACKEND_SOURCE)
 

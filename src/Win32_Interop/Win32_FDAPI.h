@@ -269,37 +269,47 @@ extern "C"
 {
 #endif
 
+/* Static native libraries (including OpenSSL) also reference Winsock's real
+ * symbols. Keep the replacement variables in their own linker namespace while
+ * retaining the C identifiers used by Redis and its connection structures. */
+#ifdef __MINGW32__
+#define FDAPI_SYMBOL(name) __asm__("redis_fdapi_" #name)
+#else
+#define FDAPI_SYMBOL(name)
+#endif
 // API replacements
-extern fdapi_accept         accept;
-extern fdapi_access         access;
-extern fdapi_bind           bind;
-extern fdapi_connect        connect;
-extern fdapi_fcntl          fcntl;
-extern fdapi_fstat          fdapi_fstat64;
-extern fdapi_freeaddrinfo   freeaddrinfo;
-extern fdapi_fsync          fsync;
-extern fdapi_getaddrinfo    getaddrinfo;
-extern fdapi_getsockopt     getsockopt;
-extern fdapi_getpeername    getpeername;
-extern fdapi_getsockname    getsockname;
-extern fdapi_htonl          htonl;
-extern fdapi_htons          htons;
-extern fdapi_isatty         isatty;
-extern fdapi_inet_ntop      inet_ntop;
-extern fdapi_inet_pton      inet_pton;
-extern fdapi_listen         listen;
-extern fdapi_lseek64        lseek64;
-extern fdapi_ntohl          ntohl;
-extern fdapi_ntohs          ntohs;
-extern fdapi_open           open;
-extern fdapi_pipe           pipe;
-extern fdapi_poll           poll;
-extern fdapi_read           read;
-extern fdapi_select         select;
-extern fdapi_setsockopt     setsockopt;
-extern fdapi_socket         socket;
-extern fdapi_write          write;
-extern fdapi_writev         writev;
+extern fdapi_accept         accept FDAPI_SYMBOL(accept);
+extern fdapi_access         access FDAPI_SYMBOL(access);
+extern fdapi_bind           bind FDAPI_SYMBOL(bind);
+extern fdapi_connect        connect FDAPI_SYMBOL(connect);
+extern fdapi_fcntl          fcntl FDAPI_SYMBOL(fcntl);
+extern fdapi_fstat          fdapi_fstat64 FDAPI_SYMBOL(fdapi_fstat64);
+extern fdapi_freeaddrinfo   freeaddrinfo FDAPI_SYMBOL(freeaddrinfo);
+extern fdapi_fsync          fsync FDAPI_SYMBOL(fsync);
+extern fdapi_getaddrinfo    getaddrinfo FDAPI_SYMBOL(getaddrinfo);
+extern fdapi_getsockopt     getsockopt FDAPI_SYMBOL(getsockopt);
+extern fdapi_getpeername    getpeername FDAPI_SYMBOL(getpeername);
+extern fdapi_getsockname    getsockname FDAPI_SYMBOL(getsockname);
+extern fdapi_htonl          htonl FDAPI_SYMBOL(htonl);
+extern fdapi_htons          htons FDAPI_SYMBOL(htons);
+extern fdapi_isatty         isatty FDAPI_SYMBOL(isatty);
+extern fdapi_inet_ntop      inet_ntop FDAPI_SYMBOL(inet_ntop);
+extern fdapi_inet_pton      inet_pton FDAPI_SYMBOL(inet_pton);
+extern fdapi_listen         listen FDAPI_SYMBOL(listen);
+extern fdapi_lseek64        lseek64 FDAPI_SYMBOL(lseek64);
+extern fdapi_ntohl          ntohl FDAPI_SYMBOL(ntohl);
+extern fdapi_ntohs          ntohs FDAPI_SYMBOL(ntohs);
+extern fdapi_open           open FDAPI_SYMBOL(open);
+extern fdapi_pipe           pipe FDAPI_SYMBOL(pipe);
+extern fdapi_poll           poll FDAPI_SYMBOL(poll);
+extern fdapi_read           read FDAPI_SYMBOL(read);
+extern fdapi_select         select FDAPI_SYMBOL(select);
+extern fdapi_setsockopt     setsockopt FDAPI_SYMBOL(setsockopt);
+extern fdapi_socket         socket FDAPI_SYMBOL(socket);
+extern fdapi_write          write FDAPI_SYMBOL(write);
+extern fdapi_writev         writev FDAPI_SYMBOL(writev);
+
+#undef FDAPI_SYMBOL
 
 // Other FD based APIs
 void    FDAPI_SaveSocketAddrStorage(int rfd, SOCKADDR_STORAGE* socketAddrStorage);
@@ -319,6 +329,7 @@ int     FDAPI_WSAIoctl(int rfd, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD
 int     FDAPI_WSASend(int rfd, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesSent, DWORD dwFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 int     FDAPI_WSARecv(int rfd, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 BOOL    FDAPI_WSAGetOverlappedResult(int rfd, LPWSAOVERLAPPED lpOverlapped, LPDWORD lpcbTransfer, BOOL fWait, LPDWORD lpdwFlags);
+int     FDAPI_CancelSocketIO(int rfd, LPOVERLAPPED overlapped);
 int     FDAPI_IsSocketWritable(int rfd);
 BOOL    FDAPI_CloseDuplicatedSocket(int rfd);
 int     FDAPI_WSADuplicateSocket(int rfd, DWORD dwProcessId, LPWSAPROTOCOL_INFOW lpProtocolInfo);
