@@ -849,46 +849,49 @@ start_cluster 3 3 {tags {external:skip cluster} overrides {cluster-node-timeout 
         R 0 flushall
         R 1 flushall
         set r1_pid [S 1 process_id]
+        set r1_loglines [count_log_lines -1]
         R 1 debug repl-pause on-streaming-repl-buf
+        set load_handle {}
 
-        # Set a small output buffer limit to trigger the error
-        R 0 config set client-output-buffer-limit "replica 4mb 0 0"
+        try {
+            # Set a small output buffer limit to trigger the error
+            R 0 config set client-output-buffer-limit "replica 4mb 0 0"
 
-        set task_id [setup_slot_migration_with_delay 0 1 0 100]
+            set task_id [setup_slot_migration_with_delay 0 1 0 100]
 
-        # some write traffic is to have chance to enter streaming buffer state
-        set slot0_key [slot_key 0 mykey]
-        R 0 set $slot0_key "a"
+            # Some write traffic lets the destination enter streaming buffer state.
+            set slot0_key [slot_key 0 mykey]
+            R 0 set $slot0_key "a"
 
-        # after 3 second, the slots snapshot (costs 2s to generate) should be transferred,
-        # then start streaming buffer
-        after 3000
+            # Wait for the destination to stop reading instead of assuming the
+            # snapshot and streaming transition have finished after a fixed delay.
+            wait_for_log_messages -1 {"*Process is about to stop.*"} $r1_loglines 1000 10
 
-        set loglines [count_log_lines 0]
+            set loglines [count_log_lines 0]
 
-        # Start the slot 0 write load on the R 0
-        set load_handle [start_write_load "127.0.0.1" [get_port 0] 100 $slot0_key 1000]
+            # Large values fill the buffer without requiring a high command rate
+            # from the TLS load generator on a busy Windows runner.
+            set load_handle [start_write_load "127.0.0.1" [get_port 0] 100 $slot0_key 100000]
 
-        # verify the metric is accessible, it is transient, will be reset on disconnect
-        assert {[S 0 mem_cluster_slot_migration_output_buffer] >= 0}
+            # verify the metric is accessible, it is transient, will be reset on disconnect
+            assert {[S 0 mem_cluster_slot_migration_output_buffer] >= 0}
 
-        # After some time, the client output buffer limit should be reached
-        wait_for_log_messages 0 {"*Client * closed * for overcoming of output buffer limits.*"} $loglines 1000 10
-        wait_for_condition 1000 10 {
-            [string match {*send*stream*} [migration_status 0 $task_id last_error]]
-        } else {
-            fail "ASM task did not fail as expected"
+            # After some time, the client output buffer limit should be reached
+            wait_for_log_messages 0 {"*Client * closed * for overcoming of output buffer limits.*"} $loglines 1000 10
+            wait_for_condition 1000 10 {
+                [string match {*send*stream*} [migration_status 0 $task_id last_error]]
+            } else {
+                fail "ASM task did not fail as expected"
+            }
+        } finally {
+            # A failed assertion must not leave the next test with a paused node
+            # or a background writer still running.
+            if {$load_handle ne {}} { stop_write_load $load_handle }
+            resume_process $r1_pid
+            R 1 debug repl-pause clear
+            R 0 config set client-output-buffer-limit "replica 0 0 0"
+            R 0 config set rdb-key-save-delay 0
         }
-
-        stop_write_load $load_handle
-
-        # Reset configurations
-        R 0 config set client-output-buffer-limit "replica 0 0 0"
-        R 0 config set rdb-key-save-delay 0
-
-        # resume server and clear pause point
-        resume_process $r1_pid
-        R 1 debug repl-pause clear
 
         # Wait for the migration to complete
         wait_for_asm_done
@@ -2491,14 +2494,21 @@ start_cluster 3 6 [list tags {external:skip cluster modules} config_lines [list 
                 set task_id [setup_slot_migration_with_delay 0 1 0 100]
                 assert_equal 1 [CI $node cluster_slot_migration_active_tasks]
 
-                assert_equal "OK" [R $node $resetcmd]
-                assert_equal "canceled" [migration_status $node $task_id state]
-                assert_equal 0 [CI $node cluster_slot_migration_active_tasks]
-
-                # cleanup
-                R 0 config set rdb-key-save-delay 0
-                R 0 CLUSTER MIGRATION CANCEL ID $task_id
-                R 1 CLUSTER MIGRATION CANCEL ID $task_id
+                # Keep the peer from retrying between the reset and the status
+                # queries. Otherwise a new task can already be active by the
+                # time the TLS client observes the original task's cancellation.
+                set peer_pid [S [expr {1 - $node}] process_id]
+                pause_process $peer_pid
+                try {
+                    assert_equal "OK" [R $node $resetcmd]
+                    assert_equal "canceled" [migration_status $node $task_id state]
+                    assert_equal 0 [CI $node cluster_slot_migration_active_tasks]
+                } finally {
+                    resume_process $peer_pid
+                    R 0 config set rdb-key-save-delay 0
+                    R 0 CLUSTER MIGRATION CANCEL ID $task_id
+                    R 1 CLUSTER MIGRATION CANCEL ID $task_id
+                }
                 wait_for_asm_done
             }
         }

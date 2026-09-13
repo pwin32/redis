@@ -226,7 +226,18 @@ proc windows_kill_proc config {
         $shutdown_client shutdown
         set shutdown_sent 1
     }
-    if {$shutdown_client ne {}} { catch {$shutdown_client close} }
+    if {$shutdown_client ne {}} {
+        if {$::tls && $shutdown_sent} {
+            # Closing a fresh TclTLS connection immediately after its first
+            # write can reset it before Redis receives the command. Keep it
+            # alive briefly, with the same bounded process ownership checks.
+            set deadline [expr {[clock milliseconds] + 1000}]
+            while {[clock milliseconds] < $deadline && [windows_is_alive $config]} {
+                after 10
+            }
+        }
+        catch {$shutdown_client close}
+    }
 
     if {!$shutdown_sent} {
         catch {windows_kill_proc2 $pid}

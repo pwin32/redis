@@ -66,6 +66,19 @@ export REDIS_CHECK_RDB="$build_dir/redis-check-rdb.exe"
 export REDIS_TEST_LAUNCHER="$launcher"
 export REDIS_TEST_MODULE_DIR="$module_dir"
 
+for argument in "$@"; do
+    if [[ "$argument" == --tls ]]; then
+        bash tests/windows/prepare-tls.sh
+        # Native Tcl consumes a Tcl list of Windows paths, not an MSYS path.
+        tls_package="$(cygpath -m "$repo_root/.local/test-deps/tcltls-1.7.22/install/lib/tcltls1.7.22")"
+        export TCLLIBPATH="{$tls_package} ${TCLLIBPATH:-}"
+        if [[ ! -f tests/tls/ca.crt ]]; then
+            MSYS2_ARG_CONV_EXCL='*' bash -e -o pipefail utils/gen-test-certs.sh
+        fi
+        break
+    fi
+done
+
 case "$suite" in
     root)
         exec "$TCLSH" tests/test_helper.tcl "$@"

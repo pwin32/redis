@@ -1,4 +1,5 @@
 source tests/support/aofmanifest.tcl
+source tests/support/benchmark.tcl
 set defaults { appendonly {yes} appendfilename {appendonly.aof} appenddirname {appendonlydir} aof-use-rdb-preamble {no} }
 set server_path [tmpdir server.aof]
 
@@ -8,7 +9,7 @@ tags {"aof external:skip"} {
     # was subsequently appended to the new AOF, resulting in duplicate commands.
     start_server_aof [list dir $server_path] {
         set client [redis [srv host] [srv port] 0 $::tls]
-        set bench_cmd [list | $::redis_benchmark_path -q -h [srv host] -p [srv port] -c 20 -n 20000 incr foo]
+        set bench_cmd [list | {*}[redisbenchmark [srv host] [srv port] {-q -c 20 -n 20000 incr foo}]]
         set bench [open $bench_cmd "r+"]
 
         wait_for_condition 100 1 {
@@ -22,6 +23,7 @@ tags {"aof external:skip"} {
 
         # Read until benchmark pipe reaches EOF
         while {[string length [read $bench]] > 0} {}
+        close $bench
 
         waitForBgrewriteaof $client
 

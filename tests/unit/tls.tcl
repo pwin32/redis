@@ -27,11 +27,11 @@ proc mint_nul_cn_cert {tlsdir outbase visible suffix} {
         set f [open $path wb]; puts -nonewline $f $data; close $f
     }
 
-    exec openssl genrsa -out $key 2048 2>/dev/null
+    exec openssl genrsa -out $key 2048 2>$::test_null_device
     exec -ignorestderr openssl req -new -key $key \
-        -subj "/O=Redis Test/CN=${visible}Q${suffix}" -out $csr 2>/dev/null
+        -subj "/O=Redis Test/CN=${visible}Q${suffix}" -out $csr 2>$::test_null_device
     exec -ignorestderr openssl x509 -req -sha256 -CA $cacrt -CAkey $cakey \
-        -CAcreateserial -days 365 -in $csr -outform DER -out $der 2>/dev/null
+        -CAcreateserial -days 365 -in $csr -outform DER -out $der 2>$::test_null_device
 
     set data [_read_bin $der]
 
@@ -60,7 +60,7 @@ proc mint_nul_cn_cert {tlsdir outbase visible suffix} {
     set cert      "\x30[_der_len [string length $body]]$body"
     _write_bin $der $cert
 
-    exec -ignorestderr openssl x509 -inform DER -in $der -out $crt 2>/dev/null
+    exec -ignorestderr openssl x509 -inform DER -in $der -out $crt 2>$::test_null_device
     return [list $crt $key]
 }
 

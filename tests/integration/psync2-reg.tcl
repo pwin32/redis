@@ -4,6 +4,8 @@
 # redis-benchmark. At the end we check that the data is the same
 # everywhere.
 
+source tests/support/benchmark.tcl
+
 start_server {tags {"psync2 external:skip"}} {
 start_server {} {
 start_server {} {
@@ -38,24 +40,34 @@ start_server {} {
         $R(1) config set repl-backlog-size 10mb
     }
 
-    set cycle_start_time [clock milliseconds]
-    set bench_pid [exec $::redis_benchmark_path -h $R_host(0) -p $R_port(0) -n 10000000 -r 1000 incr __rand_int__ > $::test_null_device &]
-    while 1 {
-        set elapsed [expr {[clock milliseconds]-$cycle_start_time}]
-        if {$elapsed > $duration*1000} break
-        if {rand() < .05} {
-            test "PSYNC2 #3899 regression: kill first replica" {
-                $R(1) client kill type master
-            }
+    set bench_cmd [redisbenchmark $R_host(0) $R_port(0) {-n 10000000 -r 1000 incr __rand_int__}]
+    set bench_pid [exec {*}$bench_cmd > $::test_null_device &]
+    try {
+        # The consistency check must include benchmark writes, even under TLS.
+        wait_for_condition 100 100 {
+            [regexp {^calls=[1-9][0-9]*,} [cmdrstat incr $R(0)]]
+        } else {
+            fail "Benchmark did not generate replication traffic"
         }
-        if {rand() < .05} {
-            test "PSYNC2 #3899 regression: kill chained replica" {
-                $R(2) client kill type master
+        set cycle_start_time [clock milliseconds]
+        while 1 {
+            set elapsed [expr {[clock milliseconds]-$cycle_start_time}]
+            if {$elapsed > $duration*1000} break
+            if {rand() < .05} {
+                test "PSYNC2 #3899 regression: kill first replica" {
+                    $R(1) client kill type master
+                }
             }
+            if {rand() < .05} {
+                test "PSYNC2 #3899 regression: kill chained replica" {
+                    $R(2) client kill type master
+                }
+            }
+            after 100
         }
-        after 100
+    } finally {
+        kill_proc2 $bench_pid
     }
-    kill_proc2 $bench_pid
 
     if {$debug_msg} {
         for {set j 0} {$j < 100} {incr j} {

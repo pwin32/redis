@@ -135,10 +135,15 @@ tags {"benchmark network external:skip logreqres:skip"} {
         test {benchmark: clients idle mode should return error when reached maxclients limit} {
             set cmd [redisbenchmark $master_host $master_port "-c 10 -I"]
             set original_maxclients [lindex [r config get maxclients] 1]
+            set rejected_before [s rejected_connections]
             r config set maxclients 5
-            catch { exec {*}$cmd } error
-            assert_match "*Error*" $error
-            r config set maxclients $original_maxclients
+            try {
+                # TLS may be rejected during the handshake, before a RESP error.
+                assert_equal 1 [catch { exec {*}$cmd } error]
+                assert {[s rejected_connections] > $rejected_before}
+            } finally {
+                r config set maxclients $original_maxclients
+            }
         }
 
         test {benchmark: read last argument from stdin} {

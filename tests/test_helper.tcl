@@ -30,6 +30,7 @@ set ::all_tests {
     windows/cpuaffinity
     windows/aof
     windows/iocp
+    windows/tls
     windows/regression
 }
 

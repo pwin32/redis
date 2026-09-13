@@ -702,7 +702,8 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
 
     test_nontty_cli "Test command-line hinting - no server" {
         # cli will fail to connect to the server and will use the cached commands.c
-        catch {run_cli -p 123 --test_hint_file tests/assets/test_cli_hint_suite.txt} output
+        set unused_port [find_available_port $::baseport $::portcount]
+        catch {run_cli -p $unused_port -t 1 --test_hint_file tests/assets/test_cli_hint_suite.txt} output
         assert_match "*SUCCESS*" $output
     }
 

@@ -464,12 +464,22 @@ HIREDIS_TEST_OBJS := \
 	$(addprefix $(BUILD)/hiredis-test/,$(TOOL_WIN32_INTEROP_CXX_SOURCES:.cpp=.o))
 
 INTEROP_TEST_C_SOURCES := \
+	src/adlist.c \
+	src/ae.c \
+	src/monotonic.c \
+	src/redisassert.c \
+	src/zmalloc.c \
+	src/Win32_Interop/win32fixes.c \
+	src/Win32_Interop/Win32_Time.c \
+	src/Win32_Interop/Win32_TLS.c \
+	src/Win32_Interop/win32_wsiocp.c \
 	src/Win32_Interop/Win32_APIs.c \
 	src/Win32_Interop/Win32_Error.c \
 	src/Win32_Interop/Win32_PThread.c \
 	src/Win32_Interop/Win32_Signal_Process.c \
 	src/Win32_Interop/Win32_ThreadControl.c \
-	tests/windows/llp64.c
+	tests/windows/llp64.c \
+	tests/windows/tls-interop.c
 
 INTEROP_TEST_CXX_SOURCES := \
 	tests/windows/interop.cpp \
@@ -537,7 +547,8 @@ AE_OBJS := \
 	$(BUILD)/server/src/ae.o \
 	$(BUILD)/cli/src/ae.o \
 	$(BUILD)/benchmark/src/ae.o \
-	$(BUILD)/hiredis-test/src/ae.o
+	$(BUILD)/hiredis-test/src/ae.o \
+	$(BUILD)/interop-test/src/ae.o
 
 HIREDIS_LIB := $(BUILD)/lib/libhiredis.a
 LUA_LIB := $(BUILD)/lib/liblua.a
