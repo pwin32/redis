@@ -143,9 +143,20 @@ $(FDAPI_CXX_EXTRA_TARGETS): FDAPI_CXX_EXTRA := $(FDAPI_SYSTEM_REDEFS)
 LDFLAGS_COMMON := \
 	-no-pthread \
 	-static-libgcc \
-	-static-libstdc++ \
+	-static-libstdc++
+
+# QFork restores server data at matching virtual addresses. Client tools and
+# standalone tests do not use QFork and retain normal executable hardening.
+LDFLAGS_SERVER := $(LDFLAGS_COMMON) \
 	-Wl,--disable-dynamicbase \
-	-Wl,--disable-high-entropy-va
+	-Wl,--disable-high-entropy-va \
+	-Wl,--nxcompat
+
+LDFLAGS_TOOL := $(LDFLAGS_COMMON) \
+	-Wl,--dynamicbase \
+	-Wl,--high-entropy-va \
+	-Wl,--nxcompat \
+	-Wl,--enable-reloc-section
 
 LDLIBS_COMMON := \
 	-lws2_32 \
@@ -594,32 +605,32 @@ $(EVENTLOG_DLL): Makefile.mingw $(EVENTLOG_OBJ)
 	$(CC) -shared -nostdlib -Wl,--entry,0 -o $@ $(EVENTLOG_OBJ)
 
 $(BUILD)/redis-server.exe: Makefile.mingw $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB)
-	$(CXX) $(LDFLAGS_COMMON) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB) $(ZSTD_LDLIBS) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_SERVER) -o $@ $(SERVER_OBJS) $(HIREDIS_LIB) $(LUA_LIB) $(HDR_HISTOGRAM_OBJS) $(JEMALLOC_LIB) $(FPCONV_LIB) $(XXHASH_LIB) $(TRE_LIB) $(ZSTD_LDLIBS) $(LDLIBS_COMMON)
 
 $(BUILD)/redis-cli.exe: Makefile.mingw $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS)
-	$(CXX) $(LDFLAGS_COMMON) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_TOOL) -o $@ $(CLI_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(LDLIBS_COMMON)
 
 $(BUILD)/redis-benchmark.exe: Makefile.mingw $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB)
-	$(CXX) $(LDFLAGS_COMMON) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_TOOL) -o $@ $(BENCHMARK_OBJS) $(HIREDIS_LIB) $(HDR_HISTOGRAM_OBJS) $(FPCONV_LIB) $(LDLIBS_COMMON)
 
 $(REDIS_CHECK_ALIASES): $(BUILD)/redis-server.exe
 	cp -f $< $@
 
 $(BUILD)/hiredis-test.exe: Makefile.mingw $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB)
-	$(CXX) $(LDFLAGS_COMMON) -o $@ $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_TOOL) -o $@ $(HIREDIS_TEST_OBJS) $(HIREDIS_LIB) $(LDLIBS_COMMON)
 
 $(BUILD)/interop-test.exe: Makefile.mingw $(INTEROP_TEST_OBJS)
-	$(CXX) $(LDFLAGS_COMMON) -o $@ $(INTEROP_TEST_OBJS) $(LDLIBS_COMMON)
+	$(CXX) $(LDFLAGS_TOOL) -o $@ $(INTEROP_TEST_OBJS) $(LDLIBS_COMMON)
 
 $(AE_OBJS): $(AE_BACKEND_SOURCE)
 
 $(BUILD)/redis-test-launcher.exe: Makefile.mingw tests/windows/test-launcher.c
 	mkdir -p $(dir $@)
-	$(CC) $(TEST_LAUNCHER_CFLAGS) $(TEST_LAUNCHER_LDFLAGS) $(LDFLAGS_COMMON) -o $@ tests/windows/test-launcher.c -lws2_32
+	$(CC) $(TEST_LAUNCHER_CFLAGS) $(TEST_LAUNCHER_LDFLAGS) $(LDFLAGS_TOOL) -o $@ tests/windows/test-launcher.c -lws2_32
 
 $(BUILD)/redis-affinity-test.exe: Makefile.mingw tests/windows/cpuaffinity.c src/Win32_Interop/Win32_CpuAffinity.c src/Win32_Interop/Win32_CpuAffinity.h src/Win32_Interop/Win32_RedisLog.h
 	mkdir -p $(dir $@)
-	$(CC) $(TEST_LAUNCHER_CFLAGS) -Isrc $(LDFLAGS_COMMON) -o $@ tests/windows/cpuaffinity.c
+	$(CC) $(TEST_LAUNCHER_CFLAGS) -Isrc $(LDFLAGS_TOOL) -o $@ tests/windows/cpuaffinity.c
 
 $(BUILD)/tests/modules/%.so: tests/modules/%.c src/redismodule.h src/Win32_Interop/win32_types_hiredis.h Makefile.mingw
 	mkdir -p $(dir $@)

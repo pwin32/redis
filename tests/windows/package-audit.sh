@@ -207,29 +207,12 @@ for pe_file in "$package_dir"/*.exe "$package_dir"/EventLog.dll; do
             grep -Eiq '[[:space:]][.](z?debug[^[:space:]]*|gnu_debuglink)[[:space:]]'; then
         die "$pe_name contains a debug section after release stripping"
     fi
-    case "$pe_name" in
-        *.exe)
-            dll_characteristics="$({ objdump -p "$pe_file" || true; } |
-                sed -n 's/^[[:space:]]*DllCharacteristics[[:space:]]*\([0-9A-Fa-f][0-9A-Fa-f]*\).*/\1/p' |
-                sed -n '1p')"
-            [[ "$dll_characteristics" =~ ^[0-9A-Fa-f]+$ ]] ||
-                die "$pe_name has no readable PE DllCharacteristics field"
-            dll_flags=$((16#$dll_characteristics))
-            (( (dll_flags & 0x0100) != 0 )) ||
-                die "$pe_name does not retain NX compatibility"
-            (( (dll_flags & 0x0040) == 0 )) ||
-                die "$pe_name unexpectedly enables dynamic-base ASLR incompatible with QFork"
-            (( (dll_flags & 0x0020) == 0 )) ||
-                die "$pe_name unexpectedly enables high-entropy ASLR incompatible with QFork"
-            printf '%s\tDllCharacteristics=0x%08x\tNX_COMPAT=1\tDYNAMIC_BASE=0\tHIGH_ENTROPY_VA=0\n' \
-                "$pe_name" "$dll_flags" >> "$layout_report"
-            ;;
-    esac
     {
         printf '== %s ==\n' "$pe_name"
         objdump -p "$pe_file" | sed -n '/The Import Tables/,/The Function Table/p'
     } >> "$imports_report"
 done
+bash "$repo_root/tests/windows/pe-hardening.sh" "$package_dir" >> "$layout_report"
 objdump -h "$package_dir/EventLog.dll" | grep -Eq '[[:space:]][.]rsrc[[:space:]]' ||
     die "EventLog.dll does not contain a PE resource section"
 if grep -Eiq 'DLL Name: (libgcc_s|libstdc\+\+|libwinpthread|libzstd|msys-|cygwin)' "$imports_report"; then

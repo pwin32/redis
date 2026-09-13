@@ -83,6 +83,8 @@ jobs:
         run: |
           ./build-mingw.sh -j2
           make -f Makefile.mingw interop-test
+      - name: Check executable hardening
+        run: bash tests/windows/pe-hardening.sh build/mingw64
       - name: Run focused Redis tests
         run: >-
           ./runtest-mingw.sh --clients 1 --quiet --timeout 300

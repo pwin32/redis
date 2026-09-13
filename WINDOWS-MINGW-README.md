@@ -40,6 +40,18 @@ needed.
 The service test needs an elevated Windows token. Use private test ports and
 do not stop or reconfigure unrelated Redis services.
 
+For focused CPU-affinity and executable-hardening checks in MINGW64 after a
+build:
+
+    ./build/mingw64/redis-affinity-test.exe
+    ./runtest-mingw.sh --single windows/config --single windows/cpuaffinity --clients 1 --quiet --timeout 300
+    bash tests/windows/pe-hardening.sh build/mingw64
+
+These checks cover synthetic processor groups, native thread-mask readback,
+startup configuration validation, QFork persistence affinity, and PE flags and
+relocations. Physical multi-group qualification requires a host with multiple
+processor groups. Focused checks do not replace the complete CI qualification.
+
 ## Windows port boundaries
 
 The Windows path uses IOCP networking, the Win32 file-descriptor layer, and the

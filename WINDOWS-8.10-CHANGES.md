@@ -95,7 +95,7 @@ legal advice.
 | Diskless replication | Streams a full synchronization directly to replicas | Supported through QFork; the Windows examples default to disk-backed synchronization |
 | Active defragmentation | Uses allocator hooks to relocate objects | Supported by the customized jemalloc allocator |
 | CPU affinity | CPU lists select processors for server and worker threads | Strict thread affinity within one Windows processor group per list |
-| Executable layout | Normal PIE/ASLR conventions | Dynamic-base and high-entropy ASLR are disabled for QFork address stability |
+| Executable layout | Normal PIE/ASLR conventions | CLI and benchmark enable dynamic-base/high-entropy ASLR, NX, and relocations; server and its aliases keep ASLR disabled for QFork |
 | Service integration | daemon, systemd, or syslog conventions | Foreground console or Windows SCM service with Application Event Log support |
 | Native modules | ELF shared objects and POSIX fork assumptions | x64 PE DLLs; module-created fork children are unsupported |
 | Interactive CLI | POSIX terminal handling | Native Windows console input and ANSI translation; redirected input is a separate path |
@@ -217,6 +217,14 @@ the tracked jemalloc heap at matching virtual addresses, restores changed
 pages, and runs the upstream child operation. The package therefore keeps the
 customized `jemalloc-5.3.0-redis` allocator and fixed-address executable
 constraints.
+
+The CLI and benchmark do not use QFork. Their executables enable dynamic-base
+and high-entropy ASLR, NX compatibility, and base relocations. Standalone test
+executables use the same policy. The server retains NX compatibility with ASLR
+disabled, and Sentinel and the RDB/AOF checkers remain byte-identical copies of
+that server image. The shared PE hardening check runs on local build directories
+and extracted CI packages; package integrity, import, and stripping checks
+remain part of full CI qualification.
 
 Allow enough Windows commit/pagefile capacity for the parent, child, copied
 pages, output buffers, compact-hash templates, and workload churn. Memory
