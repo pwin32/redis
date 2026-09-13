@@ -1,7 +1,7 @@
 Redis for Windows third-party notices
 =========================================
 
-This file accompanies the Redis 8.10.0 MinGW64 core-only portable binaries. It records
+This file accompanies the Redis 8.10.1 MinGW64 core-only portable binaries. It records
 third-party code incorporated into the server, sentinel, checker, CLI, and
 benchmark executables. Redis licensing is provided separately in LICENSE.txt
 and REDISCONTRIBUTIONS.txt; fork-specific Windows notices are in

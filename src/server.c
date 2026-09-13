@@ -8536,6 +8536,14 @@ int main(int argc, char **argv) {
             "use io-threads 1.");
         exit(1);
     }
+#ifdef USE_COMPRESSION
+    if (server.repl_compression != 0) {
+        serverLog(LL_WARNING,
+            "Fatal: replication compression is not supported on Windows; "
+            "use repl-compression 0.");
+        exit(1);
+    }
+#endif
     if (server.unixsocket != NULL) {
         serverLog(LL_WARNING,
             "Fatal: Unix domain sockets are not supported on Windows; "

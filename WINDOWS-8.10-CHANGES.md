@@ -90,8 +90,10 @@ legal advice.
 | Event loop | epoll, kqueue, or another POSIX backend | IOCP with synthetic FDAPI descriptors and one-shot readiness rearming |
 | Network transports | TCP, Unix sockets, and optional TLS | Plain TCP over IPv4/IPv6; Unix sockets and TLS are unsupported |
 | Client I/O threads | Multiple read/write I/O threads may be configured | Exactly one client I/O thread is enforced |
-| Replication compression | Requires multiple client I/O threads | Compiled with static Zstandard but must remain disabled |
+| Replication compression | Requires multiple client I/O threads | Compiled with static Zstandard; startup rejects nonzero `repl-compression` |
 | Background persistence | fork copy-on-write child | QFork starts a Windows child and restores the tracked heap at matching addresses |
+| Diskless replication | Streams a full synchronization directly to replicas | Supported through QFork; the Windows examples default to disk-backed synchronization |
+| Active defragmentation | Uses allocator hooks to relocate objects | Supported by the customized jemalloc allocator |
 | Executable layout | Normal PIE/ASLR conventions | Dynamic-base and high-entropy ASLR are disabled for QFork address stability |
 | Service integration | daemon, systemd, or syslog conventions | Foreground console or Windows SCM service with Application Event Log support |
 | Native modules | ELF shared objects and POSIX fork assumptions | x64 PE DLLs; module-created fork children are unsupported |
@@ -121,20 +123,22 @@ listener, TLS replication, TLS Cluster link, or Unix-domain socket support.
 A TLS proxy or VPN is an external security component and must be assessed
 separately.
 
-Startup rejects client `io-threads` values other than 1 and rejects
-`io-threads-do-reads yes`. Upstream Redis 8.10 replication compression requires
+Startup rejects client `io-threads` values other than 1 and nonzero
+`repl-compression`. Upstream Redis 8.10 replication compression requires
 multiple client I/O threads, so keep these settings:
 
     io-threads 1
-    io-threads-do-reads no
     repl-compression 0
 
-Do not enable `repl-compression` merely because Zstandard is linked into the
-binary. It remains outside the qualified Windows runtime surface.
+`io-threads-do-reads` is deprecated and ignored in Redis 8.10, including when
+its value is `yes`. It does not enable additional Windows client I/O threads.
+Linking Zstandard does not enable replication compression in this port.
 
-Windows include paths are literal and do not support POSIX wildcard expansion.
-List every included configuration file explicitly and use paths writable by
-the intended console user or service account.
+Windows `include` paths support wildcard patterns, including wildcard directory
+components such as `C:/Redis/conf.d/*/redis.conf`. Matches are loaded in sorted
+order. An unmatched pattern is skipped; an explicit missing file or an
+unreadable match fails configuration loading. Included files must be readable
+by the intended console user or service account.
 
 ## Windows text, naming, and filesystem contract
 
@@ -197,9 +201,12 @@ pressure can fail a background operation even when the parent remains
 responsive. Monitor Redis persistence status and Windows commit usage; do not
 disable the pagefile for a QFork deployment without workload-specific evidence.
 
-The examples retain disk-backed replication synchronization. Diskless
-replication is not the default Windows contract and requires separate workload
-qualification. For AOF deployments, preserve the complete append-only
+The examples retain disk-backed replication synchronization. Diskless full
+synchronization is implemented through QFork and covered by the Windows
+replication tests. Active defragmentation is also implemented using the
+customized jemalloc hooks and covered by the source tests. Qualify both against
+the intended memory, persistence, module, and network workload before changing
+deployment settings. For AOF deployments, preserve the complete append-only
 directory and manifest together. Use the packaged checkers before recovery:
 
     redis-check-rdb.exe dump.rdb

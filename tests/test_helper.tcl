@@ -26,6 +26,7 @@ source tests/support/util.tcl
 
 set dir [pwd]
 set ::all_tests {
+    windows/config
     windows/aof
     windows/iocp
     windows/regression

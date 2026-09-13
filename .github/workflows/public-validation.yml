@@ -86,7 +86,7 @@ jobs:
       - name: Run focused Redis tests
         run: >-
           ./runtest-mingw.sh --clients 1 --quiet --timeout 300
-          --single unit/type/string --single unit/printver
+          --single unit/type/string --single unit/printver --single windows/config
       - name: Run Windows interop test
         run: |
           ./build/mingw64/interop-test.exe --legacy

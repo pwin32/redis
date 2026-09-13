@@ -39,8 +39,9 @@ of package scope.
 
 ## Redis 8.10
 
-Redis 8.10.0 is the current Windows core line. It includes additional source,
-LLP64, Unicode, process, console, QFork, packaging, and dependency hardening.
+The development sources integrate Redis 8.10.1. The canonical `mingw-8.10`
+branch still tracks Redis 8.10.0. This line includes additional source, LLP64,
+Unicode, process, console, QFork, packaging, and dependency hardening.
 Zstandard is linked for the supported core build, while replication
 compression remains disabled on Windows pending separate threaded-I/O
 qualification.
