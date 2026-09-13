@@ -28,6 +28,9 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/pem.h>
+#ifdef _WIN32
+#include "Win32_Interop/Win32_TLS.h"
+#endif
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #include <openssl/decoder.h>
 #endif
@@ -482,6 +485,14 @@ static void updateTLSError(tls_connection *conn) {
     ERR_error_string_n(ERR_get_error(), conn->ssl_error, 512);
 }
 
+static int tlsSetFD(SSL *ssl, int fd) {
+#ifdef _WIN32
+    return Win32TLS_SetFD(ssl, fd);
+#else
+    return SSL_set_fd(ssl, fd);
+#endif
+}
+
 /* Create a new TLS connection that is already associated with
  * an accepted underlying file descriptor.
  *
@@ -516,7 +527,11 @@ static connection *connCreateAcceptedTLS(struct aeEventLoop *el, int fd, void *p
             break;
     }
 
-    SSL_set_fd(conn->ssl, conn->c.fd);
+    if (!tlsSetFD(conn->ssl, conn->c.fd)) {
+        updateTLSError(conn);
+        conn->c.state = CONN_STATE_ERROR;
+        return (connection *)conn;
+    }
     SSL_set_accept_state(conn->ssl);
 
     return (connection *) conn;
@@ -564,7 +579,7 @@ static int handleSSLReturnCode(tls_connection *conn, int ret_value, WantIOType *
  *
  * Returns ret_value, or -1 on error or dropped connection.
  */
-static int updateStateAfterSSLIO(tls_connection *conn, int ret_value, int update_event) {
+static int updateStateAfterSSLIO(tls_connection *conn, int ret_value, int update_event, int writing) {
     /* If system call was interrupted, there's no need to go through the full
      * OpenSSL error handling and just report this for the caller to retry the
      * operation.
@@ -578,8 +593,8 @@ static int updateStateAfterSSLIO(tls_connection *conn, int ret_value, int update
         WantIOType want = 0;
         int ssl_err;
         if (!(ssl_err = handleSSLReturnCode(conn, ret_value, &want))) {
-            if (want == WANT_READ) conn->flags |= TLS_CONN_FLAG_WRITE_WANT_READ;
-            if (want == WANT_WRITE) conn->flags |= TLS_CONN_FLAG_READ_WANT_WRITE;
+            if (writing && want == WANT_READ) conn->flags |= TLS_CONN_FLAG_WRITE_WANT_READ;
+            if (!writing && want == WANT_WRITE) conn->flags |= TLS_CONN_FLAG_READ_WANT_WRITE;
             if (update_event) updateSSLEvent(conn);
             errno = EAGAIN;
             return -1;
@@ -674,7 +689,7 @@ static int tlsRearmFailed(tls_connection *conn,
     int error = errno;
     conn->c.last_errno = error;
     conn->c.state = CONN_STATE_ERROR;
-    aeDeleteFileEvent(server.el, conn->c.fd, AE_READABLE | AE_WRITABLE);
+    aeDeleteFileEvent(conn->c.el, conn->c.fd, AE_READABLE | AE_WRITABLE);
     serverLog(LL_WARNING, "IOCP TLS %s rearm failed for fd=%d: %s",
               operation, conn->c.fd, wsa_strerror(error));
     if (handler != NULL) return callHandler((connection *)conn, handler);
@@ -691,7 +706,7 @@ static int tlsRearmEvents(tls_connection *conn) {
     if (conn->c.fd == -1 || conn->c.state == CONN_STATE_CLOSED ||
         conn->c.state == CONN_STATE_ERROR) return 1;
 
-    mask = aeGetFileEvents(server.el, conn->c.fd);
+    mask = aeGetFileEvents(conn->c.el, conn->c.fd);
     if (mask & AE_READABLE) {
         if (WSIOCP_QueueNextRead(conn->c.fd) != 0) {
             handler = conn->c.conn_handler ? conn->c.conn_handler :
@@ -796,10 +811,10 @@ static void tlsHandleEvent(tls_connection *conn, int mask) {
                 conn->c.state = CONN_STATE_ERROR;
             } else {
                 if (!(conn->flags & TLS_CONN_FLAG_FD_SET)) {
-                    SSL_set_fd(conn->ssl, conn->c.fd);
-                    conn->flags |= TLS_CONN_FLAG_FD_SET;
+                    if (tlsSetFD(conn->ssl, conn->c.fd))
+                        conn->flags |= TLS_CONN_FLAG_FD_SET;
                 }
-                ret = SSL_connect(conn->ssl);
+                ret = (conn->flags & TLS_CONN_FLAG_FD_SET) ? SSL_connect(conn->ssl) : -1;
                 if (ret <= 0) {
                     WantIOType want = 0;
                     if (!handleSSLReturnCode(conn, ret, &want)) {
@@ -892,8 +907,8 @@ static void tlsHandleEvent(tls_connection *conn, int mask) {
             /* If SSL has pending that, already read from the socket, we're at
              * risk of not calling the read handler again, make sure to add it
              * to a list of pending connection that should be handled anyway. */
-            if ((mask & AE_READABLE)) {
-                if (SSL_pending(conn->ssl) > 0) {
+            if (conn->c.el) {
+                if (conn->c.read_handler && SSL_pending(conn->ssl) > 0) {
                     tlsPendingAdd(conn);
                 } else if (conn->pending_list_node) {
                     tlsPendingRemove(conn);
@@ -969,8 +984,8 @@ static void connTLSShutdown(connection *conn_) {
     connectionTypeTcp()->shutdown(conn_);
 }
 
-/* Send TLS close-notify without half-closing the underlying socket before
- * OpenSSL has had a chance to flush the alert. The connection remains alive
+/* Flush TLS close-notify before shutting down the Windows send side so
+ * Winsock drains the queued reply and alert. The connection remains alive
  * until the normal delayed connClose() path frees the SSL object and socket. */
 static int connTLSShutdownWrite(connection *conn_) {
     tls_connection *conn = (tls_connection *) conn_;
@@ -978,7 +993,12 @@ static int connTLSShutdownWrite(connection *conn_) {
     if (!conn->ssl || conn->c.state != CONN_STATE_CONNECTED)
         return C_OK;
 
-    return SSL_shutdown(conn->ssl) < 0 ? C_ERR : C_OK;
+    int ret = SSL_shutdown(conn->ssl);
+#ifdef _WIN32
+    if (ret >= 0)
+        return FDAPI_shutdown(conn->c.fd, SD_SEND) == 0 ? C_OK : C_ERR;
+#endif
+    return ret < 0 ? C_ERR : C_OK;
 }
 
 static void connTLSClose(connection *conn_) {
@@ -986,7 +1006,7 @@ static void connTLSClose(connection *conn_) {
 
     if (conn->ssl) {
         if (conn->c.state == CONN_STATE_CONNECTED)
-            SSL_shutdown(conn->ssl);
+            connTLSShutdownWrite(conn_);
         SSL_free(conn->ssl);
         conn->ssl = NULL;
     }
@@ -1181,8 +1201,10 @@ static int connTLSWrite(connection *conn_, const void *data, size_t data_len) {
 
     if (conn->c.state != CONN_STATE_CONNECTED) return -1;
     ERR_clear_error();
+    errno = 0;
+    conn->flags &= ~TLS_CONN_FLAG_WRITE_WANT_READ;
     ret = SSL_write(conn->ssl, data, data_len);
-    return updateStateAfterSSLIO(conn, ret, 1);
+    return updateStateAfterSSLIO(conn, ret, 1, 1);
 }
 
 static int connTLSWritev(connection *conn_, const struct iovec *iov, int iovcnt) {
@@ -1228,8 +1250,10 @@ static int connTLSRead(connection *conn_, void *buf, size_t buf_len) {
 
     if (conn->c.state != CONN_STATE_CONNECTED) return -1;
     ERR_clear_error();
+    errno = 0;
+    conn->flags &= ~TLS_CONN_FLAG_READ_WANT_WRITE;
     ret = SSL_read(conn->ssl, buf, buf_len);
-    return updateStateAfterSSLIO(conn, ret, 1);
+    return updateStateAfterSSLIO(conn, ret, 1, 0);
 }
 
 static const char *connTLSGetLastError(connection *conn_) {
@@ -1258,6 +1282,7 @@ static int connTLSSetReadHandler(connection *conn, ConnectionCallbackFunc func) 
     return C_OK;
 }
 
+#ifndef _WIN32
 static void setBlockingTimeout(tls_connection *conn, long long timeout) {
     anetBlock(NULL, conn->c.fd);
     anetSendTimeout(NULL, conn->c.fd, timeout);
@@ -1286,7 +1311,7 @@ static int connTLSBlockingConnect(connection *conn_, const char *addr, int port,
 
     /* Initiate TLS connection now.  We set up a send/recv timeout on the socket,
      * which means the specified timeout will not be enforced accurately. */
-    SSL_set_fd(conn->ssl, conn->c.fd);
+    if (!tlsSetFD(conn->ssl, conn->c.fd)) return C_ERR;
     setBlockingTimeout(conn, timeout);
     ERR_clear_error();
 
@@ -1307,7 +1332,7 @@ static ssize_t connTLSSyncWrite(connection *conn_, char *ptr, ssize_t size, long
     SSL_clear_mode(conn->ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
     ERR_clear_error();
     int ret = SSL_write(conn->ssl, ptr, size);
-    ret = updateStateAfterSSLIO(conn, ret, 0);
+    ret = updateStateAfterSSLIO(conn, ret, 0, 1);
     SSL_set_mode(conn->ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
     unsetBlockingTimeout(conn);
 
@@ -1320,7 +1345,7 @@ static ssize_t connTLSSyncRead(connection *conn_, char *ptr, ssize_t size, long 
     setBlockingTimeout(conn, timeout);
     ERR_clear_error();
     int ret = SSL_read(conn->ssl, ptr, size);
-    ret = updateStateAfterSSLIO(conn, ret, 0);
+    ret = updateStateAfterSSLIO(conn, ret, 0, 0);
     unsetBlockingTimeout(conn);
 
     return ret;
@@ -1338,7 +1363,7 @@ static ssize_t connTLSSyncReadLine(connection *conn_, char *ptr, ssize_t size, l
 
         ERR_clear_error();
         int ret = SSL_read(conn->ssl, &c, 1);
-        ret = updateStateAfterSSLIO(conn, ret, 0);
+        ret = updateStateAfterSSLIO(conn, ret, 0, 0);
         if (ret <= 0) {
             nread = -1;
             goto exit;
@@ -1358,6 +1383,102 @@ exit:
     unsetBlockingTimeout(conn);
     return nread;
 }
+
+#else
+/* Windows keeps the FDAPI socket nonblocking and accounts for all TLS
+ * fragments and IOCP cancellation within one monotonic operation deadline. */
+static int tlsSyncError(tls_connection *conn, int ssl_error) {
+    if (ssl_error == SSL_ERROR_SYSCALL) {
+        conn->c.last_errno = errno;
+        zfree(conn->ssl_error);
+        conn->ssl_error = errno ? zstrdup(strerror(errno)) : NULL;
+    } else {
+        updateTLSError(conn);
+    }
+    conn->c.state = ssl_error == SSL_ERROR_ZERO_RETURN ? CONN_STATE_CLOSED : CONN_STATE_ERROR;
+    return -1;
+}
+
+static int tlsSyncBegin(tls_connection *conn, long long deadline) {
+    if (Win32TLS_BeginSync(conn->ssl, deadline) < 0)
+        return tlsSyncError(conn, SSL_ERROR_SYSCALL);
+    return 0;
+}
+
+static int tlsSyncIO(tls_connection *conn, int operation, void *buffer,
+                     int length, long long deadline) {
+    int ssl_error;
+    int ret = Win32TLS_SyncIO(conn->ssl, operation, buffer, length, deadline, &ssl_error);
+    if (ret <= 0) return tlsSyncError(conn, ssl_error);
+    return ret;
+}
+
+static int tlsSyncEnd(tls_connection *conn, int result) {
+    if (Win32TLS_EndSync(conn->ssl) < 0 && result >= 0)
+        return tlsSyncError(conn, SSL_ERROR_SYSCALL);
+    return result;
+}
+
+static int connTLSBlockingConnect(connection *conn_, const char *addr, int port, long long timeout) {
+    tls_connection *conn = (tls_connection *)conn_;
+    long long deadline = Win32TLS_Deadline(timeout);
+    if (conn->c.state != CONN_STATE_NONE) return C_ERR;
+    if (connectionTypeTcp()->blocking_connect(conn_, addr, port, timeout) == C_ERR) return C_ERR;
+    if (tlsApplyExpectedPeerName(conn, addr) != C_OK) return C_ERR;
+    if (!tlsSetFD(conn->ssl, conn->c.fd)) {
+        updateTLSError(conn);
+        conn->c.state = CONN_STATE_ERROR;
+        return C_ERR;
+    }
+    if (tlsSyncBegin(conn, deadline) < 0) return C_ERR;
+    int ret = tlsSyncIO(conn, WIN32_TLS_CONNECT, NULL, 0, deadline);
+    ret = tlsSyncEnd(conn, ret);
+    if (ret <= 0) return C_ERR;
+    conn->c.state = CONN_STATE_CONNECTED;
+    return C_OK;
+}
+
+static ssize_t connTLSSyncWrite(connection *conn_, char *ptr, ssize_t size, long long timeout) {
+    tls_connection *conn = (tls_connection *)conn_;
+    long long deadline = Win32TLS_Deadline(timeout);
+    if (tlsSyncBegin(conn, deadline) < 0) return -1;
+    SSL_clear_mode(conn->ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
+    int ret = tlsSyncIO(conn, WIN32_TLS_WRITE, ptr, size, deadline);
+    SSL_set_mode(conn->ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
+    return tlsSyncEnd(conn, ret);
+}
+
+static ssize_t connTLSSyncRead(connection *conn_, char *ptr, ssize_t size, long long timeout) {
+    tls_connection *conn = (tls_connection *)conn_;
+    long long deadline = Win32TLS_Deadline(timeout);
+    if (tlsSyncBegin(conn, deadline) < 0) return -1;
+    return tlsSyncEnd(conn, tlsSyncIO(conn, WIN32_TLS_READ, ptr, size, deadline));
+}
+
+static ssize_t connTLSSyncReadLine(connection *conn_, char *ptr, ssize_t size, long long timeout) {
+    tls_connection *conn = (tls_connection *)conn_;
+    long long deadline = Win32TLS_Deadline(timeout);
+    int nread = 0;
+    if (tlsSyncBegin(conn, deadline) < 0) return -1;
+    while (--size > 0) {
+        char c;
+        if (tlsSyncIO(conn, WIN32_TLS_READ, &c, 1, deadline) <= 0) {
+            nread = -1;
+            break;
+        }
+        if (c == '\n') {
+            *ptr = '\0';
+            if (nread && *(ptr-1) == '\r') *(ptr-1) = '\0';
+            break;
+        }
+        *ptr++ = c;
+        *ptr = '\0';
+        nread++;
+    }
+    return tlsSyncEnd(conn, nread);
+}
+
+#endif
 
 static const char *connTLSGetType(connection *conn_) {
     (void) conn_;

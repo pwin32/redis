@@ -58,6 +58,9 @@
 #include "win32.h"
 #include "async_private.h"
 #include "hiredis_ssl.h"
+#ifdef _WIN32
+#include "../../src/Win32_Interop/Win32_TLS.h"
+#endif
 
 #define OPENSSL_1_1_0 0x10100000L
 
@@ -92,6 +95,10 @@ typedef struct redisSSL {
      * should resume whenever a read takes place, if possible
      */
     int pendingWrite;
+#ifdef _WIN32
+    /* Retry SSL_read on writable readiness even when the output is empty. */
+    int readWantWrite;
+#endif
 } redisSSL;
 
 /* Forward declaration */
@@ -355,6 +362,28 @@ error:
  */
 
 
+#ifdef _WIN32
+static int redisSSLBlockingIO(redisContext *c, SSL *ssl, int operation,
+                               void *buffer, int length, int *ssl_error) {
+    const struct timeval *timeout = operation == WIN32_TLS_CONNECT ?
+        c->connect_timeout : c->command_timeout;
+    long long timeout_ms = -1;
+    if (timeout && (timeout->tv_sec || timeout->tv_usec))
+        timeout_ms = (long long)timeout->tv_sec * 1000 + (timeout->tv_usec + 999) / 1000;
+    long long deadline = Win32TLS_Deadline(timeout_ms);
+    if (Win32TLS_BeginSync(ssl, deadline) < 0) {
+        *ssl_error = SSL_ERROR_SYSCALL;
+        return -1;
+    }
+    int ret = Win32TLS_SyncIO(ssl, operation, buffer, length, deadline, ssl_error);
+    if (Win32TLS_EndSync(ssl) < 0 && ret > 0) {
+        *ssl_error = SSL_ERROR_SYSCALL;
+        return -1;
+    }
+    return ret;
+}
+#endif
+
 static int redisSSLConnect(redisContext *c, SSL *ssl) {
     if (c->privctx) {
         __redisSetError(c, REDIS_ERR_OTHER, "redisContext was already associated");
@@ -371,17 +400,38 @@ static int redisSSLConnect(redisContext *c, SSL *ssl) {
     rssl->ssl = ssl;
 
     SSL_set_mode(rssl->ssl, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+#ifdef _WIN32
+    if (!Win32TLS_SetFD(rssl->ssl, c->fd)) {
+        __redisSetError(c, REDIS_ERR_IO, "Failed to attach the Windows TLS transport");
+        hi_free(rssl);
+        return REDIS_ERR;
+    }
+#else
     SSL_set_fd(rssl->ssl, c->fd);
+#endif
     SSL_set_connect_state(rssl->ssl);
 
     ERR_clear_error();
+    errno = 0;
+#ifdef _WIN32
+    int ssl_error;
+    int rv = (c->flags & REDIS_BLOCK) ?
+        redisSSLBlockingIO(c, ssl, WIN32_TLS_CONNECT, NULL, 0, &ssl_error) :
+        SSL_connect(rssl->ssl);
+    if (!(c->flags & REDIS_BLOCK)) ssl_error = rv > 0 ? SSL_ERROR_NONE : SSL_get_error(ssl, rv);
+#else
     int rv = SSL_connect(rssl->ssl);
+#endif
     if (rv == 1) {
         c->privctx = rssl;
         return REDIS_OK;
     }
 
+#ifdef _WIN32
+    rv = ssl_error;
+#else
     rv = SSL_get_error(rssl->ssl, rv);
+#endif
     if (((c->flags & REDIS_BLOCK) == 0) &&
         (rv == SSL_ERROR_WANT_READ || rv == SSL_ERROR_WANT_WRITE)) {
         c->privctx = rssl;
@@ -485,17 +535,50 @@ static void redisSSLFree(void *privctx){
     hi_free(rsc);
 }
 
+#ifdef _WIN32
+int Win32TLS_HiredisWant(redisContext *c, int writing) {
+    redisSSL *rssl = c->privctx;
+    if (writing)
+        return rssl->wantRead ? SSL_ERROR_WANT_READ : SSL_ERROR_WANT_WRITE;
+    return rssl->readWantWrite ? SSL_ERROR_WANT_WRITE : SSL_ERROR_WANT_READ;
+}
+
+int Win32TLS_HiredisPending(redisContext *c) {
+    redisSSL *rssl = c->privctx;
+    return SSL_pending(rssl->ssl);
+}
+#endif
+
 static ssize_t redisSSLRead(redisContext *c, char *buf, size_t bufcap) {
     redisSSL *rssl = c->privctx;
 
+    ERR_clear_error();
+    errno = 0;
+#ifdef _WIN32
+    int ssl_error;
+    rssl->readWantWrite = 0;
+    int nread = (c->flags & REDIS_BLOCK) ?
+        redisSSLBlockingIO(c, rssl->ssl, WIN32_TLS_READ, buf, bufcap, &ssl_error) :
+        SSL_read(rssl->ssl, buf, bufcap);
+    if (!(c->flags & REDIS_BLOCK)) ssl_error = nread > 0 ? SSL_ERROR_NONE : SSL_get_error(rssl->ssl, nread);
+#else
     int nread = SSL_read(rssl->ssl, buf, bufcap);
+#endif
     if (nread > 0) {
         return nread;
     } else if (nread == 0) {
         __redisSetError(c, REDIS_ERR_EOF, "Server closed the connection");
         return -1;
     } else {
+#ifdef _WIN32
+        int err = ssl_error;
+        if (!(c->flags & REDIS_BLOCK) && err == SSL_ERROR_WANT_WRITE) {
+            rssl->readWantWrite = 1;
+            return 0;
+        }
+#else
         int err = SSL_get_error(rssl->ssl, nread);
+#endif
         if (c->flags & REDIS_BLOCK) {
             /**
              * In blocking mode, we should never end up in a situation where
@@ -531,14 +614,29 @@ static ssize_t redisSSLWrite(redisContext *c) {
     redisSSL *rssl = c->privctx;
 
     size_t len = rssl->lastLen ? rssl->lastLen : hi_sdslen(c->obuf);
+    ERR_clear_error();
+    errno = 0;
+#ifdef _WIN32
+    int ssl_error;
+    rssl->wantRead = 0;
+    int rv = (c->flags & REDIS_BLOCK) ?
+        redisSSLBlockingIO(c, rssl->ssl, WIN32_TLS_WRITE, c->obuf, len, &ssl_error) :
+        SSL_write(rssl->ssl, c->obuf, len);
+    if (!(c->flags & REDIS_BLOCK)) ssl_error = rv > 0 ? SSL_ERROR_NONE : SSL_get_error(rssl->ssl, rv);
+#else
     int rv = SSL_write(rssl->ssl, c->obuf, len);
+#endif
 
     if (rv > 0) {
         rssl->lastLen = 0;
-    } else if (rv < 0) {
+    } else {
         rssl->lastLen = len;
 
+#ifdef _WIN32
+        int err = ssl_error;
+#else
         int err = SSL_get_error(rssl->ssl, rv);
+#endif
         if ((c->flags & REDIS_BLOCK) == 0 && maybeCheckWant(rssl, err)) {
             return 0;
         } else {
@@ -570,10 +668,21 @@ static void redisSSLAsyncRead(redisAsyncContext *ac) {
         }
     }
 
+#ifdef _WIN32
+    /* OpenSSL can hold application records after the one-shot IOCP event.
+     * Drain them before callbacks, which may free ac and its SSL context. */
+    do {
+        rv = redisBufferRead(c);
+    } while (rv == REDIS_OK && !rssl->readWantWrite && SSL_pending(rssl->ssl) > 0);
+#else
     rv = redisBufferRead(c);
+#endif
     if (rv == REDIS_ERR) {
         __redisAsyncDisconnect(ac);
     } else {
+#ifdef _WIN32
+        if (rssl->readWantWrite) _EL_ADD_WRITE(ac);
+#endif
         _EL_ADD_READ(ac);
         redisProcessCallbacks(ac);
     }
@@ -584,6 +693,13 @@ static void redisSSLAsyncWrite(redisAsyncContext *ac) {
     redisSSL *rssl = ac->c.privctx;
     redisContext *c = &ac->c;
 
+#ifdef _WIN32
+    if (rssl->readWantWrite) {
+        redisSSLAsyncRead(ac);
+        return; /* callbacks may have freed ac */
+    }
+    rssl->wantRead = 0;
+#endif
     rssl->pendingWrite = 0;
     rv = redisBufferWrite(c, &done);
     if (rv == REDIS_ERR) {
@@ -617,4 +733,3 @@ redisContextFuncs redisContextSSLFuncs = {
     .read = redisSSLRead,
     .write = redisSSLWrite
 };
-

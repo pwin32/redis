@@ -25,6 +25,7 @@
 
 #include "win32_wsiocp2.h"
 #include "../ae.h"
+#include "../adlist.h"
 
  /* structs and functions for using IOCP with windows sockets */
 
@@ -61,6 +62,10 @@ typedef struct iocpSockState {
     int accept_rearm_logged;
     int write_rearm_logged;
     int deferred_error;
+#ifdef USE_OPENSSL
+    HANDLE read_event;
+    int read_suspended;
+#endif
     OVERLAPPED ov_read;
     list wreqlist;
     int unknownComplete;
@@ -90,6 +95,10 @@ BOOL           WSIOCP_TryFinalizeClosedState(iocpSockState *socketState);
 void           WSIOCP_DisposeAcceptRequest(aacceptreq *request);
 BOOL           WSIOCP_AcceptRearmPending(void);
 BOOL           WSIOCP_WriteRearmPending(void);
+#ifdef USE_OPENSSL
+int            WSIOCP_SuspendRead(iocpSockState *socketState, int timeout_ms);
+int            WSIOCP_ResumeRead(iocpSockState *socketState);
+#endif
 
 
 void* CallocMemoryNoCOW(size_t size);

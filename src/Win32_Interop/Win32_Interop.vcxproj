@@ -39,6 +39,7 @@
     <ClCompile Include="Win32_StackTrace.cpp" />
     <ClCompile Include="Win32_ThreadControl.c" />
     <ClCompile Include="Win32_Time.c" />
+    <ClCompile Include="Win32_TLS.c" />
     <ClCompile Include="Win32_variadicFunctor.cpp" />
     <ClCompile Include="win32_wsiocp.c" />
   </ItemGroup>
@@ -65,6 +66,7 @@
     <ClInclude Include="Win32_StackTrace.h" />
     <ClInclude Include="Win32_ThreadControl.h" />
     <ClInclude Include="Win32_Time.h" />
+    <ClInclude Include="Win32_TLS.h" />
     <ClInclude Include="win32_types.h" />
     <ClInclude Include="Win32_Portability.h" />
     <ClInclude Include="win32_types_hiredis.h" />

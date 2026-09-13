@@ -1750,11 +1750,13 @@ int replicaPutOnline(client *slave) {
                   replicationGetSlaveName(slave));
 
 #ifdef _WIN32
-        /* closesocket() may discard overlapped sends that connWrite() already
-         * accepted. For a plain TCP connection, replace the command reader
-         * with a drain handler, half-close only the send side, and keep the
-         * client alive until its peer closes or repl-timeout expires. */
-        if (!strcmp(connGetType(slave->conn),CONN_TYPE_SOCKET) &&
+        /* closesocket() may discard sends that connWrite() already accepted.
+         * For TCP and TLS connections, replace the command reader with a
+         * drain handler, shut down the send side through the connection type,
+         * and keep the client alive until its peer closes or repl-timeout
+         * expires. TLS flushes close-notify before the socket half-close. */
+        const char *type = connGetType(slave->conn);
+        if ((!strcmp(type,CONN_TYPE_SOCKET) || !strcmp(type,CONN_TYPE_TLS)) &&
             connSetReadHandler(slave->conn,rdbOnlyReplicaDrain) == C_OK &&
             connShutdownWrite(slave->conn) == C_OK)
         {

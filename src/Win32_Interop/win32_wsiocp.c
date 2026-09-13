@@ -33,6 +33,14 @@
 static HANDLE iocph;
 static volatile LONG acceptRearmPending;
 static volatile LONG writeRearmPending;
+static INIT_ONCE closeHookOnce = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK WSIOCP_InitializeCloseHook(PINIT_ONCE once,
+                                               PVOID parameter, PVOID *context) {
+    (void)once; (void)parameter; (void)context;
+    FDAPI_SetCloseSocketState(WSIOCP_CloseSocketStateRFD);
+    return TRUE;
+}
 
 #define SUCCEEDED_WITH_IOCP(result) \
     ((result) || (FDAPI_WSAGetLastError() == WSA_IO_PENDING))
@@ -51,6 +59,8 @@ iocpSockState* WSIOCP_GetExistingSocketState(int fd) {
 
 /* Get the socket state. Create if not found. */
 iocpSockState* WSIOCP_GetSocketState(int fd) {
+    /* Synchronous TLS tools can retain state before creating an event loop. */
+    InitOnceExecuteOnce(&closeHookOnce, WSIOCP_InitializeCloseHook, NULL, NULL);
     iocpSockState *existing = WSIOCP_GetExistingSocketState(fd);
     if (existing != NULL) return existing;
 
@@ -173,6 +183,9 @@ BOOL WSIOCP_TryFinalizeClosedState(iocpSockState *socketState) {
     WSIOCP_DisposeCompletedAccepts(socketState);
     socketState->masks &= ~CLOSE_PENDING;
     FDAPI_ClearSocketInfo(fd);
+#ifdef USE_OPENSSL
+    if (socketState->read_event) CloseHandle(socketState->read_event);
+#endif
     FreeMemoryNoCOW(socketState);
     return TRUE;
 }
@@ -193,6 +206,9 @@ BOOL WSIOCP_CloseSocketState(iocpSockState* socketState) {
     WSIOCP_DisposeCompletedAccepts(socketState);
     if (!WSIOCP_HasOutstandingState(socketState)) {
         FDAPI_ClearSocketState(socketState->fd, socketState);
+#ifdef USE_OPENSSL
+        if (socketState->read_event) CloseHandle(socketState->read_event);
+#endif
         FreeMemoryNoCOW(socketState);
         return TRUE;
     } else {
@@ -461,13 +477,30 @@ int WSIOCP_QueueNextRead(int fd) {
     /* ConnectEx and read readiness share ov_read. Never reuse it while an
      * overlapped operation is still pending. */
     if ((sockstate->masks & SOCKET_ATTACHED) == 0 ||
-        (sockstate->masks & (READ_QUEUED | CONNECT_PENDING)) != 0) {
+        (sockstate->masks & (READ_QUEUED | CONNECT_PENDING | CLOSE_PENDING)) != 0) {
         return 0;
     }
+#ifdef USE_OPENSSL
+    if (sockstate->read_suspended) return 0;
+    /* Install the event before issuing I/O, even for initially plaintext
+     * sockets. The event acknowledges cancellation without stealing packets
+     * from this or another event loop's completion queue. */
+    if (!sockstate->read_event) {
+        sockstate->read_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (!sockstate->read_event) {
+            set_errno_from_last_error();
+            return -1;
+        }
+    }
+    ResetEvent(sockstate->read_event);
+#endif
 
     // Use zero length read with overlapped to get notification
     // of when data is available
     memset(&sockstate->ov_read, 0, sizeof(sockstate->ov_read));
+#ifdef USE_OPENSSL
+    sockstate->ov_read.hEvent = sockstate->read_event;
+#endif
 
     zreadbuf.buf = zreadchar;
     zreadbuf.len = 0;
@@ -487,6 +520,46 @@ int WSIOCP_QueueNextRead(int fd) {
     }
     return 0;
 }
+
+#ifdef USE_OPENSSL
+int WSIOCP_SuspendRead(iocpSockState *state, int timeout_ms) {
+    DWORD transferred = 0, flags = 0;
+    if (state->read_suspended || (state->masks & (CLOSE_PENDING | CONNECT_PENDING))) {
+        errno = EBUSY;
+        return -1;
+    }
+    state->read_suspended = 1;
+    if (!(state->masks & READ_QUEUED)) return 0;
+    if (!state->read_event) {
+        errno = EINVAL;
+        goto error;
+    }
+    if (FDAPI_CancelSocketIO(state->fd, &state->ov_read) != 0) goto error;
+    DWORD waited = WaitForSingleObject(state->read_event,
+        timeout_ms < 0 ? INFINITE : (DWORD)timeout_ms);
+    if (waited != WAIT_OBJECT_0) {
+        if (waited == WAIT_TIMEOUT) errno = ETIMEDOUT;
+        else set_errno_from_last_error();
+        goto error;
+    }
+    if (!FDAPI_WSAGetOverlappedResult(state->fd, &state->ov_read,
+                                    &transferred, FALSE, &flags) &&
+        FDAPI_WSAGetLastError() != ERROR_OPERATION_ABORTED) goto error;
+    /* READ_QUEUED remains set. Only the matching normal dequeue may clear it,
+     * including when cancellation completed before we started waiting. */
+    return 0;
+error:
+    state->read_suspended = 0;
+    return -1;
+}
+
+int WSIOCP_ResumeRead(iocpSockState *state) {
+    state->read_suspended = 0;
+    if (!(state->masks & CLOSE_PENDING) && (state->masks & AE_READABLE))
+        return WSIOCP_QueueNextRead(state->fd);
+    return 0;
+}
+#endif
 
 /* Queue a synthetic completion only after Winsock reports real write
  * readiness.  A backpressured socket is marked for the event loop's bounded
@@ -798,7 +871,7 @@ void WSIOCP_Init(HANDLE iocp) {
         InterlockedExchange(&acceptRearmPending, 0);
         InterlockedExchange(&writeRearmPending, 0);
     }
-    FDAPI_SetCloseSocketState(WSIOCP_CloseSocketStateRFD);
+    InitOnceExecuteOnce(&closeHookOnce, WSIOCP_InitializeCloseHook, NULL, NULL);
 }
 
 void WSIOCP_Cleanup(HANDLE iocp) {

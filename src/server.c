@@ -8553,11 +8553,13 @@ int main(int argc, char **argv) {
             "use a TCP listener.");
         exit(1);
     }
+#if !defined(USE_OPENSSL)
     if (server.tls_port || server.tls_replication || server.tls_cluster) {
         serverLog(LL_WARNING,
-            "Fatal: TLS is not available in the standard Windows package.");
+            "Fatal: TLS is not available in this Windows build; rebuild with BUILD_TLS=yes.");
         exit(1);
     }
+#endif
 
     /* Validate every worker's list before initServer() starts any of them.
      * Application remains best-effort if Windows later refuses the request. */

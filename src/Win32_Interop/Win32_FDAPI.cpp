@@ -42,6 +42,9 @@ using namespace std;
 #define CATCH_AND_REPORT()  catch(const std::exception &){errno = EIO; ::serverLog(LL_WARNING, "FDAPI: std exception");}catch(...){errno = EIO; ::serverLog(LL_WARNING, "FDAPI: other exception");}
 
 extern "C" {
+/* Avoid the CRT-replacement macros in Win32_APIs.h in this implementation. */
+int win32_get_proc_address(HMODULE module, const char *name,
+                           void *function, size_t function_size);
 // Unix compatible FD based routines
 fdapi_accept accept = NULL;
 fdapi_access access = NULL;
@@ -137,6 +140,32 @@ void FDAPI_SetCloseSocketState(fnWSIOCP_CloseSocketStateRFD* func) {
 
 int FDAPI_WSAGetLastError(void) {
     return f_WSAGetLastError();
+}
+
+/* Cancel only this operation, preserving the native handle's full width.
+ * ERROR_NOT_FOUND means it already completed; its IOCP packet still owns the
+ * OVERLAPPED until the event loop dequeues it. */
+int FDAPI_CancelSocketIO(int rfd, LPOVERLAPPED overlapped) {
+    typedef BOOL (WINAPI *CancelIoExFunction)(HANDLE, LPOVERLAPPED);
+    CancelIoExFunction cancel = NULL;
+    try {
+        SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
+        if (socket == INVALID_SOCKET) {
+            errno = EBADF;
+            return -1;
+        }
+        if (win32_get_proc_address(GetModuleHandleW(L"kernel32.dll"),
+                                  "CancelIoEx", &cancel, sizeof(cancel)) != 0) {
+            set_errno_from_last_error();
+            return -1;
+        }
+        if (cancel((HANDLE)socket, overlapped) || GetLastError() == ERROR_NOT_FOUND)
+            return 0;
+        set_errno_from_last_error();
+        return -1;
+    } CATCH_AND_REPORT();
+    errno = EBADF;
+    return -1;
 }
 
 BOOL FDAPI_WSAGetOverlappedResult(int rfd, LPWSAOVERLAPPED lpOverlapped, LPDWORD lpcbTransfer, BOOL fWait, LPDWORD lpdwFlags) {
@@ -946,12 +975,12 @@ int FDAPI_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
             }
 
             if (effective_timeout < 0) {
-                ret = select(0, &readSet, &writeSet, &excepSet, NULL);
+                ret = f_select(0, &readSet, &writeSet, &excepSet, NULL);
             } else {
                 struct timeval tv;
                 tv.tv_sec = effective_timeout / 1000;
                 tv.tv_usec = 1000 * (effective_timeout % 1000);
-                ret = select(0, &readSet, &writeSet, &excepSet, &tv);
+                ret = f_select(0, &readSet, &writeSet, &excepSet, &tv);
             }
 
             if (ret < 0) {
@@ -1007,6 +1036,12 @@ int FDAPI_connect(int rfd, const struct sockaddr *addr, size_t addrlen) {
     try {
         SOCKET socket = RFDMap::getInstance().lookupSocket(rfd);
         if (socket != INVALID_SOCKET) {
+            /* Poll-based clients need the same non-inheritance rule as
+             * sockets attached to IOCP. */
+            if (!SetHandleInformation((HANDLE)socket, HANDLE_FLAG_INHERIT, 0)) {
+                set_errno_from_last_error();
+                return SOCKET_ERROR;
+            }
             EnableFastLoopback(socket);
             int result = f_connect(socket, addr, (int) addrlen);
             if (result == SOCKET_ERROR) {

@@ -568,7 +568,35 @@ end:
 
 int anetTcpNonBlockConnect(char *err, const char *addr, int port)
 {
+#ifdef _WIN32
+    /* Used by connSocketBlockingConnect's poll-based path. Do not submit
+     * ConnectEx: a synchronous TLS handshake cannot dispatch its completion
+     * while the main loop is waiting for this connection. */
+    SOCKADDR_STORAGE storage;
+    if (!ParseStorageAddress(addr, port, &storage)) {
+        anetSetError(err, "invalid address: %s", addr);
+        errno = EINVAL;
+        return ANET_ERR;
+    }
+    int fd = anetCreateSocket(err, storage.ss_family);
+    if (fd == ANET_ERR) return ANET_ERR;
+    if (anetNonBlock(err, fd) == ANET_ERR) {
+        close(fd);
+        return ANET_ERR;
+    }
+    FDAPI_SaveSocketAddrStorage(fd, &storage);
+    int length = storage.ss_family == AF_INET ? sizeof(SOCKADDR_IN) : sizeof(SOCKADDR_IN6);
+    if (connect(fd, (struct sockaddr *)&storage, length) == SOCKET_ERROR && errno != EINPROGRESS) {
+        int saved_errno = errno;
+        anetSetError(err, "connect: %s", wsa_strerror(errno));
+        close(fd);
+        errno = saved_errno;
+        return ANET_ERR;
+    }
+    return fd;
+#else
     return anetTcpGenericConnect(err,addr,port,NULL,ANET_CONNECT_NONBLOCK);
+#endif
 }
 
 int anetTcpNonBlockBestEffortBindConnect(char *err, const char *addr, int port,

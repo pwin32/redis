@@ -44,6 +44,9 @@ POSIX_ONLY(#include <pthread.h>)
 #include "ae.h"
 #include <hiredis.h>
 #ifdef USE_OPENSSL
+#ifdef _WIN32
+#include "Win32_Interop/Win32_TLS.h"
+#endif
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <hiredis_ssl.h>
@@ -139,6 +142,9 @@ typedef struct _client {
     size_t staglen;         /* Number of pointers in client->stagptr */
     size_t stagfree;        /* Number of unused pointers in client->stagptr */
     size_t written;         /* Bytes of 'obuf' already written */
+#ifdef _WIN32
+    int write_started;      /* A TLS retry may precede the first written byte. */
+#endif
     long long start;        /* Start time of a request */
     long long latency;      /* Request latency */
     int pending;            /* Number of pending requests (replies to consume) */
@@ -265,8 +271,8 @@ static redisContext *getRedisContext(const char *ip, int port,
     }
     if (config.tls==1) {
         const char *err = NULL;
-        if (cliSecureConnection(ctx, config.sslconfig, &err) == REDIS_ERR && err) {
-            fprintf(stderr, "Could not negotiate a TLS connection: %s\n", err);
+        if (cliSecureConnection(ctx, config.sslconfig, &err) == REDIS_ERR) {
+            fprintf(stderr, "Could not negotiate a TLS connection: %s\n", err ? err : ctx->errstr);
             goto cleanup;
         }
     }
@@ -401,6 +407,9 @@ static void resetClient(client c) {
     aeDeleteFileEvent(el,c->context->fd,AE_READABLE);
     aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
     c->written = 0;
+#ifdef _WIN32
+    c->write_started = 0;
+#endif
     c->pending = config.pipeline;
 }
 
@@ -468,6 +477,19 @@ static void clientDone(client c) {
     }
 }
 
+#if defined(_WIN32) && defined(USE_OPENSSL)
+static void rearmTLSClient(aeEventLoop *el, client c, int writing,
+                           aeFileProc *handler) {
+    int want = Win32TLS_HiredisWant(c->context, writing) == SSL_ERROR_WANT_READ ?
+        AE_READABLE : AE_WRITABLE;
+    aeDeleteFileEvent(el, c->context->fd, (AE_READABLE | AE_WRITABLE) & ~want);
+    if (aeCreateFileEvent(el, c->context->fd, want, handler, c) == AE_ERR) {
+        fprintf(stderr, "Error rearming TLS socket: %s\n", wsa_strerror(errno));
+        exit(1);
+    }
+}
+#endif
+
 REDIS_NO_SANITIZE_MSAN("memory")
 static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     client c = privdata;
@@ -485,6 +507,19 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     if (c->latency < 0) c->latency = ustime()-(c->start);
 
 #ifdef _WIN32
+#ifdef USE_OPENSSL
+    if (config.tls) {
+        /* Drain decrypted records before rearming IOCP. No socket event is
+         * guaranteed for data already buffered inside OpenSSL. */
+        do {
+            if (redisBufferRead(c->context) != REDIS_OK) {
+                fprintf(stderr, "Error: %s\n", c->context->errstr);
+                exit(1);
+            }
+        } while (Win32TLS_HiredisPending(c->context));
+        rearmTLSClient(el, c, 0, readHandler);
+    } else {
+#endif
     ssize_t nread = read(c->context->fd,buf,sizeof(buf));
     if (nread == -1) {
         if (errno == ENOENT || errno == EAGAIN) {
@@ -510,6 +545,9 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         fprintf(stderr,"Error rearming socket read: %s\n",wsa_strerror(errno));
         exit(1);
     }
+#ifdef USE_OPENSSL
+    }
+#endif
 #else
     if (redisBufferRead(c->context) != REDIS_OK) {
         fprintf(stderr,"Error: %s\n",c->context->errstr);
@@ -641,7 +679,10 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     UNUSED(mask);
 
     /* Initialize request when nothing was written. */
-    if (c->written == 0) {
+    if (c->written == 0 WIN32_ONLY(&& !c->write_started)) {
+#ifdef _WIN32
+        c->write_started = 1;
+#endif
         /* Enforce upper bound to number of requests. */
         int requests_issued = 0;
         atomicGetIncr(config.requests_issued, requests_issued, config.pipeline);
@@ -666,6 +707,26 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     if (writeLen > 0) {
         void *ptr = c->obuf+c->written;
 #ifdef _WIN32
+#ifdef USE_OPENSSL
+        if (config.tls) {
+            ssize_t nwritten = cliWriteConn(c->context, ptr, writeLen);
+            if (nwritten < 0 && errno != EAGAIN && errno != EINTR) {
+                fprintf(stderr, "Writing to TLS socket: %s\n", c->context->errstr);
+                freeClient(c);
+                return;
+            }
+            if (nwritten > 0) c->written += (size_t)nwritten;
+            if (c->written == sdslen(c->obuf)) {
+                aeDeleteFileEvent(el, c->context->fd, AE_READABLE | AE_WRITABLE);
+                if (aeCreateFileEvent(el, c->context->fd, AE_READABLE, readHandler, c) == AE_ERR) {
+                    freeClient(c);
+                }
+            } else {
+                rearmTLSClient(el, c, 1, writeHandler);
+            }
+            return;
+        }
+#endif
         int send_len = writeLen > INT_MAX ? INT_MAX : (int)writeLen;
         int result = WSIOCP_SocketSend(c->context->fd,
                                        ptr,
@@ -782,8 +843,8 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
     }
     if (config.tls==1) {
         const char *err = NULL;
-        if (cliSecureConnection(c->context, config.sslconfig, &err) == REDIS_ERR && err) {
-            fprintf(stderr, "Could not negotiate a TLS connection: %s\n", err);
+        if (cliSecureConnection(c->context, config.sslconfig, &err) == REDIS_ERR) {
+            fprintf(stderr, "Could not negotiate a TLS connection: %s\n", err ? err : c->context->errstr);
             exit(1);
         }
     }
@@ -929,6 +990,7 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
 #ifdef _WIN32
     /* IOCP attachment switches the socket to nonblocking operation. */
     c->context->flags &= ~REDIS_BLOCK;
+    c->write_started = 0;
 #endif
 
     listAddNodeTail(config.clients,c);
