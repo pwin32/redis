@@ -13,7 +13,8 @@ archive as the complete upstream Redis 8 binary distribution.
 Redis 8.10 replication-compression code and Zstandard are compiled into the
 server, but `repl-compression` must remain 0 in this Windows package. Upstream
 uses client I/O threads for compressed replication, while this IOCP port
-deliberately enforces `io-threads 1` and `io-threads-do-reads no`.
+deliberately enforces `io-threads 1`. The deprecated `io-threads-do-reads`
+directive is ignored.
 
 Package contents:
 
@@ -31,6 +32,7 @@ Package contents:
   license texts for statically linked code
 - ZSTD-LICENSE.txt - Zstandard license for the statically linked compression
   library
+- OPENSSL-LICENSE.txt - Apache 2.0 license for statically linked OpenSSL 3
 - RELEASENOTES.txt - Windows port release notes and validation scope
 - 00-RELEASENOTES - upstream Redis release notes
 - BUILDINFO.txt - exact source commit, tree, toolchain, and package scope
@@ -53,6 +55,23 @@ Console server quick start from a command prompt:
 
     redis-server.exe redis.windows.conf
     redis-cli.exe PING
+
+Native TLS is included through static OpenSSL 3; no OpenSSL DLL is required.
+Ordinary TCP remains the default. To use TLS only, set port 0, tls-port 6379,
+tls-cert-file, tls-key-file, and tls-ca-cert-file. The included configuration
+files have commented examples. Client certificates are required by default.
+
+    redis-cli.exe --tls --cacert certs/ca.crt --cert certs/client.crt --key certs/client.key PING
+
+The same TLS options work with redis-benchmark.exe and rediss:// URLs. Set
+tls-replication yes for replicas and Sentinel, and tls-cluster yes for Cluster
+links. Dedicated client certificate/key options support outbound connections.
+Use tls-expected-peer-name to verify the configured server-to-server identity.
+Quote certificate paths containing spaces; use forward slashes for Windows
+paths. Grant the Windows service account read access to its certificate/key
+files. Renew by installing new files and setting the TLS certificate, key and
+CA paths together with CONFIG SET; established connections keep their current
+context until reconnecting. Save configuration changes for the next restart.
 
 Sentinel quick start:
 

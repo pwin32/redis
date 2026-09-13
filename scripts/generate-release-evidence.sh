@@ -61,8 +61,12 @@ buildinfo="$extracted_dir/BUILDINFO.txt"
 version="$(sed -n 's/^Redis version: //p' "$buildinfo")"
 source_commit="$(sed -n 's/^Source commit: //p' "$buildinfo")"
 source_tree="$(sed -n 's/^Source tree: //p' "$buildinfo")"
+openssl_version="$(sed -n 's/^OpenSSL version: //p' "$buildinfo")"
+openssl_package="$(sed -n 's/^OpenSSL package: //p' "$buildinfo")"
 buildinfo_revision="$(sed -n 's/^Windows package revision: //p' "$buildinfo")"
 buildinfo_tag="$(sed -n 's/^Release tag: //p' "$buildinfo")"
+[[ "$openssl_version" == 3.* && "$openssl_package" == mingw-w64-x86_64-openssl\ * ]] || die "missing OpenSSL provenance"
+grep -Fx 'TLS build: yes (built in; static OpenSSL)' "$buildinfo" >/dev/null || die "package TLS mode mismatch"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid BUILDINFO version"
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || die "invalid BUILDINFO source commit"
 [[ "$source_tree" =~ ^[0-9a-f]{40}$ ]] || die "invalid BUILDINFO source tree"
@@ -142,16 +146,16 @@ IFS= read -r -d '' report_template <<'EOF' || true
 | --- | --- |
 | Public-source hygiene over full Git history | Passed |
 | MinGW64 core, interop, launcher, and package build | Passed |
-| Redis root test suite | Passed |
-| Cluster test suite | Passed |
-| Sentinel test suite | Passed |
-| Module API test suite | Passed |
+| Redis root test suite (plaintext and TLS) | Passed |
+| Cluster test suite (plaintext and TLS) | Passed |
+| Sentinel test suite (plaintext and TLS) | Passed |
+| Module API test suite (plaintext and TLS) | Passed |
 | Windows legacy and modern interop tests | Passed |
-| Isolated Windows service and Event Log test | Passed |
+| Isolated Windows service and Event Log test (plaintext and TLS) | Passed |
 | ZIP checksum, extraction, manifest, licenses, PE and import audit | Passed |
 | Release binaries identical to the bytes used by source-tree suites | Passed |
-| Packaged master/replica full and incremental synchronization | Passed |
-| Packaged QFork RDB/AOF persistence and restart soak (30 minutes minimum) | Passed |
+| Packaged master/replica full and incremental synchronization (plaintext and TLS) | Passed |
+| Packaged QFork RDB/AOF persistence and restart soak (30 minutes per transport) | Passed |
 | Short loopback package benchmark completed | Passed |
 
 ## Benchmark
@@ -241,6 +245,8 @@ jq -n \
     --arg package_file_name "$package_name" \
     --arg archive_sha "$archive_sha" \
     --arg package_verification_code "$package_verification_code" \
+    --arg openssl_version "$openssl_version" \
+    --arg openssl_package "$openssl_package" \
     --slurpfile files "$files_json" \
     --slurpfile contains "$relationships_json" \
     '{
@@ -262,12 +268,26 @@ jq -n \
             licenseConcluded:"NOASSERTION",
             licenseDeclared:"NOASSERTION",
             copyrightText:"NOASSERTION"
+        },{
+            SPDXID:"SPDXRef-OpenSSL",
+            name:"OpenSSL",
+            versionInfo:$openssl_version,
+            downloadLocation:"https://www.openssl.org/source/",
+            filesAnalyzed:false,
+            licenseConcluded:"Apache-2.0",
+            licenseDeclared:"Apache-2.0",
+            copyrightText:"NOASSERTION",
+            sourceInfo:("MSYS2 package: " + $openssl_package)
         }],
         files:$files,
         relationships:([{
             spdxElementId:"SPDXRef-DOCUMENT",
             relationshipType:"DESCRIBES",
             relatedSpdxElement:"SPDXRef-Package"
+        },{
+            spdxElementId:"SPDXRef-Package",
+            relationshipType:"STATIC_LINK",
+            relatedSpdxElement:"SPDXRef-OpenSSL"
         }] + $contains)
     }' > "$output_dir/sbom.spdx.json"
 rm -f "$files_json" "$relationships_json" "$verification_sha1s"
@@ -275,7 +295,9 @@ rm -f "$files_json" "$relationships_json" "$verification_sha1s"
 jq -e --arg package_verification_code "$package_verification_code" '
     ([.SPDXID] + [.packages[]?.SPDXID] + [.files[]?.SPDXID]) as $ids |
     ($ids | length == (unique | length)) and
-    (.packages | length == 1) and
+    (.packages | length == 2) and
+    (.packages[1].SPDXID == "SPDXRef-OpenSSL" and .packages[1].licenseDeclared == "Apache-2.0" and .packages[1].filesAnalyzed == false) and
+    (any(.relationships[]; .relationshipType == "STATIC_LINK" and .relatedSpdxElement == "SPDXRef-OpenSSL")) and
     (.packages[0].filesAnalyzed == true) and
     (.packages[0].packageVerificationCode.packageVerificationCodeValue == $package_verification_code) and
     (all(.files[];
@@ -300,13 +322,15 @@ jq -n \
     --arg benchmark_status "$benchmark_status" \
     --arg workflow_url "$workflow_url" \
     --arg completed_utc "$created_utc" \
+    --arg openssl_version "$openssl_version" \
+    --arg openssl_package "$openssl_package" \
     --slurpfile maintained_lines "$gate_json" \
     '{
         schema_version:$schema_version,
         release:{version:$version,windows_revision:($windows_revision|tonumber),tag:$tag,branch:$branch},
         source:{commit:$source_commit,tree:$source_tree},
-        package:{archive:$archive,sha256:$archive_sha256,scope:"Redis core only"},
-        qualification:{workflow_url:$workflow_url,completed_utc:$completed_utc,all_required_tests:"passed",release_binary_identity:"passed",maintained_lines:$maintained_lines[0]},
+        package:{archive:$archive,sha256:$archive_sha256,scope:"Redis core only",tls:{build:"yes",linkage:"static",openssl_version:$openssl_version,openssl_package:$openssl_package}},
+        qualification:{workflow_url:$workflow_url,completed_utc:$completed_utc,all_required_tests:"passed",transports:["plaintext","TLS"],release_binary_identity:"passed",maintained_lines:$maintained_lines[0]},
         benchmark:{baseline_reference:$baseline,regression_advisory:$benchmark_status,blocking:false},
         attestations:{required_before_publication:{build_provenance:true,sbom:true},created_by:"Publish Windows release workflow"}
     }' > "$output_dir/release-evidence.json"

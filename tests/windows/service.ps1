@@ -1,7 +1,9 @@
 param(
     [string]$BuildDir = (Join-Path $PSScriptRoot "..\..\build\mingw64"),
     [string]$ServiceName = "RedisPortTest",
-    [int]$Port = 6397
+    [int]$Port = 6397,
+    [switch]$TLS,
+    [string]$TLSDir = (Join-Path $PSScriptRoot "..\tls")
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,7 +64,7 @@ function Assert-LastExitCode([string]$Operation) {
 function Wait-ForRedis([string]$Cli, [int]$RedisPort) {
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
-        $reply = & $Cli -h 127.0.0.1 -p $RedisPort PING 2>$null
+        $reply = & $Cli @tlsClientArguments -h 127.0.0.1 -p $RedisPort PING 2>$null
         if ($LASTEXITCODE -eq 0 -and $reply -eq "PONG") {
             return
         }
@@ -165,19 +167,19 @@ function Assert-RedisRound(
     [string]$Key,
     [string]$Value
 ) {
-    $pingReply = & $Cli -h 127.0.0.1 -p $RedisPort PING
+    $pingReply = & $Cli @tlsClientArguments -h 127.0.0.1 -p $RedisPort PING
     Assert-LastExitCode "Pinging the Redis service"
     if ($pingReply -ne "PONG") {
         throw "Unexpected PING reply: $pingReply"
     }
 
-    $setReply = & $Cli -h 127.0.0.1 -p $RedisPort SET $Key $Value
+    $setReply = & $Cli @tlsClientArguments -h 127.0.0.1 -p $RedisPort SET $Key $Value
     Assert-LastExitCode "Writing through the Redis service"
     if ($setReply -ne "OK") {
         throw "Unexpected SET reply: $setReply"
     }
 
-    $getReply = & $Cli -h 127.0.0.1 -p $RedisPort GET $Key
+    $getReply = & $Cli @tlsClientArguments -h 127.0.0.1 -p $RedisPort GET $Key
     Assert-LastExitCode "Reading through the Redis service"
     if ($getReply -ne $Value) {
         throw "Unexpected GET reply: $getReply"
@@ -277,21 +279,43 @@ if (Test-Path $dataDir) {
     throw "Refusing to reuse existing service test directory $dataDir"
 }
 
+$tlsClientArguments = @()
+$tcpPort = $Port
+if ($TLS) {
+    $TLSDir = (Resolve-Path -LiteralPath $TLSDir).Path
+    foreach ($name in @('ca.crt', 'server.crt', 'server.key', 'client.crt', 'client.key')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $TLSDir $name) -PathType Leaf)) {
+            throw "Missing TLS service fixture: $name"
+        }
+    }
+    $tlsClientArguments = @('--tls', '--cacert', (Join-Path $TLSDir 'ca.crt'),
+        '--cert', (Join-Path $TLSDir 'client.crt'), '--key', (Join-Path $TLSDir 'client.key'))
+    $tcpPort = 0
+}
+
 $binaryPath = (
     '"{0}" --service-run --service-name {1} --persistence-available no --port {2} --bind 127.0.0.1 --dir "{3}" --logfile "{4}" --loglevel verbose --syslog-enabled yes --syslog-ident {1}' -f
-        $server, $ServiceName, $Port, $dataDir, $logFile
+        $server, $ServiceName, $tcpPort, $dataDir, $logFile
 )
 $serviceInstallArguments = @(
     "--service-install",
     "--service-name", $ServiceName,
     "--persistence-available", "no",
-    "--port", "$Port",
+    "--port", "$tcpPort",
     "--bind", "127.0.0.1",
     "--dir", $dataDir,
     "--logfile", $logFile,
     "--loglevel", "verbose",
     "--syslog-enabled", "yes",
     "--syslog-ident", $ServiceName)
+if ($TLS) {
+    $tlsServerArguments = @('--tls-port', "$Port", '--tls-cert-file',
+        (Join-Path $dataDir 'server.crt'), '--tls-key-file', (Join-Path $dataDir 'server.key'),
+        '--tls-ca-cert-file', (Join-Path $dataDir 'ca.crt'))
+    $serviceInstallArguments += $tlsServerArguments
+    $binaryPath += ' --tls-port {0} --tls-cert-file "{1}" --tls-key-file "{2}" --tls-ca-cert-file "{3}"' -f
+        $Port, (Join-Path $dataDir 'server.crt'), (Join-Path $dataDir 'server.key'), (Join-Path $dataDir 'ca.crt')
+}
 $eventLogSourcePath =
     "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\redis"
 $legacyEventLogPath =
@@ -320,6 +344,12 @@ try {
         [Security.AccessControl.AccessControlType]::Allow)
     $acl.SetAccessRule($rule)
     Set-Acl -Path $dataDir -AclObject $acl
+    if ($TLS) {
+        # Keep the service's private key under the same isolated account ACL.
+        foreach ($name in @('server.crt', 'server.key', 'ca.crt')) {
+            Copy-Item -LiteralPath (Join-Path $TLSDir $name) -Destination (Join-Path $dataDir $name)
+        }
+    }
 
     $serviceCreationAttempted = $true
     if ($eventLogSourceWasPresent -or $legacyEventLogWasPresent) {

@@ -103,7 +103,11 @@ if (( ${#module_binaries[@]} != 45 )); then
     exit 1
 fi
 
-make -f Makefile.mingw test-modules test-launcher
+# Parallel CI jobs reuse the test helpers built with the single candidate.
+# Keep the inventory checks below active when rebuilding is disabled.
+if [[ "${REDIS_TEST_PREBUILT:-0}" != 1 ]]; then
+    make -f Makefile.mingw test-modules test-launcher
+fi
 
 for exe in redis-server.exe redis-cli.exe redis-benchmark.exe redis-check-aof.exe redis-check-rdb.exe; do
     if [[ ! -x "$binary_dir/$exe" ]]; then

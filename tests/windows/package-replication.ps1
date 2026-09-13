@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)][int]$MasterPort,
     [Parameter(Mandatory = $true)][int]$ReplicaPort,
     [Parameter(Mandatory = $true)][string]$OutputDir,
-    [Parameter(Mandatory = $true)][string]$ExpectedVersion
+    [Parameter(Mandatory = $true)][string]$ExpectedVersion,
+    [switch]$TLS,
+    [string]$TLSDir = (Join-Path $PSScriptRoot "..\tls")
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,13 +49,24 @@ New-Item -ItemType Directory -Path $masterDir, $replicaDir | Out-Null
 $masterConfig = Join-Path $masterDir 'redis.conf'
 $replicaConfig = Join-Path $replicaDir 'redis.conf'
 
+$tlsClientArguments = @()
+$masterPlainPort = $MasterPort
+$replicaPlainPort = $ReplicaPort
+if ($TLS) {
+    $TLSDir = (Resolve-Path -LiteralPath $TLSDir).Path
+    $masterPlainPort = 0
+    $replicaPlainPort = 0
+    $tlsClientArguments = @('--tls', '--cacert', (Join-Path $TLSDir 'ca.crt'),
+        '--cert', (Join-Path $TLSDir 'client.crt'), '--key', (Join-Path $TLSDir 'client.key'))
+}
+
 function Convert-ToConfigPath([string]$Path) {
     return $Path.Replace('\', '/')
 }
 
 @(
     'bind 127.0.0.1'
-    "port $MasterPort"
+    "port $masterPlainPort"
     'protected-mode yes'
     'save ""'
     'appendonly no'
@@ -66,7 +79,7 @@ function Convert-ToConfigPath([string]$Path) {
 
 @(
     'bind 127.0.0.1'
-    "port $ReplicaPort"
+    "port $replicaPlainPort"
     'protected-mode yes'
     'save ""'
     'appendonly no'
@@ -76,11 +89,25 @@ function Convert-ToConfigPath([string]$Path) {
     'logfile ""'
 ) | Set-Content -LiteralPath $replicaConfig -Encoding UTF8
 
+if ($TLS) {
+    foreach ($entry in @(@($masterConfig, $MasterPort), @($replicaConfig, $ReplicaPort))) {
+        @(
+            "tls-port $($entry[1])"
+            'tls-replication yes'
+            "tls-cert-file `"$(Convert-ToConfigPath (Join-Path $TLSDir 'server.crt'))`""
+            "tls-key-file `"$(Convert-ToConfigPath (Join-Path $TLSDir 'server.key'))`""
+            "tls-client-cert-file `"$(Convert-ToConfigPath (Join-Path $TLSDir 'client.crt'))`""
+            "tls-client-key-file `"$(Convert-ToConfigPath (Join-Path $TLSDir 'client.key'))`""
+            "tls-ca-cert-file `"$(Convert-ToConfigPath (Join-Path $TLSDir 'ca.crt'))`""
+        ) | Add-Content -LiteralPath $entry[0] -Encoding UTF8
+    }
+}
+
 $master = $null
 $replica = $null
 
 function Invoke-RedisCli([int]$Port, [string[]]$Arguments) {
-    $outputText = & $cli -h 127.0.0.1 -p $Port --raw @Arguments 2>&1
+    $outputText = & $cli @tlsClientArguments -h 127.0.0.1 -p $Port --raw @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "redis-cli failed on port ${Port}: $outputText"
     }
@@ -176,7 +203,7 @@ try {
     }
 
     $seedLog = Join-Path $output 'seed-benchmark.log'
-    & $benchmark -h 127.0.0.1 -p $MasterPort -c 20 -P 4 -n 10000 `
+    & $benchmark @tlsClientArguments -h 127.0.0.1 -p $MasterPort -c 20 -P 4 -n 10000 `
         -r 10000 -d 128 -t set -q *> $seedLog
     if ($LASTEXITCODE -ne 0) { throw 'Packaged seed benchmark failed.' }
     if ((Invoke-RedisCli $MasterPort @('SET', 'package:replication:marker', 'initial')) -ne 'OK') {
@@ -220,7 +247,7 @@ try {
         Set-Content -LiteralPath (Join-Path $output 'master-info-replication.txt') -Encoding UTF8
     Invoke-RedisCli $ReplicaPort @('INFO', 'replication') |
         Set-Content -LiteralPath (Join-Path $output 'replica-info-replication.txt') -Encoding UTF8
-    "PACKAGE_REPLICATION_OK version=$ExpectedVersion master_port=$MasterPort replica_port=$ReplicaPort" |
+    "PACKAGE_REPLICATION_OK tls=$TLS version=$ExpectedVersion master_port=$MasterPort replica_port=$ReplicaPort" |
         Tee-Object -FilePath (Join-Path $output 'summary.txt')
 } finally {
     Stop-ExactRedis $replica $ReplicaPort

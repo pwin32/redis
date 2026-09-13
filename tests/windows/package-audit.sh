@@ -91,6 +91,7 @@ GCC-RUNTIME-README.txt
 GPL-3.0.txt
 LICENSE.txt
 MINGW-W64-RUNTIME.txt
+OPENSSL-LICENSE.txt
 PACKAGE-MANIFEST.txt
 README.txt
 REDISCONTRIBUTIONS.txt
@@ -124,7 +125,7 @@ for required_text in \
     LICENSE.txt REDISCONTRIBUTIONS.txt WINDOWS-NOTICES.txt \
     THIRD-PARTY-NOTICES.txt CC0-1.0.txt GPL-3.0.txt \
     GCC-RUNTIME-LIBRARY-EXCEPTION.txt GCC-RUNTIME-README.txt \
-    MINGW-W64-RUNTIME.txt ZSTD-LICENSE.txt README.txt \
+    MINGW-W64-RUNTIME.txt ZSTD-LICENSE.txt OPENSSL-LICENSE.txt README.txt \
     RELEASENOTES.txt 00-RELEASENOTES "$changes_doc" BUILDINFO.txt
 do
     [[ -s "$package_dir/$required_text" ]] || die "required package text is empty: $required_text"
@@ -151,6 +152,15 @@ buildinfo_tree="$(sed -n 's/^Source tree: //p' "$package_dir/BUILDINFO.txt")"
 if [[ -n "${SOURCE_SHA:-}" && "$buildinfo_commit" != "$SOURCE_SHA" ]]; then
     die "BUILDINFO source commit does not match the requested qualification source"
 fi
+
+grep -Fx 'TLS build: yes (built in; static OpenSSL)' "$package_dir/BUILDINFO.txt" >/dev/null ||
+    die 'package was not built with static TLS support'
+grep -Eq '^OpenSSL version: 3[.][0-9]+[.][0-9]+' "$package_dir/BUILDINFO.txt" ||
+    die 'BUILDINFO OpenSSL version is missing or invalid'
+grep -Eq '^OpenSSL package: mingw-w64-x86_64-openssl 3[.]' "$package_dir/BUILDINFO.txt" ||
+    die 'BUILDINFO OpenSSL package is missing or invalid'
+grep -F 'Apache License' "$package_dir/OPENSSL-LICENSE.txt" >/dev/null ||
+    die 'OpenSSL license is missing'
 
 manifest="$package_dir/PACKAGE-MANIFEST.txt"
 [[ "$(sed -n '1p' "$manifest")" == "SHA256  SIZE  FILE" ]] || die "invalid package manifest header"
@@ -215,8 +225,8 @@ done
 bash "$repo_root/tests/windows/pe-hardening.sh" "$package_dir" >> "$layout_report"
 objdump -h "$package_dir/EventLog.dll" | grep -Eq '[[:space:]][.]rsrc[[:space:]]' ||
     die "EventLog.dll does not contain a PE resource section"
-if grep -Eiq 'DLL Name: (libgcc_s|libstdc\+\+|libwinpthread|libzstd|msys-|cygwin)' "$imports_report"; then
-    grep -Ei 'DLL Name: (libgcc_s|libstdc\+\+|libwinpthread|libzstd|msys-|cygwin)' "$imports_report" >&2
+if grep -Eiq 'DLL Name: (libgcc_s|libstdc\+\+|libwinpthread|libzstd|libssl|libcrypto|ssleay32|libeay32|msys-|cygwin)' "$imports_report"; then
+    grep -Ei 'DLL Name: (libgcc_s|libstdc\+\+|libwinpthread|libzstd|libssl|libcrypto|ssleay32|libeay32|msys-|cygwin)' "$imports_report" >&2
     die "package imports a forbidden non-system runtime DLL"
 fi
 

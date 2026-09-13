@@ -2,6 +2,11 @@
 
 Date: August 18, 2026
 
+This record describes the August audit. Native TLS was added afterward; see
+[WINDOWS-8.10-CHANGES.md](WINDOWS-8.10-CHANGES.md) and
+[WINDOWS-MINGW-README.md](WINDOWS-MINGW-README.md) for current transport support
+and validation requirements.
+
 ## Outcome
 
 The Redis 8.10.0 Windows core source was reviewed for portability, LLP64,
@@ -72,9 +77,10 @@ replication compression remains disabled on Windows.
 ### Package scope
 
 The intended Windows package contains Redis core executables, configuration,
-licenses, notices, and provenance. Bundled Redis modules, legacy MSI/NuGet/
-Chocolatey publication, TLS, Unix-domain sockets, multiple client I/O threads,
-and runtime replication compression are outside the qualified core scope.
+licenses, notices, and provenance. At the time of this audit, bundled Redis
+modules, legacy MSI/NuGet/Chocolatey publication, TLS, Unix-domain sockets,
+multiple client I/O threads, and runtime replication compression were outside
+the qualified core scope.
 
 ## Validation model
 

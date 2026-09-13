@@ -50,21 +50,26 @@ concurrency:
   group: full-windows-qualification-${{ github.event_name == 'push' && github.ref || inputs.source_sha || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
+env:
+  SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+  SOURCE_BRANCH: ${{ inputs.source_branch || github.ref_name }}
+  WINDOWS_PACKAGE_REVISION: ${{ inputs.package_revision || '1' }}
+  QUALIFICATION_GATE: ${{ inputs.qualification_gate || '' }}
+
 jobs:
-  qualify:
-    name: Windows MinGW64 qualification
+  build:
+    name: Build and audit Windows candidate
     runs-on: windows-2022
-    timeout-minutes: 240
+    timeout-minutes: 90
     outputs:
+      version: ${{ steps.meta.outputs.version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      candidate_artifact_name: ${{ steps.meta.outputs.candidate_artifact_name }}
+      candidate_sha256: ${{ steps.candidate.outputs.candidate_sha256 }}
+      package_sha256: ${{ steps.candidate.outputs.package_sha256 }}
     defaults:
       run:
         shell: msys2 {0}
-    env:
-      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
-      SOURCE_BRANCH: ${{ inputs.source_branch || github.ref_name }}
-      WINDOWS_PACKAGE_REVISION: ${{ inputs.package_revision || '1' }}
-      QUALIFICATION_GATE: ${{ inputs.qualification_gate || '' }}
     steps:
       - name: Check out exact source commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,12 +97,6 @@ jobs:
             throw 'The exact source checkout is not clean after byte restoration.'
           }
 
-      - name: Resolve hosted GitHub CLI
-        shell: pwsh
-        run: |
-          $gh = (Get-Command gh.exe -ErrorAction Stop).Source
-          "GH_CLI=$gh" >> $env:GITHUB_ENV
-
       - name: Set up MSYS2 MinGW64
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
         with:
@@ -111,6 +110,10 @@ jobs:
             jq
             diffutils
             mingw-w64-x86_64-gcc
+            curl
+            tar
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-openssl
             mingw-w64-x86_64-tcl
             mingw-w64-x86_64-zstd
 
@@ -140,6 +143,7 @@ jobs:
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
           printf 'release_tag=v%s-windows.%s\n' "$version" "$WINDOWS_PACKAGE_REVISION" >> "$GITHUB_OUTPUT"
           printf 'artifact_name=windows-qualification-%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          printf 'candidate_artifact_name=windows-qualification-candidate-%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           mkdir -p build/qualification build/mingw64/release-assets
           if [[ -n "$QUALIFICATION_GATE" ]]; then
             printf '%s\n' "$QUALIFICATION_GATE" | jq -e . > build/qualification/maintained-lines.json
@@ -160,6 +164,8 @@ jobs:
             pacman -Q mingw-w64-x86_64-gcc
             pacman -Q mingw-w64-x86_64-zstd
             pacman -Q mingw-w64-x86_64-tcl
+            pacman -Q mingw-w64-x86_64-openssl
+            printf 'BUILD_TLS=yes (static OpenSSL)\n'
             printf 'KERNEL_NAME=%s\n' "$(uname -s)"
             printf 'KERNEL_RELEASE=%s\n' "$(uname -r)"
             printf 'MACHINE=%s\n' "$(uname -m)"
@@ -225,30 +231,202 @@ jobs:
           set -o pipefail
           make -f Makefile.mingw interop-test 2>&1 | tee build/qualification/interop-build.log
 
-      - name: Run Redis root test suite
-        run: |
-          set +e
-          ./runtest-mingw.sh --clients 1 --quiet --timeout 600 2>&1 | tee build/qualification/root-tests.log
-          status=${PIPESTATUS[0]}
-          set -e
-          if (( status != 0 )); then
-            excerpt="$(tail -n 100 build/qualification/root-tests.log)"
-            excerpt="${excerpt//'%'/'%25'}"
-            excerpt="${excerpt//$'\r'/'%0D'}"
-            excerpt="${excerpt//$'\n'/'%0A'}"
-            printf '::error title=Redis root test suite failure::%s\n' "$excerpt"
-          fi
-          exit "$status"
-
-      - name: Run Redis cluster test suite
+      - name: Run Windows interop tests
         run: |
           set -o pipefail
-          ./runtest-mingw.sh --cluster 2>&1 | tee build/qualification/cluster-tests.log
+          {
+            ./build/mingw64/interop-test.exe --legacy
+            ./build/mingw64/interop-test.exe --modern
+          } 2>&1 | tee build/qualification/interop-tests.log
 
-      - name: Run Redis Sentinel test suite
+      - name: Bundle the audited candidate and prebuilt test support
+        id: candidate
+        run: |
+          set -euo pipefail
+          mapfile -d '' -t archives < <(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print0)
+          (( ${#archives[@]} == 1 )) || { echo 'expected exactly one candidate ZIP' >&2; exit 1; }
+          archive="${archives[0]}"
+          support=(
+            build/mingw64/redis-test-launcher.exe
+            build/mingw64/redis-affinity-test.exe
+            build/mingw64/interop-test.exe
+            build/mingw64/tests/modules/*.so
+          )
+          sha256sum "${support[@]}" > build/qualification/test-support.sha256
+          # A tar preserves executable modes and paths across artifact transfers.
+          # Test helpers remain outside the core-only release ZIP.
+          tar -cf build/qualification-candidate.tar \
+            build/mingw64/releases "${support[@]}" \
+            build/qualification/test-support.sha256 \
+            build/qualification/package-binary-identity.before.tsv \
+            build/qualification/maintained-lines.json \
+            build/qualification/toolchain.txt
+          printf 'candidate_sha256=%s\n' "$(sha256sum build/qualification-candidate.tar | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'package_sha256=%s\n' "$(sha256sum "$archive" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          [[ -z "$(git status --porcelain --untracked-files=no)" ]] || {
+            echo 'candidate build modified tracked source files' >&2
+            exit 1
+          }
+
+      - name: Upload the single qualification candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.meta.outputs.candidate_artifact_name }}
+          path: build/qualification-candidate.tar
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+      - name: Upload qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-qualification-build-diagnostics-${{ inputs.source_sha || github.sha }}
+          path: |
+            build/qualification
+            build/mingw64/package-soak-*
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
+
+  transports:
+    name: Windows qualification (${{ matrix.transport }})
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        transport: [plaintext, TLS]
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      TRANSPORT: ${{ matrix.transport }}
+      CANDIDATE_SHA256: ${{ needs.build.outputs.candidate_sha256 }}
+      PACKAGE_SHA256: ${{ needs.build.outputs.package_sha256 }}
+      REDIS_VERSION: ${{ needs.build.outputs.version }}
+      REDIS_TEST_PREBUILT: '1'
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Preserve repository bytes for MSYS2 Git
+        shell: pwsh
+        run: |
+          git config --local core.autocrlf false
+          git config --local core.eol lf
+          git config --local core.filemode false
+          git reset --hard HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Git reset failed while restoring the exact source checkout.'
+          }
+          $dirty = @(git status --porcelain --untracked-files=normal)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Git status failed while checking the restored checkout.'
+          }
+          if ($dirty.Count -ne 0) {
+            $dirty | Write-Error
+            throw 'The exact source checkout is not clean after byte restoration.'
+          }
+
+      - name: Set up MSYS2 MinGW64
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            make
+            unzip
+            zip
+            jq
+            diffutils
+            mingw-w64-x86_64-gcc
+            curl
+            tar
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-tcl
+            mingw-w64-x86_64-zstd
+
+      - name: Normalize source bytes for MSYS2 Git
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          git config --local core.autocrlf false
+          git config --local core.eol lf
+          git config --local core.filemode false
+          git reset --hard HEAD
+          dirty="$(git status --porcelain --untracked-files=normal)"
+          if [[ -n "$dirty" ]]; then
+            printf '%s\n' "$dirty" >&2
+            echo 'The MSYS2 Git checkout is not clean after byte normalization.' >&2
+            exit 1
+          fi
+
+      - name: Resolve hosted GitHub CLI
+        if: matrix.transport == 'plaintext'
+        shell: pwsh
+        run: |
+          $gh = (Get-Command gh.exe -ErrorAction Stop).Source
+          "GH_CLI=$gh" >> $env:GITHUB_ENV
+
+      - name: Download the single qualification candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.candidate_artifact_name }}
+          path: build/candidate-input
+
+      - name: Verify and restore the candidate before transport tests
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$CANDIDATE_SHA256" build/candidate-input/qualification-candidate.tar | sha256sum -c -
+          tar -xf build/candidate-input/qualification-candidate.tar
+          mapfile -d '' -t archives < <(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print0)
+          (( ${#archives[@]} == 1 )) || { echo 'expected exactly one candidate ZIP' >&2; exit 1; }
+          archive="${archives[0]}"
+          printf '%s  %s\n' "$PACKAGE_SHA256" "$archive" | sha256sum -c -
+          package_dir=build/qualification/package-audit/package
+          mkdir -p "$package_dir"
+          unzip -q "$archive" -d "$package_dir"
+          grep -Fx "Source commit: $SOURCE_SHA" "$package_dir/BUILDINFO.txt"
+          grep -Fx "Source tree: $(git rev-parse 'HEAD^{tree}')" "$package_dir/BUILDINFO.txt"
+          ./tests/windows/package-binary-identity.sh \
+            "$package_dir" "$package_dir" build/qualification/package-binary-identity.start.tsv
+          cmp build/qualification/package-binary-identity.before.tsv \
+            build/qualification/package-binary-identity.start.tsv
+          sha256sum -c build/qualification/test-support.sha256
+          printf 'REDIS_TEST_BINARY_DIR=%s\n' "$package_dir" >> "$GITHUB_ENV"
+          printf 'REDIS_TEST_LAUNCHER=%s\n' "$(pwd -P)/build/mingw64/redis-test-launcher.exe" >> "$GITHUB_ENV"
+          printf 'REDIS_TEST_MODULE_DIR=%s\n' "$(pwd -P)/build/mingw64/tests/modules" >> "$GITHUB_ENV"
+
+      - name: Run Redis ${{ matrix.transport }} root test suite
+        run: |
+          set -o pipefail
+          tls_args=()
+          if [[ "$TRANSPORT" == TLS ]]; then tls_args+=(--tls); fi
+          ./runtest-mingw.sh "${tls_args[@]}" --clients 1 --quiet --timeout 600 --dump-logs \
+            2>&1 | tee build/qualification/root-tests.log
+
+      - name: Run Redis ${{ matrix.transport }} cluster test suite
+        run: |
+          set -o pipefail
+          tls_args=()
+          if [[ "$TRANSPORT" == TLS ]]; then tls_args+=(--tls); fi
+          ./runtest-mingw.sh --cluster "${tls_args[@]}" 2>&1 | tee build/qualification/cluster-tests.log
+
+      - name: Run Redis ${{ matrix.transport }} Sentinel test suite
         run: |
           set +e
-          ./runtest-mingw.sh --sentinel --dont-clean 2>&1 | tee build/qualification/sentinel-tests.log
+          tls_args=()
+          if [[ "$TRANSPORT" == TLS ]]; then tls_args+=(--tls); fi
+          ./runtest-mingw.sh --sentinel "${tls_args[@]}" --dont-clean 2>&1 | tee build/qualification/sentinel-tests.log
           status=${PIPESTATUS[0]}
           set -e
           if (( status != 0 )); then
@@ -260,50 +438,47 @@ jobs:
             excerpt="${excerpt//$'\n'/'%0A'}"
             printf '::error title=Redis Sentinel test suite failure::%s\n' "$excerpt"
           fi
-          # The suite was run with --dont-clean so failed-run instance logs can
-          # be copied above.  Remove only generated Sentinel temp entries
-          # before the final source-tree cleanliness gate.
-          find tests/sentinel/tmp -mindepth 1 -maxdepth 1 ! -name .gitignore \
-            -exec rm -rf -- {} +
+          find tests/sentinel/tmp -mindepth 1 -maxdepth 1 ! -name .gitignore -exec rm -rf -- {} +
           exit "$status"
 
-      - name: Run Redis Module API test suite
+      - name: Run Redis ${{ matrix.transport }} Module API test suite
         run: |
           set -o pipefail
-          ./runtest-mingw.sh --moduleapi --clients 1 --quiet --timeout 300 2>&1 | tee build/qualification/moduleapi-tests.log
+          tls_args=()
+          if [[ "$TRANSPORT" == TLS ]]; then tls_args+=(--tls); fi
+          ./runtest-mingw.sh --moduleapi "${tls_args[@]}" --clients 1 --quiet --timeout 300 \
+            2>&1 | tee build/qualification/moduleapi-tests.log
 
-      - name: Run Windows interop tests
+      - name: Run elevated ${{ matrix.transport }} Windows service and Event Log test
         run: |
           set -o pipefail
-          {
-            ./build/mingw64/interop-test.exe --legacy
-            ./build/mingw64/interop-test.exe --modern
-          } 2>&1 | tee build/qualification/interop-tests.log
+          service_args=()
+          if [[ "$TRANSPORT" == TLS ]]; then
+            service_args+=(-TLS -ServiceName RedisPortTLSTest -Port 6398)
+          fi
+          ./runtest-mingw-service.sh "${service_args[@]}" 2>&1 | tee build/qualification/service-tests.log
 
-      - name: Run elevated Windows service and Event Log test
-        run: |
-          set -o pipefail
-          ./runtest-mingw-service.sh 2>&1 | tee build/qualification/service-tests.log
-
-      - name: Verify packaged master and replica synchronization
+      - name: Verify packaged ${{ matrix.transport }} master and replica synchronization
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & ./tests/windows/package-replication.ps1 `
-            -PackageDir '${{ steps.package.outputs.package_dir }}' `
-            -MasterPort 6391 -ReplicaPort 6392 `
+            -PackageDir 'build/qualification/package-audit/package' `
+            -MasterPort 6391 -ReplicaPort 6392 -TLS:($env:TRANSPORT -eq 'TLS') `
             -OutputDir 'build/qualification/package-replication' `
-            -ExpectedVersion '${{ steps.meta.outputs.version }}' `
+            -ExpectedVersion $env:REDIS_VERSION `
             2>&1 | Tee-Object -FilePath build/qualification/package-replication.log
 
-      - name: Run packaged QFork persistence and restart soak
+      - name: Run packaged ${{ matrix.transport }} QFork persistence and restart soak
         run: |
           set -o pipefail
+          if [[ "$TRANSPORT" == TLS ]]; then export REDIS_PACKAGE_SOAK_TLS=1; fi
           REDIS_PACKAGE_SOAK_KEEP=1 \
             tests/windows/package-soak.sh build/qualification/package-audit/package 6393 1800 16 \
             2>&1 | tee build/qualification/package-soak.log
 
       - name: Prepare same-line benchmark baseline
+        if: matrix.transport == 'plaintext'
         id: baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -342,6 +517,7 @@ jobs:
           printf 'baseline_tag=%s\n' "$baseline_tag" >> "$GITHUB_OUTPUT"
 
       - name: Run short packaged benchmark
+        if: matrix.transport == 'plaintext'
         env:
           BASELINE_DIR: ${{ steps.baseline.outputs.baseline_dir }}
           BASELINE_TAG: ${{ steps.baseline.outputs.baseline_tag }}
@@ -355,36 +531,139 @@ jobs:
             2>&1 | tee build/qualification/package-benchmark.log
           printf '%s\n' "$BASELINE_TAG" > build/qualification/benchmark/baseline-reference.txt
 
-      - name: Reverify the exact candidate after all qualification tests
+      - name: Reverify the candidate after ${{ matrix.transport }} qualification
         run: |
           set -euo pipefail
           mapfile -d '' -t archives < <(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print0)
           (( ${#archives[@]} == 1 )) || { echo 'expected exactly one release ZIP after qualification' >&2; exit 1; }
           archive="${archives[0]}"
+          printf '%s  %s\n' "$PACKAGE_SHA256" "$archive" | sha256sum -c -
           (
             cd "$(dirname "$archive")"
             sha256sum -c "$(basename "$archive").sha256"
           ) > build/qualification/package-checksum-after-tests.txt
           fresh_package=build/qualification/release-package
-          rm -rf "$fresh_package"
           mkdir -p "$fresh_package"
           unzip -q "$archive" -d "$fresh_package"
           ./tests/windows/package-binary-identity.sh \
-            build/mingw64 \
-            "$fresh_package" \
+            build/qualification/package-audit/package \
+            "$fresh_package" build/qualification/package-binary-identity.tsv
+          cmp build/qualification/package-binary-identity.before.tsv \
             build/qualification/package-binary-identity.tsv
-          cmp -s \
-            build/qualification/package-binary-identity.before.tsv \
-            build/qualification/package-binary-identity.tsv || {
-              echo 'release binary identity changed during qualification' >&2
-              exit 1
-            }
+          sha256sum -c build/qualification/test-support.sha256 > build/qualification/test-support-after-tests.txt
           dirty="$(git status --porcelain --untracked-files=no)"
           if [[ -n "$dirty" ]]; then
             printf '%s\n' "$dirty" >&2
             echo 'qualification modified tracked source files' >&2
             exit 1
           fi
+          jq -n \
+            --arg source_commit "$SOURCE_SHA" --arg source_tree "$(git rev-parse 'HEAD^{tree}')" \
+            --arg transport "$TRANSPORT" --arg run_id "$GITHUB_RUN_ID" \
+            --arg archive "$(basename "$archive")" --arg archive_sha256 "$PACKAGE_SHA256" \
+            --arg candidate_sha256 "$CANDIDATE_SHA256" \
+            '{source_commit:$source_commit,source_tree:$source_tree,transport:$transport,run_id:$run_id,
+              archive:$archive,archive_sha256:$archive_sha256,candidate_sha256:$candidate_sha256,result:"passed"}' \
+            > build/qualification/transport-result.json
+          mkdir -p build/qualification/transport-evidence
+          cp build/qualification/{transport-result.json,package-binary-identity.start.tsv,package-binary-identity.tsv,test-support-after-tests.txt} \
+            build/qualification/transport-evidence/
+          if [[ "$TRANSPORT" == plaintext ]]; then
+            cp -a build/qualification/benchmark build/qualification/transport-evidence/
+          fi
+
+      - name: Upload successful ${{ matrix.transport }} qualification results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-qualification-result-${{ matrix.transport }}-${{ inputs.source_sha || github.sha }}
+          path: build/qualification/transport-evidence
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+      - name: Upload qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-qualification-${{ matrix.transport }}-diagnostics-${{ inputs.source_sha || github.sha }}
+          path: |
+            build/qualification
+            build/mingw64/package-soak-*
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
+
+  qualify:
+    name: Assemble Windows qualification evidence
+    needs: [build, transports]
+    if: ${{ needs.build.result == 'success' && needs.transports.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      artifact_name: ${{ needs.build.outputs.artifact_name }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CANDIDATE_SHA256: ${{ needs.build.outputs.candidate_sha256 }}
+      PACKAGE_SHA256: ${{ needs.build.outputs.package_sha256 }}
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the single qualification candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.candidate_artifact_name }}
+          path: build/candidate-input
+
+      - name: Download successful plaintext qualification results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-qualification-result-plaintext-${{ inputs.source_sha || github.sha }}
+          path: build/qualification/results/plaintext
+
+      - name: Download successful TLS qualification results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-qualification-result-TLS-${{ inputs.source_sha || github.sha }}
+          path: build/qualification/results/TLS
+
+      - name: Require both transport results for the exact candidate
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$CANDIDATE_SHA256" build/candidate-input/qualification-candidate.tar | sha256sum -c -
+          tar -xf build/candidate-input/qualification-candidate.tar
+          mapfile -d '' -t archives < <(find build/mingw64/releases -maxdepth 1 -type f -name '*.zip' -print0)
+          (( ${#archives[@]} == 1 )) || { echo 'expected exactly one release ZIP for evidence' >&2; exit 1; }
+          archive="${archives[0]}"
+          printf '%s  %s\n' "$PACKAGE_SHA256" "$archive" | sha256sum -c -
+          mkdir -p build/qualification/release-package
+          unzip -q "$archive" -d build/qualification/release-package
+          ./tests/windows/package-binary-identity.sh \
+            build/qualification/release-package build/qualification/release-package \
+            build/qualification/package-binary-identity.tsv
+          cmp build/qualification/package-binary-identity.before.tsv \
+            build/qualification/package-binary-identity.tsv
+          for transport in plaintext TLS; do
+            result_dir="build/qualification/results/$transport"
+            jq -e \
+              --arg sha "$SOURCE_SHA" --arg tree "$(git rev-parse 'HEAD^{tree}')" \
+              --arg transport "$transport" --arg run_id "$GITHUB_RUN_ID" \
+              --arg archive "$(basename "$archive")" --arg archive_sha256 "$PACKAGE_SHA256" \
+              --arg candidate_sha256 "$CANDIDATE_SHA256" \
+              '.source_commit == $sha and .source_tree == $tree and
+               .transport == $transport and .run_id == $run_id and .result == "passed" and
+               .archive == $archive and .archive_sha256 == $archive_sha256 and
+               .candidate_sha256 == $candidate_sha256' "$result_dir/transport-result.json"
+            cmp build/qualification/package-binary-identity.tsv "$result_dir/package-binary-identity.start.tsv"
+            cmp build/qualification/package-binary-identity.tsv "$result_dir/package-binary-identity.tsv"
+          done
+          cp -a build/qualification/results/plaintext/benchmark build/qualification/benchmark
 
       - name: Generate sanitized release evidence, SBOM, and test report
         run: |
@@ -411,15 +690,17 @@ jobs:
           name: windows-qualification-${{ inputs.source_sha || github.sha }}
           path: build/mingw64/release-assets
           if-no-files-found: error
+          overwrite: true
           retention-days: 30
 
       - name: Upload qualification diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: windows-qualification-diagnostics-${{ inputs.source_sha || github.sha }}
+          name: windows-qualification-evidence-diagnostics-${{ inputs.source_sha || github.sha }}
           path: |
             build/qualification
             build/mingw64/package-soak-*
           if-no-files-found: warn
+          overwrite: true
           retention-days: 14

@@ -69,7 +69,7 @@ Binary redistribution must preserve:
 - `REDISCONTRIBUTIONS.txt`;
 - `WINDOWS-NOTICES.txt`;
 - `THIRD-PARTY-NOTICES.txt`;
-- the Zstandard, CC0, GCC Runtime Library Exception, GPLv3, and MinGW-w64
+- the OpenSSL, Zstandard, CC0, GCC Runtime Library Exception, GPLv3, and MinGW-w64
   companion texts;
 - this guide, the Windows release notes, and BUILDINFO; and
 - access to the exact corresponding source revision.
@@ -78,6 +78,9 @@ The MinGW server statically links Zstandard from the MSYS2 MinGW64 package
 resolved by the release workflow. `BUILDINFO.txt` records the exact package
 version. The executable does not import a Zstandard DLL, but its BSD license
 remains part of the binary redistribution payload.
+The standard build also statically links OpenSSL 3, records its version and
+MSYS2 package in BUILDINFO, and includes its Apache 2.0 license as
+`OPENSSL-LICENSE.txt`.
 The existing fast_float, TRE, xxHash, hiredis, jemalloc, Lua, HdrHistogram,
 fpconv, linenoise, CRC, hash, and toolchain notices are reproduced in
 `THIRD-PARTY-NOTICES.txt`. This guide records engineering scope and is not
@@ -88,7 +91,7 @@ legal advice.
 | Area | Upstream Linux/POSIX behavior | This Windows core package |
 | --- | --- | --- |
 | Event loop | epoll, kqueue, or another POSIX backend | IOCP with synthetic FDAPI descriptors and one-shot readiness rearming |
-| Network transports | TCP, Unix sockets, and optional TLS | Plain TCP over IPv4/IPv6; Unix sockets and TLS are unsupported |
+| Network transports | TCP, Unix sockets, and optional TLS | TCP and native TLS over IPv4/IPv6; Unix sockets are unsupported |
 | Client I/O threads | Multiple read/write I/O threads may be configured | Exactly one client I/O thread is enforced |
 | Replication compression | Requires multiple client I/O threads | Compiled with static Zstandard; startup rejects nonzero `repl-compression` |
 | Background persistence | fork copy-on-write child | QFork starts a Windows child and restores the tracked heap at matching addresses |
@@ -119,10 +122,19 @@ reply protected by the connection barrier is written.
 
 The example configurations bind to `127.0.0.1` and keep protected mode
 enabled. Before adding non-loopback addresses, configure ACL authentication,
-firewall rules, and a trusted transport boundary. This package has no TLS
-listener, TLS replication, TLS Cluster link, or Unix-domain socket support.
-A TLS proxy or VPN is an external security component and must be assessed
-separately.
+firewall rules, and TLS settings. The standard MinGW build statically links
+OpenSSL 3 and supports native TLS listeners, CLI/benchmark and `rediss://`,
+replication (including diskless and dedicated RDB channels), Cluster links,
+and Sentinel command/Pub/Sub links. Runtime defaults remain ordinary TCP;
+configure certificates and `tls-port`, `tls-replication`, or `tls-cluster` to
+enable encryption for the required roles. `BUILD_TLS=no` builds an explicit
+plaintext-only variant. Unix-domain sockets remain unsupported.
+
+TLS uses a shared FDAPI BIO and preserves IOCP completion ownership during
+synchronous operations. QFork children still serialize into the existing
+parent-owned replication pipe; SSL objects and network encryption remain in
+the parent. See WINDOWS-MINGW-README.md for native TLS tests, certificate path
+handling, renewal and peer-name verification.
 
 Startup rejects client `io-threads` values other than 1 and nonzero
 `repl-compression`. Upstream Redis 8.10 replication compression requires

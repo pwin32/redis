@@ -61,7 +61,12 @@ jobs:
           install: >-
             git
             make
+            diffutils
             mingw-w64-x86_64-gcc
+            curl
+            tar
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-openssl
             mingw-w64-x86_64-tcl
             mingw-w64-x86_64-zstd
 
@@ -96,3 +101,37 @@ jobs:
         run: |
           ./build/mingw64/interop-test.exe --legacy
           ./build/mingw64/interop-test.exe --modern
+
+      - name: Build and check explicit no-TLS mode
+        run: |
+          make -f Makefile.mingw -j2 all interop-test BUILD_TLS=no
+          bash tests/windows/tls-disabled.sh
+          ./runtest-mingw.sh --clients 1 --quiet --timeout 300 --single unit/type/string
+      - name: Restore default TLS mode and run focused TLS roles
+        run: |
+          make -f Makefile.mingw -j2 all interop-test
+          ./build/mingw64/interop-test.exe --legacy
+          ./build/mingw64/interop-test.exe --modern
+          ./runtest-mingw.sh --tls --clients 1 --quiet --timeout 600 --single unit/tls --single windows/tls --single unit/cluster/cluster-response-tls --single unit/cluster/tls-peer-impersonation
+          ./runtest-mingw.sh --sentinel --tls --single 00-base
+      - name: Check TLS slot migration buffer limits and cancellation
+        run: |
+          ./runtest-mingw.sh --tls --clients 1 --quiet --timeout 180 --dump-logs \
+            --single unit/cluster/atomic-slot-migration \
+            --only "Client output buffer limit is reached on source side" \
+            --only "Full sync buffer limit is reached on destination side" \
+            --only "RM_ResetDataset and RM_RdbLoad will cancel slot migration task"
+
+      - name: Check TLS persistence and tool regression fixtures
+        run: |
+          ./runtest-mingw.sh --tls --clients 1 --quiet --timeout 300 --dump-logs \
+            --single integration/aof-race --single integration/psync2-reg \
+            --single integration/redis-benchmark --single integration/redis-cli
+
+      - name: Check TLS replication disconnects and final replies
+        run: |
+          ./runtest-mingw.sh --tls --clients 1 --quiet --timeout 300 --dump-logs \
+            --single integration/replication --single integration/replication-rdbchannel \
+            --only "Set instance A as slave of B" \
+            --only "BLPOP followed by role change*" \
+            --only "Test main channel connection drops while loading rdb*"

@@ -22,6 +22,7 @@ benchmark, and RDB/AOF checkers.  PORT must be an unused local TCP port.
 Optional environment variables:
   REDIS_PACKAGE_SOAK_SEED_REQUESTS    seed SET requests (default: 100000)
   REDIS_PACKAGE_SOAK_WRITER_REQUESTS  SET requests per cycle (default: 100000)
+  REDIS_PACKAGE_SOAK_TLS             use TLS when 1 (fixtures in tests/tls)
   REDIS_PACKAGE_SOAK_KEEP             keep scratch data after success when 1
   REDIS_PACKAGE_EXPECTED_VERSION      expected Redis version (default: src/version.h)
 EOF
@@ -43,6 +44,8 @@ min_cycles=${4:-16}
 seed_requests=${REDIS_PACKAGE_SOAK_SEED_REQUESTS:-100000}
 writer_requests=${REDIS_PACKAGE_SOAK_WRITER_REQUESTS:-100000}
 keep_success=${REDIS_PACKAGE_SOAK_KEEP:-0}
+tls_mode=${REDIS_PACKAGE_SOAK_TLS:-0}
+[[ "$tls_mode" == 0 || "$tls_mode" == 1 ]] || { echo "invalid TLS mode" >&2; exit 2; }
 
 # WSL callers commonly pass /mnt/<drive>/... while the re-executed MSYS2
 # shell sees the same drive as /<drive>/....
@@ -76,6 +79,16 @@ if [[ "$keep_success" != "0" && "$keep_success" != "1" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd -P)"
+tls_args=()
+tcp_port=$port
+if [[ "$tls_mode" == 1 ]]; then
+    tls_dir="$(cygpath -m "$repo_root/tests/tls")"
+    for name in ca.crt server.crt server.key client.crt client.key; do
+        [[ -s "$repo_root/tests/tls/$name" ]] || { echo "missing TLS fixture: $name" >&2; exit 1; }
+    done
+    tls_args=(--tls --cacert "$tls_dir/ca.crt" --cert "$tls_dir/client.crt" --key "$tls_dir/client.key")
+    tcp_port=0
+fi
 expected_version="${REDIS_PACKAGE_EXPECTED_VERSION:-}"
 if [[ -z "$expected_version" ]]; then
     expected_version="$(sed -n 's/^#define REDIS_VERSION "\([^"]*\)"/\1/p' "$repo_root/src/version.h")"
@@ -249,7 +262,7 @@ write_configuration() {
     cat >"$path" <<EOF
 bind 127.0.0.1
 protected-mode yes
-port $port
+port $tcp_port
 persistence-available yes
 dir "."
 dbfilename "soak.rdb"
@@ -263,6 +276,14 @@ aof-use-rdb-preamble yes
 enable-debug-command local
 logfile "redis.log"
 EOF
+    if [[ "$tls_mode" == 1 ]]; then
+        cat >>"$path" <<EOF
+tls-port $port
+tls-cert-file "$tls_dir/server.crt"
+tls-key-file "$tls_dir/server.key"
+tls-ca-cert-file "$tls_dir/ca.crt"
+EOF
+    fi
 }
 
 launch_process() {
@@ -296,7 +317,7 @@ launch_process() {
 }
 
 redis_raw() {
-    "$cli" -h 127.0.0.1 -p "$port" --raw "$@"
+    "$cli" "${tls_args[@]}" -h 127.0.0.1 -p "$port" --raw "$@"
 }
 
 redis_scalar() {
@@ -432,7 +453,7 @@ run_seed_benchmark() {
     local stdout_log="$scratch_dir/seed-benchmark.stdout.log"
     local stderr_log="$scratch_dir/seed-benchmark.stderr.log"
 
-    launch_process pid token "$stdout_log" "$stderr_log" "$benchmark" \
+    launch_process pid token "$stdout_log" "$stderr_log" "$benchmark" "${tls_args[@]}" \
         -h 127.0.0.1 -p "$port" -c 50 -n "$seed_requests" \
         -r 200000 -d 512 -P 16 -t set -q
     writer_pid=$pid
@@ -447,7 +468,7 @@ start_cycle_writer() {
     local stdout_log="$scratch_dir/writer-${cycle}.stdout.log"
     local stderr_log="$scratch_dir/writer-${cycle}.stderr.log"
 
-    launch_process writer_pid writer_token "$stdout_log" "$stderr_log" "$benchmark" \
+    launch_process writer_pid writer_token "$stdout_log" "$stderr_log" "$benchmark" "${tls_args[@]}" \
         -h 127.0.0.1 -p "$port" -c 50 -n "$writer_requests" \
         -r 200000 -d 512 -P 16 -t set -q
     if ! pid_is_owned "$writer_pid" "$benchmark" "$writer_token"; then

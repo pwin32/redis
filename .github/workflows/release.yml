@@ -286,9 +286,23 @@ jobs:
               .attestations.required_before_publication.build_provenance == true and
               .attestations.required_before_publication.sbom == true
             ' release-assets/release-evidence.json >/dev/null
-          jq -e --arg archive "$archive_name" --arg archive_sha "$archive_sha" '
+          jq -e --arg archive "$archive_name" --arg archive_sha "$archive_sha" \
+            --slurpfile evidence release-assets/release-evidence.json '
             (.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT") and
-            (.packages | length == 1) and
+            (if ($evidence[0].package.tls.build // "no") == "yes" then
+              (.packages | length == 2) and
+              (.packages[1].SPDXID == "SPDXRef-OpenSSL") and
+              (.packages[1].name == "OpenSSL" and .packages[1].filesAnalyzed == false) and
+              (.packages[1].licenseDeclared == "Apache-2.0") and
+              (.packages[1].versionInfo == $evidence[0].package.tls.openssl_version) and
+              (.packages[1].sourceInfo == ("MSYS2 package: " + $evidence[0].package.tls.openssl_package)) and
+              ($evidence[0].package.tls.linkage == "static") and
+              ($evidence[0].qualification.transports == ["plaintext", "TLS"]) and
+              (any(.relationships[];
+                .spdxElementId == "SPDXRef-Package" and
+                .relationshipType == "STATIC_LINK" and
+                .relatedSpdxElement == "SPDXRef-OpenSSL"))
+            else (.packages | length == 1) end) and
             (.packages[0].packageFileName == $archive) and
             (.packages[0].filesAnalyzed == true) and
             (any(.packages[0].checksums[]; .algorithm == "SHA256" and .checksumValue == $archive_sha)) and

@@ -1,4 +1,22 @@
 Redis for Windows - https://github.com/pwin32/redis
+
+2026-09-13: Native TLS for the MinGW 8.10 core build
+
+The standard build now includes static OpenSSL 3 with BUILD_TLS=yes; an
+explicit BUILD_TLS=no build remains available. TLS covers clients, tools,
+replication (including diskless and dedicated RDB channels), Cluster and
+Sentinel. Runtime defaults remain plaintext until TLS is configured. Windows
+client I/O remains single-threaded and replication compression disabled.
+
+Server and hiredis share a synthetic-descriptor BIO. Synchronous transitions
+acknowledge their own IOCP read cancellation while retaining completion and
+descriptor ownership until normal dequeue. QFork encryption stays in the
+parent. Qualification runs both plaintext and TLS suites against one stripped
+package, including package/service checks and a persistence soak per transport.
+OpenSSL version, package, static linkage and license accompany the package and
+SBOM. Earlier no-TLS scope statements below describe historical releases.
+
+--------------------------------------------------------
 ========================================================
 
 This file provides information about Windows-specific changes to Redis.

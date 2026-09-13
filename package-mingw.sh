@@ -36,6 +36,7 @@ required_manifest_files=(
     packaging/licenses/GPL-3.0.txt
     packaging/licenses/MINGW-W64-RUNTIME.txt
     packaging/licenses/ZSTD-LICENSE.txt
+    packaging/licenses/OPENSSL-LICENSE.txt
     RELEASENOTES.txt
     00-RELEASENOTES
 )
@@ -98,6 +99,13 @@ if [[ "$zstd_package" != mingw-w64-x86_64-zstd\ * ]]; then
     exit 1
 fi
 
+openssl_package="$(pacman -Q mingw-w64-x86_64-openssl)"
+openssl_version="$(pkg-config --modversion openssl)"
+[[ "$openssl_package" == mingw-w64-x86_64-openssl\ * && "$openssl_version" == 3.* ]] || {
+    echo 'error: packaging requires the MinGW64 OpenSSL 3 package' >&2
+    exit 1
+}
+
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "error: package source worktree must be clean" >&2
     git status --short >&2
@@ -137,9 +145,9 @@ checksum="$archive.sha256"
 jobs=${JOBS:-2}
 # A release archive must never inherit objects or nested jemalloc dependency
 # files from another maintenance line or an earlier source checkout.
-BUILD_BUNDLED_MODULES=no SKIP_VEC_SETS=yes BUILD_COMPRESSION=yes \
+BUILD_BUNDLED_MODULES=no SKIP_VEC_SETS=yes BUILD_COMPRESSION=yes BUILD_TLS=yes \
     ./build-mingw.sh distclean
-BUILD_BUNDLED_MODULES=no SKIP_VEC_SETS=yes BUILD_COMPRESSION=yes \
+BUILD_BUNDLED_MODULES=no SKIP_VEC_SETS=yes BUILD_COMPRESSION=yes BUILD_TLS=yes \
     ./build-mingw.sh -j"$jobs"
 
 for executable in \
@@ -203,6 +211,7 @@ install -m 0644 packaging/licenses/GCC-RUNTIME-README.txt "$stage_dir/GCC-RUNTIM
 install -m 0644 packaging/licenses/GPL-3.0.txt "$stage_dir/GPL-3.0.txt"
 install -m 0644 packaging/licenses/MINGW-W64-RUNTIME.txt "$stage_dir/MINGW-W64-RUNTIME.txt"
 install -m 0644 packaging/licenses/ZSTD-LICENSE.txt "$stage_dir/ZSTD-LICENSE.txt"
+install -m 0644 packaging/licenses/OPENSSL-LICENSE.txt "$stage_dir/OPENSSL-LICENSE.txt"
 install -m 0644 RELEASENOTES.txt "$stage_dir/RELEASENOTES.txt"
 install -m 0644 00-RELEASENOTES "$stage_dir/00-RELEASENOTES"
 install -m 0644 "$windows_changes" "$stage_dir/$windows_changes"
@@ -216,6 +225,9 @@ install -m 0644 "$windows_changes" "$stage_dir/$windows_changes"
     printf 'Release tag: %s\n' "$release_tag"
     printf 'Toolchain: GCC %s MSYS2/MinGW64\n' "$gcc_version"
     printf 'Toolchain package: %s\n' "$gcc_package"
+    printf 'TLS build: yes (built in; static OpenSSL)\n'
+    printf 'OpenSSL version: %s\n' "$openssl_version"
+    printf 'OpenSSL package: %s\n' "$openssl_package"
     printf 'Allocator: jemalloc-5.3.0-redis\n'
     printf 'Compression package: %s (statically linked)\n' "$zstd_package"
     printf 'Replication compression: compiled in; keep disabled because Windows client I/O is restricted to one thread\n'

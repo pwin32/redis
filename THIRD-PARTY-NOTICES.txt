@@ -15,6 +15,7 @@ The package also includes these complete companion license texts:
 - MINGW-W64-RUNTIME.txt
 - CC0-1.0.txt
 - ZSTD-LICENSE.txt
+- OPENSSL-LICENSE.txt
 
 The GCC and MinGW texts correspond to the GCC 16.1.0 MSYS2/MinGW64 toolchain
 used for this release. The executables statically link the eligible GCC runtime
@@ -27,6 +28,18 @@ The following sections reproduce those notices and attributions. Where the
 upstream permission is documented outside an imported source file, its terms
 and provenance are summarized explicitly.
 
+
+-------------------------------------------------------------------------------
+OpenSSL 3
+Source notice: packaging/licenses/OPENSSL-LICENSE.txt
+MSYS2 package: mingw-w64-x86_64-openssl (exact version in BUILDINFO.txt)
+-------------------------------------------------------------------------------
+
+OpenSSL is licensed under the Apache License 2.0. The complete upstream
+license is included as OPENSSL-LICENSE.txt. The MinGW server, Sentinel,
+checkers, CLI and benchmark link libssl and libcrypto statically. EventLog.dll
+does not link OpenSSL. Source and copyright notices are available from
+https://www.openssl.org/source/ and the corresponding MSYS2 source package.
 
 -------------------------------------------------------------------------------
 Zstandard 1.5.7
