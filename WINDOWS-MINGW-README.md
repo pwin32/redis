@@ -75,6 +75,7 @@ and user/kernel CPU time are retained in the performance artifact.
 Separate builds use `-pg` for gprof call graphs and sampling. Their timings are
 kept separate from the uninstrumented A/B results. The profiled server keeps
 the existing fixed image base, which gprof needs to resolve Windows samples.
+An explicit `nm` symbol table preserves static function names in the profiles.
 Profiles do not attribute time inside Windows DLLs; use the recorded kernel
 CPU measurements alongside the call graphs. This workflow builds diagnostic
 binaries without creating release packages or release qualification evidence.

@@ -159,13 +159,21 @@ def run_variant(variant, client, output, round_number, requests, profile, port, 
     if profile:
         gmon = directory / "gmon.out"
         assert gmon.is_file() and gmon.stat().st_size > 0, f"Missing gprof output for {name}"
-        report = subprocess.check_output(["gprof", "-b", str(server), str(gmon)],
+        # MinGW gprof's PE symbol reader can attribute static functions to the
+        # preceding global function. An explicit nm table preserves their
+        # names and call counts (including the event loop and clock helpers).
+        symbols = directory / "symbols.txt"
+        symbols.write_bytes(subprocess.check_output(["nm", "-n", "--defined-only", str(server)],
+                                                     timeout=120))
+        report = subprocess.check_output(["gprof", "-b", "-S", str(symbols), str(server), str(gmon)],
                                          text=True, errors="replace", timeout=120)
         assert "Flat profile:" in report and "Call graph" in report
         assert "WSIOCP_QueueNextRead" in report, "Profile is missing the Windows I/O path"
+        assert "aeApiPoll" in report and "getMonotonicUs_win32" in report, "Profile lost static function symbols"
         (directory / "gprof.txt").write_text(report, encoding="utf-8")
         save_json(directory / "profile-identity.json", {"server_sha256": digest(server),
-                                                       "gmon_sha256": digest(gmon)})
+                                                       "gmon_sha256": digest(gmon),
+                                                       "symbols_sha256": digest(symbols)})
     print(f"Completed {name} round {round_number}", flush=True)
     return samples
 
