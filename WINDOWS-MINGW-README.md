@@ -60,6 +60,25 @@ startup configuration validation, QFork persistence affinity, and PE flags and
 relocations. Physical multi-group qualification requires a host with multiple
 processor groups. Focused checks do not replace the complete CI qualification.
 
+## Performance investigations
+
+The public validation workflow has an optional `performance_analysis` dispatch
+input. Supply exact `baseline_sha` and `candidate_sha` commits to rebuild both
+with one MinGW64 toolchain. It compares the baseline with TLS-enabled and
+TLS-disabled candidate builds over plaintext TCP, using one baseline benchmark
+client, separate client/server CPU affinity, two complete rotations of the
+variants, and 250,000 requests per test. An optional `reference_sha` includes
+the original TLS-enabled build in the same run when evaluating a fix.
+Raw samples, binary identities, command counts,
+and user/kernel CPU time are retained in the performance artifact.
+
+Separate builds use `-pg` for gprof call graphs and sampling. Their timings are
+kept separate from the uninstrumented A/B results. The profiled server keeps
+the existing fixed image base, which gprof needs to resolve Windows samples.
+Profiles do not attribute time inside Windows DLLs; use the recorded kernel
+CPU measurements alongside the call graphs. This workflow builds diagnostic
+binaries without creating release packages or release qualification evidence.
+
 ## Native TLS
 
 The standard build includes built-in TLS and statically links OpenSSL 3. It

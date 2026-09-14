@@ -3,6 +3,20 @@ name: Public Windows validation
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      performance_analysis:
+        description: Run controlled Windows A/B benchmarks and gprof
+        type: boolean
+        default: false
+      baseline_sha:
+        description: Exact baseline commit for performance analysis
+        type: string
+      candidate_sha:
+        description: Exact candidate commit (defaults to this workflow commit)
+        type: string
+      reference_sha:
+        description: Optional original TLS-enabled commit for a before/after comparison
+        type: string
 
 permissions:
   contents: read
@@ -26,6 +40,7 @@ jobs:
         run: bash tests/windows/package-process-identity-test.sh
 
   mingw-smoke:
+    if: ${{ !inputs.performance_analysis }}
     runs-on: windows-latest
     defaults:
       run:
@@ -135,3 +150,60 @@ jobs:
             --only "Set instance A as slave of B" \
             --only "BLPOP followed by role change*" \
             --only "Test main channel connection drops while loading rdb*"
+
+  performance-analysis:
+    if: ${{ inputs.performance_analysis }}
+    needs: public-hygiene
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      BASELINE_SHA: ${{ inputs.baseline_sha }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha || github.sha }}
+      REFERENCE_SHA: ${{ inputs.reference_sha }}
+    steps:
+      - name: Check out benchmark harness and source history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Preserve source bytes
+        shell: pwsh
+        run: |
+          git config --local core.autocrlf false
+          git config --local core.eol lf
+          git config --local core.filemode false
+          git reset --hard HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source byte restoration failed.' }
+      - name: Set up one MinGW64 toolchain for all variants
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git make diffutils jq
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-python
+      - name: Build comparable release and gprof variants
+        run: bash tests/windows/performance-build.sh
+      - name: Measure alternating A/B runs with a common client
+        run: python tests/windows/performance-ab.py --manifest build/performance/manifest.json --stage benchmark
+      - name: Profile the server variants separately with gprof
+        run: python tests/windows/performance-ab.py --manifest build/performance/manifest.json --stage profile
+      - name: Upload performance measurements and profiles
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-performance-${{ github.sha }}
+          path: |
+            build/performance/*.json
+            build/performance/*.txt
+            build/performance/*.log
+            build/performance/results
+          if-no-files-found: error
+          retention-days: 14
