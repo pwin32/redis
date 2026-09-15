@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-validation-${{ github.workflow }}-${{ github.ref }}
+  group: public-validation-${{ github.workflow }}-${{ github.ref }}-${{ inputs.performance_analysis && 'performance' || 'validation' }}
   cancel-in-progress: true
 
 jobs:

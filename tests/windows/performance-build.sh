@@ -56,7 +56,9 @@ build_variant() {
     if [[ "$profile" == true ]]; then
         opt+=' -pg -fno-omit-frame-pointer'
         link+=" -L\"$(cygpath -am "$profile_runtime")\" -pg"
-    else
+    elif [[ "$name" == baseline ]]; then
+        # Every run shares these uninstrumented clients. Other variants only
+        # need the server; rebuilding unused clients adds no comparison data.
         targets+=("$dest/redis-cli.exe" "$dest/redis-benchmark.exe")
     fi
     (
