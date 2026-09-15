@@ -252,7 +252,10 @@ static int aeApiFireQueuedAccept(aeEventLoop *eventLoop) {
         return aeApiFireEvent(eventLoop, sockstate, fd, AE_READABLE);
     }
 
-    state->next_accept_ready_ms = 0;
+    /* Empty scans need the same bound as a repeated accept notification.
+     * Fresh AcceptEx completions still dispatch immediately below; rescanning
+     * every client descriptor on each read completion adds no readiness. */
+    state->next_accept_ready_ms = now + 100;
     return 0;
 }
 

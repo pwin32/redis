@@ -31,6 +31,7 @@ int win32_get_proc_address(HMODULE module, const char *name,
                            void *function, size_t function_size);
 int win32_llp64_interop_test(void);
 int win32_tls_interop_test(void);
+int win32_iocp_interop_test(void);
 }
 
 static bool emulate_modern_windows = false;
@@ -1072,6 +1073,7 @@ int main(int argc, char **argv) {
     test_eventloop_pipe();
     test_iocp_blocking_transition();
     test_socket_duplication();
+    failures += win32_iocp_interop_test();
     failures += win32_tls_interop_test();
 
     if (failures != 0) {
