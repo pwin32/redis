@@ -85,6 +85,13 @@ static connection *connCreateAcceptedSocket(struct aeEventLoop *el, int fd, void
     connection *conn = connCreateSocket(el);
     conn->fd = fd;
     conn->state = CONN_STATE_ACCEPTING;
+#if defined(_WIN32) && defined(USE_OPENSSL)
+    /* An accepted Redis TCP connection keeps this transport for its lifetime. */
+    if (WSIOCP_SetPlaintextOnly(fd) < 0) {
+        conn->last_errno = errno;
+        conn->state = CONN_STATE_ERROR;
+    }
+#endif
     return conn;
 }
 

@@ -39,6 +39,9 @@ typedef struct WSIOCP_Request {
 } WSIOCP_Request;
 
 int WSIOCP_QueueNextRead(int rfd);
+#ifdef USE_OPENSSL
+int WSIOCP_SetPlaintextOnly(int rfd);
+#endif
 int WSIOCP_QueueWriteReady(int rfd);
 void WSIOCP_CancelWriteReady(int rfd);
 void WSIOCP_SetDeferredError(int rfd, int error);

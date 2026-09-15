@@ -133,6 +133,12 @@ int Win32TLS_SetFD(SSL *ssl, int fd) {
         ERR_raise(ERR_LIB_SYS, EBADF);
         return 0;
     }
+    /* The Redis TCP connection owner can commit a descriptor to plaintext.
+     * Do not attach TLS without the established cancellation-event contract. */
+    if (state->plaintext_only) {
+        ERR_raise(ERR_LIB_SYS, EINVAL);
+        return 0;
+    }
     bio = BIO_new(fdapi_method);
     if (!bio) return 0;
     transport = OPENSSL_zalloc(sizeof(*transport));

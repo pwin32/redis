@@ -460,6 +460,26 @@ int WSIOCP_Accept(int fd, struct sockaddr *sa, socklen_t *len) {
     return acceptfd;
 }
 
+#ifdef USE_OPENSSL
+/* Only owners with an immutable plaintext transport may opt out of read
+ * cancellation events. Generic descriptors must remain eligible for TLS
+ * attachment after I/O has already been posted. */
+int WSIOCP_SetPlaintextOnly(int fd) {
+    iocpSockState *state = WSIOCP_GetSocketState(fd);
+    if (!state) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (state->event_refs || state->read_event ||
+        (state->masks & (READ_QUEUED | CONNECT_PENDING | CLOSE_PENDING))) {
+        errno = EBUSY;
+        return -1;
+    }
+    state->plaintext_only = 1;
+    return 0;
+}
+#endif
+
 /* After doing a read, the caller needs to call this method in
  * order to continue to check for read events.
  * This is not necessary if the caller will delete read events */
@@ -482,10 +502,9 @@ int WSIOCP_QueueNextRead(int fd) {
     }
 #ifdef USE_OPENSSL
     if (sockstate->read_suspended) return 0;
-    /* Install the event before issuing I/O, even for initially plaintext
-     * sockets. The event acknowledges cancellation without stealing packets
-     * from this or another event loop's completion queue. */
-    if (!sockstate->read_event) {
+    /* Generic sockets need an event before I/O, even if TLS attaches later.
+     * A connection committed to plaintext only uses ordinary IOCP delivery. */
+    if (!sockstate->plaintext_only && !sockstate->read_event) {
         sockstate->read_event = CreateEventW(NULL, TRUE, FALSE, NULL);
         if (!sockstate->read_event) {
             set_errno_from_last_error();

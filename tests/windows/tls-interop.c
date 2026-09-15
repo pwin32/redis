@@ -6,6 +6,7 @@
 #include <errno.h>
 
 #ifdef USE_OPENSSL
+#include <openssl/err.h>
 static int failures;
 #define check(condition, message) do { \
     if (!(condition)) { fprintf(stderr, "FAIL: TLS BIO %s (errno=%d)\n", message, errno); failures++; } \
@@ -86,6 +87,46 @@ static void countRead(aeEventLoop *el, int fd, void *data, int mask) {
     (*(int *)data)++;
 }
 
+static void testPlaintextTransport(SSL_CTX *ctx) {
+    int pair[2], callbacks = 0;
+    char byte;
+    aeEventLoop *el = aeCreateEventLoop(65536);
+    check(el != NULL, "creates plaintext event loop");
+    check(FDAPI_pipe_for_eventloop(pair) == 0, "creates plaintext pair");
+    check(WSIOCP_SetPlaintextOnly(pair[0]) == 0,
+          "owner can commit an unused descriptor to plaintext");
+    check(aeCreateFileEvent(el, pair[0], AE_READABLE, countRead, &callbacks) == AE_OK,
+          "queues plaintext readiness");
+    iocpSockState *state = WSIOCP_GetExistingSocketState(pair[0]);
+    check((state->masks & READ_QUEUED) && !state->read_event && !state->ov_read.hEvent,
+          "committed plaintext reads use only IOCP notification");
+    SSL *ssl = SSL_new(ctx);
+    check(ssl && !Win32TLS_SetFD(ssl, pair[0]),
+          "committed plaintext cannot bypass TLS cancellation ownership");
+    SSL_free(ssl);
+    ERR_clear_error();
+    check(write(pair[1], "p", 1) == 1, "plaintext peer sends a byte");
+    for (int i = 0; i < 1000 && !callbacks; i++) {
+        aeProcessEvents(el, AE_FILE_EVENTS | AE_DONT_WAIT);
+        Sleep(1);
+    }
+    check(callbacks == 1 && !(state->masks & READ_QUEUED),
+          "plaintext readiness still follows normal IOCP dequeue");
+    check(read(pair[0], &byte, 1) == 1 && byte == 'p', "plaintext bytes remain intact");
+    aeDeleteFileEvent(el, pair[0], AE_READABLE);
+    FDAPI_close(pair[0]);
+    FDAPI_close(pair[1]);
+    aeDeleteEventLoop(el);
+
+    check(FDAPI_pipe_for_eventloop(pair) == 0, "creates retained transport pair");
+    ssl = borrowSocket(ctx, pair[0]);
+    check(WSIOCP_SetPlaintextOnly(pair[0]) < 0 && errno == EBUSY,
+          "a retained TLS transport cannot be reclassified as plaintext");
+    SSL_free(ssl);
+    FDAPI_close(pair[0]);
+    FDAPI_close(pair[1]);
+}
+
 static void testReadEventRearm(SSL_CTX *ctx) {
     int pair[2], callbacks = 0;
     char byte;
@@ -140,25 +181,28 @@ static void testHandshakeDeadline(SSL_CTX *ctx) {
     FDAPI_close(pair[1]);
 }
 
-static void testCancellation(SSL_CTX *ctx, int completed, int timeout) {
+static void testCancellation(SSL_CTX *ctx, int completed, int timeout, int late_attach) {
     int pair[2], other[2], callbacks = 0, other_callbacks = 0;
     char byte;
     aeEventLoop *el = aeCreateEventLoop(65536);
     check(el != NULL, "creates a real event loop");
     check(FDAPI_pipe_for_eventloop(pair) == 0, "creates cancellation pair");
     check(FDAPI_pipe_for_eventloop(other) == 0, "creates unrelated pair");
-    SSL *ssl = borrowSocket(ctx, pair[0]);
-    BIO *bio = SSL_get_rbio(ssl);
+    SSL *ssl = late_attach ? NULL : borrowSocket(ctx, pair[0]);
     check(aeCreateFileEvent(el, pair[0], AE_READABLE, countRead, &callbacks) == AE_OK, "queues readiness receive");
     check(aeCreateFileEvent(el, other[0], AE_READABLE, countRead, &other_callbacks) == AE_OK, "queues unrelated receive");
     iocpSockState *state = WSIOCP_GetExistingSocketState(pair[0]);
     iocpSockState *other_state = WSIOCP_GetExistingSocketState(other[0]);
+    check(WSIOCP_SetPlaintextOnly(pair[0]) < 0 && errno == EBUSY,
+          "an existing readiness receive cannot be reclassified as plaintext");
     write(other[1], "o", 1);
     check(WaitForSingleObject(other_state->read_event, 1000) == WAIT_OBJECT_0, "unrelated completion is queued first");
     if (completed) {
         write(pair[1], "x", 1);
         check(WaitForSingleObject(state->read_event, 1000) == WAIT_OBJECT_0, "read can complete before cancellation");
     }
+    if (late_attach) ssl = borrowSocket(ctx, pair[0]);
+    BIO *bio = SSL_get_rbio(ssl);
     check(BIO_read(bio, &byte, 1) < 0 && BIO_should_read(bio), "async BIO waits for matching dequeue");
     HANDLE original_event = state->read_event;
     if (timeout) {
@@ -209,10 +253,11 @@ int win32_tls_interop_test(void) {
     SSL_CTX *ctx = SSL_CTX_new(TLS_method());
     if (!ctx) return 1;
     testBIO(ctx);
+    testPlaintextTransport(ctx);
     testReadEventRearm(ctx);
     testHandshakeDeadline(ctx);
     for (int i = 0; i < 8; i++) {
-        testCancellation(ctx, i & 1, i & 2);
+        testCancellation(ctx, i & 1, i & 2, i & 4);
     }
     SSL_CTX_free(ctx);
     return failures;

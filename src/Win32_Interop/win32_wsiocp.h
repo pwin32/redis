@@ -65,6 +65,7 @@ typedef struct iocpSockState {
 #ifdef USE_OPENSSL
     HANDLE read_event;
     int read_suspended;
+    int plaintext_only;
 #endif
     OVERLAPPED ov_read;
     list wreqlist;

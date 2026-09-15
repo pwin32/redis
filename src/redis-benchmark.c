@@ -848,6 +848,13 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
             exit(1);
         }
     }
+#if defined(_WIN32) && defined(USE_OPENSSL)
+    /* Benchmark connections keep the transport selected for this run. */
+    if (!config.tls && WSIOCP_SetPlaintextOnly(c->context->fd) < 0) {
+        fprintf(stderr, "Could not initialize plaintext I/O: %s\n", strerror(errno));
+        exit(1);
+    }
+#endif
     c->thread_id = thread_id;
     /* Suppress hiredis cleanup of unused buffers for max speed. */
     c->context->reader->maxbuf = 0;
