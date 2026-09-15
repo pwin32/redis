@@ -86,6 +86,43 @@ static void countRead(aeEventLoop *el, int fd, void *data, int mask) {
     (*(int *)data)++;
 }
 
+static void testReadEventRearm(SSL_CTX *ctx) {
+    int pair[2], callbacks = 0;
+    char byte;
+    HANDLE event = NULL;
+    aeEventLoop *el = aeCreateEventLoop(65536);
+    check(el != NULL, "creates rearm event loop");
+    check(FDAPI_pipe_for_eventloop(pair) == 0, "creates rearm pair");
+    SSL *ssl = borrowSocket(ctx, pair[0]);
+    BIO *bio = SSL_get_rbio(ssl);
+    iocpSockState *state = WSIOCP_GetExistingSocketState(pair[0]);
+    for (int cycle = 0; cycle < 4; cycle++) {
+        check(aeCreateFileEvent(el, pair[0], AE_READABLE, countRead, &callbacks) == AE_OK,
+              "rearms the same socket after consuming readiness");
+        if (!event) event = state->read_event;
+        check(event && state->read_event == event && state->ov_read.hEvent == event,
+              "readiness reuses the same cancellation event");
+        check((state->masks & READ_QUEUED) && WaitForSingleObject(event, 0) == WAIT_TIMEOUT,
+              "pending receive resets the previous completion signal");
+        check(write(pair[1], "x", 1) == 1, "peer makes the rearmed socket readable");
+        check(WaitForSingleObject(event, 1000) == WAIT_OBJECT_0,
+              "each receive signals its own completion");
+        for (int i = 0; i < 100 && callbacks == cycle; i++) {
+            aeProcessEvents(el, AE_FILE_EVENTS | AE_DONT_WAIT);
+            Sleep(1);
+        }
+        check(callbacks == cycle + 1 && !(state->masks & READ_QUEUED),
+              "each completion is dequeued exactly once");
+        check(BIO_read(bio, &byte, 1) == 1 && byte == 'x',
+              "consumes the byte before rearming an empty socket");
+    }
+    aeDeleteFileEvent(el, pair[0], AE_READABLE);
+    SSL_free(ssl);
+    FDAPI_close(pair[0]);
+    FDAPI_close(pair[1]);
+    aeDeleteEventLoop(el);
+}
+
 static void testHandshakeDeadline(SSL_CTX *ctx) {
     int pair[2], ssl_error = 0;
     FDAPI_pipe_for_eventloop(pair);
@@ -172,6 +209,7 @@ int win32_tls_interop_test(void) {
     SSL_CTX *ctx = SSL_CTX_new(TLS_method());
     if (!ctx) return 1;
     testBIO(ctx);
+    testReadEventRearm(ctx);
     testHandshakeDeadline(ctx);
     for (int i = 0; i < 8; i++) {
         testCancellation(ctx, i & 1, i & 2);

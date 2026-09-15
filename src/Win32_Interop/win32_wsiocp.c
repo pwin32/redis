@@ -492,7 +492,8 @@ int WSIOCP_QueueNextRead(int fd) {
             return -1;
         }
     }
-    ResetEvent(sockstate->read_event);
+    /* WSARecv resets hEvent before returning a pending operation. Avoid a
+     * redundant ResetEvent system call on every read, including plaintext. */
 #endif
 
     // Use zero length read with overlapped to get notification
