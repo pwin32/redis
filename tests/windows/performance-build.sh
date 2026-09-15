@@ -29,6 +29,23 @@ fi
 } > "$output/toolchain.txt"
 : > "$output/variants.ndjson"
 
+# Older FDAPI baselines export variables named open/write. libgmon's POSIX
+# file calls would bind to those variables and crash while writing gmon.out.
+# Redirect only the profiler runtime to the equivalent native CRT entry points;
+# timed builds and every compared source tree remain untouched.
+profile_runtime="$output/gprof-runtime"
+mkdir -p "$profile_runtime"
+original_gmon="$(gcc -print-file-name=libgmon.a)"
+[[ -f "$original_gmon" ]] || { echo 'Compiler profiler runtime is missing' >&2; exit 1; }
+objcopy --redefine-sym open=_open --redefine-sym write=_write --redefine-sym close=_close \
+    "$original_gmon" "$profile_runtime/libgmon.a"
+nm -u "$profile_runtime/libgmon.a" > "$output/gprof-runtime-symbols.txt"
+jq -n --arg original "$(sha256sum "$original_gmon" | cut -d ' ' -f 1)" \
+    --arg adapted "$(sha256sum "$profile_runtime/libgmon.a" | cut -d ' ' -f 1)" \
+    '{original_sha256:$original,adapted_sha256:$adapted,
+      crt_redirects:{open:"_open",write:"_write",close:"_close"}}' \
+    > "$output/gprof-runtime.json"
+
 build_variant() {
     local name=$1 source=$2 tls=$3 profile=$4
     local source_dir="$output/sources/$source"
@@ -38,7 +55,7 @@ build_variant() {
     local -a targets=("$dest/redis-server.exe")
     if [[ "$profile" == true ]]; then
         opt+=' -pg -fno-omit-frame-pointer'
-        link+=' -pg'
+        link+=" -L\"$(cygpath -am "$profile_runtime")\" -pg"
     else
         targets+=("$dest/redis-cli.exe" "$dest/redis-benchmark.exe")
     fi
