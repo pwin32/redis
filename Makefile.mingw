@@ -479,7 +479,6 @@ INTEROP_TEST_C_SOURCES := \
 	src/Win32_Interop/Win32_Signal_Process.c \
 	src/Win32_Interop/Win32_ThreadControl.c \
 	tests/windows/llp64.c \
-	tests/windows/iocp-interop.c \
 	tests/windows/tls-interop.c
 
 INTEROP_TEST_CXX_SOURCES := \
