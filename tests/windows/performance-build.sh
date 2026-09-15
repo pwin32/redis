@@ -63,7 +63,7 @@ build_variant() {
     fi
     (
         cd "$source_dir"
-        make -f Makefile.mingw -j2 BUILD="$dest" BUILD_TLS="$tls" \
+        make -f Makefile.mingw -j4 BUILD="$dest" BUILD_TLS="$tls" \
             OPT="$opt" LDFLAGS_COMMON="$link" "${targets[@]}"
         [[ -z "$(git status --porcelain --untracked-files=no)" ]]
     ) 2>&1 | tee "$output/$name-build.log"
